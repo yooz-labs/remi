@@ -1,41 +1,24 @@
 /** Relay enrollment is separate from direct trust; revoked authorization always wins. */
-import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RelayDevice } from '@remi/shared';
 import { type IdentityStore, validatePublicKey } from '../auth/identity-store.ts';
+import { newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import {
+  type StoredRelayDevice,
+  readRelayEnrollments,
+  writeRelayEnrollments,
+} from '../storage/relay-enrollments.ts';
+import { activateSecurePushLocked } from '../storage/secure-push-activation.ts';
 
 export class RelayDeviceStore {
-  private readonly file: string;
   constructor(
     private readonly dir: string,
     private readonly trust: IdentityStore,
-  ) {
-    this.file = path.join(dir, 'relay_devices.json');
-  }
-  private read(): RelayDevice[] {
-    let values: unknown;
-    try {
-      values = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw new Error('RELAY_STORAGE_ERROR');
-    }
-    if (
-      !Array.isArray(values) ||
-      values.some(
-        (v) =>
-          !v ||
-          typeof v.publicKey !== 'string' ||
-          !/^[0-9a-f]{16}$/.test(v.fingerprint) ||
-          typeof v.label !== 'string' ||
-          !Number.isFinite(Date.parse(v.createdAt)) ||
-          (v.lastUsedAt !== null && !Number.isFinite(Date.parse(v.lastUsedAt))),
-      )
-    )
-      throw new Error('RELAY_STORAGE_ERROR');
-    return values as RelayDevice[];
+  ) {}
+  private read(): StoredRelayDevice[] {
+    return readRelayEnrollments(this.dir);
   }
   list(): RelayDevice[] {
     const authorized = new Map(
@@ -44,43 +27,47 @@ export class RelayDeviceStore {
     return this.read()
       .filter((device) => authorized.get(device.fingerprint)?.publicKey === device.publicKey)
       .map((device) => ({
-        ...device,
+        publicKey: device.publicKey,
+        fingerprint: device.fingerprint,
+        label: device.label,
+        createdAt: device.createdAt,
         lastUsedAt: authorized.get(device.fingerprint)?.lastUsedAt ?? null,
       }));
   }
   isEnrolled(publicKey: string): boolean {
     return this.list().some((device) => device.publicKey === publicKey);
   }
-  /** Fail-closed API boundary for durable enrollment generation pins (#1200). */
-  captureEnrollmentEpoch(_publicKey: string): string | null {
-    return null;
+  /** Capture only an authorized enrollment, with bounded lazy migration of its current row. */
+  captureEnrollmentEpoch(publicKey: string): string | null {
+    return this.trust.withAuthorizationEpoch(
+      publicKey,
+      (grant) => {
+        if (!grant) return null;
+        const fingerprint = this.trust
+          .loadAuthorizedKeys()
+          .keys.find((key) => key.publicKey === publicKey)?.fingerprint;
+        const values = this.read();
+        const device = values.find(
+          (value) => value.publicKey === publicKey && value.fingerprint === fingerprint,
+        );
+        if (!device) return null;
+        activateSecurePushLocked(this.dir);
+        if (device.enrollmentEpoch) return device.enrollmentEpoch;
+        const enrollmentEpoch = newAuthorityEpoch();
+        writeRelayEnrollments(
+          this.dir,
+          values.map((value) => (value === device ? { ...device, enrollmentEpoch } : value)),
+        );
+        return enrollmentEpoch;
+      },
+      true,
+    );
   }
-  private change(update: (values: RelayDevice[]) => RelayDevice[]): void {
+  private change(update: (values: StoredRelayDevice[]) => StoredRelayDevice[]): void {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(this.dir, 0o700);
     withInterprocessFileLock(path.join(this.dir, 'authorized_keys.json'), () => {
-      const values = update(this.read());
-      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(this.dir, 0o700);
-      const temp = `${this.file}.${randomUUID()}.tmp`;
-      let fd: number | undefined;
-      try {
-        fd = fs.openSync(temp, 'wx', 0o600);
-        fs.writeFileSync(fd, JSON.stringify(values));
-        fs.fsyncSync(fd);
-        fs.closeSync(fd);
-        fd = undefined;
-        fs.renameSync(temp, this.file);
-        const directory = fs.openSync(this.dir, 'r');
-        try {
-          fs.fsyncSync(directory);
-        } finally {
-          fs.closeSync(directory);
-        }
-      } finally {
-        if (fd !== undefined) fs.closeSync(fd);
-        if (fs.existsSync(temp)) fs.unlinkSync(temp);
-      }
+      writeRelayEnrollments(this.dir, update(this.read()));
     });
   }
   async add(
@@ -98,11 +85,16 @@ export class RelayDeviceStore {
     };
     this.change((values) => {
       if (!mayCommit()) throw new Error('RELAY_CANCELLED');
-      return [...values.filter((value) => value.fingerprint !== fingerprint), device];
+      activateSecurePushLocked(this.dir);
+      const stored: StoredRelayDevice = { ...device, enrollmentEpoch: newAuthorityEpoch() };
+      return [...values.filter((value) => value.fingerprint !== fingerprint), stored];
     });
     return device;
   }
   remove(fingerprint: string): void {
-    this.change((values) => values.filter((value) => value.fingerprint !== fingerprint));
+    this.change((values) => {
+      if (values.length > 0) activateSecurePushLocked(this.dir);
+      return values.filter((value) => value.fingerprint !== fingerprint);
+    });
   }
 }
