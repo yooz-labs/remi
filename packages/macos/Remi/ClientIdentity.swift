@@ -63,28 +63,8 @@ struct ClientIdentity {
 
     var authorizeCommand: String { "remi authorize \(fingerprint)" }
 
-    /// Cross-language copy of the reviewed 14 encodings in shared/relay/small-order.ts.
-    /// ClientIdentityTests validates this against helper-generated public fixtures;
-    /// no new curve algorithm is implemented here (#873).
-    private static let smallOrderEncodings: Set<String> = [
-        "0100000000000000000000000000000000000000000000000000000000000000",
-        "0100000000000000000000000000000000000000000000000000000000000080",
-        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
-        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
-        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        "0000000000000000000000000000000000000000000000000000000000000080",
-        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
-        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
-        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
-        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
-        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
-    ]
-
     static func isSmallOrderPublicKey(_ raw: Data) -> Bool {
-        smallOrderEncodings.contains(raw.map { String(format: "%02x", $0) }.joined())
+        NativeEd25519PublicKey.isSmallOrder(raw)
     }
 
     static func fingerprint(ofPublicKeyRaw raw: Data) -> String {
@@ -128,15 +108,6 @@ enum Ed25519PKCS8 {
         }
         return key
     }
-}
-
-/// Only the OS boundary is injectable. The production store, codec, migration,
-/// durable verification and refusal branches are always constructed unchanged.
-struct NativeKeychainOperations {
-    var copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
-    var add: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
-    var update: (CFDictionary, CFDictionary) -> OSStatus
-    static var system: Self { .init(copyMatching:SecItemCopyMatching,add:SecItemAdd,update:SecItemUpdate) }
 }
 
 /// The native Keychain stores a versioned PKCS8/public record. Only exact
@@ -189,17 +160,31 @@ enum ClientIdentityStore {
 
     static func load(authority: NativeIdentityAuthorityBarrier, accessGroup: String?, service: String = defaultService, account: String = defaultAccount,
                      operations: NativeKeychainOperations = .system) throws -> ClientIdentity? {
-        guard let data = try read(accessGroup: accessGroup, service: service, account: account, operations: operations) else { return nil }
+        let data: Data
+        do {
+            guard let stored = try read(accessGroup: accessGroup, service: service, account: account, operations: operations) else {
+                try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+                return nil
+            }
+            data = stored
+        } catch {
+            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+            throw error
+        }
         if data.count == 32 {
             // One-time inward migration of the existing native seed, with no deletion.
             let identity = ClientIdentity(privateKey: try .init(rawRepresentation: data))
             try persist(identity, expected: .nativeSeed(data), service: service, account: account, updating: true, accessGroup: accessGroup, operations: operations, authority: authority)
             return identity
         }
-        let record: Record
-        do { record = try JSONDecoder().decode(Record.self, from: data) }
-        catch { throw NativeIdentityError.malformed }
-        return try record.identity()
+        let identity: ClientIdentity
+        do { identity = try JSONDecoder().decode(Record.self, from: data).identity() }
+        catch {
+            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+            throw error
+        }
+        try authority.reconcileObservedIdentity(publicKey: identity.publicKeyRaw, revision: identity.revision)
+        return identity
     }
 
     /// An explicit inward import. A conflicting durable identity is untouched unless

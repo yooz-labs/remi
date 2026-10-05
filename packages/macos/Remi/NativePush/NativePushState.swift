@@ -8,6 +8,7 @@ import SQLite3
 /// authority invalidated; SQLite and Keychain are not a distributed transaction.
 protocol NativeIdentityAuthorityBarrier {
     func acquireIdentityMutation() throws -> NativeIdentityMutationLease
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws
 }
 
 enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity, changed, busy }
@@ -82,6 +83,9 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         }
     }
 
+    // Observation behavior is pinned separately before its implementation.
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws {}
+
     func acquireIdentityMutation() throws -> NativeIdentityMutationLease {
         let descriptor = open(mutationLock.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw NativePushStateError.unavailable }
@@ -118,7 +122,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     }
 
     private static func validate(_ publicKey: Data, _ revision: String) throws {
-        guard publicKey.count == 32, !ClientIdentity.isSmallOrderPublicKey(publicKey),
+        guard publicKey.count == 32, !NativeEd25519PublicKey.isSmallOrder(publicKey),
               (try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey)) != nil,
               revision.utf8.count == 36, UUID(uuidString: revision) != nil else { throw NativePushStateError.invalid }
     }

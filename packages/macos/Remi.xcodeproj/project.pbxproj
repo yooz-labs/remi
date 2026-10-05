@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000010000000000000035 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
+        120000010000000000000036 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
+        120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
+        120000010000000000000033 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
         120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000014; };
         120000010000000000000012 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000011; };
         120000010000000000000013 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000011; };
@@ -67,6 +71,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000010000000000000034 /* NativeKeychainOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativeKeychainOperations.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000031 /* NativeEd25519PublicKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativeEd25519PublicKey.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000014 /* NativeIdentityAuthorityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativeIdentityAuthorityTests.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000011 /* NativePushConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushConfiguration.swift; sourceTree = SOURCE_ROOT; };
         120000020000000000000001 /* NativePushKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushKeyStore.swift; sourceTree = SOURCE_ROOT; };
@@ -131,6 +137,8 @@
 				119900020000000000000001 /* NativeIdentityBridge.swift */,
 				120000030000000000000001 /* NativeAPNsEnvironment.swift */,
                 120000010000000000000001 /* NativePushState.swift */,
+                120000010000000000000034 /* NativeKeychainOperations.swift */,
+                120000010000000000000031 /* NativeEd25519PublicKey.swift */,
                 120000010000000000000011 /* NativePushConfiguration.swift */,
                 120000020000000000000001 /* NativePushKeyStore.swift */,
 				120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */,
@@ -322,6 +330,8 @@
 				119900020000000000000002 /* NativeIdentityBridge.swift in Sources */,
 				120000030000000000000002 /* NativeAPNsEnvironment.swift in Sources */,
                 120000010000000000000002 /* NativePushState.swift in Sources */,
+                120000010000000000000035 /* NativeKeychainOperations.swift in Sources */,
+                120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */,
                 120000010000000000000012 /* NativePushConfiguration.swift in Sources */,
                 120000020000000000000002 /* NativePushKeyStore.swift in Sources */,
 				120000030000000000000007 /* NativeAPNsEnvironmentQuery.m in Sources */,
@@ -349,6 +359,8 @@
 				119900020000000000000003 /* NativeIdentityBridge.swift in Sources */,
 				120000030000000000000003 /* NativeAPNsEnvironment.swift in Sources */,
                 120000010000000000000003 /* NativePushState.swift in Sources */,
+                120000010000000000000036 /* NativeKeychainOperations.swift in Sources */,
+                120000010000000000000033 /* NativeEd25519PublicKey.swift in Sources */,
                 120000010000000000000013 /* NativePushConfiguration.swift in Sources */,
                 120000020000000000000003 /* NativePushKeyStore.swift in Sources */,
                 120000020000000000000005 /* NativePushKeyStoreTests.swift in Sources */,

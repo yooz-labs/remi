@@ -125,4 +125,59 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         XCTAssertEqual(try state.currentAuthority(), .init(publicKey: imported.publicKeyRaw, revision: imported.revision),
                        "The actual direct legacy signer must publish only its durably verified identity")
     }
+
+    private var itemQuery: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    }
+    private func externalRecord(_ identity: ClientIdentity) throws -> Data {
+        struct Record: Encodable {
+            let version: Int; let pkcs8: Data; let publicKey: Data; let revision: String; let requiresAppUnlock: Bool
+        }
+        return try JSONEncoder().encode(Record(version: 2, pkcs8: Ed25519PKCS8.encode(identity.privateKey),
+            publicKey: identity.publicKeyRaw, revision: identity.revision, requiresAppUnlock: identity.requiresAppUnlock))
+    }
+
+    func testReadOnlyObservationClosesExternalReplacementWithoutRestoringAuthority() throws {
+        _ = try original()
+        let external = ClientIdentity(privateKey: .init())
+        let bytes = try externalRecord(external)
+        XCTAssertEqual(SecItemUpdate(itemQuery as CFDictionary, [kSecValueData as String: bytes] as CFDictionary), errSecSuccess)
+        let observed = try XCTUnwrap(ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account))
+        XCTAssertEqual(observed.revision, external.revision)
+        XCTAssertNil(try state.currentAuthority(), "An observed external revision must close prior public authority")
+        _ = try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account)
+        XCTAssertNil(try state.currentAuthority(), "A read cannot install the replacement authority implicitly")
+    }
+
+    func testReadOnlyDeletionObservationClosesAuthorityWithoutCreatingKey() throws {
+        _ = try original()
+        XCTAssertEqual(SecItemDelete(itemQuery as CFDictionary), errSecSuccess)
+        XCTAssertNil(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account))
+        XCTAssertNil(try state.currentAuthority(), "An observed deleted private record must close public authority")
+    }
+
+    func testReadOnlyCorruptionObservationClosesAuthorityAndPreservesRecord() throws {
+        _ = try original()
+        let corrupt = Data("corrupt owned key record".utf8)
+        XCTAssertEqual(SecItemUpdate(itemQuery as CFDictionary, [kSecValueData as String: corrupt] as CFDictionary), errSecSuccess)
+        XCTAssertThrowsError(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account))
+        XCTAssertNil(try state.currentAuthority(), "An observed corrupt private record must close public authority")
+        var query = itemQuery
+        query[kSecReturnData as String] = true
+        var result: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &result), errSecSuccess)
+        XCTAssertEqual(result as? Data, corrupt)
+    }
+
+    func testReadErrorClosesAuthorityButLaterReadsCannotRestoreIt() throws {
+        let prior = try original()
+        var operations = NativeKeychainOperations.system
+        operations.copyMatching = { _, _ in errSecAuthFailed }
+        XCTAssertThrowsError(try ClientIdentityStore.load(authority: state, accessGroup: nil,
+            service: service, account: account, operations: operations))
+        XCTAssertNil(try state.currentAuthority(), "An unavailable private record cannot retain public push authority")
+        XCTAssertEqual(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account)?.revision, prior.revision)
+        XCTAssertNil(try state.currentAuthority(), "A successful later read cannot reopen authority implicitly")
+    }
+
 }

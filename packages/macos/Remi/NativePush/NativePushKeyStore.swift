@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 import Security
 
+enum NativePushKeyError: Error { case keychain(OSStatus) }
+
 /// The separate native P256 sealing key uses CryptoKit's DER export/import.
 /// Exact not-found permits creation; other read errors/corruption preserve the
 /// existing item. Only this key is shared with the NSE; Ed25519 stays app-only.
@@ -37,7 +39,7 @@ final class NativePushKeyStore {
         var result: CFTypeRef?
         let status = operations.copyMatching(request as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw NativeIdentityError.keychain(status) }
+        guard status == errSecSuccess else { throw NativePushKeyError.keychain(status) }
         guard let bytes = result as? Data else { throw NativePushStateError.corrupt }
         return bytes
     }
@@ -73,7 +75,7 @@ final class NativePushKeyStore {
             guard let winner = try load() else { throw NativePushStateError.changed }
             return winner
         }
-        guard status == errSecSuccess else { throw NativeIdentityError.keychain(status) }
+        guard status == errSecSuccess else { throw NativePushKeyError.keychain(status) }
         guard try read() == data, let verified = try load(),
               verified.publicKey == key.publicKey.x963Representation else { throw NativePushStateError.changed }
         return verified
