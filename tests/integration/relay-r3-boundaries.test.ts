@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { createRawPtyOutput, createSessionUpdate } from '@remi/shared';
+import { createRawPtyOutput, createSessionUpdate, relayV2 } from '@remi/shared';
 import { AdapterRegistry } from '../../packages/daemon/src/adapters/adapter-registry.ts';
 import { HubRelay } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { resumed } from './relay-r3-fixture.ts';
@@ -30,6 +30,28 @@ test('registry refuses raw PTY before invoking the actual relay adapter, which a
     expect(send(running.cid, raw)).toBe(false);
     broadcast(raw);
     expect(await running.socket.quiet(80)).toBe(true);
+  } finally {
+    await running.cleanup();
+  }
+}, 10000);
+
+test('actual pipe enqueue rejects byte ceiling synchronously before queued crypto', async () => {
+  const running = await resumed();
+  try {
+    const peer = [
+      ...(
+        running.relay as unknown as {
+          peers: Map<string, { ws: WebSocket; pendingFrames: number; cancelled: boolean }>;
+        }
+      ).peers.values(),
+    ][0];
+    if (!peer?.ws.onmessage) throw new Error('MISSING_ACTUAL_PIPE');
+    const pending = peer.pendingFrames;
+    peer.ws.onmessage(
+      new MessageEvent('message', { data: new ArrayBuffer(relayV2.MAX_FRAME + 1) }),
+    );
+    expect(peer.cancelled).toBe(true);
+    expect(peer.pendingFrames).toBe(pending);
   } finally {
     await running.cleanup();
   }
