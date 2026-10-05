@@ -80,7 +80,7 @@ describe('WebSocketServer loopback auth skip (#257)', () => {
       await challengePromise;
       ws.close();
 
-      // No auth_challenge should ever have been sent.
+      // Bare loopback is challenged and cannot reach hello_ack.
       const types = received.map((m) => m.type);
       expect(types).toContain('auth_challenge');
       expect(types).not.toContain('hello_ack');
