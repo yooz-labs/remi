@@ -2153,7 +2153,7 @@ const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || 
 // Determine whether auth should be enabled
 // #873: CLI flag > config file > default (on for every bind).
 const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? (configAuth === 'auto' ? true : configAuth);
+const authEnabled = cliAuth ?? configAuth !== false;
 
 let authenticator: Authenticator | undefined;
 /** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
@@ -2320,7 +2320,7 @@ if (relayWanted && !cliPermanentCode) {
   // Permanent code mode: persist code to disk, require Ed25519 auth over relay
   if (!authenticator) {
     console.error(
-      'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
+      'Permanent connection codes require authentication. Remove --no-auth/auth.enabled = false or pass --auth (#873).',
     );
     process.exit(1);
   }

@@ -73,9 +73,14 @@ async function wait(check: () => boolean, what: string, milliseconds = 10000) {
     await Bun.sleep(10);
   }
 }
-async function connection(port: number, identity?: UnlockedIdentity, token?: string) {
+async function connection(
+  port: number,
+  identity?: UnlockedIdentity,
+  token?: string,
+  host = '127.0.0.1',
+) {
   const ws = new WebSocket(
-    `ws://127.0.0.1:${port}/ws`,
+    `ws://${host}:${port}/ws`,
     (token ? { headers: { [CAPABILITY_HEADER]: token } } : undefined) as never,
   );
   sockets.push(ws);
@@ -111,7 +116,6 @@ test('stock hub challenges bare loopback; CLI approves exact pending key; fresh 
     '--no-mdns',
     '--no-relay',
     '--no-telegram',
-    '--no-tofu',
   ]);
   const statusPath = path.join(dir, '.remi', 'daemon-status.json');
   await wait(() => fs.existsSync(statusPath) || hub.exitCode !== null, 'stock hub');
@@ -299,5 +303,163 @@ for (const optOut of ['flag', 'config'] as const) {
     hub.kill('SIGTERM');
     await hub.exited;
     expect(await stderr).toContain('WARNING: authentication disabled');
+  }, 20000);
+}
+
+test('stock wildcard bind requires auth and capability only admits actual TCP loopback', async () => {
+  const dir = directory();
+  const port = await reserveRange(1, 50, '0.0.0.0');
+  const hub = spawn(dir, [
+    'serve',
+    '--bind',
+    '0.0.0.0',
+    '--port',
+    String(port),
+    '--no-mdns',
+    '--no-relay',
+    '--no-telegram',
+  ]);
+  await wait(
+    () => fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')) || hub.exitCode !== null,
+    'wildcard hub',
+  );
+  expect(hub.exitCode).toBeNull();
+  const local = await connection(port);
+  await wait(() => local.messages.length > 0, 'wildcard local challenge');
+  expect(local.messages[0]?.type).toBe('auth_challenge');
+  expect((await (await fetch(`http://127.0.0.1:${port}/auth-info`)).json()).authRequired).toBe(
+    true,
+  );
+  const address = Object.values(os.networkInterfaces())
+    .flat()
+    .find((iface) => iface?.family === 'IPv4' && !iface.internal)?.address;
+  if (!address)
+    throw new Error('Real non-loopback TCP capability control needs a local IPv4 interface');
+  const token = readCapabilityToken(path.join(dir, '.remi', 'capability.key'));
+  expect(token).not.toBeNull();
+  const remote = await connection(port, undefined, token ?? '', address);
+  await wait(() => remote.messages.length > 0, 'non-loopback challenge despite capability');
+  expect(remote.messages[0]?.type).toBe('auth_challenge');
+  const probe = await fetch(`http://${address}:${port}/auth-info`, {
+    headers: { [CAPABILITY_HEADER]: token ?? '' },
+  });
+  expect((await probe.json()).authRequired).toBe(true);
+  const denied = await fetch(`http://${address}:${port}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', [CAPABILITY_HEADER]: token ?? '' },
+    body: JSON.stringify({ sessionId: 'none', questionId: 'none', answer: 'yes' }),
+  });
+  expect(denied.status).toBe(401);
+}, 20000);
+
+test('CLI unknown-key helper displays its own derived public fingerprint and machine-local authorize command', async () => {
+  const dir = directory();
+  const clientDir = directory();
+  const port = await reserveRange(1);
+  const hub = spawn(dir, [
+    'serve',
+    '--port',
+    String(port),
+    '--no-mdns',
+    '--no-relay',
+    '--no-telegram',
+  ]);
+  await wait(
+    () => fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')) || hub.exitCode !== null,
+    'hub',
+  );
+  expect(hub.exitCode).toBeNull();
+  const result = await cli(clientDir, ['ls', '--host', '127.0.0.1', '--port', String(port)]);
+  const identity = new IdentityStore(path.join(clientDir, '.remi')).load();
+  expect(identity).not.toBeNull();
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(`Approval needed for this client (${identity?.fingerprint})`);
+  expect(result.stderr).toContain(`remi authorize ${identity?.fingerprint} --label`);
+  expect(result.stderr).toContain('remi export-key --public-only');
+  const exported = await cli(clientDir, ['export-key', '--public-only']);
+  expect(exported.code).toBe(0);
+  expect(Object.keys(JSON.parse(exported.stdout)).sort()).toEqual(['fingerprint', 'publicKey']);
+  expect(JSON.parse(exported.stdout).publicKey).toBe(identity?.publicKey);
+  expect(new IdentityStore(path.join(dir, '.remi')).listPendingKeys()[0]?.fingerprint).toBe(
+    identity?.fingerprint,
+  );
+}, 20000);
+
+for (const bind of ['127.0.0.1', '0.0.0.0']) {
+  test(`malformed auth config fails before opening listener on ${bind}`, async () => {
+    for (const value of [
+      '0',
+      '1',
+      '0.0',
+      '""',
+      '"false"',
+      '[]',
+      '["auto"]',
+      '{ invalid = false }',
+    ]) {
+      const dir = directory();
+      fs.mkdirSync(path.join(dir, '.remi'));
+      fs.writeFileSync(
+        path.join(dir, '.remi', 'config.toml'),
+        `[daemon]\nbind = "${bind}"\n[auth]\nenabled = ${value}\n`,
+      );
+      const port = await reserveRange(1, 50, bind);
+      const proc = spawn(dir, [
+        'serve',
+        '--port',
+        String(port),
+        '--no-mdns',
+        '--no-relay',
+        '--no-telegram',
+      ]);
+      const output = new Response(proc.stderr).text();
+      await wait(
+        () =>
+          proc.exitCode !== null || fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')),
+        'invalid-config exit',
+      );
+      expect(proc.exitCode).toBe(1);
+      expect(await output).toContain('auth.enabled');
+      expect(fs.existsSync(path.join(dir, '.remi', 'daemon-status.json'))).toBe(false);
+    }
+  }, 20000);
+}
+
+for (const corrupt of ['authorized_keys.json', 'pending_keys.json']) {
+  test(`private storage detail stays local when ${corrupt} is malformed`, async () => {
+    const dir = directory();
+    const port = await reserveRange(1);
+    const proc = spawn(dir, [
+      'serve',
+      '--port',
+      String(port),
+      '--no-mdns',
+      '--no-relay',
+      '--no-telegram',
+    ]);
+    const stderr = new Response(proc.stderr).text();
+    await wait(
+      () => fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')) || proc.exitCode !== null,
+      'hub',
+    );
+    expect(proc.exitCode).toBeNull();
+    const file = path.join(dir, '.remi', corrupt);
+    fs.writeFileSync(file, '{PRIVATE_LABEL_SENTINEL');
+    const client = await connection(port, await unlockIdentity(await createIdentity()));
+    await wait(
+      () => client.messages.some((message) => message.type === 'auth_result'),
+      'store refusal',
+    );
+    const result = client.messages.find((message) => message.type === 'auth_result');
+    expect(result).toMatchObject({ success: false, error: 'AUTH_STORE_ERROR' });
+    expect(JSON.stringify(client.messages)).not.toContain('PRIVATE_LABEL_SENTINEL');
+    expect(JSON.stringify(client.messages)).not.toContain(dir);
+    proc.kill('SIGTERM');
+    await proc.exited;
+    const local = await stderr;
+    expect(local).toContain(file);
+    expect(local).toContain('invalid JSON');
+    expect(local).not.toContain('PRIVATE_LABEL_SENTINEL');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{PRIVATE_LABEL_SENTINEL');
   }, 20000);
 }

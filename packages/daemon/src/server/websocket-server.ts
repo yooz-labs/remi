@@ -520,7 +520,7 @@ export class WebSocketServer {
       );
       if (!ok) {
         console.warn(
-          `[answer-relay] auth rejected: signature verification failed from peer ${peerAddress ?? 'unknown'} (key ${clientPublicKey.slice(0, 12)}…)`,
+          `[answer-relay] auth rejected: signature verification failed from peer ${peerAddress ?? 'unknown'}`,
         );
         return reply(401, 'unauthorized', { error: 'signature verification failed' });
       }

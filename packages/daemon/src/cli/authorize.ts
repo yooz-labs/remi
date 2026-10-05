@@ -115,6 +115,6 @@ export function runListKeys(dir?: string): void {
     console.log(`  Approve:     remi authorize ${key.fingerprint} --label device-name`);
   }
   console.log(
-    'Compare the fingerprint on the client before approving. For explicit imports use remi key-export --public-only.',
+    'Compare the fingerprint on the client before approving. For explicit imports use remi export-key --public-only.',
   );
 }

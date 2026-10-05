@@ -137,7 +137,7 @@ export async function performAuthHandshake(
           reject(
             new Error(
               msg.error === 'UNKNOWN_KEY'
-                ? `Approval needed for this client (${identity.fingerprint}). On the daemon machine, compare this fingerprint and run: remi authorize ${identity.fingerprint} --label device-name. Then reconnect. Export only public data with remi key-export --public-only.`
+                ? `Approval needed for this client (${identity.fingerprint}). On the daemon machine, compare this fingerprint and run: remi authorize ${identity.fingerprint} --label device-name. Then reconnect. Export only public data with remi export-key --public-only.`
                 : `Authentication failed: ${msg.error ?? 'unknown'}`,
             ),
           );

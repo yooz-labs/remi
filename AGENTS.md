@@ -17,7 +17,7 @@ real problems for months. Known cases, all confirmed:
 | The claim | The reality | Cost |
 |---|---|---|
 | "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
-| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880; `'auto'` is STILL unfixed — the LAN exposure was closed by defaulting `bind` to loopback instead |
+| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880 initially closed LAN exposure with loopback binding; #873 now resolves auto on and requires local approval |
 | allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
 | `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
 | "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
@@ -194,25 +194,40 @@ loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
 disappears, which is the confusing half.
 
 Do NOT recommend `tailscale serve` as the workaround. It is a same-host reverse
-proxy, so every tailnet peer arrives as `127.0.0.1` and inherits the loopback
-auth exemption (`peer-helpers.ts`, #869) — it reinstates the hole behind a
-safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
+proxy, so every tailnet peer arrives as `127.0.0.1` and loses its actual
+peer address. #873 requires identity or a real local capability even on loopback;
+keep the documented direct setup. Recommend an SSH tunnel, or an explicit `bind` plus
 `--auth`.
 
 **The relay is off by default, and without an authenticator it accepts nothing (#1193).**
 `network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, `--permanent-code` wins over `relay = false`, and `--no-relay` wins over both.
-With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `cli.ts` prints a notice (how to enable it, what to use today, and how to silence it with `network.relay = false` or `--no-relay`) and creates no adapter, so the daemon holds no connection to the Worker.
+Without `--permanent-code`, or with auth explicitly disabled, `cli.ts` prints a notice (how to enable it, what to use today, and how to silence it with `network.relay = false` or `--no-relay`) and creates no adapter, so the daemon holds no connection to the Worker.
 `RelayAdapter` fails closed on its own as the second layer: it refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound `relay` payload before it is parsed (the signaling client has already parsed the outer frame), and acts on `peer-connected` and `peer-disconnected` only for the Worker role `client`.
 The role check matters because the Worker gives a socket that never joined the role `pending` and tells the host whenever any socket closes (`connection-room.ts`), and because the Worker can deliver a `relay` frame to the host with no peer ever having joined, so the frame drop is what closes that path.
 A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the setting and now gets the boot notice instead of a relay.
 No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
 The rebuild is planned (`.context/strategy-2026-10.md` section 9, `.context/relay-rebuild-plan-2026-10.md`); nothing remote ships through the relay today.
 
-**`--auth --permanent-code` is authenticated, not paired.**
-`cli.ts` builds the Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed, and `verifyResponse` adds an unknown key to `authorized_keys` and persists it.
-So unless `--no-tofu` is set, any client that knows the room code is added to the authorized keys on its first connection, and the same keys admit the direct WebSocket connection when `--auth` is on.
-The adapter prints a warning at boot in that mode.
-This is not widened into a behavior change here: the v1 permanent mode is deleted by the relay rebuild (#1198), which replaces trust on first use with a pairing secret.
+**Authentication and local first-connect approval (#873).**
+`auth.enabled = "auto"` now enables authentication on every bind. Unknown keys
+never become trusted automatically: `Authenticator.verifyResponse` verifies a
+one-time challenge, canonical Ed25519 public key and derived fingerprint before
+storing an unsuccessful `UNKNOWN_KEY` candidate. Candidates hold only the public
+key, derived fingerprint and first-seen/expiry timestamps (32 keys, ten minutes,
+no retry extension). `remi keys` shows pending and authorized public keys;
+compare the client's fingerprint and run `remi authorize <exact-fingerprint>
+--label phone` on the daemon machine, then retry with a fresh challenge.
+Explicit JSON/file authorization is still available; share only
+`remi export-key --public-only` output. Detached signed `/answer` requests use
+already authorized keys and never create candidates.
+`require_local_auth` has been removed; old values are ignored with a visible
+retirement notice. `--no-tofu` is accepted with a retirement notice and changes
+no trust behavior. Explicit `--no-auth` or `auth.enabled = false` still disables
+auth with a warning. A valid daemon capability over actual TCP loopback is the
+other admitted path; bare loopback clients are challenged. Pending/authorized
+mutations share an interprocess lock and atomic restricted files; approval
+persists the grant before deleting its candidate. Physical signed iPhone and
+signed sandboxed macOS acceptance remain unverified owner hardware gates.
 
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended

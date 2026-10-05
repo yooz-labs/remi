@@ -167,8 +167,8 @@ export class Authenticator {
    * Order: verify signature and derived fingerprint, then check authorization,
    * then persist an untrusted pending candidate if the key is unknown.
    *
-   * `response.clientFingerprint` is NEVER used for authorization or identity
-   * binding (#671): it is a client-supplied wire field, and Ed25519
+   * `response.clientFingerprint` is never an identity authority (#671/#873):
+   * mismatched display claims are rejected, and Ed25519
    * signature verification only proves possession of `clientPublicKey`, not
    * that the claimed fingerprint actually hashes from that key. Every
    * identity-bearing check here (authorized-keys lookup, pending registration, lastUsedAt,
@@ -218,7 +218,7 @@ export class Authenticator {
     } catch (err) {
       const detail = errorToString(err);
       console.error(`Auth store error during verification: ${detail}`);
-      return { result: createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`) };
+      return { result: createAuthResult(false, undefined, 'AUTH_STORE_ERROR') };
     }
 
     // #873: verified unknown identities request local human approval, never trust on first use.
@@ -229,9 +229,9 @@ export class Authenticator {
         // Concurrent explicit approval still requires a fresh challenge; no implicit admission.
         if (!(err instanceof DuplicateKeyError)) {
           const code =
-            err instanceof PendingQueueFullError
-              ? 'PENDING_QUEUE_FULL'
-              : `AUTH_STORE_ERROR: ${errorToString(err)}`;
+            err instanceof PendingQueueFullError ? 'PENDING_QUEUE_FULL' : 'AUTH_STORE_ERROR';
+          if (!(err instanceof PendingQueueFullError))
+            console.error(`Auth store error during pending registration: ${errorToString(err)}`);
           return { result: createAuthResult(false, undefined, code) };
         }
       }

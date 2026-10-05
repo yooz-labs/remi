@@ -378,6 +378,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
           notifications: { ...merged.notifications, subagent_alert: legacy.subagentAlert },
         }
       : merged;
+    validateAuth(config.auth, configPath);
     validateTerminal(config.terminal, configPath);
     validateDaemon(config.daemon, configPath);
     validateNotifications(config.notifications, configPath);
@@ -395,6 +396,14 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
+  }
+}
+
+/** #873: only exact enum values may reach the authentication decision. */
+function validateAuth(auth: AuthConfig, configPath: string): void {
+  const enabled: unknown = auth?.enabled;
+  if (enabled !== 'auto' && enabled !== true && enabled !== false) {
+    throw new Error(`Invalid auth.enabled in ${configPath}: expected "auto", true or false`);
   }
 }
 
@@ -535,6 +544,7 @@ function validateTerminal(cfg: TerminalConfig, configPath: string): void {
  * Env vars take precedence over config file values.
  */
 export function applyEnvOverrides(config: RemiConfig): RemiConfig {
+  validateAuth(config.auth, CONFIG_PATH);
   const env = process.env;
 
   const daemon = { ...config.daemon };
