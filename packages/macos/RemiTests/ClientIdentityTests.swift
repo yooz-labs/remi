@@ -301,7 +301,7 @@ final class ClientIdentityTests: XCTestCase {
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide where x < quietZone || y < quietZone ||
                 x >= bitmap.pixelsWide - quietZone || y >= bitmap.pixelsHigh - quietZone {
-                let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y))
                 opaqueWhiteBorder = opaqueWhiteBorder && pixel.alphaComponent == 1 &&
                     pixel.redComponent == 1 && pixel.greenComponent == 1 && pixel.blueComponent == 1
             }
