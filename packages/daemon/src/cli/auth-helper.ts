@@ -16,7 +16,7 @@ import {
 } from '@remi/shared';
 import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UnlockedIdentity } from '@remi/shared';
-import { IdentityStore } from '../auth/identity-store.ts';
+import { IdentityStore, validatePublicKey } from '../auth/identity-store.ts';
 
 export interface AuthHandshakeResult {
   /** The unlocked identity used for signing */
@@ -85,6 +85,9 @@ export async function performAuthHandshake(
       );
     }
   }
+
+  // #873: display and sign the fingerprint derived from our own public bytes.
+  identity = { ...identity, fingerprint: await validatePublicKey(identity.publicKeyRaw) };
 
   // Sign the challenge
   try {
