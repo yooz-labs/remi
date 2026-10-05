@@ -492,8 +492,10 @@ Mutants of the new logic and of each wiring line, with the tests that kill them,
 ## Phase 5 amendment: wire identity, `create_session` with a harness, web label (#1179)
 
 Phase 5 puts the harness on the wire and lets a client ask a hub for a Codex or Claude session with arguments.
-Nothing here was run against a real Codex: every black-box test spawns the real `cli.ts`, hub and child daemons and a real WebSocket client, but the agents are fake `claude` and `codex` executables on a PATH of fakes plus `/usr/bin:/bin`, and the app-server is the stand-in.
-LV-4 (a Codex session created from a hub request, in an already-trusted directory, reaches the prompt headless) is NOT done, and the gate "LV-4 passed" is therefore not met; item 13 lists what it must check.
+When it was written, nothing here had been run against a real Codex: every black-box test spawns the real `cli.ts`, hub and child daemons and a real WebSocket client, but the agents are fake `claude` and `codex` executables on a PATH of fakes plus `/usr/bin:/bin`, and the app-server is the stand-in; those tests are still what the suite runs.
+LV-4 (a Codex session created from a hub request, in an already-trusted directory, reaches the prompt headless) then ran on 2026-10-04, partly: see "LV-4 results" below.
+The prompt, the identity, a resume, the cold start and PATH resolution passed; `-a untrusted` failed (fixed in the follow-up); an approval card on a hub-created session, the Update and Trust modals through `remi attach`, `remi codex --host` from a second machine and the web label were NOT RUN.
+Item 13 lists what was asked.
 
 1. **Dual-emit, from one value.**
 `hello_ack` (on the acks that carry the binding), `question` and the daemon's own session-list entry carry `harness` and `harnessSessionId`.
@@ -510,7 +512,7 @@ The command is never run (a test makes it write a marker and checks it never doe
 `Bun.which` reads the PATH the process started with and ignores a later change to `process.env.PATH` (checked on Bun 1.3.11 and 1.4.2), and every daemon changes it at boot (`resolveShellPath`), so the PATH is passed explicitly; a test points `process.env.PATH` at a directory after startup and would fail without it.
 The list is read at each ack, so a command installed later is offered without a restart.
 Every ack the production daemon sends carries it: the three in `connection-events.ts` (attached, query-mode, and the session-less one a hub sends) and both in `resume-session-events.ts`; `Connection`'s own ack (`connection.ts`, library consumers only, `skipHelloAck` is always set by the daemon) does not.
-Codex is advertised by PATH presence, before LV-4 (plan open call 17): the owner may want it gated.
+Codex is advertised by PATH presence (plan open call 17); LV-4 ran on 2026-10-04, partly ("LV-4 results"), and the owner may still want it gated.
 3. **The trust boundary for a create request** (`checkHarnessRequest`, before a port is probed or anything spawned), in this order: a known harness id (`isHarnessId`), an adapter in the registry, its command on PATH (only when a harness is named: a request that names none keeps Claude's old behavior, a spawn that fails inside the child if there is no `claude`), `args` against that harness's remote allowlist, then for a named harness its older-daemon gate (`legacyWriterRefusal`, the Phase 3 text).
 A refusal is `create_session_response{success:false, error}` and nothing spawned.
 What the client reads is short and host-free (changed by the Phase 5 review, G8): the log, not the response, has the whole reason, escaped.
@@ -560,7 +562,7 @@ The header's binding button still reads `claudeSessionId`, so a Codex session ha
 - A Codex `hello_ack` used to carry `claudeSessionId: null` (through the Claude-shaped binding); it is now omitted, as the issue says; the Phase 3 characterization test reads it with `?? null` and stayed green.
 - The Phase 3 test that pinned `remi codex --host` as an exit-2 refusal now pins that it asks the remote daemon (exit 1 with none listening).
 - The plan's section 2.6 and the issue say a request carrying `resume` is out of scope; the Phase 2 validator allows `resume <uuid>` and was not narrowed (item 3).
-- Plan open call 17 (advertise Codex only after LV-4) is not applied: availability is PATH presence, as the issue says.
+- Plan open call 17 (advertise Codex only after LV-4) is not applied: availability is PATH presence, as the issue says; LV-4 has since run, partly ("LV-4 results").
 - The plan's "exports with no production caller" rule: none in this PR; `SessionStore.findByHarnessSessionId` (Phase 2) had none and was deleted in the Phase 5 review (G14), with its tests; a lookup by thread id, if a later phase needs one, should return a list.
 12. **Test changes to existing files, all disclosed in the PR:** `harness.test.ts` (the declared change: the factories no longer emit neither key), setup lines in `binding-protocol.test.ts` (the binding's shape), the new required dependencies added to each handler constructor in the existing tests, `message-api-setup.test.ts` (`getClaudeSessionId` became `getIdentity`), the `--host` test in `codex-launch-characterization.test.ts`, and the three deleted tests of item 8.
 13. **What LV-4 had to verify (run live on 2026-10-04: the results are in "LV-4 results", below; this list is what was asked, as written before the run).**
@@ -653,7 +655,7 @@ They found real work, G1 to G18, and the lead decided H1 to H5.
 
 - **H1, Codex stays advertised by PATH presence.**
 There is no opt-in switch: the PR targets the epic branch, nothing reaches users from it, and LV-4 is a HARD gate on merging the epic.
-If LV-4 shows trouble, the lead gates the advertisement then.
+If LV-4 shows trouble, the lead gates the advertisement then (LV-4 ran on 2026-10-04, partly; "LV-4 results" says what it showed and what it did not run, and the decision stays the lead's).
 - **H2, a remote Codex `resume <uuid>` stays in the validator, and the hub refuses a held thread.**
 It fails closed, it is the Phase 2 capability and it has tests; it was unverified headless when decided, and LV-4 then ran it ("LV-4 results").
 The hub refuses a thread a live session already holds BEFORE it spawns; before, the child refused and the client saw only "Daemon process exited unexpectedly".

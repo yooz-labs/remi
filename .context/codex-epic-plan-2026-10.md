@@ -509,7 +509,7 @@ export interface HarnessChat {
 - `resume_session_request` on a daemon that hosts Codex is refused `UNSUPPORTED`; `resolveStoredSession`'s Codex branch is deleted (the lead's decision: `remi --sessions` prints the whole resume command).
 - Live-sessions: `harness` on the entry, three Claude-only readers filter on it (`couldBeClaudeEntry`); no Codex-side reader exists to change.
 - `Bun.which` ignores a `process.env.PATH` change made after startup, so availability passes the PATH explicitly (found while writing the registry test).
-- Not done: LV-4, the gate of this phase. Codex is advertised before it passes (open call 17 not applied; the lead decided to keep it so, since LV-4 is a hard gate on merging the epic).
+- LV-4, the gate of this phase, ran on 2026-10-04, partly (ADR 0033, "LV-4 results"). NOT RUN: an approval card on a hub-created session, the Update and Trust modals through `remi attach`, `remi codex --host` from a second machine, and the web label. Codex is advertised by PATH presence (open call 17 not applied; the lead decided to keep it so, since LV-4 is a hard gate on merging the epic).
 - Changed by the Phase 5 review (ADR 0033, its last section): a remote Codex request may only tighten the host's posture (`-s read-only`; LV-4 then showed Codex 0.160.0 rejects `-a untrusted`, and the remote allowlist now carries no `-a` at all), Claude's allowlist drops `--continue`, the hub refuses a resume of a thread a live session holds before it spawns, every create request's `directory` is checked, the client reads short host-free texts, `--host` and a Codex `--daemon` refuse loose arguments, the notice names the exact session to `remi attach`, and `SessionStore.findByHarnessSessionId` is gone.
 
 ---
@@ -916,7 +916,7 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 | R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <last 8> to <last 8>` and, since the Phase 4 review, tells the person "remi now follows a new Codex thread; approvals come from it": the session keeps its approval authority across the move, not closed, never silent); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; (4) two remi codex sessions in one directory: a `/new` in either is followed by neither (E1), and an unbound sibling blocks a first bind only for 60 s (E2). |
 | R5 | `cancel` from a second client resolves the request like the TUI's No | LV-3(c): **VERIFIED live 2026-10-04 (the item is declined and the turn interrupted, like the TUI's No)** | Flip the No mapping to `decline` (listed or not). |
 | R6 | `thread/items/list` pages history | LV-5 | Fall back to the rollout at `thread.path`. |
-| R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation: the hub advertises `codex` only after LV-4, and a user can `remi attach`. |
+| R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation as planned: the hub advertises `codex` only after LV-4 (not applied, open call 17: it is advertised by PATH presence; LV-4 ran on 2026-10-04, partly, and no modal appeared), and a user can `remi attach`. |
 | R8 | `clientInfo.name` does not become the daemon's global originator for later TUI threads | Check `originator` after remi connects first: **WRONG, seen live 2026-10-04: `originator` is daemon-global, set by the first client that initialized, so after a `remi` client initialized first every later TUI-created thread read "remi"** | Delay the first connect about 1.5 s after the first PTY output so the TUI initializes first, or rename the client. |
 | R9 | Schema drift under `experimentalApi:true` (CLI and daemon already differ by a patch version) | Fixtures versioned to 0.160.0; narrow parsers ignore unknown fields | Parsers fail closed to `terminalOnly` cards rather than dropping requests. |
 | R10 | Request ids are unique per daemon lifetime only | Spike (ids 1, 2, 5, 6 across runs); the first real id was 0 (live, 2026-10-04) | Already handled by the `(threadId, requestId)` key and retire-on-disconnect. |
@@ -943,7 +943,7 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 14. Cards are retired on any disconnect and re-created from replay (new ids).
 15. A terminal-answered Codex request dismisses with reason `'cancelled'`.
 16. `harness_denied` equivalent is out of scope: Guardian frames now exist (captured live on 2026-10-04) but no design uses them yet.
-17. `hello_ack.harnesses` advertises `codex` by PATH presence; the owner may want it gated until LV-4.
+17. `hello_ack.harnesses` advertises `codex` by PATH presence; the owner may want it gated until LV-4 (which ran on 2026-10-04, partly; ADR 0033, "LV-4 results").
 18. The `standingGrant: 'session'` union value.
 
 ### 6.3 What I could not verify
