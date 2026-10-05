@@ -30,8 +30,11 @@
  *
  * What this object stores: the enrolled device keys (public keys) and the live
  * pairing windows (hashes of tickets). What it keeps in memory: per-device
- * admission counters (reset if the object restarts). It never holds a session
- * id, a device name, a pairing secret, a key or any frame content.
+ * admission counters (reset if the object restarts), and capacity reservations
+ * while admission handlers await a ticket burn. With conforming v2 endpoints,
+ * session payloads and device names are encrypted; private keys and the pairing
+ * secret never reach it. It sees public keys, admission metadata and the plaintext
+ * hello/hello_ack handshake. The Worker's separate legacy /push route receives plaintext.
  */
 
 import {
@@ -148,6 +151,9 @@ export class ConnectionRoom {
   protected readonly state: RoomState;
   protected readonly env: RoomEnv;
   private deviceLimiter: RateLimiter | null = null;
+  // An awaiting handler keeps the object alive. Only its in-flight reservation is in memory;
+  // completed admissions live in socket attachments and survive hibernation.
+  private readonly clientReservations = new Map<RoomSocket, string>();
 
   constructor(state: RoomState, env: RoomEnv) {
     this.state = state;
@@ -185,7 +191,9 @@ export class ConnectionRoom {
 
     // A cap on unadmitted sockets, clients and host-side sockets counted apart: a stranger who
     // knows the room id can hold a slot only for the admission deadline, and cannot starve the
-    // other class or make the host do any work.
+    // other class or make the host do any work. Host and pipe sockets share the host-side cap:
+    // strangers can block the real host for ADMIT_TIMEOUT_MS (10 s by default), a bounded
+    // availability tradeoff, not a guarantee that the host can always upgrade.
     const hostSide = route.role !== 'client';
     const pending = this.entries().filter(
       ({ att }) => (att.st === 'new' || att.st === 'auth') && (att.r !== 'client') === hostSide,
@@ -248,11 +256,13 @@ export class ConnectionRoom {
 
   async webSocketClose(ws: RoomSocket, code: number, reason: string): Promise<void> {
     const att = readAttachment(ws);
+    ws.serializeAttachment(null);
     if (att) this.gone(ws, att, code, reason);
   }
 
   async webSocketError(ws: RoomSocket): Promise<void> {
     const att = readAttachment(ws);
+    ws.serializeAttachment(null);
     if (att) this.gone(ws, att, 1006, '');
   }
 
@@ -350,25 +360,43 @@ export class ConnectionRoom {
     }
     if (!(await clientProofHolds(rid, nonce, admit))) return false;
     if (!this.deviceAllowed(key)) return false;
-    if (window !== null) {
-      await this.beforeBurn();
-      if (!(await this.burnWindow(window))) return false;
-    }
+    if (readAttachment(ws)?.st !== 'auth' || !this.reserveClient(ws, key)) return false;
+    try {
+      if (window !== null) {
+        await this.beforeBurn();
+        // A close during the test barrier (or an asynchronous admission) must not burn the
+        // ticket or resurrect the socket. A close during the transaction may still burn it.
+        if (readAttachment(ws)?.st !== 'auth' || !(await this.burnWindow(window))) return false;
+      }
+      if (readAttachment(ws)?.st !== 'auth') return false;
 
-    // From here to `setAttachment` nothing is awaited, so two admissions of one key cannot both stay.
-    for (const e of this.socketsTagged('client')) {
-      if (e.ws !== ws && e.att.k === key) this.discard(e.ws, e.att);
+      // Keep the incumbent until the replacement has passed every check. Nothing between
+      // retiring it and installing the replacement is awaited, so only one socket stays per key.
+      for (const e of this.socketsTagged('client')) {
+        if (e.ws !== ws && e.att.k === key) this.discard(e.ws, e.att);
+      }
+      const up = this.hostUp();
+      const deadline = this.now() + limit(this.env, up ? 'PIPE_TIMEOUT_MS' : 'WAIT_TIMEOUT_MS');
+      this.setAttachment(ws, { ...att, st: up ? 'pend' : 'wait', k: key, dl: deadline });
+      this.notice(ws, { t: 'admitted', hostUp: up });
+      if (up) this.tellHost({ t: 'connected', cid: att.c as string });
+      await this.arm(deadline);
+      return true;
+    } finally {
+      this.clientReservations.delete(ws);
     }
-    const admitted = this.socketsTagged('client').filter(
-      (e) => e.ws !== ws && e.att.st !== 'new' && e.att.st !== 'auth',
-    );
-    if (admitted.length >= limit(this.env, 'MAX_CLIENTS')) return false;
-    const up = this.hostUp();
-    const deadline = this.now() + limit(this.env, up ? 'PIPE_TIMEOUT_MS' : 'WAIT_TIMEOUT_MS');
-    this.setAttachment(ws, { ...att, st: up ? 'pend' : 'wait', k: key, dl: deadline });
-    this.notice(ws, { t: 'admitted', hostUp: up });
-    if (up) this.tellHost({ t: 'connected', cid: att.c as string });
-    await this.arm(deadline);
+  }
+
+  /** Reserve before any burn await: a full room refuses without consuming the ticket. */
+  private reserveClient(ws: RoomSocket, key: string): boolean {
+    const occupied = new Set(this.clientReservations.values());
+    for (const e of this.socketsTagged('client')) {
+      if (e.att.k) occupied.add(e.att.k);
+    }
+    // Concurrent replacements of the same device share its existing slot. Their final,
+    // synchronous attachment update still ensures one live socket per device key.
+    if (!occupied.has(key) && occupied.size >= limit(this.env, 'MAX_CLIENTS')) return false;
+    this.clientReservations.set(ws, key);
     return true;
   }
 
@@ -458,7 +486,9 @@ export class ConnectionRoom {
 
   private forward(ws: RoomSocket, att: Attachment, data: string | ArrayBuffer): void {
     const tooBig =
-      typeof data === 'string' ? data.length > MAX_CONTROL_TEXT : data.byteLength > MAX_FRAME;
+      typeof data === 'string'
+        ? data.length > MAX_CONTROL_TEXT || new TextEncoder().encode(data).length > MAX_CONTROL_TEXT
+        : data.byteLength > MAX_FRAME;
     const peer =
       tooBig || !att.c
         ? undefined
@@ -515,6 +545,10 @@ export class ConnectionRoom {
   }
 
   private shut(ws: RoomSocket, code: number = CLOSE_CODE, reason: string = CLOSE_REASON): void {
+    // The close handshake can leave a socket in getWebSockets briefly. Retire its attachment
+    // now, so it holds no capacity and a later close callback does not repeat teardown.
+    // discard/gone retain the captured attachment for the dependent teardown they own.
+    ws.serializeAttachment(null);
     try {
       ws.close(code, reason);
     } catch {

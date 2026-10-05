@@ -19,8 +19,10 @@ This document is the layer below it: the Worker's own routes, messages, limits a
 
 A courier.
 It admits sockets, pairs a client with the host's pipe, and forwards bytes it never parses.
-It never sees a session id, a device name, a pairing secret, a key or any frame content.
-It sees the metadata listed under "What the Worker sees", and nothing in the end-to-end protocol depends on it behaving (ADR 0034 section 4).
+With conforming v2 endpoints, session payloads (including session ids) and device names are encrypted, and private keys and the pairing secret never reach it.
+It sees public keys, admission metadata and the plaintext `hello` / `hello_ack` handshake listed under "What the Worker sees".
+The separate legacy `POST /push` route still receives plaintext notification data; the v2 confidentiality claim does not cover it.
+Nothing in the end-to-end protocol depends on the Worker behaving (ADR 0034 section 4).
 
 ## Topology
 
@@ -73,7 +75,8 @@ What it can do is let whoever sees it first race the legitimate phone and burn t
 - The host registers `SHA-256(A)` with a lifetime of 1 to 600 seconds over its control socket (`pairing`); at most eight windows are live (`MAX_PAIRING_OFFERS`).
 - A presented ticket is compared with **every** live window through `admitTagMatches` (a constant-time comparison of `SHA-256(ticket)` with the registered hash), with no early exit.
   A source test bans `===`, `indexOf` and the like on any line of `admission.ts` or `connection-room.ts` that touches a ticket or a hash.
-- The window is burned only after the signature verified and the per-device budget passed, so a bad signature cannot burn it.
+- The window is burned only after the signature verified, the per-device budget passed and client capacity was reserved, so a bad signature or a full room cannot burn it.
+  A newer connection of an already-connected device uses that device's existing slot, and concurrent admissions reserve slots before awaiting the burn.
 - The burn is one storage transaction that names the window by an internal handle, so two sockets presenting one ticket in the same moment admit at most one (a test presents it from four sockets at once).
 - A window is single use whether or not the pairing then completes: the loser fails visibly and the host opens another.
 
@@ -125,7 +128,9 @@ A newer admission of a device key closes the older connection of that key, so a 
 
 Stored in Durable Object storage: `dev:<hex device key>` (an enrolled public key and the time) and `pw` (the live pairing windows: an internal handle, `b64u(SHA-256(A))`, an expiry).
 Kept in socket attachments, so they survive hibernation: role, stage, deadline, room id, connection id and, for an admitted client, its device key; the nonce while the socket is new.
-Kept in memory only: the per-device admission counters (they reset if the object restarts).
+Kept in memory only: the per-device admission counters (they reset if the object restarts) and capacity reservations for active admission handlers.
+Awaiting handlers keep the object active; completed admissions are represented by socket attachments, and every success or failure releases its reservation.
+Closing a socket clears its attachment before the close handshake finishes, so a retiring socket holds no slot.
 Nothing else.
 A socket whose attachment this code does not understand (one the pre-R2 Worker left behind) is closed on its first message.
 
@@ -171,7 +176,9 @@ Stated plainly, as ADR 0034 section 11 does, because the protocol hides content 
 - The 25-byte frame that is a BYE, so it can see when a stream ends cleanly.
 - The close code and reason each side sends.
 
-It does not see any session id, any device name, any frame content, the pairing secret, the keys or the fingerprint.
+With conforming v2 endpoints it does not see plaintext session payloads or device names, private identity keys, derived session keys or the pairing secret.
+It sees the public keys and handshake content listed above, and can derive a public fingerprint from the machine public key.
+This describes the v2 relay path; the legacy `POST /push` path still receives plaintext notification data, including session ids.
 An active Worker can drop, delay, duplicate, reorder or inject frames, refuse service, admit or refuse devices and close sockets; the library detects what it can (ADR 0034 sections 7 and 11).
 
 ## What stays and what changes
@@ -191,7 +198,8 @@ It needs a signed message the ADR does not define; see the pull request for the 
 
 - **A stranger who knows a room id can hold the unadmitted slots.**
   The room id is not a secret (it is derivable from the pairing token).
-  Strangers can keep `MAX_PENDING_HOST` host-side sockets or `MAX_PENDING_CLIENT` client sockets unadmitted for `ADMIT_TIMEOUT_MS` each, bounded by the per-address and per-room budgets, and in that time the real host (or a real client) is refused at the upgrade with a 429 and must retry.
+  Strangers can keep `MAX_PENDING_HOST` host-side sockets or `MAX_PENDING_CLIENT` client sockets unadmitted for `ADMIT_TIMEOUT_MS` each (10 seconds by default), bounded by the per-address and per-room budgets, and in that time the real host (or a real client) is refused at the upgrade with a 429 and must retry.
+  Host control and pipe sockets share the host-side cap, so unauthenticated pipe sockets can also block a host control upgrade for that interval.
   That is an availability attack on one room; it costs the host nothing, because only admitted sockets reach it.
   Distinct addresses multiply it.
   Not mitigated beyond the budgets; not measured.
@@ -204,7 +212,9 @@ It needs a signed message the ADR does not define; see the pull request for the 
 
 ## Verified and unverified
 
-Verified by tests that run the real Worker and Durable Object in workerd under `bun test` (Bun 1.4.2 and 1.3.11): everything in "Admission", "After admission" and "State", the limits at the values the tests set, frames of `MAX_FRAME` crossing and one byte more refused, a session far older than ten minutes alive, revocation closing a live session, real hibernation (the object rebuilt after about eleven idle seconds while sockets stayed open), and the Worker never holding a sentinel plaintext, the pairing secret or a device name.
+Verified by tests that run the real Worker and Durable Object in workerd under `bun test`: everything in "Admission", "After admission" and "State", the limits at the values the tests set, frames of `MAX_FRAME` crossing and one byte more refused, a session far older than ten minutes alive, revocation closing a live session, real hibernation (the object rebuilt after about eleven idle seconds while sockets stayed open), and the Worker never holding a sentinel plaintext, the pairing secret or a device name.
+The initial R2 tests ran on Bun 1.4.2 and 1.3.11; the review corrections and their regression tests ran on Bun 1.4.2.
+A rerun of the review corrections on Bun 1.3.11 remains unverified.
 
 **Unverified (the owner deploys):**
 

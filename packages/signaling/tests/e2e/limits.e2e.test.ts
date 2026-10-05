@@ -351,6 +351,16 @@ describe('the frame ceiling', () => {
   const frame = (length: number): Uint8Array => new Uint8Array(length).fill(0xab);
 
   for (const sender of ['client', 'host'] as const) {
+    test(`text far above the ceiling is refused from the ${sender}`, async () => {
+      const w = await start();
+      const { client, pipe } = await openPipe(w, await newMachine());
+      const [source, peer] = sender === 'client' ? [client, pipe] : [pipe, client];
+      source.sendText('x'.repeat(MAX_CONTROL_TEXT * 32));
+      const outcome = await Promise.race([source.closed, peer.text().then(() => 'forwarded')]);
+      expect(outcome).toEqual(REFUSED);
+      expect(await peer.closed).toEqual(REFUSED);
+    });
+
     test(`multibyte text is bounded by UTF-8 bytes from the ${sender}`, async () => {
       const w = await start();
       const { client, pipe } = await openPipe(w, await newMachine());

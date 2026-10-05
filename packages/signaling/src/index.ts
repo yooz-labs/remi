@@ -3,8 +3,10 @@
  *
  * A courier for end-to-end encrypted frames between a machine (the host) and
  * the devices enrolled with it. It admits sockets, pairs a client with the
- * host's pipe and forwards bytes it never parses; it never sees a session id, a
- * device name, a pairing secret, a key or any frame content.
+ * host's pipe and forwards bytes it never parses. With conforming v2 endpoints,
+ * session payloads and device names are encrypted; private keys and the pairing
+ * secret never reach it. Public keys, admission metadata and hello/hello_ack are
+ * visible. The separate legacy /push route still receives plaintext notification data.
  *
  * Routes (the version is part of the path and is never negotiated):
  * - GET /v2/host/<rid>: the machine's control socket (WebSocket upgrade)

@@ -32,9 +32,11 @@ function parseBody(value: unknown): CheckBody | null {
   if (typeof value !== 'object' || value === null) return null;
   const { key, limit, windowMs } = value as Record<string, unknown>;
   if (typeof key !== 'string' || key.length < 1 || key.length > 128) return null;
-  if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 100_000) return null;
-  if (!Number.isInteger(windowMs) || (windowMs as number) < 1000) return null;
-  if ((windowMs as number) > 3_600_000) return null;
+  // Match limits.ts's supported overrides, including small windows and budgets above 100,000.
+  if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 1_000_000)
+    return null;
+  if (!Number.isInteger(windowMs) || (windowMs as number) < 1) return null;
+  if ((windowMs as number) > 1_000_000) return null;
   return { key, limit: limit as number, windowMs: windowMs as number };
 }
 

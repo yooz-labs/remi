@@ -140,6 +140,16 @@ describe('the limiter object', () => {
     expect(await verdict(limiter, { ...body, key: 'other' })).toEqual({ ok: true });
   });
 
+  test('accepts both boundaries of the configured limit and window contract', async () => {
+    const limiter = new GlobalLimiter();
+    for (const [limit, windowMs] of [
+      [1, 1],
+      [1_000_000, 1_000_000],
+    ]) {
+      expect(await verdict(limiter, { key: 'boundary', limit, windowMs })).toEqual({ ok: true });
+    }
+  });
+
   test('refuses a malformed request', async () => {
     const limiter = new GlobalLimiter();
     for (const body of [

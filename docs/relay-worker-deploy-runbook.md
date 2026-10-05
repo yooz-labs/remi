@@ -113,4 +113,5 @@ A 429 on a repeat means a rate limit counted you (`LIMIT_IP_CLIENT` is 10 per mi
 ## What agents never do
 
 No agent runs `wrangler deploy`, `wrangler login`, `wrangler secret` or anything that contacts a Cloudflare account, and none reads or holds a Cloudflare or Apple credential.
-remi never reads, stores, copies, prints or relays credentials.
+The v2 relay protocol does not read or transmit the host harness's login credentials.
+The Worker uses the owner's deployment secrets for the separate legacy push path: `PUSH_SECRET` and the APNS key material configured above.
