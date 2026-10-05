@@ -137,3 +137,58 @@ test('mismatched exact confirmation cannot grant, and owner disconnect cancels p
     await running.cleanup();
   }
 }, 10000);
+
+test('owner cancellation during real authorization preparation cannot persist a stale grant', async () => {
+  const running = await resumed();
+  let socket: Socket | undefined;
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const startedStore = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  const add = running.trust.addAuthorizedKey.bind(running.trust);
+  running.trust.addAuthorizedKey = async (...args) => {
+    entered();
+    await wait;
+    try {
+      return await add(...args);
+    } finally {
+      finished();
+    }
+  };
+  try {
+    const window = await offer(running, 'owner', 'cancel-store');
+    const started = await startDevice(running, window.token);
+    socket = started.socket;
+    socket.sendText(started.auth.auth);
+    const compare = await window.inbox.next();
+    running.relay.message(
+      'owner',
+      JSON.stringify({
+        t: 'confirm',
+        id: 'cancel-store',
+        offerId: window.value['offerId'],
+        connectionId: compare['connectionId'],
+        fingerprint: compare['fingerprint'],
+        accept: true,
+      }),
+    );
+    await startedStore;
+    running.relay.close('owner');
+    release();
+    await done;
+    expect(running.trust.loadAuthorizedKeys().keys).toHaveLength(1);
+    expect(running.devices.list()).toHaveLength(1);
+  } finally {
+    release();
+    socket?.close();
+    await running.cleanup();
+  }
+}, 10000);
