@@ -19,6 +19,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let unlockLifetime = NativeUnlockLifetime()
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
+    private var replacedObserver: NSObjectProtocol?
 
     init(scheme: String, service: String, account: String) {
         self.scheme = scheme
@@ -29,9 +30,16 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.unlockedRevision = nil }
             }
+        replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.unlockedRevision = nil }
+            }
     }
 
-    deinit { if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) } }
+    deinit {
+        if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
+        if let replacedObserver { NotificationCenter.default.removeObserver(replacedObserver) }
+    }
 
     static func isBundledDocument(_ url: URL?, scheme: String) -> Bool {
         guard let url, url.scheme == scheme, url.host == "localhost", url.port == nil,
@@ -126,7 +134,10 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             var response = publicRecord(imported)
             let replaced = previous != nil && previous?.revision != imported.revision
             response["requiresRestart"] = scheme == "remi-app" && replaced
-            if replaced { NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil) }
+            if replaced {
+                NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil)
+                response["locked"] = imported.requiresAppUnlock
+            }
             return response
         case "protect":
             guard Set(request.keys) == ["op", "revision", "publicKey"],
@@ -184,18 +195,31 @@ enum NativeForegroundUnlock {
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
-        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication,
+        let authenticated = (try? await context.evaluatePolicy(.deviceOwnerAuthentication,
             localizedReason: "Unlock Remi's signing identity for this app session")) == true
+        return authenticated && isActive()
     }
 }
 
 /// Coordinates the OS authentication await; no key or signing operation is exposed here.
 @MainActor
 final class NativeUnlockLifetime {
+    private var generation: UInt64 = 0
+    private var observers: [NSObjectProtocol] = []
+    init() {
+        for name in [NativeForegroundUnlock.inactiveNotification, .nativeIdentityReplaced] {
+            observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.generation &+= 1 }
+            })
+        }
+    }
+    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
     func authenticate(revision: String, currentRevision: () -> String?,
                       authorization: () async -> Bool = NativeForegroundUnlock.authenticate,
                       foreground: () -> Bool = NativeForegroundUnlock.isActive) async -> Bool {
         guard foreground() else { return false }
-        return await authorization() && currentRevision() == revision
+        let attempt = generation
+        let authorized = await authorization()
+        return authorized && foreground() && generation == attempt && currentRevision() == revision
     }
 }
