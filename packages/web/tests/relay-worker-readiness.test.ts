@@ -14,10 +14,20 @@ test('real Worker readiness failure disposes Miniflare listeners before rejectin
   writeFileSync(
     source,
     `
-    import { writeFileSync } from 'node:fs';
+    import { writeFileSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
     import { startWorker } from ${JSON.stringify(harness)};
     function listeners() {
+      if (process.platform === 'linux') {
+        const inodes = new Set();
+        for (const fd of readdirSync('/proc/self/fd')) {
+          try { const match = readlinkSync('/proc/self/fd/' + fd).match(/^socket:\\[(\\d+)\\]$/); if (match) inodes.add(match[1]); }
+          catch { /* a descriptor closed between enumeration and readlink */ }
+        }
+        return ['tcp', 'tcp6'].flatMap(name => readFileSync('/proc/self/net/' + name, 'utf8').trim().split('\\n').slice(1))
+          .filter(line => { const fields = line.trim().split(/\\s+/); return fields[3] === '0A' && inodes.has(fields[9]); }).length;
+      }
       const scan = Bun.spawnSync([${JSON.stringify(process.platform === 'darwin' ? '/usr/sbin/lsof' : '/usr/bin/lsof')}, '-a', '-p', String(process.pid), '-iTCP', '-sTCP:LISTEN', '-Fn']);
+      if (![0, 1].includes(scan.exitCode) || scan.stderr.toString().trim()) throw new Error('Owned listener scan failed');
       return scan.stdout.toString().split('\\n').filter(line => line.startsWith('n')).length;
     }
     const before = listeners();

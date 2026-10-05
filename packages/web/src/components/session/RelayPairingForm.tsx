@@ -15,6 +15,28 @@ interface QRDetector {
 }
 type QRConstructor = new (options: { formats: string[] }) => QRDetector;
 
+/** Local codes get useful copy; provider/engine messages never become UI text. */
+function pairingErrorMessage(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  if (message === 'TOKEN' || message === 'Pairing token exceeds limit.')
+    return 'Pairing token is invalid. Copy the complete token from remi pair.';
+  if (message === 'EXPIRED' || message === 'Pairing token expired.')
+    return 'Pairing token has expired. Run remi pair again on the daemon machine.';
+  if (message === 'Saved machine limit reached. Forget a machine locally before pairing another.')
+    return 'Saved machine limit reached. Forget a machine locally before pairing another.';
+  if (
+    (cause instanceof Error && cause.name === 'QuotaExceededError') ||
+    message.toLowerCase().includes('quota')
+  )
+    return 'Device storage quota is full. Free space before retrying.';
+  if (
+    message === 'Unlock your identity before pairing.' ||
+    message === 'Native identity unlock failed.'
+  )
+    return 'Unlock your identity, then retry pairing.';
+  return 'Pairing failed. Check your identity and daemon, then retry.';
+}
+
 /** Ticket text lives only in this open form and its one pending handshake. */
 export function RelayPairingForm({
   connection,
@@ -63,9 +85,7 @@ export function RelayPairingForm({
         if (selected && generation === scanGeneration.current) setToken(selected);
       } catch (cause) {
         if (!attempt.signal.aborted && generation === scanGeneration.current)
-          setError(
-            cause instanceof Error ? cause.message : 'QR image unavailable. Paste the token.',
-          );
+          setError(pairingErrorMessage(cause));
       } finally {
         if (generation === scanGeneration.current) {
           qrController.current = null;
@@ -140,8 +160,7 @@ export function RelayPairingForm({
       setToken('');
       await onPair(text, attempt.signal);
     } catch (cause) {
-      if (!attempt.signal.aborted)
-        setError(cause instanceof Error ? cause.message : 'Pairing failed.');
+      if (!attempt.signal.aborted) setError(pairingErrorMessage(cause));
     } finally {
       if (!attempt.signal.aborted) setBusy(false);
     }
@@ -250,7 +269,7 @@ export function RelayPairingForm({
       {waiting && !connection.relayConfirmation && <p>Connecting securely…</p>}
       {(error || connection?.error) && (
         <p role="alert" className="text-sm text-[var(--color-error)]">
-          {error ?? connection?.error}
+          {error ?? pairingErrorMessage(connection?.error)}
         </p>
       )}
       {connection?.status === 'disconnected' && (

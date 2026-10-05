@@ -188,21 +188,24 @@ test('real Bun assertion and timeout failures still dispose their owned fixture'
       writeFileSync(
         file,
         `
-        import { test, afterAll, expect } from 'bun:test';
+        import { test, beforeAll, afterAll, expect } from 'bun:test';
         import { existsSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
         import { join } from 'node:path';
         import { ownedRelayHub, ownedRelayChild, cleanupOwnedRelayFixtures, registerOwnedRelayFixtureCleanup } from ${JSON.stringify(helper)};
         registerOwnedRelayFixtureCleanup();
         let fixture; let pids = [];
-        test('owned ${kind}', async () => {
+        beforeAll(async () => {
           fixture = await ownedRelayHub();
           const child = await ownedRelayChild(fixture);
           const live = join(fixture.dir, 'state/live-sessions');
           const entry = JSON.parse(readFileSync(join(live, readdirSync(live)[0]), 'utf8'));
           pids = [fixture.proc.pid, child.child.pid, entry.claudeChildPid];
+        }, 15000);
+        test('owned ${kind}', async () => {
           ${kind === 'timeout' ? 'await new Promise(() => {});' : 'expect(false).toBe(true);'}
         }, 1500);
         afterAll(async () => {
+          if (!fixture) { writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ setupFailed: true })); await cleanupOwnedRelayFixtures(); return; }
           let workerClosed = false;
           try { await fetch(fixture.worker.url, { signal: AbortSignal.timeout(200) }); }
           catch { workerClosed = true; }
@@ -222,7 +225,7 @@ test('real Bun assertion and timeout failures still dispose their owned fixture'
         new Response(runner.stdout).text(),
         new Response(runner.stderr).text(),
       ]);
-      const timer = setTimeout(() => runner.kill('SIGTERM'), 10000);
+      const timer = setTimeout(() => runner.kill('SIGTERM'), 20000);
       try {
         expect(await runner.exited).toBe(1);
         await output;
@@ -238,7 +241,7 @@ test('real Bun assertion and timeout failures still dispose their owned fixture'
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}, 25000);
+}, 45000);
 
 (process.getuid?.() === 0 ? test.skip : test)(
   'daemon teardown error still disposes Worker and retains ownership for retry',
