@@ -28,14 +28,19 @@
  * turn ends many times inside the main turn, and another window's thread is not
  * this session's. A turn id that was already announced is not announced again
  * (the last 64 are remembered): nothing shows that Codex repeats a
- * `turn/completed`, but a re-attach must not push twice if it does.
+ * `turn/completed`, but a re-attach must not push twice if it does. An id longer
+ * than 200 characters (`ID_MAX_LENGTH`) is no id: such a turn is announced each time
+ * and never remembered, so a hostile frame cannot fill the memory.
  *
  * What Codex chose is made safe before it leaves remi (`safe-text.ts`): a failure's
  * details and code are written out with every control, invisible and bidirectional
  * character visible (`escapeUnsafeText`'s set), cut to what the push shows
  * AFTER counting the escapes so a cut never lands inside one, and the final answer
  * in the push has those characters removed except the zero-width joiner, which an
- * emoji sequence needs. Chat prose is NOT touched here (`codex-chat.ts` leaves it
+ * emoji sequence needs. Tag characters (U+E0020 to U+E007F) are among the removed, so a
+ * subdivision-flag emoji loses its tags. An answer with nothing left to see (only joiners,
+ * whitespace or removed characters) is no answer: no `turn_complete` push, and one line
+ * without content says so. Chat prose is NOT touched here (`codex-chat.ts` leaves it
  * as the model wrote it, deliberately). Claude's `last_assistant_message` has the
  * same exposure today and is not changed by this phase.
  *
@@ -53,7 +58,7 @@ import type { UUID } from '@remi/shared';
 
 import type { TurnEventSink } from '../../notifications/turn-events.ts';
 import { describeError } from './describe-error.ts';
-import { boundedEscape, pushProse } from './safe-text.ts';
+import { boundedEscape, hasVisibleText, pushProse } from './safe-text.ts';
 import { parseTurnCompleted } from './thread-protocol.ts';
 
 /** Who the failure notice says stopped. */
@@ -115,19 +120,27 @@ export function createCodexTurns(deps: CodexTurnsDeps): CodexTurns {
       switch (turn.status) {
         case 'completed': {
           remember(turn.turnId);
+          // The answer as the push will show it; an answer with nothing left to see is no answer.
+          let message: string | undefined;
           if (turn.finalAnswer === null) {
             // Nothing to push: say so once, so a model that sends no phase is not a silent mystery.
             const view = turn.itemsView === null ? '' : ` (items view: ${turn.itemsView})`;
             deps.log(
               `a completed turn has no final_answer message, so no turn_complete push${view}`,
             );
+          } else {
+            const safe = pushProse(turn.finalAnswer);
+            if (hasVisibleText(safe)) message = safe;
+            else
+              deps.log(
+                'the final answer of a completed turn has no visible text once made safe, so no turn_complete push',
+              );
           }
           guarded('turnCompleted', () =>
             sink.turnCompleted({
               sessionId,
               elapsedMs: turn.durationMs ?? undefined,
-              lastAssistantMessage:
-                turn.finalAnswer === null ? undefined : pushProse(turn.finalAnswer),
+              lastAssistantMessage: message,
               reentry: false,
             }),
           );
