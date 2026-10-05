@@ -1,6 +1,6 @@
 /** Actual event constructors, secure service/store/codec, real Worker/DO and owned APNs HTTP/1.1. */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +10,10 @@ import { startWorker } from '../../../signaling/tests/e2e/harness.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
-import { ForeignSessionEscalator } from '../../src/hooks/foreign-session-escalator.ts';
+import {
+  ForeignSessionEscalator,
+  type ForeignSessionEscalatorDeps,
+} from '../../src/hooks/foreign-session-escalator.ts';
 import { pushHarnessDenied } from '../../src/notifications/harness-denied.ts';
 import { type PushTriggerOptions, sendPushTrigger } from '../../src/notifications/push-client.ts';
 import {
@@ -160,7 +163,7 @@ async function fixture(muted = false) {
   writeFileSync(transcript, '{"type":"user"}\n');
   const aged = new Date(Date.now() - 60000);
   utimesSync(transcript, aged, aged);
-  const foreign = () =>
+  const foreign = (overrides: Partial<ForeignSessionEscalatorDeps> = {}) =>
     new ForeignSessionEscalator({
       liveSessionsRegistry: new SessionRegistryFile(join(directory, 'live')),
       bindingStore: new SessionBindingStore(new SessionStore(join(directory, 'sessions.json'))),
@@ -169,6 +172,7 @@ async function fixture(muted = false) {
       currentPort: () => 18765,
       pushFn: send,
       ...{ securePush: (sid: string) => (sid === SID ? secure : undefined) },
+      ...overrides,
     });
   const sink = (config = { onTurnComplete: true, turnCompleteMinSeconds: 60 }) =>
     createTurnEventSink({
@@ -237,7 +241,25 @@ async function fixture(muted = false) {
       Math.floor(Date.now() / 1000),
     );
   };
+  const preferences = (pushPrefs: {
+    questions: boolean;
+    turnComplete: boolean;
+    harnessDenied: boolean;
+    turnFailed: boolean;
+  }) =>
+    store.register(authority, {
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey: r.b64u(pair.publicKey),
+      keyVersion: 1,
+      pushPrefs,
+    });
+  cleanup.push(async () => {
+    await Promise.allSettled(tasks);
+    contexts.finish(runtime);
+  });
   return {
+    preferences,
     directory,
     received,
     events,
@@ -267,6 +289,9 @@ for (const event of ['turn', 'denied', 'foreign'] as const) {
       else f.foreign().handleUnadmitted(f.foreignInput, SID);
       expect(f.events).toHaveLength(1); // Synchronous semantic boundary before actual network awaits.
       expect(f.events[0]?.question).toBeUndefined();
+      expect(f.events[0]?.kind).toBe(
+        event === 'turn' ? 'turn_complete' : event === 'denied' ? 'harness_denied' : 'question',
+      );
       expect(f.events[0]?.logicalId).toBe(
         event === 'turn'
           ? `turn-complete-${SID}`
@@ -286,7 +311,14 @@ for (const event of ['turn', 'denied', 'foreign'] as const) {
       expect(f.logs.join('\n')).not.toContain('PRIVATE_');
       expect(f.legacyCalls).toHaveLength(legacyCount);
       for (const call of f.legacyCalls) expect(call).toMatchObject(f.policy);
-      for (const error of f.errors) expect(String(error)).not.toContain('PRIVATE_');
+      expect(f.errors).toHaveLength(event === 'foreign' ? 0 : legacyCount);
+      for (const error of f.errors) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(
+          event === 'turn' ? 'TURN_COMPLETE_PUSH_FAILED' : 'HARNESS_DENIED_PUSH_FAILED',
+        );
+        expect(String(error)).not.toContain('PRIVATE_');
+      }
     });
   }
 }
@@ -307,4 +339,48 @@ test('secure turn-complete still refuses config-off, unknown duration and reentr
   await f.flush();
   expect(f.events).toHaveLength(0);
   expect(f.received).toHaveLength(0);
+});
+
+test('secure preferences preserve questions versus harness-denied asymmetry', async () => {
+  const f = await fixture();
+  expect(
+    await f.preferences({
+      questions: false,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: false,
+    }),
+  ).toEqual({ success: true, keyVersion: 1 });
+  f.sink().turnCompleted(f.completed);
+  f.foreign().handleUnadmitted(f.foreignInput, SID);
+  f.denied();
+  expect(f.events.map((event) => event.kind)).toEqual(['harness_denied']);
+  await f.flush();
+  expect(f.received).toHaveLength(1);
+  expect((await f.open()).content.kind).toBe('harness_denied');
+});
+test('foreign escalation rate-limit suppresses a repeated actual foreign session before secure fan-out', async () => {
+  const f = await fixture();
+  const escalator = f.foreign();
+  escalator.handleUnadmitted(f.foreignInput, SID);
+  escalator.handleUnadmitted(f.foreignInput, SID);
+  expect(f.events).toHaveLength(1);
+  await f.flush();
+  expect(f.received).toHaveLength(1);
+  expect(f.logs.join('\n')).toContain('[ForeignSession] rate limited; push suppressed');
+  expect(f.logs.join('\n')).not.toContain('PRIVATE_');
+});
+test('foreign ownership read failure logs fixed operation without session, tool or exception text', async () => {
+  const f = await fixture();
+  const broken = join(f.directory, 'PRIVATE_REGISTRY_SENTINEL');
+  mkdirSync(broken);
+  f.foreign({ bindingStore: new SessionBindingStore(new SessionStore(broken)) }).handleUnadmitted(
+    f.foreignInput,
+    SID,
+  );
+  await f.flush();
+  expect(f.events).toHaveLength(0);
+  expect(f.received).toHaveLength(0);
+  expect(f.logs.join('\n')).toContain('[ForeignSession] ownership read failed; push suppressed');
+  expect(f.logs.join('\n')).not.toContain('PRIVATE_');
 });
