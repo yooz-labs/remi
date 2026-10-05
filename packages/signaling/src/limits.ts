@@ -32,6 +32,16 @@ export const LIMIT_DEFAULTS = {
   MAX_CLIENTS: 16,
   /** Device keys one machine may enroll. */
   MAX_ENROLLED: 64,
+  /** R5 fixed60s policies: no measured service capacity is claimed. */
+  PUSH_ATTEMPT_IP: 120,
+  PUSH_ATTEMPT_AGGREGATE: 600,
+  PUSH_ATTEMPT_RECORDS: 4096,
+  PUSH_SEND_IP: 120,
+  PUSH_SEND_RID: 30,
+  PUSH_SEND_TOKEN: 10,
+  PUSH_SEND_AGGREGATE: 600,
+  PUSH_SEND_RECORDS: 4096,
+  PUSH_NONCES: 4096,
 } as const;
 
 export type LimitName = keyof typeof LIMIT_DEFAULTS;
@@ -45,4 +55,10 @@ export function limit(env: LimitEnv, name: LimitName): number {
   if (raw === undefined || !/^[0-9]{1,7}$/.test(raw)) return LIMIT_DEFAULTS[name];
   const n = Number(raw);
   return n >= 1 && n <= CEILING ? n : LIMIT_DEFAULTS[name];
+}
+
+/** Push defaults may be lowered for real boundary tests; never raised past approved bounds. */
+export function pushLimit(env: LimitEnv, name: LimitName): number {
+  const n = limit(env, name);
+  return n <= LIMIT_DEFAULTS[name] ? n : LIMIT_DEFAULTS[name];
 }

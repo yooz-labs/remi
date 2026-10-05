@@ -8,13 +8,18 @@
  * and regions, and a request without an address is limited under the shared key
  * `unknown` instead of being waved through.
  *
- * What is NOT claimed: the counters are in the object's memory, so they reset
+ * What is NOT claimed: the R2 admission counters are in the object's memory, so they reset
  * if the object is evicted or restarted (it stays resident while it is being
  * asked, which is the case that matters under load); and one object serves all
  * keys, so it is bounded by one object's request rate (Cloudflare documents a
  * soft limit of 1,000 requests per second per object). Neither is measured here.
+ * R5 push attempts/sends use separate SQLite-backed counters, fixed60s windows,
+ * current+previous window retention and bounded cardinality. Fixed windows permit
+ * boundary bursts; these policy ceilings are not measured service capacity.
  */
 
+import { type LimitEnv, pushLimit } from './limits.ts';
+import type { LimiterNamespace, PushStorage } from './push-storage.ts';
 import { RateLimiter } from './rate-limiter.ts';
 
 // Cloudflare-specific types (available at runtime in Workers)
@@ -43,8 +48,88 @@ function parseBody(value: unknown): CheckBody | null {
 /** The one object that counts. Only the Worker's own binding reaches it. */
 export class GlobalLimiter {
   private readonly limiters = new Map<string, RateLimiter>();
+  constructor(
+    protected readonly state?: { storage: PushStorage },
+    protected readonly env: LimitEnv = {},
+  ) {}
+  protected now(): number {
+    return Date.now();
+  }
+
+  private async pushCheck(request: Request, mode: 'attempt' | 'send'): Promise<Response> {
+    if (!this.state) return Response.json({ ok: false, reason: 'STORE_ERROR' }, { status: 503 });
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
+    }
+    const fields = mode === 'attempt' ? ['ip'] : ['ip', 'rid', 'tokenHash'];
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      Object.keys(body).length !== fields.length ||
+      fields.some(
+        (k) => typeof body[k] !== 'string' || !/^[0-9a-f]{32,64}$/.test(body[k] as string),
+      )
+    )
+      return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
+    const prefix = mode === 'attempt' ? 'pa:' : 'ps:';
+    const window = Math.floor(this.now() / 60_000);
+    const checks: readonly [string, number][] =
+      mode === 'attempt'
+        ? [
+            [`ip:${body['ip']}`, pushLimit(this.env, 'PUSH_ATTEMPT_IP')],
+            ['all', pushLimit(this.env, 'PUSH_ATTEMPT_AGGREGATE')],
+          ]
+        : [
+            [`ip:${body['ip']}`, pushLimit(this.env, 'PUSH_SEND_IP')],
+            [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
+            [`token:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN')],
+            ['all', pushLimit(this.env, 'PUSH_SEND_AGGREGATE')],
+          ];
+    const storage = this.state.storage;
+    try {
+      const verdict = storage.transactionSync(() => {
+        const kv = storage.kv;
+        const cap = pushLimit(
+          this.env,
+          mode === 'attempt' ? 'PUSH_ATTEMPT_RECORDS' : 'PUSH_SEND_RECORDS',
+        );
+        const rows = new Map(kv.list<{ window: number; count: number }>({ prefix, limit: 4097 }));
+        for (const [key, row] of rows) {
+          if (
+            !row ||
+            !Number.isSafeInteger(row.window) ||
+            !Number.isSafeInteger(row.count) ||
+            row.count < 1
+          )
+            throw new Error('invalid budget record');
+          if (row.window < window - 1) {
+            kv.delete(key);
+            rows.delete(key);
+          }
+        }
+        const targets = checks.map(([key, max]) => ({ key: `${prefix}${window}:${key}`, max }));
+        if (targets.some((t) => (rows.get(t.key)?.count ?? 0) >= t.max))
+          return { ok: false, reason: 'RATE_LIMITED' };
+        if (rows.size + targets.filter((t) => !rows.has(t.key)).length > cap)
+          return { ok: false, reason: 'CAPACITY' };
+        for (const t of targets)
+          kv.put(t.key, { window, count: (rows.get(t.key)?.count ?? 0) + 1 });
+        return { ok: true };
+      });
+      await this.state.storage.sync();
+      return Response.json(verdict);
+    } catch {
+      return Response.json({ ok: false, reason: 'STORE_ERROR' }, { status: 503 });
+    }
+  }
 
   async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === '/push-attempt' || path === '/push-send')
+      return this.pushCheck(request, path === '/push-attempt' ? 'attempt' : 'send');
     let body: CheckBody | null = null;
     try {
       body = parseBody(await request.json());
@@ -80,4 +165,31 @@ export async function withinBudget(
   const verdict = (await res.json()) as { ok?: unknown };
   if (typeof verdict.ok !== 'boolean') throw new Error('limiter gave no verdict');
   return verdict.ok;
+}
+
+/** Durable push counters are distinct from the original in-memory admission counters. */
+export async function withinPushBudget(
+  ns: LimiterNamespace | undefined,
+  mode: 'attempt' | 'send',
+  body: { ip: string; rid?: string; tokenHash?: string },
+): Promise<{ ok: boolean; reason?: 'RATE_LIMITED' | 'CAPACITY' | 'STORE_ERROR' }> {
+  if (!ns) return { ok: false, reason: 'STORE_ERROR' };
+  try {
+    const response = await ns
+      .get(ns.idFromName('global'))
+      .fetch(`https://limiter.invalid/push-${mode}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    const value = (await response.json()) as { ok?: unknown; reason?: unknown };
+    if (value.ok === true) return { ok: true };
+    if (
+      value.ok === false &&
+      (value.reason === 'RATE_LIMITED' ||
+        value.reason === 'CAPACITY' ||
+        value.reason === 'STORE_ERROR')
+    )
+      return { ok: false, reason: value.reason };
+  } catch {}
+  return { ok: false, reason: 'STORE_ERROR' };
 }

@@ -1,7 +1,5 @@
-/**
- * APNS (Apple Push Notification Service) HTTP/2 client.
- * Uses JWT-based authentication with a p8 key.
- */
+import { MAX_APNS_PAYLOAD_BYTES } from '@remi/shared/relay/index.ts';
+/** APNs fetch requests with JWT/p8 authentication. Actual HTTP negotiation belongs to runtime. */
 
 interface ApnsPayload {
   token: string;
@@ -43,7 +41,7 @@ interface ApnsPayload {
   dismiss?: boolean;
 }
 
-interface ApnsConfig {
+export interface ApnsConfig {
   keyId: string;
   teamId: string;
   privateKey: string;
@@ -215,7 +213,7 @@ const JWT_MAX_AGE_S = 3000;
  * The JWT is cached per keyId and reused until it is 50 minutes old to avoid
  * APNS TooManyProviderTokenUpdates (429) errors.
  */
-async function createApnsJwt(config: ApnsConfig): Promise<string> {
+export async function createApnsJwt(config: ApnsConfig): Promise<string> {
   const nowS = Math.floor(Date.now() / 1000);
   const cached = jwtCache.get(config.keyId);
   if (cached && nowS - cached.iat < JWT_MAX_AGE_S) {
@@ -285,4 +283,46 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+/** R5 only: generic fallback, no unsigned options, one explicitly signed environment. */
+export function buildSecureApnsRequest(
+  s: import('@remi/shared/relay/index.ts').PushSubmit,
+  jwt: string,
+  bundleId: string,
+): ApnsRequest {
+  const carrier = {
+    v: 2,
+    rid: s.rid,
+    collapseId: s.collapseId,
+    keyVersion: s.keyVersion,
+    kind: s.kind,
+    sealed: s.sealed,
+  };
+  const aps =
+    s.kind === 'dismiss'
+      ? { 'content-available': 1 }
+      : {
+          alert: {
+            title: 'Remi needs your attention',
+            body: 'Open Remi to view this notification.',
+          },
+          'mutable-content': 1,
+          'content-available': 1,
+          category: '',
+        };
+  const body = JSON.stringify({ aps, remiPush: carrier });
+  if (new TextEncoder().encode(body).length > MAX_APNS_PAYLOAD_BYTES) throw new Error('OVERSIZE');
+  return {
+    url: `https://${s.environment === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com'}/3/device/${s.token}`,
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': bundleId,
+      'apns-push-type': s.kind === 'dismiss' ? 'background' : 'alert',
+      'apns-priority': s.kind === 'dismiss' ? '5' : '10',
+      'apns-collapse-id': s.collapseId,
+      'apns-expiration': String(s.expiresAt),
+    },
+    body,
+  };
 }
