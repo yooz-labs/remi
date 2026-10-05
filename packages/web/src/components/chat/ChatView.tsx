@@ -124,7 +124,7 @@ export function ChatView({
   // connection so the user sees confirmation; a still-pending card needs a live
   // connection to be actionable.
   const chatCards = questionList.filter(
-    (q) => q.answeredWith != null || q.resolvedReason != null || isConnected,
+    (q) => q.awaitingRelayOutcome || q.answeredWith != null || q.resolvedReason != null || isConnected,
   );
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops

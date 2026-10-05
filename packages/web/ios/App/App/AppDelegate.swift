@@ -10,7 +10,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        let vc = CAPBridgeViewController()
+        let vc = RemiBridgeViewController()
         window.rootViewController = vc
         window.makeKeyAndVisible()
         self.window = window
@@ -205,5 +205,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let bridgeVC = window?.rootViewController as? CAPBridgeViewController {
             RemiAnswerRelay.shared.install(bridge: bridgeVC.bridge)
         }
+    }
+}
+
+/// Dedicated ingress avoids Capacitor's loss of WK frame provenance (#1199).
+final class RemiBridgeViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        super.capacitorDidLoad()
+        guard let webView = bridge?.webView else { return }
+        let signer = NativeIdentityBridge(scheme: "capacitor", service: ClientIdentityStore.defaultService,
+                                          account: ClientIdentityStore.defaultAccount)
+        webView.configuration.userContentController.addScriptMessageHandler(
+            signer, contentWorld: .page, name: NativeIdentityBridge.handlerName)
     }
 }

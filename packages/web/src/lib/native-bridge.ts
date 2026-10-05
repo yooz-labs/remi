@@ -1,29 +1,12 @@
-/**
- * JS → native bridge for the lock-screen answer relay (#591 P2).
- *
- * The iOS native handler (`RemiAnswerRelay.swift`) answers a held permission from
- * the lock screen WITHOUT opening the app: it signs the answer with the Ed25519
- * seed and POSTs it to the daemon's direct `/answer` endpoint (the same path
- * `relayAnswerDirect` uses in-app). The native code runs in a background launch
- * and cannot read the WebView's localStorage, so this module mirrors the minimum
- * it needs into UserDefaults via
- * `@capacitor/preferences` (which stores under `CapacitorStorage.<key>` — exactly
- * the keys `RemiNativeStore` reads natively):
- *
- *   - `remi-native-identity` : { seed, publicKey, fingerprint }  (the signer)
- *   - `remi-native-routes`   : { [sessionId]: { wsUrl, claudeSessionId? } }
- *
- * `wsUrl` is the daemon URL the session is connected on (the web app pins it on
- * hello_ack, the same value its cold-start push-answer routing uses). The native
- * handler POSTs the signed answer to that daemon's direct `/answer` endpoint.
- *
- * All writes are no-ops off-native (web/browser). The pure seed derivation +
- * crypto compatibility are proven in `@remi/shared` `tests/native-bridge.test.ts`
- * and `tests/ed25519-native-seed-compat.test.ts`.
+/** Public direct-answer routes for the native handler (#591/#1199).
+ * Native identity ownership is in ClientIdentityStore. This bridge no longer
+ * writes seeds or private bytes to Preferences. R4 migration verifies native
+ * persistence before removing the legacy Preferences seed. Direct signed
+ * /answer transport remains until R6; protected keys refuse background answers.
  */
 
 import { Preferences } from '@capacitor/preferences';
-import { deriveNativeIdentity } from '@remi/shared';
+import { currentNativeIdentity } from './native-identity';
 import { loadIdentity } from './identity-client';
 import { isNative } from './platform';
 
@@ -40,27 +23,10 @@ export interface NativeRoute {
   readonly claudeSessionId?: string;
 }
 
-/**
- * Mirror the stored identity's signer to native storage so the lock-screen
- * handler can sign. Writes only an UNENCRYPTED identity's seed; if the identity
- * is encrypted or missing, any previously-bridged seed is CLEARED (so a stale
- * key can never sign after the user switches to an encrypted identity). No-op
- * off-native. Never throws — a bridge failure only means the lock-screen relay is
- * unavailable, which the handler already degrades to "open the app".
- */
+/** Cleanup is permitted only after native migration removed the legacy web record. */
 export async function syncNativeIdentity(): Promise<void> {
-  if (!isNative()) return;
-  try {
-    const identity = loadIdentity();
-    const record = identity ? deriveNativeIdentity(identity) : null;
-    if (!record) {
-      await Preferences.remove({ key: IDENTITY_KEY });
-      return;
-    }
-    await Preferences.set({ key: IDENTITY_KEY, value: JSON.stringify(record) });
-  } catch (err) {
-    console.warn('[remi] syncNativeIdentity failed (lock-screen relay unavailable):', err);
-  }
+  if (!isNative() || !currentNativeIdentity() || loadIdentity()) return;
+  await Preferences.remove({ key: IDENTITY_KEY });
 }
 
 /**

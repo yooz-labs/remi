@@ -137,7 +137,12 @@ export async function startWorker(
     url = String((await mf.ready) as URL).replace(/\/$/, '');
     if (pinPushAudience && url !== audience) throw new Error('owned audience listener mismatch');
   } catch (e) {
-    await mf.dispose();
+    // Retain the R4 owned-startup cleanup without masking its original failure.
+    try {
+      await mf.dispose();
+    } catch {
+      /* preserve the original readiness failure */
+    }
     throw e;
   }
   return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };

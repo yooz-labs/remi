@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		119900020000000000000003 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
+		119900020000000000000002 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
 		0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */; };
 		0624CA493FEF2D140B88CFF7 /* HubSetupCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */; };
 		0C46ABF54A97FA1F17BE04B0 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
@@ -49,6 +51,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		119900020000000000000001 /* NativeIdentityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativeIdentityBridge.swift; path = NativeIdentityBridge.swift; sourceTree = "<group>"; };
 		03E03C1A89AE93F94D40EA16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupCommands.swift; sourceTree = "<group>"; };
 		1F4E747A3D65101EAE2331D4 /* RemiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiApp.swift; sourceTree = "<group>"; };
@@ -98,6 +101,7 @@
 				C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */,
 				4DD72A5787EF3FFBF772C89F /* Assets.xcassets */,
 				7568FF36CA5C521240F3E18B /* ClientIdentity.swift */,
+				119900020000000000000001 /* NativeIdentityBridge.swift */,
 				B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */,
 				81CA6F64B5FFA6B90233A956 /* HubClient.swift */,
 				C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */,
@@ -277,6 +281,7 @@
 				465626B53BA0E06EC5B555C0 /* ActivationPolicy.swift in Sources */,
 				954D114FF37A81A590B7D7B4 /* AppDelegate.swift in Sources */,
 				AD7C394E7D732D8388D54353 /* ClientIdentity.swift in Sources */,
+				119900020000000000000002 /* NativeIdentityBridge.swift in Sources */,
 				A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */,
 				779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */,
 				D5175153D73E308F27F71B07 /* HubProtocol.swift in Sources */,
@@ -298,6 +303,7 @@
 				2FB66887F1ABC6C53CA40C06 /* ActivationPolicy.swift in Sources */,
 				0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */,
 				55BD09EFD7CB8CA48CCE0840 /* ClientIdentity.swift in Sources */,
+				119900020000000000000003 /* NativeIdentityBridge.swift in Sources */,
 				E930A603D1AABF15D2F6197D /* ClientIdentityTests.swift in Sources */,
 				5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */,
 				B2EF1C7D36471D46EACF2DD6 /* DistSchemeHandlerServingTests.swift in Sources */,
