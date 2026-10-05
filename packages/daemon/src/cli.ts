@@ -2132,8 +2132,8 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: disabled by default. Enable with --auth flag.
-// Local/private networks don't need auth; relay/public access does.
+// #873: auth defaults on for every bind. Only explicit false/--no-auth
+// disables it with a visible warning; local capability admission is separate.
 // ---------------------------------------------------------------------------
 // `bindHost` is declared near the CLI flags above, not here: port
 // auto-selection probes with it long before this point (#880).
