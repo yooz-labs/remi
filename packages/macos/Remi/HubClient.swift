@@ -41,6 +41,7 @@ final class HubClient: ObservableObject {
     private var identity: ClientIdentity?
     private var identityObserver: NSObjectProtocol?
     private var inactiveObserver: NSObjectProtocol?
+    private let unlockLifetime = NativeUnlockLifetime()
     private var foregroundUnlocked = false
     var canUnlockIdentity: Bool { identity?.requiresAppUnlock == true && !foregroundUnlocked }
 
@@ -99,7 +100,7 @@ final class HubClient: ObservableObject {
 
     func unlockIdentity() async {
         guard let captured = identity, captured.requiresAppUnlock,
-              await NativeForegroundUnlock.authenticate(), identity?.revision == captured.revision else { return }
+              await unlockLifetime.authenticate(revision: captured.revision, currentRevision: { self.identity?.revision }), identity?.revision == captured.revision else { return }
         foregroundUnlocked = true
         phase = .scanning
         start()

@@ -16,6 +16,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     let scheme: String
     private let service: String
     private let account: String
+    private let unlockLifetime = NativeUnlockLifetime()
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
 
@@ -59,7 +60,9 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                           let identity = try ClientIdentityStore.load(service: service, account: account),
                           request["revision"] as? String == identity.revision,
                           try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw,
-                          await NativeForegroundUnlock.authenticate(),
+                          await unlockLifetime.authenticate(revision: identity.revision, currentRevision: {
+                              try? ClientIdentityStore.load(service: self.service, account: self.account)?.revision
+                          }),
                           Self.isBundledDocument(message.webView?.url, scheme: scheme),
                           try ClientIdentityStore.load(service: service, account: account)?.revision == identity.revision
                     else { throw NativeIdentityError.changed }
@@ -125,6 +128,15 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             response["requiresRestart"] = scheme == "remi-app" && replaced
             if replaced { NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil) }
             return response
+        case "protect":
+            guard Set(request.keys) == ["op", "revision", "publicKey"],
+                  let revision = request["revision"] as? String else { throw NativeIdentityError.malformed }
+            let protected = try ClientIdentityStore.requireAppUnlock(revision: revision,
+                publicKey: bytes(request["publicKey"], count: 32...32), service: service, account: account)
+            var response = publicRecord(protected)
+            response["requiresRestart"] = scheme == "remi-app" && protected.revision != revision
+            if protected.revision != revision { NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil) }
+            return response
         case "sign":
             guard Set(request.keys) == ["op", "revision", "publicKey", "message"],
                   let revision = request["revision"] as? String,
@@ -160,16 +172,30 @@ enum NativeForegroundUnlock {
         return UIApplication.willResignActiveNotification
         #endif
     }
-    static func authenticate() async -> Bool {
+    static func isActive() -> Bool {
         #if os(macOS)
-        guard NSApplication.shared.isActive else { return false }
+        return NSApplication.shared.isActive
         #else
-        guard UIApplication.shared.applicationState == .active else { return false }
+        return UIApplication.shared.applicationState == .active
         #endif
+    }
+    static func authenticate() async -> Bool {
+        guard isActive() else { return false }
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
         return (try? await context.evaluatePolicy(.deviceOwnerAuthentication,
             localizedReason: "Unlock Remi's signing identity for this app session")) == true
+    }
+}
+
+/// Coordinates the OS authentication await; no key or signing operation is exposed here.
+@MainActor
+final class NativeUnlockLifetime {
+    func authenticate(revision: String, currentRevision: () -> String?,
+                      authorization: () async -> Bool = NativeForegroundUnlock.authenticate,
+                      foreground: () -> Bool = NativeForegroundUnlock.isActive) async -> Bool {
+        guard foreground() else { return false }
+        return await authorization() && currentRevision() == revision
     }
 }

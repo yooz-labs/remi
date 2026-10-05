@@ -364,6 +364,32 @@ final class ClientIdentityTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testForegroundUnlockCompletionCannotSurviveInactiveOrReplacement() async throws {
+        let identity = try ClientIdentityStore.loadOrCreate(service:service,account:account)
+        let lifetime = NativeUnlockLifetime()
+        let baseline = await lifetime.authenticate(revision:identity.revision, currentRevision:{identity.revision},
+                                                   authorization:{true},foreground:{true})
+        XCTAssertTrue(baseline, "A current foreground OS-auth completion remains usable")
+        for notification in [NativeForegroundUnlock.inactiveNotification, .nativeIdentityReplaced] {
+            let waiting = expectation(description:"OS-auth boundary suspended")
+            var completion: CheckedContinuation<Bool,Never>?
+            let task = Task { @MainActor in
+                await lifetime.authenticate(revision:identity.revision,currentRevision:{identity.revision},
+                    authorization:{ await withCheckedContinuation { completion = $0; waiting.fulfill() } },foreground:{true})
+            }
+            await fulfillment(of:[waiting],timeout:2)
+            NotificationCenter.default.post(name:notification,object:nil)
+            completion?.resume(returning:true)
+            let accepted = await task.value
+            XCTAssertFalse(accepted, "An inactive/replacement event must cancel the actual OS-auth continuation even if foreground resumes")
+        }
+        var active = true
+        let accepted = await lifetime.authenticate(revision:identity.revision,currentRevision:{identity.revision},
+            authorization:{active = false; return true},foreground:{active})
+        XCTAssertFalse(accepted,"Foreground must be checked after the OS authentication await")
+    }
+
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {

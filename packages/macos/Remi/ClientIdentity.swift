@@ -203,6 +203,16 @@ enum ClientIdentityStore {
         return imported
     }
 
+    static func requireAppUnlock(revision: String, publicKey: Data,
+                                 service: String = defaultService, account: String = defaultAccount) throws -> ClientIdentity {
+        guard let existing = try load(service: service, account: account),
+              existing.revision == revision, existing.publicKeyRaw == publicKey else { throw NativeIdentityError.changed }
+        if existing.requiresAppUnlock { return existing }
+        let protected = ClientIdentity(privateKey: existing.privateKey, requiresAppUnlock: true)
+        try persist(protected, service: service, account: account, updating: true)
+        return protected
+    }
+
     #if DEBUG
     static func resetForTesting(service: String, account: String) {
         SecItemDelete(query(service: service, account: account) as CFDictionary)
