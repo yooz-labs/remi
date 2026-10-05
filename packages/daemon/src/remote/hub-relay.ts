@@ -3,12 +3,15 @@ import {
   type AgentStatus,
   MESSAGE_DIRECTION,
   type Message,
+  MessageIdTracker,
   type ProtocolMessage,
   type RelayDeviceRevokeResponseMessage,
+  type SessionListRequestMessage,
+  type SessionListResponseMessage,
   type UnlockedIdentity,
   createAgentOutput,
-  createAnswerResult,
   createError,
+  createSessionListResponse,
   createSessionUpdate,
   deserialize,
   fromBase64,
@@ -23,6 +26,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
@@ -43,6 +47,8 @@ type Offer = {
 };
 const keyBase64 = (key: Uint8Array) => Buffer.from(key).toString('base64');
 type Peer = {
+  answers: AnswerResults;
+  answerIds: MessageIdTracker;
   revisions: ReadonlyMap<string, number>;
   orderlyClosing: boolean;
   closing?: Promise<void>;
@@ -63,6 +69,7 @@ type Peer = {
   policy: readonly relayV2.PairingOffer[];
   receiveTail: Promise<void>;
   historyFailed: Set<string>;
+  hubLists: Map<string, (response: SessionListResponseMessage) => void>;
 };
 export interface HubRelayConfig {
   relayUrl: string;
@@ -149,16 +156,27 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         control.stop();
         return;
       }
-      for (const device of this.devices.list()) {
-        if (
-          !(await control.command({
-            t: 'enroll',
-            key: new Uint8Array(fromBase64(device.publicKey)),
-          }))
-        )
-          throw new Error('RELAY_ENROLL_REFUSED');
-        if (!this.running || this.control !== control) return;
-      }
+      await this.serial(async () => {
+        // Reconnect enrollment shares the grant/revoke ordering domain. Never
+        // reenroll a captured entry after its durable revocation has completed.
+        for (const device of this.devices.list()) {
+          if (!this.running || this.control !== control) return;
+          const revision = this.revisions.get(device.publicKey) ?? 0;
+          if (!this.devices.isEnrolled(device.publicKey)) continue;
+          const key = new Uint8Array(fromBase64(device.publicKey));
+          if (!(await control.command({ t: 'enroll', key })))
+            throw new Error('RELAY_ENROLL_REFUSED');
+          if (!this.running || this.control !== control) return;
+          if (
+            revision !== (this.revisions.get(device.publicKey) ?? 0) ||
+            !this.devices.isEnrolled(device.publicKey)
+          ) {
+            if (!(await control.command({ t: 'revoke', key })))
+              throw new Error('RELAY_REVOKE_UNCERTAIN');
+          }
+        }
+      });
+      if (!this.running || this.control !== control) return;
       this.stable = setTimeout(() => {
         if (this.control === control) this.attempts = 0;
       }, 30000);
@@ -192,8 +210,21 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private active(peer: Peer): boolean {
     return this.running && !peer.cancelled && this.peers.get(peer.cid) === peer;
   }
+  private enrolled(peer: Peer): boolean {
+    try {
+      return !!peer.key && this.devices.isEnrolled(peer.key);
+    } catch {
+      this.log('Relay authorization store unreadable; routing refused');
+      return false;
+    }
+  }
   private current(peer: Peer): boolean {
-    return this.active(peer) && !!peer.key && peer.revision === (this.revisions.get(peer.key) ?? 0);
+    return (
+      this.active(peer) &&
+      !!peer.key &&
+      peer.revision === (this.revisions.get(peer.key) ?? 0) &&
+      (peer.stage !== 'ready' || this.enrolled(peer))
+    );
   }
   private openPeer(cid: string): void {
     if (!this.running || !this.machine || this.peers.has(cid)) return;
@@ -207,6 +238,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       cid,
       ws,
       cancelled: false,
+      answers: new AnswerResults(),
+      answerIds: new MessageIdTracker(),
       orderlyClosing: false,
       revisions: new Map(this.revisions),
       pendingFrames: 0,
@@ -218,10 +251,21 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       policy: [],
       receiveTail: Promise.resolve(),
       historyFailed: new Set(),
+      hubLists: new Map(),
     };
     this.peers.set(cid, peer);
     let pipeStage = 'nonce';
     ws.onmessage = (event) => {
+      const size =
+        typeof event.data === 'string'
+          ? new TextEncoder().encode(event.data).length
+          : event.data instanceof ArrayBuffer
+            ? event.data.byteLength
+            : Number.POSITIVE_INFINITY;
+      if (size > (peer.stage === 'ready' ? relayV2.MAX_FRAME : relayV2.MAX_WORKER_TEXT)) {
+        void this.closePeer(peer);
+        return;
+      }
       if (++peer.pendingFrames > 64) {
         void this.closePeer(peer);
         return;
@@ -342,16 +386,21 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                   throw new Error('RELAY_ENROLL_UNCERTAIN');
               } else if (!this.devices.isEnrolled(peer.key as string))
                 throw new Error('RELAY_REVOKED');
-              if (!this.current(peer)) throw new Error('RELAY_CANCELLED');
+              if (!this.current(peer) || !this.enrolled(peer)) throw new Error('RELAY_CANCELLED');
               const ready = await step.ready(Date.now(), {
                 emit: (frame) => {
-                  if (!this.current(peer) && !(peer.orderlyClosing && frame[0] === 4))
+                  if (
+                    !this.current(peer) &&
+                    !(peer.orderlyClosing && frame[0] === relayV2.TYPE_BYE)
+                  ) {
+                    void this.closePeer(peer, true);
                     throw new Error('RELAY_CANCELLED');
+                  }
                   ws.send(frame);
                 },
                 close: (code, reason) => ws.close(code, reason),
               });
-              if (!this.current(peer)) {
+              if (!this.current(peer) || !this.enrolled(peer)) {
                 await ready.channel.transportClosed();
                 return;
               }
@@ -373,7 +422,11 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             if (typeof event.data === 'string') throw new Error('RELAY_TEXT_AFTER_READY');
             if (!peer.key || !this.devices.isEnrolled(peer.key)) throw new Error('RELAY_REVOKED');
             const bytes = await peer.channel?.receive(new Uint8Array(event.data));
-            if (!this.current(peer) || bytes === null || bytes === undefined) return;
+            if (!this.current(peer) || bytes === undefined) return;
+            if (bytes === null) {
+              await this.closePeer(peer, true);
+              return;
+            }
             const message = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
             if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
               throw new Error('RELAY_INVALID_MESSAGE');
@@ -440,9 +493,70 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.cid,
     );
   }
+  private async sessionList(peer: Peer, request: SessionListRequestMessage): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const local = new Promise<SessionListResponseMessage>((resolve) => {
+      peer.hubLists.set(request.id, resolve);
+      timer = setTimeout(() => resolve(createSessionListResponse([], request.id)), 5000);
+    });
+    this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
+    const localResponse = await local;
+    if (timer) clearTimeout(timer);
+    peer.hubLists.delete(request.id);
+    if (!this.current(peer) || !peer.proxy) return;
+    const all = this.cfg.registry.listLive();
+    const live = all.slice(0, 32);
+    const sessions = new Map(localResponse.sessions.map((session) => [session.sessionId, session]));
+    let failed = all.length > live.length;
+    // Eight private child handshakes at once, finite five-second list waits.
+    for (let offset = 0; offset < live.length; offset += 8) {
+      const responses = await Promise.allSettled(
+        live.slice(offset, offset + 8).map(async (entry) => ({
+          entry,
+          response: await peer.proxy?.list(entry.sessionId, request.includeExternal ?? false),
+        })),
+      );
+      if (!this.current(peer)) return;
+      for (const result of responses) {
+        if (result.status !== 'fulfilled' || !result.value.response) {
+          failed = true;
+          continue;
+        }
+        const { entry, response } = result.value;
+        const current = this.cfg.registry
+          .listLive()
+          .find((item) => item.sessionId === entry.sessionId);
+        if (current?.pid !== entry.pid || current.wsPort !== entry.wsPort) {
+          failed = true;
+          continue;
+        }
+        for (const session of response.sessions) {
+          if (
+            session.sessionId === entry.sessionId ||
+            (request.includeExternal && session.source !== 'daemon')
+          )
+            sessions.set(session.sessionId, session);
+        }
+      }
+    }
+    if (failed)
+      this.sendRaw(
+        peer.cid,
+        createError(
+          'CHILD_LIST_PARTIAL',
+          'Session list is partial: one or more child sessions could not be verified',
+          { requestId: request.id },
+        ),
+      );
+    this.sendRaw(peer.cid, createSessionListResponse([...sessions.values()], request.id), true);
+  }
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
+    if (message.type === 'session_list_request') {
+      await this.sessionList(peer, message);
+      return;
+    }
     if (message.type === 'relay_devices_request') {
       this.sendRaw(peer.cid, {
         type: 'relay_devices_response',
@@ -473,21 +587,29 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           ? message.sessionId
           : undefined;
     if (typeof sessionId === 'string' && sessionId && message.type !== 'create_session_request') {
+      if (message.type === 'answer') {
+        const live = this.cfg.registry.listLive().find((entry) => entry.sessionId === sessionId);
+        const generation = live
+          ? JSON.stringify([live.pid, live.wsPort, live.startedAt])
+          : 'missing';
+        const result = await peer.answers.run(
+          message,
+          peer.answerIds.checkAndMark(message.id),
+          async () => (peer.proxy ? await peer.proxy.answer(message) : 'uncertain'),
+          generation,
+        );
+        this.sendRaw(peer.cid, result);
+        return;
+      }
       try {
         await peer.proxy?.send(sessionId, message);
       } catch {
-        if (message.type === 'answer')
-          this.sendRaw(
-            peer.cid,
-            createAnswerResult(message.id, message.sessionId, message.questionId, 'uncertain'),
-          );
-        else
-          this.sendRaw(
-            peer.cid,
-            createError('SESSION_NOT_FOUND', 'Child session unverified; delivery uncertain', {
-              sessionId,
-            }),
-          );
+        this.sendRaw(
+          peer.cid,
+          createError('SESSION_NOT_FOUND', 'Child session unverified; delivery uncertain', {
+            sessionId,
+          }),
+        );
       }
     } else peer.connection?.handleMessage(serialize(message));
   }
@@ -500,6 +622,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     peer.step1?.abort();
     peer.step2?.abort();
     peer.proxy?.close();
+    for (const [id, resolve] of peer.hubLists) resolve(createSessionListResponse([], id));
+    peer.hubLists.clear();
     for (const offer of [...this.offers.values()])
       if (offer.reserved === peer.cid) this.discard(offer);
     peer.closing = (async () => {
@@ -657,10 +781,17 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   sendStatus(id: string, status: AgentStatus, context?: string): boolean {
     return this.sendRaw(id, createSessionUpdate(id, status, context));
   }
-  sendRaw(id: string, message: ProtocolMessage): boolean {
+  sendRaw(id: string, message: ProtocolMessage, aggregated = false): boolean {
     const peer = this.peers.get(id);
-    if (!peer || !this.current(peer) || !peer.channel || message.type === 'raw_pty_output')
+    if (peer && message.type === 'session_list_response' && !aggregated) {
+      peer.hubLists.get(message.requestId)?.(message);
       return false;
+    }
+    if (!peer || !peer.channel || message.type === 'raw_pty_output') return false;
+    if (!this.current(peer)) {
+      void this.closePeer(peer, true);
+      return false;
+    }
     if (message.type === 'transcript_load_complete' && peer.historyFailed.has(message.sessionId))
       return false;
     const bytes = new TextEncoder().encode(serialize(message));

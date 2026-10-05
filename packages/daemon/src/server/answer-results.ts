@@ -13,6 +13,7 @@ export class AnswerResults {
     message: AnswerMessage,
     recognizedDuplicate: boolean,
     apply: () => Promise<AnswerResultOutcome>,
+    generation = '',
   ) {
     const now = Date.now();
     for (const [id, entry] of this.entries)
@@ -20,6 +21,7 @@ export class AnswerResults {
     const content = createHash('sha256')
       .update(
         JSON.stringify([
+          generation,
           message.sessionId,
           message.questionId,
           message.answer,

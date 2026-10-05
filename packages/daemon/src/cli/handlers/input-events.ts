@@ -1186,13 +1186,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       messageId?: UUID,
     ): Promise<void> => {
       const session = sessionRegistry.getSessionForConnection(connectionId);
-      // #1177: a session that takes no typed chat (Codex) keeps what was sent out of the log
-      // altogether, this line included: only the length is logged. Asked once, and used again
-      // below for the refusal.
+      // Relay callers also reach this existing direct-input handler. Only metadata
+      // may enter local logs, including refused/unattached and raw input.
       const chatOff = session !== undefined && acceptsTypedChat?.(session.sessionId) === false;
-      log(
-        `User input from ${connectionId}${raw ? ' (raw)' : ''}: ${chatOff ? `${content.length} chars` : content}`,
-      );
+      log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content.length} chars`);
       if (!session) {
         // #795: there is no more exclusive write lock, so every attached
         // (non-query) connection already finds its session above. Landing
