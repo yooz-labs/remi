@@ -163,7 +163,7 @@ final class NativePushStateTests: XCTestCase {
         _ = try ownedProcess(URL(fileURLWithPath: "/usr/bin/xcrun"), ["swiftc",
             macos.appendingPathComponent("Remi/NativePush/NativePushState.swift").path,
             macos.appendingPathComponent("Remi/NativePush/NativeEd25519PublicKey.swift").path,
-            source.appendingPathComponent("Fixtures/NativePushStateProcess/main.swift").path,
+            source.appendingPathComponent("fixtures/NativePushStateProcess/main.swift").path,
             "-o", helper.path])
         let file = directory.appendingPathComponent("process.sqlite")
         let state = try NativePushState(file: file)
