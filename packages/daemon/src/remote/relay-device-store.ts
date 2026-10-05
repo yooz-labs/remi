@@ -51,6 +51,10 @@ export class RelayDeviceStore {
   isEnrolled(publicKey: string): boolean {
     return this.list().some((device) => device.publicKey === publicKey);
   }
+  /** Fail-closed API boundary for durable enrollment generation pins (#1200). */
+  captureEnrollmentEpoch(_publicKey: string): string | null {
+    return null;
+  }
   private change(update: (values: RelayDevice[]) => RelayDevice[]): void {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(this.dir, 0o700);
