@@ -134,6 +134,9 @@ function optionKind(option: UIQuestionOption): OptionKind {
  * does not run, which "Dismiss question" did not say.
  */
 function cancelLabel(question: UIQuestion): string {
+  // A card whose Cancel only clears it (Codex's, #1178) must not claim a decline that does not
+  // happen: the agent's own prompt stays open in the terminal.
+  if (question.cancelDismissesOnly === true) return 'Dismiss (answer in the terminal)';
   if (question.terminalOnly === true) return 'Decline tool call';
   if (question.kind === 'plan_approval') return 'Keep planning';
   if (question.kind === 'multi_question') return 'Dismiss question';
@@ -408,7 +411,10 @@ function MultiQuestionForm({
           style={{ background: 'var(--color-surface-elevated)', color: 'var(--color-text)' }}
         >
           {terminalOnly
-            ? 'This question can only be answered in the terminal (or Cancel).'
+            ? question.cancelDismissesOnly === true
+              ? // Cancel answers nothing here, so it is not offered as a way to answer (Codex, #1178).
+                'This question can only be answered in the terminal; Cancel only clears it from here.'
+              : 'This question can only be answered in the terminal (or Cancel).'
             : "Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal."}
         </p>
       )}
@@ -583,6 +589,11 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
           <div className="flex flex-col gap-1.5 px-3 pb-3 pt-2.5">
             {options.length > 0 ? (
               options.map((o) => <OptionRow key={o.key} option={o} onAnswer={onAnswer} />)
+            ) : question.terminalOnly === true ? (
+              // Nothing from the phone is applied to this card, so it offers no input to refuse.
+              <p className="px-1 text-[13px] text-[var(--color-text-secondary)]">
+                Answer this in the terminal.
+              </p>
             ) : (
               <FreeTextRow onAnswer={onAnswer} />
             )}

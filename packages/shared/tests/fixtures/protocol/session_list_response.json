@@ -17,6 +17,8 @@
       "canAttach": true,
       "canResume": false,
       "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
       "transcriptPath": "/Users/fixture/transcript.jsonl",
       "wsPort": 19924,
       "daemonHost": "fixture-host"

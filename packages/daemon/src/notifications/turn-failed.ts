@@ -15,6 +15,10 @@
  * nothing else: `notifications.on_turn_complete = false` does NOT silence it,
  * because a failed turn is the one turn end a user must not miss by default
  * (the agent is stopped, and until something is done it stays stopped).
+ *
+ * The Codex adapter pushes the same notice for a failed turn (`turn/completed`
+ * with status `failed`, #1180), through the turn-event sink
+ * (`turn-events.ts`), and the title names Codex instead of Claude.
  */
 
 import type { UUID } from '@remi/shared';
@@ -31,6 +35,8 @@ const EXCERPT_MAX = 140;
  *  value cannot crowd the excerpt out of the body. */
 const UNKNOWN_CODE_MAX = 40;
 const AGENT_TYPE_MAX = 30;
+/** Who stopped, in the title, when the caller does not say: Claude Code's `StopFailure` is the original source. */
+const DEFAULT_AGENT_NAME = 'Claude';
 
 /**
  * Display phrase for each documented `StopFailure` `error` value
@@ -53,6 +59,18 @@ const KNOWN_ERROR_PHRASES: ReadonlyMap<string, string> = new Map([
   ['max_output_tokens', 'Output token limit reached'],
   ['cloud_credential_error', 'Cloud credentials could not be loaded'],
   ['unknown', 'Unknown error'],
+  // Codex's string `codexErrorInfo` values (the generated schema's `CodexErrorInfo`, #1180), so a
+  // failed Codex turn reads like Claude's. A value with no phrase here is shown as is.
+  ['usageLimitExceeded', 'Usage limit reached'],
+  ['rateLimitExceeded', 'Rate limit reached'],
+  ['serverOverloaded', 'API overloaded'],
+  ['internalServerError', 'Server error'],
+  ['unauthorized', 'Authentication failed'],
+  ['badRequest', 'Invalid request'],
+  ['contextWindowExceeded', 'Context window exceeded'],
+  ['sessionBudgetExceeded', 'Session budget exceeded'],
+  ['sandboxError', 'Sandbox error'],
+  ['other', 'Unknown error'],
 ]);
 
 /** What a payload with no usable `error` reads as: the binary itself sends
@@ -101,15 +119,18 @@ export type TurnFailedInput = Pick<
 
 /**
  * Title and body for one failed turn. The title names the session the way
- * every other push does; the body is the reason ("Rate or usage limit
- * reached"), then a short excerpt of what Claude Code said. A failure from a
- * subagent says which kind.
+ * every other push does, and the agent that stopped (`agentName`: Claude
+ * unless the caller says another, as the Codex adapter does, #1180); the body
+ * is the reason ("Rate or usage limit reached"), then a short excerpt of what
+ * the agent said. A failure from a subagent says which kind.
  */
 export function buildTurnFailedText(
   sessionName: string,
   input: TurnFailedInput,
+  agentName: string = DEFAULT_AGENT_NAME,
 ): { title: string; body: string } {
-  const title = `${oneLine(sessionName) || 'Agent'}: Claude stopped`.slice(0, TITLE_MAX);
+  const agent = oneLine(agentName) || 'Agent';
+  const title = `${oneLine(sessionName) || 'Agent'}: ${agent} stopped`.slice(0, TITLE_MAX);
   const reason = describeTurnFailure(input.error);
   const excerpt = failureExcerpt(input);
   const who =
@@ -134,7 +155,7 @@ export function turnFailedCollapseId(sessionId: string): string {
 
 /** The slice of a per-session `NotificationDispatcher` the hook wiring needs. */
 export interface TurnFailedNotifier {
-  pushTurnFailed(input: TurnFailedInput): Promise<unknown>;
+  pushTurnFailed(input: TurnFailedInput, agentName?: string): Promise<unknown>;
   dismissTurnFailed(): void;
 }
 
@@ -150,13 +171,14 @@ export interface TurnFailedNotifier {
  * session with no dispatcher (already torn down) is a no-op.
  */
 export function createTurnFailedRoutes(notifiers: ReadonlyMap<UUID, TurnFailedNotifier>): {
-  push: (sessionId: UUID, input: StopFailureHookInput) => void;
+  push: (sessionId: UUID, input: TurnFailedInput, agentName?: string) => void;
   dismiss: (sessionId: UUID) => void;
 } {
   return {
-    // The dispatcher's promise never rejects; fire-and-forget.
-    push: (sessionId, input) => {
-      void notifiers.get(sessionId)?.pushTurnFailed(input);
+    // The dispatcher's promise never rejects; fire-and-forget. A Claude `StopFailure` hook payload is
+    // a `TurnFailedInput` (the type is a slice of it) and names no agent, so it reads "Claude stopped".
+    push: (sessionId, input, agentName) => {
+      void notifiers.get(sessionId)?.pushTurnFailed(input, agentName);
     },
     dismiss: (sessionId) => {
       notifiers.get(sessionId)?.dismissTurnFailed();

@@ -13,6 +13,7 @@ import {
   createSessionRotated,
   createUserInput,
   deserialize,
+  identityFromClaudeId,
   serialize,
 } from '../src/index.ts';
 
@@ -24,7 +25,7 @@ describe('binding fields on the wire (#429)', () => {
   test('hello_ack carries claudeSessionId + transcriptPath when binding present', () => {
     const msg = createHelloAck('1.0.0', RID, {
       binding: {
-        claudeSessionId: CID,
+        identity: identityFromClaudeId(CID),
         transcriptPath: '/home/u/.claude/projects/-x/abc.jsonl',
       },
     });
@@ -36,12 +37,26 @@ describe('binding fields on the wire (#429)', () => {
 
   test('hello_ack with null binding (no resolved id yet)', () => {
     const msg = createHelloAck('1.0.0', RID, {
-      binding: { claudeSessionId: null, transcriptPath: null },
+      binding: { identity: identityFromClaudeId(null), transcriptPath: null },
     });
     const round = deserialize(serialize(msg));
     if (round?.type !== 'hello_ack') throw new Error('wrong type');
     expect(round.claudeSessionId).toBeNull();
     expect(round.transcriptPath).toBeNull();
+  });
+
+  test('hello_ack names a harness without a binding, and only the harness (G9)', () => {
+    const named = createHelloAck('1.0.0', null, { harness: 'codex' });
+    expect(named.harness).toBe('codex');
+    for (const key of ['harnessSessionId', 'claudeSessionId', 'transcriptPath']) {
+      expect(key in named, key).toBe(false);
+    }
+    // A binding names the harness itself, and it wins.
+    const bound = createHelloAck('1.0.0', RID, {
+      harness: 'codex',
+      binding: { identity: identityFromClaudeId(CID), transcriptPath: null },
+    });
+    expect(bound.harness).toBe('claude');
   });
 
   test('hello_ack without binding arg omits the fields (back-compat)', () => {
@@ -56,7 +71,7 @@ describe('binding fields on the wire (#429)', () => {
     const msg = createQuestion(
       { id: QID, text: 'continue?', options: [], allowsFreeText: false, isAnswered: false },
       RID,
-      CID,
+      identityFromClaudeId(CID),
     );
     const round = deserialize(serialize(msg));
     if (round?.type !== 'question') throw new Error('wrong type');

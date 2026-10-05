@@ -564,6 +564,7 @@ function App() {
                     connectionId,
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                    ...(message.harness !== undefined && { harness: message.harness }),
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -588,6 +589,7 @@ function App() {
               preview: 'Connected',
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+              ...(message.harness !== undefined && { harness: message.harness }),
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -1011,6 +1013,7 @@ function App() {
               canResume: showResume,
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
+              ...(ds.harness !== undefined && { harness: ds.harness }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.

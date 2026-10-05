@@ -7,7 +7,7 @@
  */
 
 import { StatusPill } from '@/components/StatusPill';
-import { sessionPillState, splitSessionName } from '@/lib/session-display';
+import { harnessLabel, sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { UISession } from '@/types';
 import { clsx } from 'clsx';
 import {
@@ -61,6 +61,7 @@ export function ChatHeader({
   const menuRef = useRef<HTMLDivElement>(null);
   const { host, project, branch } = splitSessionName(session);
   const state = sessionPillState(session);
+  const harness = harnessLabel(session.harness);
   const hasMenuActions =
     onCopyConversation || onClearMessages || onExportText || onDetach || onEndSession;
 
@@ -134,6 +135,11 @@ export function ChatHeader({
             {branch || project}
           </span>
           <StatusPill state={state} className="shrink-0" />
+          {harness !== null && (
+            <span className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+              {harness}
+            </span>
+          )}
         </div>
         {session.claudeSessionId && (
           <button

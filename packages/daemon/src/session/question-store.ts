@@ -50,6 +50,11 @@ export interface QuestionStoreOptions {
    * a throw counts as not pinned.
    */
   isPinned?: (questionId: UUID) => boolean;
+  /**
+   * Log a question's length instead of its first 60 characters when one is evicted (#1178): a
+   * Codex card's text is the command Codex asks to run. Default: the text, as before.
+   */
+  redactText?: boolean;
 }
 
 /** Events emitted by QuestionStore. */
@@ -108,7 +113,11 @@ export class QuestionStore {
       // use (cap is generous); a hit signals a runaway prompt loop -- or,
       // pre-#888/#920, a hook-less question with no other removal path.
       console.warn(
-        `[QuestionStore] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded; evicted oldest id=${oldest} text="${evicted?.text.slice(0, 60) ?? ''}"`,
+        `[QuestionStore] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded; evicted oldest id=${oldest} ${
+          this.options.redactText
+            ? `chars=${evicted?.text.length ?? 0}`
+            : `text="${evicted?.text.slice(0, 60) ?? ''}"`
+        }`,
       );
       // #808: an LRU eviction is a removal too -- it never goes through
       // remove() (there is no single questionId call site for it), so trace

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ProtocolMessage, Question, UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { generateId, identityFromClaudeId } from '@remi/shared';
 import { resendPendingQuestions } from '../../../src/cli/handlers/pending-question-resend.ts';
 
 function makeQuestion(text: string): Question {
@@ -24,7 +24,12 @@ describe('resendPendingQuestions (#753)', () => {
     const sent: ProtocolMessage[] = [];
     const pending = [makeQuestion('Allow Bash?'), makeQuestion('Allow Edit?')];
 
-    const count = resendPendingQuestions((m) => sent.push(m), sessionId, pending, claudeSessionId);
+    const count = resendPendingQuestions(
+      (m) => sent.push(m),
+      sessionId,
+      pending,
+      identityFromClaudeId(claudeSessionId),
+    );
 
     expect(count).toBe(2);
     const questions = sent.filter((m) => m.type === 'question');

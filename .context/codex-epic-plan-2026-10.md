@@ -19,9 +19,9 @@ Scope: `remi codex` with a Codex approval reaching the phone, the phone's allow 
 | 3 | Request id treated as per-thread | The accept run's request is `id:1` (`expA-accept.jsonl:47`); the decline run's is `id:2` (`expA-decline.jsonl:63`); expB3's is `id:5`; expC's is `id:6`. Ids are a daemon-global counter. | Correlation key is `(threadId, requestId)`, never the id alone. |
 | 4 | Any TUI thread with matching cwd is "the thread" | `expB.jsonl:7` is the TUI thread (`ephemeral:false`, `threadSource:"user"`, `path` set). `expB.jsonl:12` is a second `thread/started` about 7 s later, for the same cwd, with `ephemeral:true`, `threadSource:"thread_title"`, `environments:[]`, `path:null`. | Identity discovery must reject ephemeral and non-`user` threads (Phase 3). A cwd-only rule would bind to the title helper after a resume. |
 | 5 | "Chat view: rollout JSONL" (strategy:96) | `ts/v2/ThreadReadParams.ts` doc: "prefer a metadata-only read and page with `thread/turns/list` and `thread/items/list`". `thread/resume` results carry `path`, `historyMode:"paginated"` and backwards cursors (`expA-accept.jsonl:38`). | Primary chat source is the app-server's paged items. Rollout JSONL is the documented fallback. Schema-level evidence only, so Phase 6 has a live check. |
-| 6 | Ordinary Bun WebSocket | Bun's native `ws+unix://` client landed in PR #29203 (merged 2026-04-12), first released in bun v1.3.13 (2026-04-20). CI pins 1.3.11 (`.github/workflows/ci.yml:12`) and `release.yml:16` pins the same. `bun-types@1.4.2` `WebSocketOptions` has no `unix` option. Third-party Codex adapter happier-dev found that the `ws` npm package under Bun ignores `createConnection` and opens TCP (their PR #401). | Native `ws+unix` cannot be the transport. The `ws` package cannot either. Phase 1 hand-rolls a small RFC 6455 client over `node:net`. Swap to native when the pin moves to >= 1.3.13 and passes the compile smoke test. |
+| 6 | Ordinary Bun WebSocket | Bun's native `ws+unix://` client landed in PR #29203 (merged 2026-04-12), first released in bun v1.3.13 (2026-04-20). CI pins 1.3.11 (`.github/workflows/ci.yml:15`; corrected in Phase 1: an earlier draft said line 12, which is a comment) and `release.yml:16` pins the same. `bun-types@1.4.2` `WebSocketOptions` has no `unix` option. The `ws` npm package is no way around it: by reviewer B's Phase 1 measurement it resolves to Bun's own native client under Bun, so on 1.3.11 the error `Wrong url scheme for WebSocket ws+unix` is Bun's, `ws+unix` works only on 1.4.2, and the `createConnection` and `socketPath` options fail on both (corrected in Phase 1; an earlier draft cited a third-party adapter's report that `ws` opens TCP under Bun, not re-verified). The pin is set in five workflow files (`ci.yml:15`, `release.yml:16`, `auto-bump-dev.yml:22`, `close-on-develop.yml:37`, `macos-app.yml:27`). | Native `ws+unix` cannot be the transport. The `ws` package cannot either. Phase 1 hand-rolls a small RFC 6455 client over `node:net`. Swap to native when the pin moves to >= 1.3.13 and passes the compile smoke test. |
 | 7 | `availableDecisions` list; TUI "No" | Spike: under `untrusted` the list is `[accept, acceptWithExecpolicyAmendment, cancel]`; `decline` (unlisted) was honored and the model continued (`expA-decline.jsonl:65-76`). The TUI's "No (esc)" maps to the listed `cancel`. | Phone "No" sends `cancel` when it is listed. See P4 policy. |
-| 8 | Strategy's flag list | Spike adds `--search`, `--approve-for-me`, `--no-daemon`; `-a`, `-s`, `-m`, `-C`, `--add-dir` and `--disable daemon_auto_start` stay shared. | Denylist in `codex-args.ts` follows the spike list. |
+| 8 | Strategy's flag list | Spike adds `--search`, `--approve-for-me`, `--no-daemon`; `-a`, `-s`, `-m`, `-C`, `--add-dir` stay shared. `--enable`/`--disable` are NOT in that list: each feature toggle is documented as equivalent to `-c features.<name>=...`, and `-c` forces an embedded server, so `--disable daemon_auto_start` is not known to stay shared. | Denylist in `codex-args.ts` follows the spike list (Phase 2 review of PR #1182 made local mode a default-deny allowlist; the denylist now only picks the refusal message). |
 | 9 | First TUI launch | 0.159.1 blocks on "Trust this folder" in an untrusted dir; 0.160.0 showed no prompt; the "Update available" modal ran an installer when a digit was typed. | remi never types into a Codex PTY, and live-verification steps must clear modals by screen-scrape first. |
 
 ### 0.2 Decisions of mine to veto (full list in §6.2)
@@ -42,15 +42,17 @@ Spike files live in `<scratchpad>/codex-spike/`, called `$SPIKE` below.
 
 **Transport**
 - WebSocket over the unix socket, text frames, `jsonrpc` optional (`$SPIKE/rpc.py:44-49`, `unix_connect(SOCK, "ws://localhost/", max_size=None)`). The python client offered the library's default extensions; nothing shows what Codex's server requires.
-- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-501/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
-- The socket path under `~/.codex` is a symlink to a short /tmp path, so connect to the realpath (macOS `sun_path` is 104 bytes).
+- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-<uid>/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
+- The socket path under `~/.codex` is a symlink to a short /tmp path, so connect to the resolved target, not the link (macOS `sun_path` is 104 bytes).
+  **Correction (Phase 1, #1181):** `fs.realpathSync`, `realpathSync.native` and `fs.promises.realpath` throw `EOPNOTSUPP` on a unix socket file and on a symlink to one on macOS, checked on Bun 1.3.11 and 1.4.2; `readlinkSync` and `lstatSync` work, and `realpath` of the parent directory works.
+  Phase 3 must `readlink` the link, or `realpath` the parent directory and `readlink` the file; wherever this plan says "realpath the socket", read that.
 
 **Handshake**
 - `initialize {clientInfo, capabilities:{experimentalApi:true, requestAttestation:false}}` returns `{userAgent, codexHome, platformFamily, platformOs}` (`expA-accept.jsonl:1-2`), then notification `initialized` (`:4`).
-- `capabilities.optOutNotificationMethods?: string[]` exists in the schema (`ts/InitializeCapabilities.ts`). Using it is unverified live.
+- `capabilities.optOutNotificationMethods?: string[]` exists in the schema (`ts/InitializeCapabilities.ts`). Verified live on 2026-10-04: it is accepted and effective.
 
 **Server-request frames**
-- Real command-approval frame: `expA-accept.jsonl:47`. `params` has `kind:"command"`, `threadId`, `turnId`, `itemId`, `startedAtMs`, `environmentId`, `command`, `cwd`, `commandActions`, `proposedExecpolicyAmendment`, `availableDecisions`. `approvalId` is null.
+- Real command-approval frame: `expA-accept.jsonl:47`. `params` has `kind:"command"`, `threadId`, `turnId`, `itemId`, `startedAtMs`, `environmentId`, `command`, `cwd`, `commandActions`, `proposedExecpolicyAmendment`, `availableDecisions`. The real frame has no `approvalId` key at all (corrected in Phase 1; an earlier draft said it is null, and the schema marks it optional), so test it with `== null`, never `=== null`.
 - `RequestId = string | number` (`ts/RequestId.ts`).
 - Order on every subscriber: `thread/status/changed {active, [waitingOnApproval]}`, then `item/started(commandExecution)`, then the request (`expA-accept.jsonl:45-47`).
 - `ServerRequest` also covers `item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, `currentTime/read` and the legacy `applyPatchApproval` and `execCommandApproval` (`ts/ServerRequest.ts`).
@@ -152,6 +154,9 @@ export async function connectUnixWebSocket(
   socketPath: string, handlers: WsHandlers,
   opts?: { host?: string /*'localhost'*/; path?: string /*'/'*/; connectTimeoutMs?: number; handshakeTimeoutMs?: number },
 ): Promise<WsConnection>;   // sends no Origin and no Sec-WebSocket-Extensions
+// As built in Phase 1 (ADR 0033): connectTimeoutMs is gone (one deadline, handshakeTimeoutMs, from the start of the
+// attempt); opts also take signal?: AbortSignal, maxPayloadBytes, closeTimeoutMs and log; WsHandlers gains onPong?;
+// WsConnection gains ping(). AppServerClientOptions gains keepalive and backoff.stableMs.
 
 // app-server-protocol.ts
 export type RequestId = string | number;
@@ -171,7 +176,7 @@ export type AppServerEvent =
   | { type: 'serverRequest'; id: RequestId; method: string; params: unknown }
   | { type: 'notification'; method: string; params: unknown };
 export interface AppServerClientOptions {
-  socketPath: () => string;                         // resolved on every attempt (realpath, trust-checked in Phase 3)
+  socketPath: () => string;                         // resolved on every attempt (by `readlink`, trust-checked in Phase 3; see the realpath correction in section 1)
   clientInfo: { name: string; title: string | null; version: string };
   optOutNotificationMethods?: readonly string[];    // default none until live-verified
   connect?: typeof connectUnixWebSocket;
@@ -228,25 +233,25 @@ Launch order inside `createCodexSession` (state-changing steps in this order):
 
 `HarnessSession` for Codex:
 - `start()` does `await pty.start()`, then `client.start()`. The PTY goes first because the TUI auto-starts the shared daemon.
-- `acceptsTypedChat:false`.
+- `acceptsTypedChat:false` (shipped in Phase 3: see the chat guard below).
 - `dispose()` calls `client.stop()` and is idempotent.
 
 **Launch is exactly `codex --no-alt-screen <validated user args>`, with no override flags.**
 - `--no-alt-screen` was in every spike TUI run (`expFlags.py:30`) and stays on the shared daemon.
 - Resume is `codex --no-alt-screen resume <uuid>`, the shape the spike used.
 - cwd is the session working directory.
-- Env is `process.env` plus nothing. In particular `CODEX_HOME` passes through, and no `REMI_PORT` and no Claude variables are set (`buildClaudeChildEnv` is not called).
+- Env is `process.env` plus `FORCE_COLOR` and `TERM`, which the PTY layer sets for every launch. In particular `CODEX_HOME` passes through, and no `REMI_PORT` and no Claude variables are set (`buildClaudeChildEnv` is not called). The characterization test pins the child's whole environment against the parent's.
 - `reservedRows` is forced to 0. Codex's inline mode manages its own scroll regions and the reserved status row (#565, #932) was built against Claude's renderer.
 
 **Who starts the shared daemon (DECIDED POLICY): remi never starts, stops, restarts or upgrades it.** It is shared with the user's other Codex sessions, and `daemon stop` leaves a stray `pid-update-loop` child (report §3).
-- The TUI auto-starts it (`daemon_auto_start`; unverified for a cold start, R2).
+- The TUI auto-starts it (`daemon_auto_start`; still unverified for a cold start, R2: the 2026-10-04 live run did not stop the daemon).
 - remi polls the socket through the client's backoff.
 - If no `ready` arrives within 30 s of spawn, remi logs once and emits one system-sender message ("Codex approvals are not reaching the phone: the shared app-server was not reachable; the session still works in the terminal"). The session continues as a plain terminal session.
 - Version skew: from `initialize.userAgent`, log the daemon version next to `codex --version`. Skew is non-fatal (the spike ran 0.159.1 CLI against 0.160.0 daemon for RPC).
 - If a call returns `-32601`, mark that capability unavailable, log, and carry on.
 - Fallbacks if R2 fails live are in §6.2 item 8.
 
-**Socket trust (Phase 3).** Before connecting, `realpath` the socket and refuse if its parent directory is not owned by the current uid or has any group/other bits (`UntrustedSocketError`, logged, no connect). Socket path is `${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock`, so profiles that relocate `CODEX_HOME` (#1157) are not precluded.
+**Socket trust (Phase 3).** Before connecting, resolve the socket with `readlink` (`realpath` throws `EOPNOTSUPP` on a socket; see the correction in section 1) and refuse if its parent directory is not owned by the current uid or has any group/other bits (`UntrustedSocketError`, logged, no connect). Socket path is `${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock`, so profiles that relocate `CODEX_HOME` (#1157) are not precluded. Two limits are documented, not closed: the check runs before `connect`, so the directory could change between the two (a check-to-connect window), and only the link's and the socket's own directories are checked, not their ancestors (no ancestor walk; the user's own home chain is the user's).
 
 **Identity after spawn (`ThreadTracker`).**
 
@@ -270,19 +275,21 @@ export interface ThreadTrackerDeps {
   spawnedAtMs: number;
   expectedThreadId: string | null;             // resume
   claimedByOthers: () => ReadonlySet<string>;  // active non-Claude records in the store
-  onIdentity(threadId: string): void;          // persist
+  onIdentity(threadId: string): void;          // persist; throws ThreadClaimedError if the store says another session holds it
   onStatus(threadId: string, status: ThreadStatus): void;
+  siblingInDirectory?: (rotating: boolean) => boolean;  // another live remi codex session in the way of a bind
+  notice?: (message: string) => void;          // a system message, sent at most once per kind
   log: (m: string) => void;
+  retryMs?: number; ambiguityMs?: number; noIdentityMs?: number;  // test seams
 }
 export class ThreadTracker {
   constructor(deps: ThreadTrackerDeps);
   handleNotification(method: string, params: unknown): void;
-  handleReady(reconnect: boolean): void;       // (re)attach
-  readonly threadId: string | null;
-  readonly attached: boolean;
-  isOurs(threadId: string): boolean;           // tracked, or a descendant via parentThreadId
+  handleReady(): void;                         // (re)attach; a new connection starts the retry period over
+  handleDisconnected(): void;                  // the subscription is gone
   dispose(): void;
 }
+// No `threadId`, `attached` or `isOurs` accessors: the session reads what it needs through the callbacks.
 ```
 
 Candidate rule on `thread/started` (all must hold):
@@ -292,20 +299,20 @@ Candidate rule on `thread/started` (all must hold):
 - `parentThreadId === null`.
 - `realpath(cwd) === sessionCwd`.
 - `createdAtSec*1000 >= spawnedAtMs - 5000`.
-- Id not in `claimedByOthers()`.
-- No tracked thread yet.
+- The id is a UUID (`parseThread` returns null for anything else: it is stored and printed in a command line), not in `claimedByOthers()`, not the tracked thread's and not one the store refused.
+- A tracked thread does not end the search: a later candidate is a rotation (below).
 
-The first match wins. If a second candidate arrives within 300 ms with a `createdAt` within 300 ms of the first, bind neither, log, and set no identity (fail closed). Residual risk: a non-remi TUI in the same cwd started in the same window (R4).
+The first match waits 300 ms. If a second DISTINCT candidate arrives inside that window, bind neither, log, and set no identity (fail closed). It is decided by arrival, not by `createdAt`: the real frames carry whole seconds (`createdAtSec`), so a createdAt comparison cannot tell two windows apart at 300 ms, and it is not used. A repeat of the same thread id is not a second candidate. At commit the claim is checked again (another session may have taken the thread during the window), and so is the sibling guard (E1, E2): a `thread/started` cannot be attributed to a session, so a first bind is refused while another live remi codex session in the same directory has no thread id and started under 60 s ago (an older one no longer blocks), and the candidate is DROPPED, not retained, since after a block keeping it would bind a guess. The user is told once ("another remi codex session in this directory is starting or has no thread yet; this session did not bind. Restart one of them if this persists."). Residual risk (R4): a non-remi TUI in the same cwd started in the same window.
 
 On identity:
 - `bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId)`.
 - Attach with exactly `thread/resume {threadId, excludeTurns:true}` and no overrides (the spike showed overrides persist, report §2). Pin: the frame is exactly that.
-- Retry on `-32600` or any error: immediately on `thread/status/changed` to `active` for the tracked thread, otherwise every 1 s for the session's life. Replay delivers a request that arrived before attach (`expB3.jsonl:51`).
+- Retry on `-32600` or any error: immediately on `thread/status/changed` to `active` for the tracked thread, otherwise every 1 s, and every 5 s after ten failures, for the session's life; a `-32601` (this app-server has no `thread/resume`) stops the retries until the next `ready`. Replay delivers a request that arrived before attach (`expB3.jsonl:51`).
 - Resume of a known id (`resume <uuid>`): attach on `ready`; `thread/started` is not required (`expB3.jsonl:12-13`).
-- Rotation (`/new` inside the TUI): a later candidate matching the same rule rotates the binding only if the tracked thread's status is not `active` (DECIDED POLICY, unverified live, R4). The old id is not retained.
+- Rotation (`/new` inside the TUI): a later candidate matching the same rule rotates the binding only if the tracked thread's status is not `active` (DECIDED POLICY; the idle plain-window re-bind was seen live on 2026-10-04, R4; the not-while-active part was not tried), only if the thread is not held by another session, and not while ANY other live non-Claude remi session shares the directory, bound or not (E1): a `/new` frame cannot be attributed to a session, so with two sessions in one directory a `/new` in either is followed by neither (a known limit; each logs it and tells its user once, "a new thread appeared; another remi codex session shares this directory; not following it"). The old id is not retained, and every rotation logs `rotated from <8> to <8>`. Residual (R4): a plain non-remi `codex` window opened in the same directory while this session is idle is indistinguishable from `/new` and re-binds it. TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; that is a known limit.
 - A server request for a thread that `thread/started` showed as a descendant (parent chain reaches the tracked thread) is accepted as `terminalOnly` (v1). Requests for anything else are ignored.
 
-**Older-daemon hazard, #1165 D (closed in Phase 2, enforced in Phase 3).**
+**Older-daemon hazard, #1165 D (narrowed in Phase 2, enforced at launch in Phase 3; not closed).**
 - Fact: any daemon older than the shim drops `harness`/`harnessSessionId` on rewrite, and `list()` and `getMostRecent()` themselves write (`session-store.ts:701-715`, `doPurge`). The shim is in no tagged release; v0.7.15 is the newest tag. The first build containing it is `0.7.16-dev.7`.
 - DECIDED POLICY: before the first non-Claude record is written, `findLegacyWriters` scans live-sessions entries (`version` absent or `< 0.7.16-dev.7`, pid alive), the hub status file (`daemon-status.json`: `pid`, `version`, pid alive) and per-port `status-<PORT>.json`. Any hit means `remi codex` refuses to start: "an older remi daemon (vX, pid N) would erase Codex session records; run `remi stop --all` and restart". The hub's `create_session_response` is `success:false` for a Codex request in the same case (Phase 5).
 - Why a refusal and not a separate store file: a second store would force a merge in every consumer of `SessionStore` (`list`, `getMostRecent`, `markExited`, the hub session list, `--sessions`).
@@ -361,7 +368,7 @@ export class CodexDecisions implements DecisionChannel {
 
 | Method | `Question` | Actionable in v1? |
 |---|---|---|
-| `item/commandExecution/requestApproval` with `kind:'command'`, `approvalId==null`, no `additionalPermissions`, no `networkApprovalContext`, no `proposedNetworkPolicyAmendments` | `kind:'permission'`, `text:"Allow Codex to run: <command>"` (reason appended), `held` stamped by `handleQuestion` | Yes, verified live |
+| `item/commandExecution/requestApproval` with `kind:'command'`, `approvalId==null` (loose equality: the real frame omits the key, section 1), no `additionalPermissions`, no `networkApprovalContext`, no `proposedNetworkPolicyAmendments` | `kind:'permission'`, `text:"Allow Codex to run: <command>"` (reason appended), `held` stamped by `handleQuestion` | Yes, verified live |
 | Same method with `kind:'writeStdin'`, a non-null `approvalId`, or extra permissions or network context | Same shape, `terminalOnly:true` | No (unexercised, grants more than the command) |
 | `item/fileChange/requestApproval` | text with `reason`/`grantRoot`, `terminalOnly:true` | No (schema only). Phase-4 live step may flip it. |
 | `item/permissions/requestApproval` | text with `reason`, permission names, `terminalOnly:true` | No |
@@ -372,7 +379,7 @@ export class CodexDecisions implements DecisionChannel {
 
 **Options (by meaning, never by position).**
 - `{label:'Yes', value:'accept', isYes:true, isNo:false, isRecommended:true}` if `accept` is listed (or the list is absent).
-- `{label:'Yes, for this session', value:'acceptForSession', isYes:true, standingGrant:'session'}` only if `acceptForSession` is listed.
+- `{label:'Yes, for this session', value:'acceptForSession', isYes:true, standingGrant:'session'}` only if `acceptForSession` is listed (relabeled "Yes, and don't ask again for this command this session" in the review rework, S12: it is schema-only, whether Codex remembers it is unverified, LV-3 (f)).
 - `{label:'No', value:<No decision>, isNo:true}` where the No decision is `cancel` if listed, else `decline` if the list is absent or lists it, else none (and the card becomes `terminalOnly`).
 - The object-form decisions (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) are never offered: they write persistent policy from a phone tap, and Claude's rule (AGENTS.md) is that a phone tap never writes a settings file.
 - `standingGrant` gains the value `'session'` (shared `types.ts:389`, web `types/index.ts:204`). The web card hint already reads "This session" for any defined `standingGrant` (`QuestionCard.tsx:108`).
@@ -394,29 +401,38 @@ export class CodexDecisions implements DecisionChannel {
 
 | Member | Meaning for Codex |
 |---|---|
-| `answerHeld(qid, a)` | id never seen: `'unknown'`. Known id: never `'unknown'`. Not pending (resolved, retired, disconnected): `'closed'`. Client not `ready`: `'closed'` plus log. `terminalOnly`: `cancel` gives `'closed'` (card dismissed, nothing sent, nothing typed), anything else `'refused'`. Actionable: map via `responseFor`, `client.respond(...)`, then `'resolved'`. |
+| `answerHeld(qid, a)` | id never seen: `'unknown'` (as built: `'closed'`, never `'unknown'`, see above). Known id: never `'unknown'`. Not pending (resolved, retired, disconnected): `'closed'`. Client not `ready`: `'closed'` plus log. `terminalOnly`: `cancel` gives `'closed'` (card dismissed, nothing sent, nothing typed), anything else `'refused'`. Actionable: map via `responseFor`, `client.respond(...)`, then `'resolved'`. |
 | `retireQuestion(qid)` | stop tracking; send nothing; the app-server request stays pending for the TUI |
 | `isHeld(qid)` | actionable and pending |
-| `hasMainHold()` | any pending main-thread request, or the latest status flags for the tracked thread are non-empty |
-| `hasOpenHookPrompt()` | same as `hasMainHold()` plus any pending `terminalOnly` request |
+| `hasMainHold()` | as built: false (nothing reads it for Codex: chat is refused earlier and a Stop force-closes); the plan said any pending main-thread request or non-empty status flags |
+| `hasOpenHookPrompt()` | as built: false, for the same reason; the plan said `hasMainHold()` plus any pending `terminalOnly` request |
 | `noteTerminalEscape()` | no-op; the app-server's `serverRequest/resolved` is authoritative |
 | `forceRelease(reason)` | dismiss every local card (`question_resolved` `'cancelled'`), stop tracking, send nothing; returns the count |
 | `screen` | undefined (no PTY parsing), so any typed path fails closed. `trackerScreenDeps` returns `null` for `observedPromptOptions`. |
+
+**As built in Phase 4 (ADR 0033 amendment, #1178).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
+- `answerHeld` is never `unknown`, for any id (the table row above says `unknown` for an id never seen): the answer and Cancel handlers type for `unknown`.
+- `handleServerRequest(req)` takes one argument; the thread's role comes from the `threadRole` dependency (`ThreadTracker.role`: `main`, `subagent` or null), which is also read at the answer. A subagent's request is always `terminalOnly`. The tracker gained `role()` and `onAttached` (the replay window starts at a successful attach).
+- "Retire on disconnect" means: unanswerable at once, still shown until the replay replaces it or the replay window ends (then it is dismissed); with no re-attach it is dismissed after 30 s. `CodexDecisions` also has `dispose()`; its client dependency is `respond` only.
+- A request that does not name its thread is no card (`null`), and a command over 20000 characters is a `terminalOnly` card; a command over 120 characters is cut (head, a count, tail) with the whole command in `detail`, and such a card gets no lock-screen buttons (the review's S1).
+- The replay window is 3 s (was 1.5 s), a delivered answer with no `serverRequest/resolved` after 10 s tells the person to check the terminal, every peer-chosen string is escaped and bounded, and a Codex card's label in the live-sessions file is fixed (the review's S5, S7, S8, S2).
+- There is no per-card deadline for Codex (F1): the card mirrors a request that waits in the app-server without one.
+- `onQuestionResolved` is a `CodexLaunchDeps` member, and the question-detected log line and the registry's cap-eviction warning log a length for Codex.
 
 **Hold semantics.** Codex is the arbiter. remi holds nothing. No `HeldAnswerOutcome` means "waiting for a deadline".
 
 **First answer wins and dismissal.**
 - `serverRequest/resolved` for a tracked key: if remi answered it, nothing more (the handler already removed the card at `input-events.ts:838-840`). Otherwise `sessionRegistry.removeQuestion(sid, qid, 'codex:resolved')` plus `onQuestionResolved(sid, qid, 'cancelled')`. This covers a terminal answer, and the card clears on every client.
 - A phone answer that lost the race is ignored by Codex with no error (spike), and the later `resolved` clears the card.
-- DECIDED POLICY: on disconnect, retire all cards immediately, because a card the phone cannot answer must not stay answerable. On reconnect the tracker re-resumes and the replayed requests create fresh cards with new ids. A 1.5 s replay window follows each re-resume (the spike's replay arrived in 4 ms, `expB3.jsonl:49-51`), and any pending key not re-seen after it is dismissed.
+- DECIDED POLICY: on disconnect, retire all cards immediately, because a card the phone cannot answer must not stay answerable. On reconnect the tracker re-resumes and the replayed requests create fresh cards with new ids. A 3 s replay window follows each re-resume (the spike's replay arrived in 4 ms, `expB3.jsonl:49-51`; the window was 1.5 s in the first delivery and was doubled in the review rework, ADR 0033 Phase 4 amendment), and any pending key not re-seen after it is dismissed.
 - A request from a daemon restart can reuse ids, which is harmless because cards are retired on disconnect and keys include the thread.
 
 **Never answer what we do not decide.** The client never sends an error response to a server request it does not handle. A JSON-RPC error from remi would be the "first answer" and could resolve the TUI's request. `account/chatgptAuthTokens/refresh` and `attestation/generate` are never answered or logged beyond the method name.
 
 **Chat guard.**
-- `HarnessSession.acceptsTypedChat?: boolean` (default true; Codex false).
-- `input-events.ts` refuses non-raw chat text for such a session with `INPUT_NOT_DELIVERED` (`createInputNotDeliveredError`) before the `promptUp` guard at `~1272`.
-- `promptUp` stays truthful through `hasMainHold`/`hasOpenHookPrompt` so a future `turn/start` chat path inherits it.
+- `HarnessSession.acceptsTypedChat?: boolean` (absent means true; Codex false). SHIPPED IN PHASE 3 (#1177, review finding W1), not Phase 4: with no screen reads and no decision channel, `promptUp` reads "nothing up" for a Codex session, so a phone message would have been typed with its Enter into an approval overlay.
+- `input-events.ts` refuses non-raw chat text for such a session before the `promptUp` guard, with code `PROMPT_WAITING` and a Codex-specific message ("This session does not take typed messages from the app yet; type in the terminal."). The code is `PROMPT_WAITING` and not `INPUT_NOT_DELIVERED` because the web client only fails the refused bubble for that code (`web/src/lib/prompt-waiting.ts`). Every caller of `onUserInput` (WebSocket, relay, Telegram text and `/interrupt`) reaches that one handler.
+- `promptUp` reads `hasMainHold`/`hasOpenHookPrompt`; as built they say false, and a future `turn/start` chat path (phase 6) adds what it needs.
 - Raw input from `remi attach`, the web Esc button and Telegram `/interrupt` stays (a person at the terminal; Esc at a Codex overlay is its own "No").
 
 ### 2.5 Chat source and turn events (item 4)
@@ -428,7 +444,7 @@ export class CodexDecisions implements DecisionChannel {
 ```ts
 export interface TurnEventSink {
   turnCompleted(e: { sessionId: UUID; elapsedMs: number | undefined; lastAssistantMessage: string | undefined; reentry: boolean }): void;
-  turnFailed(e: { sessionId: UUID; error?: string; errorDetails?: string; lastAssistantMessage?: string; agentName: string }): void;
+  turnFailed(e: { sessionId: UUID; error?: string; errorDetails?: string; agentName: string }): void;
   turnSucceeded(sessionId: UUID): void;           // dismisses an outstanding turn_failed notice
 }
 export function createTurnEventSink(deps: { /* config, device tokens, push, notifiers: what onTurnStop uses today */ }): TurnEventSink;
@@ -440,7 +456,7 @@ export function createTurnEventSink(deps: { /* config, device tokens, push, noti
   - `status:'failed'`: `turnFailed` with `turn.error.message` as `errorDetails` and `codexErrorInfo` as `error` only if it is a string.
   - `status:'interrupted'`: `turnSucceeded` only.
   - Same config gates apply (`on_turn_complete`, `turn_complete_min_seconds`); a failed turn is never muted by `on_turn_complete`, as for Claude.
-- `harness_denied` equivalent: deferred. The Guardian frames (`autoApprovalReview/*`, `guardianWarning`) were skipped by the spike, so no real frame exists. Not designed here.
+- `harness_denied` equivalent: deferred. The Guardian frames (`item/autoApprovalReview/started`, `item/autoApprovalReview/completed`, a `guardianWarning` text) were skipped by the spike but exist: the live run of 2026-10-04 captured them (payload shapes stay in scratch). With Codex's "Approve for me" Guardian approves a command automatically and sends NO `requestApproval` to any client, so remi shows nothing and cannot answer. Not designed here.
 
 **Chat.**
 - The client-facing contract is already neutral: `transcript_content` (`protocol.ts:827-852`, `createTranscriptContent`). Only its producer is Claude-typed (`TranscriptWatcher`/`TranscriptMessageBridge`).
@@ -463,8 +479,28 @@ export interface HarnessChat {
   - `commandExecution` becomes an assistant `contentBlocks` tool entry (name `shell`).
   - `reasoning` is skipped.
   - Frames for `userMessage` and `agentMessage` are real (`expA-accept.jsonl:35-36,67`).
-- `thread/items/list` and `thread/turns/list` are schema-only. Phase 6 gates on a live read. Fallback if it fails: tail the rollout at `thread.path` (known from `thread/started`), not built unless needed.
+- `thread/items/list` and `thread/turns/list` were schema-only at planning time. LV-5 later captured two `thread/items/list` request/results and a failed turn; separate root-private receipts also verify a bounded two-page cursor continuation (ascending `limit: 1`, `userMessage` then `agentMessage`, ending with `nextCursor: null`). Those receipts are not in `lv5.jsonl`; larger histories and `thread/turns/list` remain unverified. The fallback if live history fails is still to tail the rollout at `thread.path` (known from `thread/started`), not built unless needed.
 - History for an exited Codex session is out of scope (a live daemon owns it).
+
+**As built in Phase 6 (#1180, ADR 0033 Phase 6 amendment).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
+- The sink's `config` dependency is `{onTurnComplete, turnCompleteMinSeconds}` read per event. `onTurnStop` is extracted into `createClaudeTurnStop` (`notifications/claude-turn-stop.ts`: the #914 filter first, then the timer read and clear, then `turnCompleted`; `cli.ts` builds it), which passes `getPrimarySessionId() ?? 'unbound'` so a Stop before a primary id still pushes, titled "Agent", as before. `createTurnFailedRoutes`' `push` and `NotificationDispatcher.pushTurnFailed` take the optional agent name; Claude's `StopFailure` wiring is unchanged. `TurnFailedEvent` has no `lastAssistantMessage` (nothing set it).
+- `completed` takes the LAST `final_answer` message when there are several; a message with no phase is never taken for it, so a model that sends none pushes no "turn complete" (one content-free line says so). A failed turn carries no earlier answer. An unknown status is logged without its value. A turn id already announced is not announced again (the last 64 are kept; ids over 200 characters are treated as no id).
+- At planning time, that a turn ended by `cancel`, Esc or `turn/interrupt` reports `status: "interrupted"` was an assumption. LV-5 later observed all three statuses in bounded probes; the earlier decline frame still reports `completed` and is not a substitute.
+- Codex-chosen text is made safe (`harness/codex/safe-text.ts`): a failure's details and code are escaped after counting the escapes, the final answer in a push has the same set removed except the zero-width joiner (tag characters are removed, so subdivision-flag emoji lose their tags); an answer with nothing visible left produces no push and one content-free log line. A shell command and its output are escaped after the 500-code-point cut; chat prose is not escaped, deliberately. Codex's string error codes have reason phrases like Claude's.
+- `parseTurnCompleted` and `parseThreadItem` are in `thread-protocol.ts`. `chatFor` is optional, so a handler built without it is unchanged; the handler ends a read when a send to the requester is refused.
+- History: 100 items a page; a cursor that comes back (any earlier one) or 1000 pages ends the read, as does a 60-second deadline checked after each non-final page (an in-flight request can exceed it by its 15-second timeout); one explicit read of a session runs at a time with one waiting and a third refused; "no rollout found" on the first page is an empty history, and every other failure is a `CodexHistoryError` whose message carries the code and none of the server's words. A command still `inProgress` is skipped until it completes (live). Message text is not bounded; a command and its output are cut at 500 code points, without splitting a character; item ids over 200 characters are rejected.
+- Catch-up at each attach: the live hold starts before `thread/resume` is sent; failure releases it in order unless a read is running. After success one complete page is read (`limit: 100`, a hard maximum of 100 raw returned entries, 3 s request timeout), and items not yet delivered go out as `transcript_content` only through their own MessageAPI. Oversized or continuing pages are skipped with a content-free log and left to an explicit read. Overflow flushes the held queue in order and abandons collected history; rotation skips the old history and filters held items by role before a follow-up for the new thread. Repeated attaches may extend the hold across follow-ups; each request times out, and the hold contains at most 256 items. Disposal drops all collected and held output; a failed live send reuses the built message on retry. Turns that ended while remi was not attached push nothing.
+- `CODEX_MAY_IMPORT` gained `api/message-api` and `notifications/turn-events` (type-only, pinned).
+- LV-5 was run as a bounded live check on 2026-10-05 against Codex 0.160.0, GPT-6.1-Sol and one controlled account. Its source selection is the 20-frame redacted `lv5.jsonl` fixture; reasoning-item strings are redacted and labeled in `index.json`. Results are reconciled in the same eight-item list as ADR 0033:
+
+(a) Two captured list requests used ascending order and `limit: 100`; both responses had `data` entries with `turnId`, `item`, `startedAtMs`, and `completedAtMs`, plus `nextCursor` and `backwardsCursor`. The first returned the controlled initial prompt and answer; the second had six rows. A separate ascending `limit: 1` check on the same owned thread followed the returned cursor from a `userMessage` page to an `agentMessage` page and ended with `nextCursor: null`; those request/results are private receipts and are not in `lv5.jsonl`. Larger histories were not checked.
+(b) Before the first write, `thread/items/list` returned -32601 and `thread/resume` returned -32600; both worked after the first write.
+(c) The two captured pages had no injected environment or instruction message in this model/account sample; this is not model-wide.
+(d) Phone No (a local WebSocket protocol client exercising the daemon path), real TUI Esc and `turn/interrupt` each produced `interrupted` (24638, 15572 and 12091 ms). An early RPC interrupt returned -32600; retry after turn start succeeded. A bad-model turn returned `failed` after 243 ms, with `codexErrorInfo: "other"`, captured details and null `additionalDetails`/`misalignment`.
+(e) An observer received one completion for each of five subscribed turns (one long completed, three interrupted, one failed). The first minimal completed turn preceded subscription. This does not establish other models or no-final-answer behavior.
+(f) The 66965 ms long-turn duration matched observer wall time; the shell ran `sleep 61`, not a CPU workload.
+(g) The captured command's `item/completed` id appears exactly once in the second list page.
+(h) Initial-attach frame ordering was not measured. A later successful resume catch-up delivered ten `transcript_content` entries including the first prompt exactly once and no `structured_agent_output`. No physical iPhone or APNS delivery was tested.
 
 ### 2.6 Wire and CLI surface (item 5)
 
@@ -482,6 +518,20 @@ export interface HarnessChat {
 - **Web (minimum).** A harness label on the session card and chat header, and the `standingGrant` union value. `Question.answerPath` is not added (no consumer yet).
 - **`remi status`/`attach`/`ls`.** Unchanged, except `LiveSessionEntry.harness?` (Phase 5).
 
+**As built in Phase 5 (#1179, ADR 0033 Phase 5 amendment).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
+- `--harness` is how a hub tells a child daemon its harness, and `remi new --host --harness codex` is a user-facing form (`--help` lists it); `remi codex --host` works.
+- The hub's child is started with the inherited flags, `--harness <id>`, then `--` and the validated arguments, last; the arguments reach a daemon as `explicitArgs` (tokens after the first `--` only), not as `passthroughArgs`.
+- A new `HarnessRegistry` (`harness/registry.ts`, built in `cli.ts`) holds each harness's command, remote allowlist, older-daemon gate and headless notice; the plan listed no registry file.
+- Claude's remote allowlist is `harness/claude-args.ts`; its model name may not start with a hyphen (tighter than #1165 B).
+- `hello_ack.harnesses` lists a harness by PATH presence, read at each ack. It is on every ack the production daemon sends, a hub's session-less one and the resume acks included, and `Connection`'s own library-only ack does not carry it.
+- Dual-emit: one `SessionIdentity` produces `claudeSessionId` and `harnessSessionId` in `createHelloAck` (`binding: {identity, transcriptPath}`) and `createQuestion`; the daemon's own session-list entry is decorated, the transcript-discovered entries are not (a #1162 test pins that), and a Codex `hello_ack` no longer carries `claudeSessionId: null`.
+- `create_session_response` has an optional `notice` (Codex only): the hub cannot know that a headless Codex reached its prompt, so it says so and names `remi attach` (carry-over item d). The web client does not show it.
+- `resume_session_request` on a daemon that hosts Codex is refused `UNSUPPORTED`; `resolveStoredSession`'s Codex branch is deleted (the lead's decision: `remi --sessions` prints the whole resume command).
+- Live-sessions: `harness` on the entry, three Claude-only readers filter on it (`couldBeClaudeEntry`); no Codex-side reader exists to change.
+- `Bun.which` ignores a `process.env.PATH` change made after startup, so availability passes the PATH explicitly (found while writing the registry test).
+- LV-4, the gate of this phase, ran on 2026-10-04, partly (ADR 0033, "LV-4 results"). NOT RUN: an approval card on a hub-created session, the Update and Trust modals through `remi attach`, `remi codex --host` from a second machine, and the web label. Codex is advertised by PATH presence (open call 17 not applied; the lead decided to keep it so, since LV-4 is a hard gate on merging the epic).
+- Changed by the Phase 5 review (ADR 0033, its last section): a remote Codex request may only tighten the host's posture (`-s read-only`; LV-4 then showed Codex 0.160.0 rejects `-a untrusted`, and the remote allowlist now carries no `-a` at all), Claude's allowlist drops `--continue`, the hub refuses a resume of a thread a live session holds before it spawns, every create request's `directory` is checked, the client reads short host-free texts, `--host` and a Codex `--daemon` refuse loose arguments, the notice names the exact session to `remi attach`, and `SessionStore.findByHarnessSessionId` is gone.
+
 ---
 
 ## 3. Tests, fixtures, live verification (item 6)
@@ -495,7 +545,7 @@ export interface HarnessChat {
 
 ### 3.2 Fake app-server (`tests/helpers/fake-app-server.ts`, a protocol-speaking replay)
 
-- `Bun.serve({unix, fetch: upgrade, websocket})` in a temp dir, behind a symlink from a fake `CODEX_HOME/app-server-control/app-server-control.sock` to a short path (this also exercises realpath).
+- `Bun.serve({unix, fetch: upgrade, websocket})` in a temp dir, behind a symlink from a fake `CODEX_HOME/app-server-control/app-server-control.sock` to a short path (this exercises resolving the link with `readlink`; `realpath` cannot be used on a socket, see section 1).
 - Frames come from redacted spike fixtures. Behavior is modeled only where a spike claim backs it:
   - `initialize` returns the fixture result.
   - `thread/resume` returns the fixture result and subscribes the client. It errors `-32600 no rollout found for thread id X` until `createRollout(threadId)`.
@@ -532,18 +582,20 @@ export interface HarnessChat {
 **Redaction scan (`fixtures-redaction.test.ts`)** is an allowlist, not a denylist.
 - Every absolute path must start with `/work/`.
 - Every UUID must be in the placeholder set.
-- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, `ghostty`, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
+- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, the terminal emulator's name, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
 - Mutation check: a seeded fixture copy containing each of those must fail.
-- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` with `ghostty/1.3.1` and `Mac OS 27.0.0`, `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), `gpt-6-luna`.
+- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` (it carries the client, the OS version, the CPU architecture and the terminal emulator with its version), `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), model names (`gpt-...`).
 
-### 3.4 What stays unverified without a real Codex
+### 3.4 What stays unverified after the bounded live checks
+
+**Updated 2026-10-05 after LV-5:** items 1 (the handshake; the keepalive needed a fix), 3, 4, 7 and `/new` rotation in item 5 were verified in LV-1 to LV-3 above. LV-5 partially verifies item 6: it captured a failed turn and two `thread/items/list` pages; separate root-private receipts verify a bounded two-page cursor continuation. Larger/longer histories and `thread/turns/list` remain unverified. LV-4(d) verified shared-daemon auto-start from a headless hub child; the separate plain direct `codex` cold start in item 2 was not run (see [ADR 0033, LV-4 results](decisions/0033-codex-adapter-app-server.md#lv-4-results-live-2026-10-04)). Also unverified: a subagent's request in item 5, file-change, permissions and elicitation behavior, async questions, and item 8.
 
 1. That Codex's server accepts the hand-rolled client's handshake (tungstenite quirks, extension negotiation, keepalive).
-2. That bare `codex` auto-starts the shared daemon on a cold start.
+2. Whether plain direct `codex` auto-starts the shared daemon on a cold start; this was not run, distinct from the verified LV-4(d) headless hub-child auto-start (see [ADR 0033, LV-4 results](decisions/0033-codex-adapter-app-server.md#lv-4-results-live-2026-10-04)).
 3. `cancel` from a second client.
 4. What a mid-approval subscriber disconnect does to a pending request. If it cancels the request, remi becomes harmful on any socket blip (R1).
 5. `/new` rotation, subagent threads, file-change, permissions and elicitation behavior, async questions.
-6. `thread/items/list` and `thread/turns/list` paging, and a failed-turn `turn/completed` frame.
+6. `thread/items/list` paging beyond the bounded two-page cursor continuation (larger/longer histories) and `thread/turns/list`; LV-5 captured two `limit: 100` reads and one failed-turn `turn/completed` frame, while separate private receipts verify an ascending `limit: 1` continuation ending with `nextCursor: null`.
 7. `optOutNotificationMethods`.
 8. Headless (daemon-mode) startup behavior.
 
@@ -558,11 +610,11 @@ Safety rules for any agent driving the TUI:
 
 | Step | Phase | Checks | Cost |
 |---|---|---|---|
-| LV-1 | 1 | The hand-rolled client does `initialize`, `initialized`, `thread/loaded/list` and `server/diagnostics` against the real socket, idles 120 s (keepalive), and `optOutNotificationMethods` is accepted. Compare the result with the python client. | none |
-| LV-2 | 3 | `remi codex` in a scratch dir (a) with the daemon already running and (b), optionally, with it stopped to test auto-start; `thread/started` for cwd within about 2 s; the title-helper thread is ignored; identity recorded after the first message; `thread/resume` retry resolves; no `.claude/settings.local.json` written; the TUI is untouched. | one tiny turn |
-| LV-3 | 4 | The epic gate: (a) phone allow runs the command and the overlay closes; (b) the TUI answering first dismisses the phone card; (c) phone No (`cancel`) behaves like the TUI's; (d) a probe client mimicking remi (not remi) is `kill -9`'d while an approval is pending: the TUI overlay must stay up and answerable, and the request must not auto-cancel (R1); (e) `thread/unsubscribe` from remi at exit is harmless. | a few turns |
+| LV-1 | 1 | The hand-rolled client does `initialize`, `initialized`, `thread/loaded/list` and `server/diagnostics` against the real socket, idles 120 s (keepalive), and `optOutNotificationMethods` is accepted. Compare the result with the python client. **Run live 2026-10-04 on Codex 0.160.0: the handshake works (initialize answered in 2 ms, result keys userAgent, codexHome, platformFamily, platformOs; the 101 response carries `x-codex-websocket-max-unfragmented-message-bytes: 16777216` and no extensions; `optOutNotificationMethods` accepted and effective; `thread/loaded/list` and `server/diagnostics` answered; R3 answered), EXCEPT the keepalive: the server answers every ping with two identical pongs, which made the Phase 1 client drop the link about every 70 s (fixed in round 3 of Phase 4).** | none |
+| LV-2 | 3 | `remi codex` in a scratch dir (a) with the daemon already running and (b), optionally, with it stopped to test auto-start; `thread/started` for cwd within about 2 s; the title-helper thread is ignored; identity recorded after the first message; `thread/resume` retry resolves; no `.claude/settings.local.json` written; the TUI is untouched; whether `thread/started` carries any client marker (so a non-remi window could be told apart); that TUI-internal `/resume` emits no `thread/started`; `remi codex -- login` and `remi codex -- exec x` (does Codex read the words after the inserted `--` as prompt text, as `codex-args.ts` assumes); `-i` together with `resume`; `kill -9` of remi in the middle of an approval. **Run live 2026-10-04 (Codex 0.160.0): `thread/started` for the TUI thread within about 0.8 s of the spawn, cwd equal to the scratch directory's realpath, identity written to `sessions.json` at that moment before any message; the ephemeral `threadSource: "thread_title"` helper thread (0 environments, no path) about 1 s after the first message, ignored; `thread/resume` fails -32600 "no rollout found for thread id <uuid>" before the first message and succeeds about 1 s after it; no `.claude/settings.local.json` and no `~/.claude/settings.json` change; `thread/started` carries NO client marker (`source` "vscode", `originator` daemon-global); a TUI `/resume` of an already loaded thread emits no `thread/started`; words after `--` read as prompt text (only `help` and `completion bash` tried); `-i <missing.png> resume <uuid>`: clap took `resume` and the uuid as image paths and the TUI started a FRESH session and auto-submitted the images (remi's refusal is right); `kill -9` of remi ends the TUI too (SIGHUP when the PTY master closes) while the approval stays pending. NOT run: (b) cold-start auto-start with the daemon stopped (R2), `-- exec x`, `-- login`, a TUI `/resume` of an unloaded thread.** | one tiny turn |
+| LV-3 | 4 | The epic gate: (a) phone allow runs the command and the overlay closes; (b) the TUI answering first dismisses the phone card; (c) phone No (`cancel`) behaves like the TUI's, and whether it also interrupts the turn; (d) a probe client mimicking remi (not remi) is `kill -9`'d while an approval is pending: the TUI overlay must stay up and answerable, and the request must not auto-cancel (R1); (e) as first written, that a `thread/unsubscribe` from remi at exit is harmless; (f) `acceptForSession` is accepted and remembered; (g) interrupt, Esc and turn end produce `serverRequest/resolved`; (h) a subagent's request is addressed to a connection that resumed only the main thread, and is replayed; (i) the stand-in server's model (a pending request survives a subscriber drop and is replayed) is Codex's behavior; (j) a plain `codex` window in the same directory re-binds an idle session (R4); (k) Codex's `cwd` for a command run in the session's directory equals its realpath and Codex always sends one. **Run live 2026-10-04 on the owner's real Codex 0.160.0 by a spike agent; the gate HOLDS. VERIFIED: (a) the phone Yes ran the command, the overlay closed, both phone clients got `question_resolved` reason answered; (b) the TUI answering first sent reason cancelled to every phone client and a late phone Yes got STALE_ANSWER from remi (Codex ignoring a late answer was not re-tested; the spike covers it); (c) phone No sends `cancel` (listed in `availableDecisions`): the item is declined and the turn INTERRUPTED ("Conversation interrupted"), the command does not run, exactly like the TUI's No, so a phone No ends the turn; (d) a probe killed -9 and real remi killed -9 did NOT cancel or decline the request: the overlay stayed up, the SAME request id was replayed to the next `thread/resume`, answering in the TUI produced `serverRequest/resolved`; (g) an Esc in the TUI, `turn/interrupt` over RPC and an RPC `cancel` each produced `serverRequest/resolved` and the card was dismissed (no status-based dismissal is needed); (i) a pending request survives a subscriber drop, even remi plus the TUI together, replayed with the same id; (j) a plain `codex` window re-bound an idle remi session (R4 residual confirmed), the rotation message reached the phone; (k) Codex reports the REALPATH as `cwd` (frame, TUI directory line, `thread/started`) even when launched from a symlinked path. CORRECTION on (e): remi sends no `thread/unsubscribe` anywhere (dispose only closes the socket); a probe's `thread/unsubscribe` is harmless and a normal exit leaves the thread loaded. (f): `acceptForSession` was NOT in `availableDecisions` in any of 7 real command approvals on 0.160.0 (accept, an `acceptWithExecpolicyAmendment` object, cancel), so that option is unreachable in practice and its effect is unknown. NOT run: (h) a subagent's request.** | a few turns |
 | LV-4 | 5 | A Codex session created from a hub request in an already-trusted directory reaches the prompt headless. | one launch |
-| LV-5 | 6 | `thread/items/list` ascending paging; an interrupted turn and a failed turn (`turn/start` with a bad model) produce the `turn/completed` statuses assumed. | one or two turns |
+| LV-5 | 6 | **Bounded live check completed 2026-10-05.** See the eight reconciled results above and ADR 0033. Remaining limits include larger/longer history paging, broader model/device coverage, initial-attach ordering, APNS delivery and hardware acceptance. | two completed turns, three interrupted probes and one failed-model probe |
 
 ---
 
@@ -637,7 +689,7 @@ Files to modify:
 Deliverables:
 1. `SessionStore.updateHarnessIdentity(remiSessionId, harness, harnessSessionId): StoredSession | null` (next to `:757`) and `findByHarnessSessionId(harness, id)`. `assertUniqueSessionIdentities` (`:190`) also rejects two active records with the same non-Claude pair. `SessionBindingStore.updateHarnessIdentity`. `preAssign` skips the "index seed deferred" log for non-Claude records (`session-binding-store.ts:134`).
 2. Harness-aware reads (#1165 D second half):
-   - `--sessions` prints `codex:<8>` for non-Claude records (`cli.ts:708`).
+   - `--sessions` prints `codex:<last 8>` for non-Claude records (`cli.ts:708`; the last eight characters, because a UUIDv7 starts with a timestamp).
    - `getMostRecent(harness?)`; the call at `cli.ts:730` becomes `getMostRecent('claude')`.
    - `resolveStoredSession(sessions, query, {harness})` matches `claudeSessionId` only among Claude records. A non-Claude record found by remi id or prefix exits 1 with "this session ran under codex: use `remi codex resume <id>`".
 3. `session/legacy-writers.ts`:
@@ -655,18 +707,19 @@ export function findLegacyWriters(deps: {
 4. `Harness.transcriptPath` becomes `string | null` (`types.ts:128`). Claude is unchanged. Adapt `current-session.ts:56-58`, `session-events.ts:149` and the `transcript-events.ts` durable-index load to treat null as "no file". `claude-session.ts` untouched.
 5. `createPtySessionForSession` takes `command?: string` (default `'claude'`), `childEnv?: Record<string,string>` (default `buildClaudeChildEnv(wsPort, reservedRows)`), and `outputSink: PtyOutputSink` (`{process(text:string):void; flush():void}`) in place of `outputProcessor` (`:46`); export `NOOP_OUTPUT_SINK`. `claude-session.ts` passes its `OutputProcessor`. `onExit`'s `markClaudeChildExited` is neutral in effect. Boundary-test allowlist: `harness/codex/*` may import `cli/session-phases/pty-session-setup.ts` and nothing else under `cli/session-phases/`. Alternative: `git mv` the file to `pty/`, which renames imports in three tests.
 6. #1165 E: move `sessionNotifiers.set(sessionId, notifications)` from `claude-session.ts:217` into `createNewSession` just before `harness.createSession` (`cli.ts:1511`). `ClaudeLaunchDeps.sessionNotifiers` stays as a read-only reference for the lazy `pushTerminalNotice` closures.
-7. `validateCodexArgs(args): {ok:true; args; resumeThreadId: string | null} | {ok:false; error}` (pure):
-   - **Denylist** (names matched also as `--flag=value`, and any attached short form `-cX`, `-pX`, `-CX`): `-c`, `--config`, `--enable`, `--disable`, `-p`, `--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--search`, `--approve-for-me`, `--remote`, `--remote-auth-token-env`, `--oss`, `--local-provider`, `-C`, `--cd`. `--no-alt-screen` is accepted and deduplicated.
-   - **Subcommands:** only `resume <uuid>` is allowed, and it requires an explicit uuid. `fork`, `exec`, `login`, `logout`, `mcp`, `mcp-server`, `app-server`, `proxy`, `completion`, `debug`, `apply`, `cloud`, `sandbox` and `review` are refused ("remi codex runs the interactive TUI only"). Refresh this list from `codex --help` on the owner's installed version at implementation time (I could not run it).
-   - **Remote (default-deny, used by Phase 5):** `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>`, `resume <uuid>`, `-a untrusted|on-request`, `-s read-only|workspace-write`; at most 16 args, at most 256 chars each, no NUL.
-   - The working directory is `realpath`-normalized and must exist and be a directory.
+7. `validateCodexArgs(args): {ok:true; args; resumeThreadId: string | null} | {ok:false; error}` (pure).
+   As shipped in PR #1182; the denylist this plan first described here is superseded by the review's default-deny allowlist:
+   - **Local: a default-deny flag allowlist.** `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`, `-h/--help` and `-V/--version` pass (also as `--flag=value` and, for the short ones, attached as `-mX`); `--no-alt-screen` is accepted and removed, because the launch adds its own. Every other flag is refused by name. A denylist (`-c/--config`, `--enable`, `--disable`, `-p/--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--search`, `--approve-for-me`, `--not-so-yolo`, `--remote*`, `--oss`, `--local-provider`, `-C/--cd`, `--worktree`) only chooses the refusal message. A valued flag never takes a flag-shaped token as its value.
+   - **Prompt and subcommands.** The returned args are `[...flags, 'resume', uuid]` or `[...flags, '--', ...promptWords]`: a prompt always follows an inserted `--`, so Codex cannot read it as a subcommand, and a `--` the user typed makes the rest prompt text. Only `resume <uuid>` runs a subcommand, and it needs an explicit UUID (`--last` and the picker are refused). The list of Codex subcommand names (32, from 0.160.0) only gives a clear refusal when the first positional is one; safety does not depend on it.
+   - **Remote (default-deny, used by Phase 5):** `validateCodexRemoteArgs(args: unknown)` allows `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>` with no leading hyphen, `-s read-only` and `resume <uuid>` (returned last, lowercased), each at most once, at most 16 arguments of at most 256 characters, no NUL, and is total over any input; it refuses `-a` in every form. (History: this plan's Phase 2 line allowed `-a untrusted|on-request` and `-s read-only|workspace-write`; the Phase 5 review cut that to `-a untrusted` and `-s read-only`, so a remote request can tighten the host's posture and never loosen it; after LV-4 showed that Codex 0.160.0 rejects `-a untrusted`, `-a` went too, and only `-s read-only` remains.)
+   - The working directory is `realpath`-normalized and must exist and be a directory (`resolveCodexWorkingDirectory`).
 8. ADR 0033 amendment.
 
 DECIDED POLICY:
-- A refusal, not a second store file, closes the older-daemon hazard.
-- `-C/--cd` is denied because identity matching uses the session cwd.
-- Local `remi codex` uses a denylist (the user is the principal); remote uses the allowlist.
-- A bare prompt positional is passed through.
+- A refusal, not a second store file, narrows the older-daemon hazard; it does not close it. An older binary started after the launch can still rewrite the store, and one registered nowhere is never seen (R12). No sidecar identity file is planned.
+- `-C/--cd` and `--worktree` are refused because identity matching uses the session cwd.
+- Both local and remote arguments are default-deny allowlists (item 7). The user is the principal locally, but a flag remi does not model fails silently (an approval path that never reaches the phone), so it is refused by name.
+- A bare prompt positional is passed through, after an inserted `--`.
 
 Pin tests first (before any change):
 - Characterize the current mixed-store behavior: a record with `harness:'codex'` and null `claudeSessionId` is returned by `getMostRecent()` today, and `--resume` of it errors "no Claude session ID".
@@ -689,7 +742,7 @@ Lines: about 480 source (including about 120 of `cli.ts` and `arg-parser.ts` wir
 Files to create: `harness/codex/{thread-protocol,thread-tracker,codex-session,codex}.ts`, `tests/integration/codex-launch-characterization.test.ts`, `tests/harness/codex/thread-tracker.test.ts`.
 
 Files to modify:
-- `harness/index.ts` (export `CodexHarness`)
+- `harness/types.ts` and `cli/handlers/input-events.ts` (`acceptsTypedChat`, moved here from Phase 4)
 - `cli/arg-parser.ts`
 - `cli.ts`
 - `tests/integration/hub-test-utils.ts` (`spawnDaemon` optional `extraArgs`; test-helper setup line)
@@ -705,11 +758,14 @@ Deliverables:
 7. Socket trust check (§2.3), applied inside the client's `socketPath()`.
 
 DECIDED POLICY:
+- `CodexHarness` is NOT exported from `harness/index.ts`: only `cli.ts` imports `harness/codex/` (the boundary test), and that rule is not loosened.
 - remi never starts the daemon (§2.3).
 - One `thread/resume` shape, no overrides.
-- No rotation while the tracked thread is `active`.
+- No rotation while the tracked thread is `active`, none onto a thread another session holds, and none while any other live remi session shares the directory (E1).
+- Phone chat typing to Codex is refused in this phase (`acceptsTypedChat:false`, code `PROMPT_WAITING`).
+- No `thread/list` recovery for a session that never learns its thread; it says so after 30 s (a system message, logged) and a follow-up issue, gated by LV-2, decides whether to add one.
 - The daemon-mode launch passes no args until Phase 5.
-- remi logs thread ids truncated to 8 characters and never logs thread frames of other threads.
+- remi logs a thread id as its last 8 characters (UUIDv7 prefixes collide) and never logs thread frames of other threads.
 
 Pin test first: `launch-characterization.test.ts` (Claude) passes unmodified before and after the `cli.ts` gating. Then write `codex-launch-characterization.test.ts` first against the spec, with the same shape (real `cli.ts --daemon --harness codex` in an isolated `$HOME`, an executable fake `codex` on PATH recording argv, cwd and env, the fake app-server on a symlinked `CODEX_HOME`, and the test playing the TUI by emitting the real `thread/started`/status frames). It asserts:
 - argv is exactly `--no-alt-screen` (and `--no-alt-screen resume <uuid>` for a resume).
@@ -739,8 +795,6 @@ Files to create:
 
 Files to modify:
 - `harness/codex/codex-session.ts` (wire `CodexDecisions`, `present = messageApi.handleQuestion(q,{held:true})`, `setQuestionEvictionGuard(sessionId, id => decisions.isHeld(id))`, and `tracker.onNotification` into `handleResolved`/`handleStatus`/`handleDisconnected`/`handleReattached`)
-- `harness/types.ts` (`HarnessSession.acceptsTypedChat?`)
-- `cli/handlers/input-events.ts` (typed-chat refusal at `~1272`; dep wired from `harnessSessions.get(id)?.acceptsTypedChat` in `cli.ts`)
 - `shared/src/types.ts:389` and `web/src/types/index.ts:204` (`standingGrant` union plus `'session'`)
 - `AGENTS.md` (a "Codex" subsection stating only what is verified)
 
@@ -752,8 +806,9 @@ DECIDED POLICY (all in §2.4, restated as the checklist the reviewer uses):
 - Object-form decisions are never offered.
 - The client never answers a request it does not handle.
 - Cards are retired on disconnect and re-created from replay.
+- A subagent's status is forgotten on a link drop and not fetched again (the Phase 3 limit, E4): a subagent that is still waiting reads as not waiting until its next frame, in phase 4 a subagent's approval is always a `terminalOnly` card, and whether it is replayed to a connection that resumed only the main thread is unverified.
 - `answerHeld` is never `unknown` for a known id.
-- Phone chat typing is refused with `INPUT_NOT_DELIVERED`.
+- Phone chat typing is already refused (`acceptsTypedChat:false`, Phase 3); Phase 4 keeps it and extends the typed-bytes-zero pin to every answer variant.
 - `held` is stamped so the push always goes to the lock screen and free text is refused.
 - A terminal-answered request dismisses the card with reason `'cancelled'`, for parity with Claude's terminal answers.
 
@@ -764,7 +819,7 @@ Pin tests first:
 
 Scenario tests (real `SessionRegistry`, real input handlers, fake app-server): phone accepts first; terminal answers first and the card clears on every client with `question_resolved`; a late phone answer gets `STALE_ANSWER` from the real handler; the server drops the socket mid-approval, the card is retired, and the replay after reconnect creates a new card whose answer works; a request resolved while disconnected is swept after the replay window; two sequential requests with distinct daemon-global ids; terminalOnly cards refuse everything but Cancel and never type Esc.
 
-Mutation checks: `answerHeld` returning `'unknown'` for a known id, sending an unlisted decision, offering an object-form decision, the No mapping, correlation by id alone, not retiring on disconnect, the replay-window sweep removed, the typed-chat refusal removed, `held` unstamped.
+Mutation checks: `answerHeld` returning `'unknown'` for a known id, sending an unlisted decision, offering an object-form decision, the No mapping, correlation by id alone, not retiring on disconnect, the replay-window sweep removed, `held` unstamped. (The typed-chat refusal's mutants belong to Phase 3.)
 
 Gate: all of the above green, plus LV-3 (a) through (e), run before merge. If LV-3(d) shows a dropped subscriber cancels or declines the pending request, do not merge: redesign around fewer reconnects and report to the owner.
 
@@ -849,7 +904,7 @@ Pin tests first: pure tests of `shouldNotifyTurnComplete`/`buildTurnCompleteText
 
 Mutation checks: the `admitsAnySession` filter removed from `onTurnStop`, wrong `final_answer` item chosen, `interrupted` pushing, `failed` not pushing, history order reversed.
 
-Gate: green, plus LV-5.
+Gate: the bounded LV-5 evidence is recorded above. Phase 6 acceptance still needs the owner-coordinated code/test gate, LV-4 and outstanding hardware/APNS judgments; LV-5 is not physical-device or model-matrix acceptance.
 
 Agent budget: 1 implementer, 1 reviewer, 1 spike agent for LV-5.
 
@@ -863,8 +918,8 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 - **Other threads' metadata.** Codex broadcasts `thread/started` and `thread/status/changed` to every connection, and `thread/resume` results carry `preview` (the first user message). remi uses frames only for its own tracked thread and descendants; it never logs, stores or relays other threads' frames.
 - **Fixtures.** The extractor, redaction allowlist and seeded-leak mutation in §3.3. Reviewers diff the fixture directory by eye before merge.
 - **Socket.** Both directories are mode 0700 and owned by the user, so only the same OS user connects. The socket itself has no authentication, so any same-user process can answer approvals; that is Codex's property. remi adds the phone as a principal, as for Claude. remi refuses a socket whose directory is not owned by the current uid or has group/other bits.
-- **The Update modal hazard.** remi never types into a Codex PTY on its own: `acceptsTypedChat:false`, no `screen`, `answerHeld` never `unknown` for Codex ids, and the typed-bytes-zero pin. Raw input comes only from a person (attach, web Esc, Telegram `/interrupt`). The live steps follow the screen-scrape rule in §3.5.
-- **Push text.** A Codex approval push carries the command (up to 120 characters in the title, 200 in the body). It travels in plaintext to the signaling Worker and APNS, the same posture as Claude permission cards, `turn_complete` and `turn_failed` (AGENTS.md "Push text is plaintext to the Worker and APNS"). The fix is outside this epic: relay E2E (#881, still open and the relay is latent) and push encryption (strategy §9 item 4). Codex adds no new exposure class but raises volume. Commands can embed secrets, so the owner may want a per-class option (open call 12). cwd is not in the push.
+- **The Update modal hazard.** remi never types into a Codex PTY on its own: `acceptsTypedChat:false` (phone chat is refused with `PROMPT_WAITING`, since Phase 3), no `screen`, `answerHeld` never `unknown` for Codex ids, and the typed-bytes-zero pin. Raw input comes only from a person (attach, web Esc, Telegram `/interrupt`). The live steps follow the screen-scrape rule in §3.5.
+- **Push text.** A Codex approval push carries the command (up to 120 characters in the title, 200 in the body). It travels in plaintext to the signaling Worker and APNS, the same posture as Claude permission cards, `turn_complete` and `turn_failed` (AGENTS.md "Push text is plaintext to the Worker and APNS"). Push is a separate plaintext path: relay session encryption does not cover it. The relay/key-exchange work tracked by #881 is distinct from push encryption (strategy §9 item 4), which remains an owner decision outside this epic. Codex adds no new exposure class but raises volume. Commands can embed secrets, so the owner may want a per-class option (open call 12). cwd is not in the push.
 - **Originator.** If remi initializes before the TUI on a fresh daemon, the daemon's global originator may read "remi" on the user's later threads (R8).
 
 ---
@@ -875,17 +930,17 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 
 | # | Fact assumed | Check | If wrong |
 |---|---|---|---|
-| R1 | A non-answering subscriber disconnecting does not cancel the pending request | LV-3(d) | Do not ship Phase 4; remi becomes harmful on any socket blip. Redesign to minimize reconnects and tell the owner. |
+| R1 | A non-answering subscriber disconnecting does not cancel the pending request | LV-3(d): **VERIFIED live 2026-10-04 (a probe and real remi killed with -9; the same request id was replayed)** | Do not ship Phase 4; remi becomes harmful on any socket blip. Redesign to minimize reconnects and tell the owner. |
 | R2 | Bare `codex` auto-starts the shared daemon (`daemon_auto_start`, the lock file dated Sep 25) | LV-2(b) | The watchdog fires and approvals never arrive. Fallbacks: run `codex app-server daemon start` before spawn, or spawn with `--remote unix://<socket>` (verified shared in the spike). Owner pick. |
-| R3 | A hand-rolled client interoperates with Codex's server | LV-1 | Fix the codec, or move the pin to >= 1.3.13 and use native `ws+unix`. |
-| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). A non-remi TUI in the same cwd started in the same window is a residual. |
-| R5 | `cancel` from a second client resolves the request like the TUI's No | LV-3(c) | Flip the No mapping to `decline` (listed or not). |
+| R3 | A hand-rolled client interoperates with Codex's server | LV-1: **VERIFIED live 2026-10-04 (the handshake works; the keepalive needed the double-pong fix)** | Fix the codec, or move the pin to >= 1.3.13 and use native `ws+unix`. |
+| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <last 8> to <last 8>` and, since the Phase 4 review, tells the person "remi now follows a new Codex thread; approvals come from it": the session keeps its approval authority across the move, not closed, never silent); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; (4) two remi codex sessions in one directory: a `/new` in either is followed by neither (E1), and an unbound sibling blocks a first bind only for 60 s (E2). |
+| R5 | `cancel` from a second client resolves the request like the TUI's No | LV-3(c): **VERIFIED live 2026-10-04 (the item is declined and the turn interrupted, like the TUI's No)** | Flip the No mapping to `decline` (listed or not). |
 | R6 | `thread/items/list` pages history | LV-5 | Fall back to the rollout at `thread.path`. |
-| R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation: the hub advertises `codex` only after LV-4, and a user can `remi attach`. |
-| R8 | `clientInfo.name` does not become the daemon's global originator for later TUI threads | Check `originator` after remi connects first | Delay the first connect about 1.5 s after the first PTY output so the TUI initializes first, or rename the client. |
+| R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation as planned: the hub advertises `codex` only after LV-4 (not applied, open call 17: it is advertised by PATH presence; LV-4 ran on 2026-10-04, partly, and no modal appeared), and a user can `remi attach`. |
+| R8 | `clientInfo.name` does not become the daemon's global originator for later TUI threads | Check `originator` after remi connects first: **WRONG, seen live 2026-10-04: `originator` is daemon-global, set by the first client that initialized, so after a `remi` client initialized first every later TUI-created thread read "remi"** | Delay the first connect about 1.5 s after the first PTY output so the TUI initializes first, or rename the client. |
 | R9 | Schema drift under `experimentalApi:true` (CLI and daemon already differ by a patch version) | Fixtures versioned to 0.160.0; narrow parsers ignore unknown fields | Parsers fail closed to `terminalOnly` cards rather than dropping requests. |
-| R10 | Request ids are unique per daemon lifetime only | Spike (ids 1, 2, 5, 6 across runs) | Already handled by the `(threadId, requestId)` key and retire-on-disconnect. |
-| R11 | Push text is plaintext | AGENTS.md; #881 | Owner decision on a per-class option. |
+| R10 | Request ids are unique per daemon lifetime only | Spike (ids 1, 2, 5, 6 across runs); the first real id was 0 (live, 2026-10-04) | Already handled by the `(threadId, requestId)` key and retire-on-disconnect. |
+| R11 | Push text is plaintext | AGENTS.md; push dispatcher path | Owner decision on a per-class option; relay encryption does not apply to push. |
 | R12 | The older-daemon gate sees every legacy writer | Phase 2 tests | An older CLI binary elsewhere and an unregistered process slip through. Fall back to the sidecar identity file. |
 | R13 | The reserved status row works with Codex | Not attempted (`reservedRows=0`) | n/a; revisit only if wanted. |
 | R14 | Live runs cost tokens | n/a | Use the smallest prompts. |
@@ -898,17 +953,17 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 4. Phone "No" sends `cancel` (decline as fallback).
 5. Only command approvals are actionable in v1; everything else is a `terminalOnly` card that still notifies and dismisses.
 6. Object-form decisions (persistent policy amendments) are never offered from the phone.
-7. Phone chat typing to Codex is refused (`INPUT_NOT_DELIVERED`), not routed through `turn/start`.
+7. Phone chat typing to Codex is refused (code `PROMPT_WAITING`, shipped in Phase 3), not routed through `turn/start`.
 8. remi never starts or stops the daemon; if R2 fails the fallback is run `daemon start` or `--remote` (owner picks).
 9. `remi codex` accepts only the interactive TUI and `resume <uuid>`; `fork` and `resume --last`/picker are refused; `-C/--cd` is denied.
-10. Local `remi codex` args use a denylist; remote args use a default-deny allowlist.
-11. The older-daemon hazard is closed by refusing to start, not by a second store file.
+10. Local `remi codex` args and remote args are both default-deny allowlists; the local denylist only chooses the refusal message.
+11. The older-daemon hazard is narrowed by refusing to start, not closed, and there is no second store file: an older binary started after the launch, or one registered nowhere (R12), can still erase a Codex identity. There is no marker field to detect it; the launch's refusal and notice say so.
 12. Lock-screen `REMI_YN` applies to Codex `[Yes, No]` cards at parity with Claude, unless the owner wants no category.
 13. `reservedRows=0` and no status bar for Codex.
 14. Cards are retired on any disconnect and re-created from replay (new ids).
 15. A terminal-answered Codex request dismisses with reason `'cancelled'`.
-16. `harness_denied` equivalent is out of scope until Guardian frames are captured.
-17. `hello_ack.harnesses` advertises `codex` by PATH presence; the owner may want it gated until LV-4.
+16. `harness_denied` equivalent is out of scope: Guardian frames now exist (captured live on 2026-10-04) but no design uses them yet.
+17. `hello_ack.harnesses` advertises `codex` by PATH presence; the owner may want it gated until LV-4 (which ran on 2026-10-04, partly; ADR 0033, "LV-4 results").
 18. The `standingGrant: 'session'` union value.
 
 ### 6.3 What I could not verify

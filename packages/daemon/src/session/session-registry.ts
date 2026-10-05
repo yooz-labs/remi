@@ -34,6 +34,11 @@ export interface SessionRegistryConfig {
   readonly orphanTimeoutMs?: number;
   /** Maximum messages to keep for replay. Default: 1000 */
   readonly maxReplayHistory?: number;
+  /**
+   * Leave a pending question's text out of the registry's log lines (#1178). A Codex approval
+   * card's text is the command Codex asks to run, which a log must not carry. Default: false.
+   */
+  readonly redactQuestionLogs?: boolean;
 }
 
 /** Result of attempting to attach a connection to a session */
@@ -203,9 +208,12 @@ export class SessionRegistry {
   /** Buffer for messages received before session registration (from readExisting transcript) */
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
+  private readonly redactQuestionLogs: boolean;
+
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
     this.maxReplayHistory = config.maxReplayHistory ?? 1000;
+    this.redactQuestionLogs = config.redactQuestionLogs ?? false;
     this.events = events;
   }
 
@@ -244,7 +252,10 @@ export class SessionRegistry {
       },
       // #1126: read live, so a guard installed before or after this
       // registration (the hook bridge is set up first) applies.
-      { isPinned: (questionId) => this.evictionGuards.get(sessionId)?.(questionId) ?? false },
+      {
+        isPinned: (questionId) => this.evictionGuards.get(sessionId)?.(questionId) ?? false,
+        redactText: this.redactQuestionLogs,
+      },
     );
     this.session = {
       sessionId,

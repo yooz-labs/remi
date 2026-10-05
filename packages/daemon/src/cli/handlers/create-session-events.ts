@@ -10,9 +10,16 @@
  * create requests race for the same free port.
  */
 
-import { createCreateSessionResponse, errorToString } from '@remi/shared';
+import {
+  createCreateSessionResponse,
+  errorToString,
+  escapeUnsafeText,
+  isHarnessId,
+} from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
+import type { HarnessRegistry, StartedSession } from '../../harness/registry.ts';
+import type { CreateSessionExtra } from '../../server/client-message-events.ts';
 import type { SessionRegistryFile } from '../../session/index.ts';
 import { findAvailableTcpPort as defaultFindAvailableTcpPort } from '../../session/port-utils.ts';
 import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
@@ -26,7 +33,95 @@ export interface SpawnResult {
   readonly pid: number;
 }
 
+/** What a requester is told when the child could not be started: the cause is in the host's log (G8). */
+const START_FAILED_TEXT =
+  "The session could not be started on the host; the host's remi log has the reason.";
+const INVALID_DIRECTORY_TEXT = 'Invalid directory; the request was not started.';
+
+/**
+ * Why a requested directory is refused, or null (#1179 review, G7). The directory reaches the
+ * child as the value of `--dir`: one that starts with a hyphen is left unconsumed by the child's
+ * parser and read as a flag (`--no-auth`), one with a NUL cannot be an argument at all, and one with
+ * a terminal escape sequence would reach the owner's terminal through the log. The
+ * wire carries whatever JSON the peer sent, so a value that is not a string is refused too, not
+ * left to throw. No directory, an empty one and white space all mean home. The refusal names no
+ * part of the value. It covers every create request, Claude's included: no real client sends such
+ * a value, so nothing a person does changes.
+ */
+export function directoryRefusal(directory: unknown): string | null {
+  if (directory === undefined) return null;
+  if (typeof directory !== 'string') return INVALID_DIRECTORY_TEXT;
+  if (directory.trim().startsWith('-')) return INVALID_DIRECTORY_TEXT;
+  // Any C0 control (NUL, tab, newline, carriage return, escape) or C1 control (U+0080 to U+009F,
+  // which includes the single-character CSI) or DEL. Bidi and zero-width characters are allowed in
+  // a path, so they are written out wherever the directory is logged.
+  for (const ch of directory) {
+    const c = ch.codePointAt(0) as number;
+    if (c <= 0x1f || (c >= 0x7f && c <= 0x9f)) return INVALID_DIRECTORY_TEXT;
+  }
+  return null;
+}
+
+/**
+ * What a create request may ask of a harness, checked before a port is probed or anything is
+ * spawned (#1179): the harness must be one this build has an adapter for whose command resolves
+ * on PATH, its `args` must pass that harness's remote allowlist, and nothing may stand in the way
+ * of a launch (the older-daemon gate, for Codex). On success, the arguments to append to the
+ * child's command line: `--harness <id>` and then `-- <args>`, last, so no remote argument can be
+ * read as a remi flag (`--no-auth`). A request that names no harness spawns Claude exactly as it
+ * always did, with nothing appended unless it brought `args`. `noticeFor` builds what a success
+ * does not say for a harness that may stop at a prompt nobody can answer headless, once the spawn
+ * has said which session and port it started. A refusal's `error` is for the client; its `detail`,
+ * when there is one, is the host-local reason only the log gets.
+ */
+export function checkHarnessRequest(
+  registry: HarnessRegistry,
+  extra: CreateSessionExtra | undefined,
+):
+  | { ok: true; spawnArgs: string[]; noticeFor?: (session: StartedSession) => string }
+  | { ok: false; error: string; detail?: string } {
+  const { harness, args } = extra ?? {};
+  if (harness === undefined && args === undefined) return { ok: true, spawnArgs: [] };
+
+  if (harness !== undefined && !isHarnessId(harness)) {
+    return { ok: false, error: 'Unknown harness; the request was not started.' };
+  }
+  const id = harness ?? 'claude';
+  const spec = registry.get(id);
+  if (spec === undefined) {
+    return { ok: false, error: `This remi has no ${id} adapter; the request was not started.` };
+  }
+  // A request that names no harness keeps Claude's old behavior, a spawn that fails inside the
+  // child if there is no `claude`; one that names a harness is held to what is installed.
+  if (harness !== undefined && !registry.available().includes(id)) {
+    return {
+      ok: false,
+      error: `${id} is not available on this machine (no ${spec.command} on the daemon's PATH); nothing was started.`,
+    };
+  }
+  const checked = spec.validateRemoteArgs(args ?? []);
+  if (!checked.ok) return { ok: false, error: checked.error };
+  // Every request that reaches here has a harness or arguments, a Claude resume with no harness
+  // named included: a resume of a session a live one holds must be refused whichever way it is asked.
+  const refusal =
+    spec.launchRefusal?.({
+      args: checked.args,
+      resumeThreadId: checked.resumeThreadId ?? null,
+    }) ?? null;
+  if (refusal !== null) return { ok: false, error: refusal.client, detail: refusal.detail };
+  return {
+    ok: true,
+    spawnArgs: [
+      ...(harness !== undefined ? ['--harness', id] : []),
+      ...(checked.args.length > 0 ? ['--', ...checked.args] : []),
+    ],
+    ...(spec.headlessNotice !== undefined && { noticeFor: spec.headlessNotice }),
+  };
+}
+
 export interface CreateSessionHandlerDeps {
+  /** The harnesses a request may name, and what each allows (`cli.ts` builds it). */
+  harnesses: HarnessRegistry;
   liveSessionsRegistry: SessionRegistryFile;
   /** In-flight spawn ports; shared with cli.ts daemon-mode startup. */
   spawningPorts: Set<number>;
@@ -60,6 +155,7 @@ export type CreateSessionHandlers = ReturnType<typeof createCreateSessionHandler
 
 export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
   const {
+    harnesses,
     liveSessionsRegistry,
     spawningPorts,
     basePort,
@@ -76,10 +172,35 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       connectionId: UUID,
       directory: string | undefined,
       requestId: UUID,
+      extra?: CreateSessionExtra,
     ): Promise<void> => {
       log(`Create session request from ${connectionId}, spawning new daemon`);
 
       try {
+        // The trust boundary (#1179): refuse before a port is chosen or anything is spawned.
+        // The client gets a short text; the host's log gets the reason, escaped (the arguments in
+        // it came off the wire).
+        const badDirectory = directoryRefusal(directory);
+        if (badDirectory !== null) {
+          log('Create session request refused: the directory is not acceptable; nothing spawned');
+          send(
+            connectionId,
+            createCreateSessionResponse(false, requestId, undefined, badDirectory),
+          );
+          return;
+        }
+        const request = checkHarnessRequest(harnesses, extra);
+        if (!request.ok) {
+          log(
+            `Create session request refused: ${escapeUnsafeText(request.detail ?? request.error)}; nothing spawned`,
+          );
+          send(
+            connectionId,
+            createCreateSessionResponse(false, requestId, undefined, request.error),
+          );
+          return;
+        }
+
         // Include in-flight spawn ports to prevent a TOCTOU race on
         // concurrent create requests.
         const liveUsed = new Set([
@@ -105,10 +226,15 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         // hub's own cwd (an accident of where `remi serve` was started) —
         // see resolveRequestedSessionDirectory for the full rationale.
         const resolvedDirectory = resolveRequestedSessionDirectory(directory);
-        log(`Spawning new daemon on port ${freePort} for directory ${resolvedDirectory}`);
+        log(
+          `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
+        );
         spawningPorts.add(freePort);
         try {
-          const result = await spawnDaemon(freePort, resolvedDirectory, [...inheritedArgs()]);
+          const result = await spawnDaemon(freePort, resolvedDirectory, [
+            ...inheritedArgs(),
+            ...request.spawnArgs,
+          ]);
           send(
             connectionId,
             createCreateSessionResponse(
@@ -117,6 +243,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
               result.sessionId as UUID,
               undefined,
               result.port,
+              request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
             ),
           );
           log(
@@ -126,9 +253,13 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           spawningPorts.delete(freePort);
         }
       } catch (err) {
-        const msg = errorToString(err);
-        logError(`Failed to spawn daemon: ${msg}`);
-        send(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
+        // The failure is the host's business: it can hold a path, a pid or a log file name. The
+        // requester is told only that the session did not start (G8).
+        logError(`Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}`);
+        send(
+          connectionId,
+          createCreateSessionResponse(false, requestId, undefined, START_FAILED_TEXT),
+        );
       }
     },
   };

@@ -5,7 +5,7 @@
  * without coupling to a specific transport.
  */
 
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, UUID } from '@remi/shared';
 import type { ClientMessageEventsWithConnectionId } from '../server/client-message-events.ts';
 
 /**
@@ -145,12 +145,9 @@ export interface ConnectionAdapter {
    */
   sendMessage(connectionId: UUID, message: Message): boolean;
 
-  /**
-   * Send a question to a specific connection.
-   * The adapter is responsible for formatting appropriately
-   * (e.g., inline keyboard for Telegram).
-   */
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean;
+  // There is no `sendQuestion` here (#1179 review, G15): a question message names the session's
+  // harness identity, which only the daemon's message API knows, so questions leave through
+  // `sendRaw` as the protocol message it builds. An adapter-level method built one with no identity.
 
   /**
    * Send a status update to a specific connection.

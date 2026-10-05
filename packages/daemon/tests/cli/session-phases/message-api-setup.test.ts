@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { generateId, now } from '@remi/shared';
+import { generateId, identityFromClaudeId, now } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createMessageApiForSession } from '../../../src/cli/session-phases/message-api-setup.ts';
@@ -166,6 +166,39 @@ describe('createMessageApiForSession', () => {
     const emitted = Object.keys(questionMsgs[0]?.message ?? {});
     expect(emitted).not.toContain('harness');
     expect(emitted).not.toContain('harnessSessionId');
+  });
+
+  test('the log line for a detected question names its text, and only its length when told to redact it (#1178)', () => {
+    const lines: string[] = [];
+    configureLogger({ writeLog: (line) => lines.push(line) });
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const q = { ...questionWith([yesOpt, noOpt]), text: 'Allow Codex to run: sk-command-secret' };
+    for (const redactQuestionLogs of [false, true]) {
+      const { messageApi } = createMessageApiForSession(
+        {
+          sessionRegistry,
+          transcriptWatchers,
+          deviceTokens,
+          pushConfig: () => ({ signalingUrl: 'ws://fake-signaling' }),
+          updateRemiStatus: () => {},
+          maxBulletLength: 4000,
+          sendMessage: () => {},
+          redactQuestionLogs,
+        },
+        sessionId,
+      );
+      messageApi.handleQuestion(q, { held: true });
+    }
+    const detected = lines.filter((l) => l.includes('Question detected'));
+    expect(detected).toHaveLength(2);
+    expect(detected[0]).toContain('Allow Codex to run: sk-command-secret');
+    expect(detected[1]).toContain(`(${q.text.length} chars)`);
+    expect(detected[1]).not.toContain('sk-command-secret');
   });
 
   test('a held push is stamped held on the wire and in the registry', () => {
@@ -380,7 +413,10 @@ describe('createMessageApiForSession', () => {
           sendMessage: (sid, message) => {
             sendCalls.push({ sessionId: sid, message });
           },
-          getClaudeSessionId: get,
+          getIdentity: () => {
+            const id = get();
+            return id === null ? null : identityFromClaudeId(id);
+          },
         },
         sessionId,
       );

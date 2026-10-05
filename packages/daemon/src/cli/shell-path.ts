@@ -8,7 +8,8 @@
  * 2. Merge all discovered PATH entries with the inherited entries.
  * 3. Fall back to well-known Homebrew / user-bin directories if no shell run
  *    succeeded.
- * 4. Verify `claude` is findable after resolution; warn if not.
+ * 4. Verify the harness's command (`claude`, or `codex` for `remi codex`) is
+ *    findable after resolution; warn if not.
  *
  * `resolveShellPath` mutates `process.env.PATH` in place — same behavior as
  * the original inline version.
@@ -31,7 +32,7 @@ export interface ShellPathLogger {
  * Never throws — shell spawn failures and missing `which` are logged but
  * swallowed; PATH resolution is best-effort.
  */
-export function resolveShellPath(logger: ShellPathLogger): void {
+export function resolveShellPath(logger: ShellPathLogger, command = 'claude'): void {
   const shell = process.env['SHELL'] || '/bin/zsh';
   const currentEntries = (process.env['PATH'] || '').split(':').filter(Boolean);
   const allEntries = new Set(currentEntries);
@@ -92,13 +93,13 @@ export function resolveShellPath(logger: ShellPathLogger): void {
     logger.log(`[PATH] Resolved ${allEntries.size} entries (was ${currentEntries.length})`);
   }
 
-  // Verify claude is findable after PATH resolution
+  // Verify the harness's command is findable after PATH resolution
   try {
-    const which = Bun.spawnSync(['which', 'claude'], { env: process.env, timeout: 2000 });
+    const which = Bun.spawnSync(['which', command], { env: process.env, timeout: 2000 });
     if (which.exitCode !== 0) {
       logger.error(
-        '[PATH] WARNING: "claude" not found in PATH after resolution. ' +
-          'Session creation will fail. Ensure claude is installed and in PATH.',
+        `[PATH] WARNING: "${command}" not found in PATH after resolution. ` +
+          `Session creation will fail. Ensure ${command} is installed and in PATH.`,
       );
     }
   } catch {

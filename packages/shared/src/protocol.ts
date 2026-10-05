@@ -10,7 +10,7 @@
  * - Messages are ordered within a session
  */
 
-import type { HarnessId } from './harness.ts';
+import type { HarnessId, SessionIdentity } from './harness.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -301,17 +301,28 @@ export interface HelloAckMessage {
    */
   readonly claudeSessionId?: UUID | null;
   /**
-   * The harness this daemon's session runs under (#1162, ADR 0032). Typed
-   * only: no daemon code sets it, so every ack omits it, and a client should
-   * treat absence as the default harness (`claude`); none reads it yet.
+   * The harness this daemon's session runs under (#1179, ADR 0032). Sent with
+   * the binding, on the acks that carry `claudeSessionId` today; absent on an
+   * ack with no session (a hub's) and from an older daemon, which a client
+   * reads as the default harness (`claude`).
    */
   readonly harness?: HarnessId | undefined;
   /**
-   * The harness's own id for this daemon's session (#1162, ADR 0032). Typed
-   * only and never set today; for a Claude session the id is
-   * {@link claudeSessionId}. Null would mean the harness has not reported one.
+   * The harness's own id for this daemon's session (#1179). For Claude it is
+   * {@link claudeSessionId}, null included. For another harness
+   * `claudeSessionId` is omitted and this is null until the harness has
+   * reported its id (a Codex thread id), so a client must not depend on it
+   * being set on the first ack: answers are addressed by `questionId`.
    */
   readonly harnessSessionId?: string | null | undefined;
+  /**
+   * The harnesses this daemon can start for a `create_session_request` (#1179):
+   * those it has an adapter for whose command resolves on its PATH. Sent on
+   * every ack, a hub's session-less one included. An OLDER daemon omits it and
+   * ignores `create_session_request.harness`, starting a Claude session, so a
+   * client must see its harness here before it asks for one.
+   */
+  readonly harnesses?: readonly HarnessId[] | undefined;
   /**
    * Absolute path to the .jsonl transcript file Claude writes to.
    * Pre-assigned alongside claudeSessionId; the file may not yet exist on
@@ -425,15 +436,15 @@ export interface QuestionMessage {
    */
   readonly claudeSessionId?: UUID | undefined;
   /**
-   * The harness the question came from (#1162, ADR 0032). Typed only: no
-   * daemon code sets it, so every question omits it, and a client
-   * should treat absence as the default harness (`claude`); none reads it yet.
+   * The harness the question came from (#1179, ADR 0032). Sent by a daemon
+   * that knows its harness; absence (an older daemon) reads as the default
+   * harness (`claude`).
    */
   readonly harness?: HarnessId | undefined;
   /**
-   * The harness's own session id for the question (#1162, ADR 0032). Typed
-   * only and never set today; for a Claude question the id is
-   * {@link claudeSessionId}.
+   * The harness's own session id for the question (#1179). For a Claude
+   * question it equals {@link claudeSessionId}; for another harness
+   * `claudeSessionId` is omitted. Omitted while the id is not known.
    */
   readonly harnessSessionId?: string | undefined;
 }
@@ -901,13 +912,26 @@ export interface TerminalResizeMessage {
   readonly rows: number;
 }
 
-/** Request to create a new Claude Code session */
+/** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
   readonly type: 'create_session_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
   /** Working directory for the new session */
   readonly directory?: string;
+  /**
+   * The harness to start (#1179). Absent means Claude. A daemon older than
+   * this field ignores it and starts Claude, so a client checks
+   * `HelloAckMessage.harnesses` first. The daemon refuses a harness it does not
+   * offer without spawning anything.
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * Extra arguments for the harness (#1179), validated by the daemon against
+   * that harness's remote allowlist and appended after `--` to the child's
+   * command line, so they can never be read as remi flags.
+   */
+  readonly args?: readonly string[] | undefined;
 }
 
 /** Response after creating a new session */
@@ -925,6 +949,13 @@ export interface CreateSessionResponseMessage {
   readonly requestId: UUID;
   /** Port of the new daemon (when session was spawned on a new daemon) */
   readonly port?: number;
+  /**
+   * What a success does not say (#1179): for a harness started without a terminal that may stop at a
+   * prompt only a terminal can answer (Codex's Update and Trust prompts), the daemon cannot know the
+   * session reached its prompt, so it says so and what to do. `success` means the session daemon was
+   * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
+   */
+  readonly notice?: string | undefined;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -1385,10 +1416,25 @@ export function createHello(
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
-  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null } | undefined;
+  /**
+   * Who the session is and which transcript it writes (#430, #1179). The
+   * identity is dual-emitted from this one value: Claude's id rides on
+   * `claudeSessionId` AND `harnessSessionId` (null included), so the two cannot
+   * differ; another harness's id rides on `harnessSessionId` alone and
+   * `claudeSessionId` is omitted.
+   */
+  binding?: { identity: SessionIdentity; transcriptPath: string | null } | undefined;
   attachState?: 'attached' | 'queued' | undefined;
   /** The daemon's remi binary version (#539). */
   daemonVersion?: string | undefined;
+  /** The harnesses this daemon can start (#1179), on every ack. */
+  harnesses?: readonly HarnessId[] | undefined;
+  /**
+   * The harness this daemon hosts, for an ack with no `binding` (the brief window before its session
+   * exists). Ignored when a binding is given, which names the harness itself. A hub hosts none and
+   * passes nothing.
+   */
+  harness?: HarnessId | undefined;
 }
 
 /**
@@ -1399,7 +1445,7 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion } = options;
+  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness } = options;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -1412,11 +1458,19 @@ export function createHelloAck(
       nextBulletId: resumeInfo.nextBulletId,
     }),
     ...(binding && {
-      claudeSessionId: binding.claudeSessionId,
+      ...(binding.identity.harness === 'claude' && {
+        claudeSessionId: binding.identity.harnessSessionId,
+      }),
+      harness: binding.identity.harness,
+      harnessSessionId: binding.identity.harnessSessionId,
       transcriptPath: binding.transcriptPath,
     }),
+    // No binding, but the daemon knows what it hosts: only the harness is named, so a Codex daemon
+    // does not read as Claude by the absence of a field.
+    ...(binding === undefined && harness !== undefined && { harness }),
     ...(attachState !== undefined && { attachState }),
     ...(daemonVersion !== undefined && { daemonVersion }),
+    ...(harnesses !== undefined && { harnesses }),
   };
 }
 
@@ -1582,12 +1636,14 @@ export function createInputNotDeliveredError(sessionId: UUID, messageId?: UUID):
 }
 
 /**
- * Create a question message.
+ * Create a question message. `identity` is the session's harness identity
+ * (#1179): the harness is always sent; the session id only once it is known,
+ * and for Claude it rides on `claudeSessionId` as well, so the two cannot differ.
  */
 export function createQuestion(
   question: Question,
   sessionId: UUID,
-  claudeSessionId?: UUID,
+  identity?: SessionIdentity | null,
 ): QuestionMessage {
   return {
     type: 'question',
@@ -1595,7 +1651,13 @@ export function createQuestion(
     timestamp: now(),
     question,
     sessionId,
-    ...(claudeSessionId !== undefined && { claudeSessionId }),
+    ...(identity && {
+      harness: identity.harness,
+      ...(identity.harnessSessionId !== null && {
+        harnessSessionId: identity.harnessSessionId,
+        ...(identity.harness === 'claude' && { claudeSessionId: identity.harnessSessionId }),
+      }),
+    }),
   };
 }
 
@@ -1895,14 +1957,21 @@ export function createTranscriptLoadComplete(
 }
 
 /**
- * Create a request to spawn a new Claude Code session.
+ * Create a request to spawn a new session: Claude Code, or the `harness` named
+ * with its `args` (#1179).
  */
-export function createCreateSessionRequest(directory?: string): CreateSessionRequestMessage {
+export function createCreateSessionRequest(
+  directory?: string,
+  options: { harness?: HarnessId | undefined; args?: readonly string[] | undefined } = {},
+): CreateSessionRequestMessage {
+  const { harness, args } = options;
   return {
     type: 'create_session_request',
     id: generateId(),
     timestamp: now(),
     ...(directory !== undefined && { directory }),
+    ...(harness !== undefined && { harness }),
+    ...(args !== undefined && { args }),
   };
 }
 
@@ -1915,6 +1984,7 @@ export function createCreateSessionResponse(
   sessionId?: UUID,
   error?: string,
   port?: number,
+  notice?: string,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -1925,6 +1995,7 @@ export function createCreateSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(port !== undefined && { port }),
+    ...(notice !== undefined && { notice }),
   };
 }
 

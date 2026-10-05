@@ -46,7 +46,6 @@ import {
   createAgentOutput,
   createAuthResult,
   createError,
-  createQuestion,
   decryptRelayPayload,
   deriveRelaySessionKeys,
   encryptRelayPayload,
@@ -63,7 +62,6 @@ import type {
   EphemeralKeyPair,
   Message,
   ProtocolMessage,
-  Question,
   RelaySessionKeys,
   UUID,
 } from '@remi/shared';
@@ -74,6 +72,7 @@ import type {
   ConnectionAdapter,
 } from '../adapters/connection-adapter.ts';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { createSessionExtra } from '../server/client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from '../server/route-client-message.ts';
 import { SignalingClient } from './signaling-client.ts';
 
@@ -650,7 +649,12 @@ export class RelayAdapter implements ConnectionAdapter {
         this.events.onTranscriptLoadRequest?.(connectionId, m.sessionId, m.id);
       },
       create_session_request: (m) => {
-        this.events.onCreateSessionRequest?.(connectionId, m.directory, m.id);
+        this.events.onCreateSessionRequest?.(
+          connectionId,
+          m.directory,
+          m.id,
+          createSessionExtra(m),
+        );
       },
       resume_session_request: (m) => {
         this.events.onResumeSessionRequest?.(connectionId, m.sessionId, m.id);
@@ -734,10 +738,6 @@ export class RelayAdapter implements ConnectionAdapter {
 
   sendMessage(connectionId: UUID, message: Message): boolean {
     return this.sendRaw(connectionId, createAgentOutput(message));
-  }
-
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    return this.sendRaw(connectionId, createQuestion(question, sessionId));
   }
 
   sendStatus(_connectionId: UUID, _status: AgentStatus, _context?: string): boolean {

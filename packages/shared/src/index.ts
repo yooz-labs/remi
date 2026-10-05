@@ -251,3 +251,6 @@ export { errorToString } from './error-utils.ts';
 
 // Async helpers
 export { sleep } from './async-utils.ts';
+
+// Text a peer controls, made safe to show (#1178)
+export { escapeUnsafeText } from './display-text.ts';

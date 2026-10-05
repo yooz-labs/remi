@@ -323,6 +323,35 @@ describe('runAttachClient', () => {
     );
   });
 
+  // #1178: a card's text can carry a command (a Codex approval), and the banner writes it to the
+  // user's terminal. Terminal escape sequences in it would run there (a clipboard write, a report
+  // query whose reply the attach client forwards as keystrokes into the agent's terminal, a line
+  // overwrite), and a bidi control reorders what the person reads. The text and the option labels
+  // come out escaped; the banner's own sequences are the only ones left.
+  test('formatQuestionBanner escapes terminal and bidi controls in the text and the option labels, and changes nothing else', () => {
+    const bidiOverride = String.fromCharCode(0x202e);
+    const isolate = String.fromCharCode(0x2066);
+    const hostile = `ls\x1b]52;c;QUJD\x07 \x1b[2K\r ${bidiOverride}fdp.exe`;
+    const question: Question = {
+      ...makeQuestion(hostile),
+      options: [
+        { label: 'Yes\x1b[6n', value: '1', isRecommended: true, isYes: true, isNo: false },
+        { label: `No${isolate}`, value: '2', isRecommended: false, isYes: false, isNo: true },
+      ],
+    };
+    const banner = formatQuestionBanner(question);
+    expect(banner).toBe(
+      '\r\x1b[2K\x1b[36m[remi] pending question: ls\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D \\u202Efdp.exe\x1b[0m\r\n' +
+        '\x1b[36m[remi] options: 1) Yes\\u001B[6n  2) No\\u2066\x1b[0m\r\n' +
+        '\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n',
+    );
+    expect(banner).not.toContain('\x07');
+    expect(banner).not.toContain(bidiOverride);
+    expect(banner).not.toContain(isolate);
+    // Only the banner's own escape sequences remain: the row clear, the colors, the reset.
+    expect(banner.match(/\x1b/g)).toHaveLength(7);
+  });
+
   test('formatQuestionBanner omits the options line when there are none', () => {
     const question: Question = { ...makeQuestion('Allow file edit?'), options: [] };
     const banner = formatQuestionBanner(question);

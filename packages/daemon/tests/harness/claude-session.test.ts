@@ -183,7 +183,7 @@ describe('ClaudeHarness.createSession', () => {
     opts: { passThrough?: boolean; reservedRows?: number; register?: boolean } = {},
   ) {
     const sessionId: UUID = generateId();
-    const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
+    const { messageApi, sendAndRecord } = createMessageApiForSession(
       {
         sessionRegistry,
         transcriptWatchers,
@@ -204,7 +204,6 @@ describe('ClaudeHarness.createSession', () => {
       messageApi,
       sendAndRecord,
       sendMessage: () => {},
-      notifications,
     });
     launched.push(session);
     // The shell registers the PTY between createSession and start(); a held
@@ -212,7 +211,7 @@ describe('ClaudeHarness.createSession', () => {
     if (opts.register) {
       sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
     }
-    return { session, sessionId, notifications };
+    return { session, sessionId };
   }
 
   function claudeSessionIdOf(sessionId: UUID): string {
@@ -269,17 +268,19 @@ describe('ClaudeHarness.createSession', () => {
     expect(() => launch(harness)).toThrow('without launch dependencies');
   });
 
-  test('returns an unstarted session, registers its notifier and exposes its screen, and binds the port read at launch', () => {
+  test('returns an unstarted session, leaves the notifier to the shell and exposes its screen, and binds the port read at launch', () => {
     const harness = newHarness();
     // PORT is reassigned by port probing after the harness exists; the launch
     // must read it when it runs, not when the harness was built.
     port = 19123;
 
-    const { session, sessionId, notifications } = launch(harness);
+    const { session, sessionId } = launch(harness);
 
     expect(session.pty.isRunning).toBe(false);
     expect(session.pty.childPid).toBeNull();
-    expect(sessionNotifiers.get(sessionId)).toBe(notifications);
+    // The shell (`createNewSession`) registers the dispatcher before it calls
+    // `createSession` (#1165 E); the launch no longer does.
+    expect(sessionNotifiers.has(sessionId)).toBe(false);
     expect(session.decisions.screen).toBeDefined();
     const stored = sessionStore.findByRemiSessionId(sessionId);
     expect(stored?.port).toBe(19123);
@@ -320,7 +321,8 @@ describe('ClaudeHarness.createSession', () => {
     fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
     fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
     for (const [name, value] of [
-      ['PATH', `${fakeBin}:${process.env['PATH'] ?? ''}`],
+      // Only the fake and the system directories: a test never starts a real `claude`.
+      ['PATH', `${fakeBin}:/usr/bin:/bin`],
       ['FAKE_CLAUDE_DIR', fakeDir],
     ] as const) {
       const previous = process.env[name];
@@ -341,7 +343,15 @@ describe('ClaudeHarness.createSession', () => {
     const { session } = launch(newHarness(), { passThrough: true, reservedRows: 2 });
     await session.start();
 
-    await until(() => fs.existsSync(path.join(fakeDir, 'size')), 'the fake claude to start');
+    // The fake creates `size` when its shell opens the redirect and fills it a
+    // moment later (`stty` writes it), so the file existing is not the file
+    // having its content (#1185): wait for the content.
+    await until(
+      () =>
+        fs.existsSync(path.join(fakeDir, 'size')) &&
+        fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim() !== '',
+      'the fake claude to report its terminal size',
+    );
     // reservedRows > 0 makes the child's statusLine drop the remi prefix, and
     // passThrough sizes the child from the wrapper's own terminal minus the bar.
     expect(fs.readFileSync(path.join(fakeDir, 'status_bar'), 'utf8')).toBe('1');
@@ -493,7 +503,7 @@ describe('what cli.ts hands the harness (#1164)', () => {
 
   // Scoped to the harness's own construction: `currentPort: () => PORT` is
   // also spelled by other dependencies elsewhere in the file.
-  const construction = () => slice('const harness = new ClaudeHarness(', '\n});');
+  const construction = () => slice('const claudeHarness = new ClaudeHarness(', '\n});');
 
   test('getters for hookServer, the port, the websocket port and [prompts]', () => {
     expect(construction()).toContain('hookServer: () => hookServer,');
@@ -580,9 +590,9 @@ describe('what cli.ts hands the harness (#1164)', () => {
     expect(handlers).toContain(
       '...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),',
     );
-    // onTurnStop applies the #914 session filter first and returns when no session claims the event.
-    const turnStop = functionBody('onTurnStop');
-    expect(turnStop).toContain('if (!harness.admitsAnySession(input)) return;');
+    // onTurnStop is built with the #914 session filter: it asks the harness whether any session claims the
+    // event (its order against the timer is `notifications/claude-turn-stop.ts`'s, pinned in its own test).
+    expect(cli).toContain('admits: (input) => claudeHarness.admitsAnySession(input),');
   });
 
   test('a commented-out line does not satisfy a pin', () => {

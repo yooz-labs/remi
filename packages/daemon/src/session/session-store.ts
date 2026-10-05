@@ -12,11 +12,12 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import { DEFAULT_HARNESS, errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { isProcessAlive } from './process-alive.ts';
+import { shellQuote } from './shell-quote.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
@@ -108,13 +109,16 @@ export class InterprocessFileLockError extends Error {
 export { InterprocessFileLockError as SessionStoreLockError };
 
 export class AmbiguousSessionIdentityError extends Error {
-  readonly identity: 'Remi' | 'Claude';
+  /** 'Remi', 'Claude', or a non-Claude harness id ('codex'). */
+  readonly identity: string;
   readonly value: string;
   readonly matchCount: number;
 
-  constructor(identity: 'Remi' | 'Claude', value: string, matchCount: number) {
+  constructor(identity: string, value: string, matchCount: number) {
     super(
-      `Ambiguous ${identity} session ID ${value.slice(0, 8)}: ${matchCount} records; refusing to choose one`,
+      // A Claude or remi id is random throughout, so its first eight characters name it; a
+      // non-Claude harness id (a Codex thread, a UUIDv7) starts with a timestamp, so its last do.
+      `Ambiguous ${identity} session ID ${identity === 'Claude' || identity === 'Remi' ? value.slice(0, 8) : value.slice(-8)}: ${matchCount} records; refusing to choose one`,
     );
     this.name = 'AmbiguousSessionIdentityError';
     this.identity = identity;
@@ -135,6 +139,33 @@ function sleepSync(milliseconds: number): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * The harness a stored record belongs to: absence means Claude (ADR 0032), so
+ * a record with no `harness` and one naming `claude` read the same. An
+ * unrecognized string is returned as is, never coerced to Claude.
+ */
+export function storedHarness(session: Pick<StoredSession, 'harness'>): string {
+  return session.harness ?? DEFAULT_HARNESS;
+}
+
+/** True for a Claude record (no `harness`, or `claude`). */
+export function isClaudeRecord(session: Pick<StoredSession, 'harness'>): boolean {
+  return storedHarness(session) === DEFAULT_HARNESS;
+}
+
+/**
+ * The harness-neutral identity of a stored record (ADR 0032, #1179): a Claude
+ * record's is derived from `claudeSessionId` alone, so the two cannot differ;
+ * another known harness reports its stored `harnessSessionId`, or null before it
+ * has one. Null for a harness this build does not know, never a guess.
+ */
+export function identityOfRecord(stored: StoredSession): SessionIdentity | null {
+  if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
+  if (!isHarnessId(stored.harness)) return null;
+  if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
+  return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
 }
 
 function parseStoredSession(value: unknown, index: number, filePath: string): StoredSession {
@@ -190,9 +221,27 @@ function parseStoredSession(value: unknown, index: number, filePath: string): St
 function assertUniqueSessionIdentities(sessions: readonly StoredSession[]): void {
   const remiIds = new Map<string, number>();
   const activeClaudeIds = new Map<string, number>();
+  // Two simultaneous active owners of one non-Claude (harness, id) pair are as
+  // unsafe as two of a Claude id: an answer or a resume could reach either.
+  const activeHarnessIds = new Map<string, { harness: string; id: string; count: number }>();
 
   for (const session of sessions) {
     remiIds.set(session.remiSessionId, (remiIds.get(session.remiSessionId) ?? 0) + 1);
+
+    if (
+      !isClaudeRecord(session) &&
+      typeof session.harnessSessionId === 'string' &&
+      session.exitedAt === null
+    ) {
+      const key = `${storedHarness(session)}\0${session.harnessSessionId}`;
+      const entry = activeHarnessIds.get(key) ?? {
+        harness: storedHarness(session),
+        id: session.harnessSessionId,
+        count: 0,
+      };
+      entry.count += 1;
+      activeHarnessIds.set(key, entry);
+    }
 
     // A resumed Claude transcript legitimately has one exited historical Remi
     // row and one current active row. Only simultaneous active owners are an
@@ -215,42 +264,98 @@ function assertUniqueSessionIdentities(sessions: readonly StoredSession[]): void
       throw new AmbiguousSessionIdentityError('Claude', claudeSessionId, count);
     }
   }
+  for (const { harness, id, count } of activeHarnessIds.values()) {
+    if (count > 1) {
+      throw new AmbiguousSessionIdentityError(harness, id, count);
+    }
+  }
+}
+
+function selectSessionMatch(
+  matches: readonly StoredSession[],
+  identity: string,
+  sessionId: string,
+): StoredSession | null {
+  if (matches.length <= 1) return matches[0] ?? null;
+
+  // A normal `--resume` creates a new active Remi row for the same harness
+  // session while retaining the exited historical row. Prefer the single
+  // active owner; multiple active owners remain an unsafe ambiguity.
+  const active = matches.filter((session) => session.exitedAt === null);
+  if (active.length === 1) return active[0] ?? null;
+
+  throw new AmbiguousSessionIdentityError(identity, sessionId, matches.length);
 }
 
 function selectClaudeSessionMatch(
   matches: readonly StoredSession[],
   claudeSessionId: string,
 ): StoredSession | null {
-  if (matches.length <= 1) return matches[0] ?? null;
-
-  // A normal `--resume` creates a new active Remi row for the same Claude
-  // transcript while retaining the exited historical row. Prefer the single
-  // active owner; multiple active owners remain an unsafe ambiguity.
-  const active = matches.filter((session) => session.exitedAt === null);
-  if (active.length === 1) return active[0] ?? null;
-
-  throw new AmbiguousSessionIdentityError('Claude', claudeSessionId, matches.length);
+  return selectSessionMatch(matches, 'Claude', claudeSessionId);
 }
 
-/** Resolve a CLI resume query without ever choosing the first ambiguous row. */
+/**
+ * A resume query named a session that ran under another harness (#1176).
+ * `message` is what the CLI prints before exiting 1. For a Codex record with a
+ * thread id it names the command that resumes it, `remi codex resume <thread
+ * id>` (#1177), with the whole id; every other record gets no pointer, because
+ * no other command exists in this build.
+ */
+export class SessionHarnessMismatchError extends Error {
+  constructor(session: StoredSession) {
+    const harness = storedHarness(session);
+    super(
+      harness === 'codex' && session.harnessSessionId
+        ? `this session ran under codex; resume it with \`remi codex resume ${shellQuote(session.harnessSessionId)}\``
+        : `this session ran under ${harness}; this build cannot resume it`,
+    );
+    this.name = 'SessionHarnessMismatchError';
+  }
+}
+
+/**
+ * Resolve a CLI resume query without ever choosing the first ambiguous row.
+ *
+ * `opts.harness` is the harness the caller resumes; only `claude` (`remi --resume`) has a caller
+ * (#1179 removed the branch that matched another harness's own session id: `remi --sessions`
+ * prints the whole resume command, and `remi codex resume <thread id>` takes a whole thread id,
+ * so nothing resolves a Codex record by remi id or prefix). An exact or prefix Remi id that
+ * names a record of another harness throws `SessionHarnessMismatchError`, so a Codex session is
+ * never resumed as a Claude one. The fallback matches `claudeSessionId` of Claude records only,
+ * so a non-Claude record can never be found by a Claude id. Without `opts.harness` a Remi id
+ * resolves whatever the record's harness.
+ */
 export function resolveStoredSession(
   sessions: readonly StoredSession[],
   query: string,
+  opts: { readonly harness?: 'claude' } = {},
 ): StoredSession | null {
+  const { harness } = opts;
+  // The type already refuses another harness; a cast around it must not get a Claude record back.
+  if (harness !== undefined && harness !== DEFAULT_HARNESS) {
+    throw new Error(`resolveStoredSession resolves ${DEFAULT_HARNESS} sessions only`);
+  }
+  const checked = (session: StoredSession | null): StoredSession | null => {
+    if (session && harness !== undefined && storedHarness(session) !== harness) {
+      throw new SessionHarnessMismatchError(session);
+    }
+    return session;
+  };
+
   const exactRemi = sessions.filter((session) => session.remiSessionId === query);
   if (exactRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, exactRemi.length);
   }
-  if (exactRemi.length === 1) return exactRemi[0] ?? null;
+  if (exactRemi.length === 1) return checked(exactRemi[0] ?? null);
 
   const prefixRemi = sessions.filter((session) => session.remiSessionId.startsWith(query));
   if (prefixRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, prefixRemi.length);
   }
-  if (prefixRemi.length === 1) return prefixRemi[0] ?? null;
+  if (prefixRemi.length === 1) return checked(prefixRemi[0] ?? null);
 
   return selectClaudeSessionMatch(
-    sessions.filter((session) => session.claudeSessionId === query),
+    sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
     query,
   );
 }
@@ -712,7 +817,11 @@ export class SessionStore {
   /** Find a session by its Claude session ID. */
   findByClaudeSessionId(claudeSessionId: string): StoredSession | null {
     const sessions = this.read();
-    const matches = sessions.filter((s) => s.claudeSessionId === claudeSessionId);
+    // Claude records only: a record of another harness never answers to a
+    // Claude id, whatever its `claudeSessionId` column holds (#1176).
+    const matches = sessions.filter(
+      (s) => isClaudeRecord(s) && s.claudeSessionId === claudeSessionId,
+    );
     return selectClaudeSessionMatch(matches, claudeSessionId);
   }
 
@@ -726,10 +835,16 @@ export class SessionStore {
     return matches[0] ?? null;
   }
 
-  /** Get the most recent session (by startedAt). */
-  getMostRecent(): StoredSession | null {
+  /**
+   * Get the most recent session (by startedAt). With `harness`, the most
+   * recent record of that harness (#1176): `remi --resume` asks for `claude`,
+   * so a newer Codex session is not picked as the one to resume. Without it,
+   * the newest record of any harness.
+   */
+  getMostRecent(harness?: HarnessId): StoredSession | null {
     const sessions = this.list();
-    return sessions[0] ?? null;
+    if (harness === undefined) return sessions[0] ?? null;
+    return sessions.find((s) => storedHarness(s) === harness) ?? null;
   }
 
   /** Mark a session as exited. */
@@ -753,12 +868,21 @@ export class SessionStore {
    * callers that mirror the binding elsewhere don't need a second disk read — a
    * separate read could race a concurrent purgeStale() and observe a null record
    * mid-rotation (#577). Returns null when no record exists (a no-op, as before).
+   * Throws for a record of another harness: its identity is not a Claude id.
    */
   updateClaudeSessionId(remiSessionId: UUID, claudeSessionId: string): StoredSession | null {
     return this.withWriteLock(() => {
       const sessions = this.read();
       assertUniqueSessionIdentities(sessions);
       const session = sessions.find((s) => s.remiSessionId === remiSessionId);
+      if (session && !isClaudeRecord(session)) {
+        // A non-Claude record keeps its own identity in `harnessSessionId`
+        // (`updateHarnessIdentity`); a Claude id written onto it would make
+        // it answer to both (#1176).
+        throw new Error(
+          `updateClaudeSessionId: session ${remiSessionId} belongs to harness ${storedHarness(session)}, not claude`,
+        );
+      }
       if (session) {
         session.claudeSessionId = claudeSessionId;
         assertUniqueSessionIdentities(sessions);
@@ -766,6 +890,48 @@ export class SessionStore {
         return session;
       }
       return null;
+    });
+  }
+
+  /**
+   * Record a non-Claude harness's own session id on a session (#1176), the
+   * counterpart of `updateClaudeSessionId`: it sets `harness` and
+   * `harnessSessionId` together, returns the updated record, and returns null
+   * when no record exists. Two things are refused, by throwing. `claude`: its
+   * record stores neither field (ADR 0032) and its id is `claudeSessionId`, so
+   * writing `harness: 'claude'` would give Claude records two shapes. A record
+   * that names a different harness: a record is created naming its own
+   * (`preAssign`), and this only fills in the id. It also rejects a second
+   * active record holding the same pair, before writing.
+   */
+  updateHarnessIdentity(
+    remiSessionId: UUID,
+    harness: Exclude<HarnessId, 'claude'>,
+    harnessSessionId: string,
+  ): StoredSession | null {
+    if ((harness as string) === DEFAULT_HARNESS) {
+      throw new Error(
+        'updateHarnessIdentity does not take claude: a Claude identity is claudeSessionId (use updateClaudeSessionId)',
+      );
+    }
+    return this.withWriteLock(() => {
+      const sessions = this.read();
+      assertUniqueSessionIdentities(sessions);
+      const session = sessions.find((s) => s.remiSessionId === remiSessionId);
+      if (!session) return null;
+      if (storedHarness(session) !== harness) {
+        // The record is created naming its harness (`preAssign`); this only
+        // fills in the id. Re-labeling a record would leave a Claude row
+        // carrying another harness's id, or the reverse.
+        throw new Error(
+          `updateHarnessIdentity: session ${remiSessionId} belongs to harness ${storedHarness(session)}, not ${harness}`,
+        );
+      }
+      session.harness = harness;
+      session.harnessSessionId = harnessSessionId;
+      assertUniqueSessionIdentities(sessions);
+      this.write(sessions);
+      return session;
     });
   }
 }

@@ -15,7 +15,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FIXTURE_BUILDERS } from './builders.ts';
+import { FIXTURE_BUILDERS, FIXTURE_VARIANTS } from './builders.ts';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +25,10 @@ function writeJson(name: string, value: unknown): void {
 
 for (const [type, build] of Object.entries(FIXTURE_BUILDERS)) {
   writeJson(type, build());
+}
+
+for (const [name, variant] of Object.entries(FIXTURE_VARIANTS)) {
+  writeJson(name, variant.build());
 }
 
 // A message type deliberately absent from the registry, pinning the
@@ -37,4 +41,6 @@ writeJson('__unknown_type__', {
   timestamp: '2026-01-01T00:00:00.000Z',
 });
 
-console.log(`Wrote ${Object.keys(FIXTURE_BUILDERS).length + 1} protocol fixtures to ${DIR}`);
+console.log(
+  `Wrote ${Object.keys(FIXTURE_BUILDERS).length + Object.keys(FIXTURE_VARIANTS).length + 1} protocol fixtures to ${DIR}`,
+);

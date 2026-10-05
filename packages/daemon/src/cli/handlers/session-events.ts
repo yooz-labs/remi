@@ -133,21 +133,32 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
-      // Decorate daemon-sourced sessions with their pre-assigned Claude
-      // binding (#429). transcriptPath comes from the harness, the same
-      // derivation every other transcript-path site uses, so the client can
-      // show "you are talking to port X / claude <short-uuid>" without
-      // round-tripping.
+      // Decorate daemon-sourced sessions with their harness identity (#1179) and,
+      // for a Claude session, its pre-assigned binding (#429): `harness` always,
+      // `harnessSessionId` once known (for Claude it equals `claudeSessionId`).
+      // transcriptPath comes from the harness, the same derivation every other
+      // transcript-path site uses, so the client can show "you are talking to
+      // port X / claude <short-uuid>" without round-tripping.
       // A failed lookup on any one entry must not nuke the entire list
       // response — the connection would hang waiting for a reply. Fall
       // back to the undecorated entry on per-entry failure.
       const daemonSessionsRaw = sessionRegistry.listSessions();
       const daemonSessions = daemonSessionsRaw.map((s) => {
         try {
-          const binding = bindingStore.get(s.sessionId as UUID);
-          if (!binding?.claudeSessionId) return s;
-          const transcriptPath = harness.transcriptPath(s.projectPath, binding.claudeSessionId);
-          return { ...s, claudeSessionId: binding.claudeSessionId, transcriptPath };
+          // Null: no record, or a harness this build does not know. Neither is guessed at.
+          const identity = bindingStore.getIdentity(s.sessionId as UUID);
+          if (!identity) return s;
+          const { harness: harnessName, harnessSessionId } = identity;
+          const named = {
+            ...s,
+            harness: harnessName,
+            ...(harnessSessionId !== null && { harnessSessionId }),
+          };
+          if (harnessName !== 'claude' || harnessSessionId === null) return named;
+          const transcriptPath = harness.transcriptPath(s.projectPath, harnessSessionId);
+          // No file to name (a harness without a transcript): decorate the id only.
+          if (transcriptPath === null) return { ...named, claudeSessionId: harnessSessionId };
+          return { ...named, claudeSessionId: harnessSessionId, transcriptPath };
         } catch (err) {
           logError(
             `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,

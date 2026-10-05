@@ -33,6 +33,24 @@ function makeSession(overrides: Partial<StoredSession> = {}): StoredSession {
   };
 }
 
+describe('AmbiguousSessionIdentityError', () => {
+  // A Claude or remi id is a random v4 UUID, so its first eight characters name it; a Codex
+  // thread id is a UUIDv7 that starts with a timestamp, so its last eight do (review Q2).
+  test('names a Claude or remi id by its first eight characters and a harness id by its last eight', () => {
+    const v4 = 'aabbccdd-1111-4222-8333-444455556666';
+    const v7 = '01a106f2-2f1c-7a35-9d4e-8b6f1c2d3e4a';
+    expect(new AmbiguousSessionIdentityError('Claude', v4, 2).message).toBe(
+      'Ambiguous Claude session ID aabbccdd: 2 records; refusing to choose one',
+    );
+    expect(new AmbiguousSessionIdentityError('Remi', v4, 3).message).toBe(
+      'Ambiguous Remi session ID aabbccdd: 3 records; refusing to choose one',
+    );
+    expect(new AmbiguousSessionIdentityError('codex', v7, 2).message).toBe(
+      'Ambiguous codex session ID 1c2d3e4a: 2 records; refusing to choose one',
+    );
+  });
+});
+
 describe('SessionStore', () => {
   let filePath: string;
   let store: SessionStore;

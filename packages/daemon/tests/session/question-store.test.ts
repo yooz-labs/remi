@@ -202,6 +202,30 @@ describe('QuestionStore (#888)', () => {
       expect(store.get(hookless as UUID)).not.toBeNull();
     });
 
+    test('the eviction warning names the text, and the length only when the store is told to redact it (#1178)', () => {
+      const lines: string[] = [];
+      const original = console.warn;
+      console.warn = (line: string) => lines.push(line);
+      try {
+        for (const redactText of [false, true]) {
+          const store = new QuestionStore(generateId() as UUID, {}, { redactText });
+          const ids: string[] = [];
+          for (let i = 0; i < 9; i++) {
+            const id = generateId();
+            ids.push(id);
+            store.add({ ...mkQuestion(id), text: `Allow Codex to run: sk-command-${i}` });
+          }
+        }
+      } finally {
+        console.warn = original;
+      }
+      const [plain, redacted] = lines;
+      expect(plain).toContain('text="Allow Codex to run: sk-command-0"');
+      expect(redacted).toContain('chars=');
+      expect(redacted).not.toContain('sk-command');
+      expect(redacted).not.toContain('Allow Codex');
+    });
+
     test('a throwing guard counts as not pinned (the plain cap applies)', () => {
       const store = new QuestionStore(
         generateId() as UUID,
