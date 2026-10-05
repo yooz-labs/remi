@@ -458,7 +458,7 @@ export function createCodexSession(
     threadId: () => trackedId,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
     messageApi,
-    // A catch-up or a held item that finishes after the session was disposed sends nothing.
+    // The flag is set first in dispose(), before the chat's own: a send in between is dropped here.
     sendAndRecord: (message) => {
       if (!disposed) ctx.sendAndRecord(message);
     },
@@ -541,11 +541,20 @@ export function createCodexSession(
       else statuses.delete(threadId);
       publish();
     },
+    // Live chat items are held from the moment the request is sent, not from its success: the
+    // app-server may write an item right behind the response, in one chunk, and the client hands
+    // over every frame of a chunk before a callback of the response runs.
+    onAttaching: () => chat.attaching(),
+    onAttachFailed: () => chat.attachFailed(),
     onAttached: () => {
-      decisions.handleReattached();
-      // What completed before this attach is never announced live (the first prompt of a new thread,
-      // anything between a drop and a re-attach): read it once now. It never rejects.
-      void chat.catchUp();
+      try {
+        decisions.handleReattached();
+      } finally {
+        // What completed before this attach is never announced live (the first prompt of a new
+        // thread, anything between a drop and a re-attach): read it once now, and end the hold
+        // `onAttaching` began, whatever the line above did. It never rejects.
+        void chat.catchUp();
+      }
     },
     log,
     ...deps.tracker,
@@ -591,6 +600,9 @@ export function createCodexSession(
       tracker.dispose();
       client.stop();
       decisions.dispose();
+      // Drops what the chat holds, and stops it from building a message: a message is built through
+      // the session's MessageAPI, which sends structured output on a path `disposed` cannot stop.
+      chat.dispose();
     },
   };
 }

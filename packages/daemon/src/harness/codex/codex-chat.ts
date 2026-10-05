@@ -31,31 +31,63 @@
  *
  * Live messages go out through the session's `sendAndRecord`, structured by the session's
  * own MessageAPI, as Claude's binder does, so a client connected now sees them and one
- * connecting later replays them.
+ * connecting later replays them. The message is built once: when a send fails the built
+ * message is kept for the retry, because the MessageAPI sent its structured output when it
+ * built it and a rebuild would send that twice.
  *
  * What completed BEFORE remi attached (the first prompt of every new thread, and anything
  * between a reconnect's drop and its re-attach) is never announced live: item and turn frames
  * reach only the connection that is attached (`expA-accept.jsonl`: the second connection never
- * receives the first `userMessage`). So after each successful attach the session calls
- * `catchUp`: ONE internal read of the thread's history through the same paging code as
- * `readHistory` (at most 5 pages, 3 s a request), whose items not yet delivered go out through
- * `sendAndRecord`. It is delivered only when the whole thread fits in those pages: a longer
- * thread is left to an explicit read (the oldest 500 items are not what is missing). Live items
- * that arrive while it runs are held (at most 256, then sent at once) and go out after it, so
- * a prompt is not preceded by the answer it caused. A failure is logged without content and
- * never breaks the attach; a reconnect sends nothing twice (the delivered ids are remembered,
- * the last 1024).
+ * receives the first `userMessage`). So the session tells the chat about each attach
+ * (`attaching` when `thread/resume` is SENT, `catchUp` when it succeeded, `attachFailed` when
+ * it did not), and the chat reads the thread's history once, through the same paging code as
+ * `readHistory`, and sends the items not yet delivered.
+ *
+ * - The history is delivered only when the whole thread fits in ONE page (100 items): a longer
+ *   thread is skipped with a line in the log and left to an explicit read. A catch-up of many
+ *   pages is hundreds of replayed messages, and the replay buffer (1000 messages, of which a
+ *   late client replays the last 200) would lose its earlier records, the rotation and link
+ *   notices among them.
+ * - It goes out as `transcript_content` ONLY, structured by a MessageAPI of its own, as an
+ *   explicit read does: the web client draws an entry from the structure inside its
+ *   `transcript_content`, and a `structured_agent_output` as well would double the replay and,
+ *   in a bound Telegram chat, be one more message per entry.
+ * - Live items are HELD from the moment `thread/resume` is sent until the history has gone out
+ *   (not from the moment it succeeds: the app-server may write an item right behind the
+ *   response, in one chunk, and the client hands over every frame of a chunk before a callback
+ *   of the response runs). They go out after the history, in the order they came, so a prompt is
+ *   not preceded by the answer it caused. The role is read again when they go out: an item of a
+ *   thread that is no longer the session's is dropped.
+ * - The hold ends when a read ends and no attach is out (an attach that is out has a history
+ *   of its own still to come), or when an attach fails with no read running (they go out in
+ *   arrival order at once).
+ * - Bounds: at most 256 items are held. The 257th finds it full: the held ones go out first, in
+ *   order, then it, the history is NOT sent after them (it would be out of order) and one line
+ *   says so; an explicit read has the history. A read takes one page at 3 s a request, so a
+ *   server that never answers holds live chat for 3 s, and one that answers slowly for as long
+ *   as the read (and its follow-ups) lasts: seconds, not unbounded, because there is one page.
+ * - If the tracked thread changed while the read ran (a rotation), the history of the old
+ *   thread is skipped with a line, and the follow-up read gives the new thread its own.
+ * - A failure is logged without content and never breaks the attach; a reconnect sends nothing
+ *   twice (the delivered ids are remembered, the last 1024).
+ * - `dispose` drops what is held and sends nothing more, and builds nothing more: building a
+ *   message makes the MessageAPI send structured output through a path the session cannot
+ *   stop.
  *
  * An explicit read (`readHistory`) is bounded too: a cursor that comes back (any earlier one,
  * not only the last), 1000 pages or 60 seconds (checked after each page, so a request in flight
  * can run past it, up to its own 15 s timeout) end it, one read of a session runs at a time
  * with one waiting (a third is refused), and it stops asking as soon as `emit` throws, which
- * the transcript handler does when a send to the requester is refused. Only the session's own (`main`) thread counts: a subagent's
- * items and another window's are not this chat (subagent chat is out of scope).
+ * the transcript handler does when a send to the requester is refused. Only the session's own
+ * (`main`) thread counts: a subagent's items and another window's are not this chat (subagent
+ * chat is out of scope).
  *
- * What no real frame has shown yet (live step LV-5): the response of `thread/items/list`
- * (the shape here is the generated schema's `ThreadItemsListResponse`), its paging, and
- * the error it answers for a thread with nothing written.
+ * A turn or item id longer than 200 characters is treated as no id (`ID_MAX_LENGTH`): an item
+ * with one is not chat, and is not shown; the id is copied into every message and remembered.
+ * A command and its output are cut to 500 code points each, whole characters.
+ *
+ * What no real frame has shown yet (live step LV-5): see ADR 0033 (Phase 6 amendment, item 9),
+ * the single source of that list.
  *
  * Message prose (a user's or the agent's text) is NOT escaped, deliberately: it is shown as the
  * model or the person wrote it, and escaping would break an emoji sequence at its zero-width
@@ -84,14 +116,19 @@ import { type ThreadItemInfo, parseThreadItem } from './thread-protocol.ts';
 const HISTORY_PAGE_SIZE = 100;
 /** An explicit history read stops after this many pages, so a cursor that never ends cannot loop for ever. */
 const HISTORY_MAX_PAGES = 1000;
-/** The catch-up at an attach reads at most this many pages, and delivers only a thread that ends within them. */
-const CATCH_UP_MAX_PAGES = 5;
+/**
+ * The catch-up at an attach reads ONE page and delivers only a thread that ends within it: a longer
+ * thread would be hundreds of replayed messages (see the header).
+ */
+const CATCH_UP_MAX_PAGES = 1;
 /** An explicit history read stops once a page has passed this long after its start. */
 const EXPLICIT_READ_DEADLINE_MS = 60_000;
 /** How long one request of the catch-up may take before it is given up on (the client's own is 15 s). */
 const CATCH_UP_REQUEST_TIMEOUT_MS = 3000;
-/** How many live items are held while a catch-up reads; more are sent at once. */
+/** How many live items are held until the history has gone out; the next one ends the hold. */
 const HOLD_MAX = 256;
+/** How many built messages whose send failed are kept for a retry. */
+const BUILT_MAX = 64;
 /** How many delivered items are remembered to drop a repeat of one. */
 const LIVE_MEMORY = 1024;
 /** Claude bounds a tool's input and output to this many characters; the shell entry, to this many code points. */
@@ -123,11 +160,23 @@ export interface CodexChat extends HarnessChat {
   /** Feed every notification of the app-server; only an `item/completed` of the main thread does anything. */
   handleNotification(method: string, params: unknown): void;
   /**
+   * A `thread/resume` for the tracked thread is about to be sent: hold live items from now on, so
+   * one written right behind the response is not sent before the history that comes before it.
+   */
+  attaching(): void;
+  /**
+   * The announced attach ended without attaching: release what was held, in arrival order, unless
+   * a catch-up is reading (it releases them when it ends).
+   */
+  attachFailed(): void;
+  /**
    * The attach to the thread succeeded (the first time, after a retry, a reconnect or a rotation):
    * deliver what completed before it. Never rejects; a call while one runs is not lost (one more
    * read follows it).
    */
   catchUp(): Promise<void>;
+  /** The session is gone: drop what is held, and send and build nothing more. */
+  dispose(): void;
 }
 
 /** What could not be read, in words with no server text: the app-server's own message may carry an id or a path. */
@@ -287,12 +336,24 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
   const clockMs = deps.clockMs ?? (() => performance.now());
   /** Items already sent to every client (live or by a catch-up), oldest first. */
   const delivered = new Set<string>();
+  /** Messages built whose send failed, kept for the retry, oldest first (see the header). */
+  const built = new Map<string, TranscriptContentMessage>();
+  let disposed = false;
 
   const remember = (id: string): void => {
     delivered.add(id);
     if (delivered.size > LIVE_MEMORY) {
       const oldest = delivered.values().next().value;
       if (oldest !== undefined) delivered.delete(oldest);
+    }
+  };
+
+  const keepBuilt = (id: string, message: TranscriptContentMessage): void => {
+    built.delete(id);
+    built.set(id, message);
+    if (built.size > BUILT_MAX) {
+      const oldest = built.keys().next().value;
+      if (oldest !== undefined) built.delete(oldest);
     }
   };
 
@@ -396,28 +457,73 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
   let reading: Promise<unknown> | null = null;
   let waiting = false;
 
-  /** Send one entry to every client, once: a repeat is dropped, and a failed send is tried again if it is delivered again. */
-  function deliver(entry: Entry, completedAtMs: number | null): void {
-    if (delivered.has(entry.id)) return;
+  /**
+   * Send one entry to every client, once: a repeat is dropped, and a failed send is tried again if it
+   * is delivered again. `api` structures a message that has to be built: the session's own for a live
+   * item, one of the catch-up's own for history (which sends no structured output).
+   */
+  function deliver(
+    entry: Entry,
+    completedAtMs: number | null,
+    api: Pick<MessageAPI, 'handleMessage' | 'getMessage'>,
+  ): void {
+    // A disposed session builds nothing: building makes the MessageAPI send structured output.
+    if (disposed || delivered.has(entry.id)) return;
     try {
-      const message = buildMessage(sessionId, entry, completedAtMs, deps.messageApi);
-      if (message === null) return;
+      let message = built.get(entry.id) ?? null;
+      if (message === null) {
+        message = buildMessage(sessionId, entry, completedAtMs, api);
+        if (message === null) return;
+      }
+      keepBuilt(entry.id, message);
       deps.sendAndRecord(message);
+      built.delete(entry.id);
       remember(entry.id);
     } catch (error) {
       deps.log(`could not send a chat message (${describeError(error)})`);
     }
   }
 
-  /** Live items that arrived while a catch-up read runs, in arrival order; null when none runs. */
-  let held: Array<{ entry: Entry; completedAtMs: number | null }> | null = null;
+  /** A live item kept until the history has gone out, with the thread it was for. */
+  interface Held {
+    threadId: string;
+    entry: Entry;
+    completedAtMs: number | null;
+  }
+  /** Live items waiting for the history; `overflowed` once one found it full. */
+  interface Hold {
+    items: Held[];
+    overflowed: boolean;
+  }
+  let hold: Hold | null = null;
+  /** A `thread/resume` has been sent and has neither failed nor been followed by `catchUp`. */
+  let attachPending = false;
+
+  /** Start holding live items (or keep holding: one hold covers an attach and the read after it). */
+  function startHold(): void {
+    if (hold === null || hold.overflowed) hold = { items: [], overflowed: false };
+  }
+
+  /** Send a held item live, unless its thread is no longer the session's. */
+  function deliverHeld(held: Held): void {
+    if (deps.threadRole(held.threadId) !== 'main') return;
+    deliver(held.entry, held.completedAtMs, deps.messageApi);
+  }
+
+  /** End the hold: what it holds goes out, in arrival order. */
+  function releaseHold(): void {
+    const ended = hold;
+    hold = null;
+    if (ended === null || disposed) return;
+    for (const held of ended.items) deliverHeld(held);
+  }
 
   async function catchUpOnce(): Promise<void> {
+    startHold();
+    const mine = hold as Hold;
     const threadId = deps.threadId();
     if (threadId === null) return;
     const collected: Array<{ entry: Entry; completedAtMs: number | null }> = [];
-    const queue: NonNullable<typeof held> = [];
-    held = queue;
     let end: PagesEnd | null = null;
     try {
       end = await readPages(
@@ -432,16 +538,24 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       const why = error instanceof CodexHistoryError ? error.message : describeError(error);
       deps.log(`the chat catch-up failed (${why})`);
     }
-    held = null;
-    if (end === 'complete') {
-      for (const { entry, completedAtMs } of collected) deliver(entry, completedAtMs);
-    } else if (end !== null) {
+    if (disposed) return;
+    // The hold overflowed (said so then): what went out is later than this history.
+    if (mine.overflowed || end === null) return;
+    if (deps.threadId() !== threadId) {
       deps.log(
-        `the chat catch-up was skipped: the thread is longer than ${CATCH_UP_MAX_PAGES} pages or its cursor repeated, so an explicit history read has it`,
+        'the chat catch-up was skipped: the tracked thread changed while it read, so the follow-up read has the new thread',
       );
+      return;
     }
-    // What arrived meanwhile goes out after what came before it.
-    for (const { entry, completedAtMs } of queue) deliver(entry, completedAtMs);
+    if (end !== 'complete') {
+      deps.log(
+        'the chat catch-up was skipped: the thread is longer than one page of 100 items (or its cursor repeated), so an explicit history read has it',
+      );
+      return;
+    }
+    // Transcript only, by an API of its own: no structured output reaches every connection.
+    const api = new MessageAPI({ sessionId });
+    for (const { entry, completedAtMs } of collected) deliver(entry, completedAtMs, api);
   }
 
   let catching: Promise<void> | null = null;
@@ -472,7 +586,22 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       }
     },
 
+    attaching() {
+      if (disposed) return;
+      attachPending = true;
+      startHold();
+    },
+
+    attachFailed() {
+      if (disposed) return;
+      attachPending = false;
+      // A read that is running releases the hold when it ends, after the history.
+      if (catching === null) releaseHold();
+    },
+
     catchUp() {
+      if (disposed) return Promise.resolve();
+      attachPending = false;
       if (catching !== null) {
         again = true;
         return catching;
@@ -482,21 +611,29 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
           do {
             again = false;
             await catchUpOnce();
-          } while (again);
+          } while (again && !disposed);
         } catch (error) {
           // catchUpOnce never throws; this is for a bug, which must not break the attach.
           deps.log(`the chat catch-up failed (${describeError(error)})`);
         } finally {
-          held = null;
           catching = null;
+          // An attach that is out has a history of its own still to come: the hold stays for it.
+          if (!attachPending) releaseHold();
         }
       })();
       catching = running;
       return running;
     },
 
+    dispose() {
+      disposed = true;
+      hold = null;
+      again = false;
+      built.clear();
+    },
+
     handleNotification(method, params) {
-      if (method !== 'item/completed' || !isRecord(params)) return;
+      if (disposed || method !== 'item/completed' || !isRecord(params)) return;
       const threadId = params['threadId'];
       if (typeof threadId !== 'string' || deps.threadRole(threadId) !== 'main') return;
       const item = parseThreadItem(params['item']);
@@ -505,12 +642,23 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       const completed = params['completedAtMs'];
       const completedAtMs =
         typeof completed === 'number' && Number.isFinite(completed) ? completed : null;
-      // A catch-up is reading the history this item may belong after: hold it, up to a bound.
-      if (held !== null && held.length < HOLD_MAX) {
-        held.push({ entry, completedAtMs });
-        return;
+      const current = hold;
+      if (current !== null && !current.overflowed) {
+        if (current.items.length < HOLD_MAX) {
+          current.items.push({ threadId, entry, completedAtMs });
+          return;
+        }
+        // Full. What was held goes out first, in the order it came, then this item, and the history
+        // is not sent after them (it would be out of order): one line says so.
+        current.overflowed = true;
+        deps.log(
+          `more than ${HOLD_MAX} chat items arrived before the history went out; they were sent in order and the catch-up was dropped, so an explicit history read has the history`,
+        );
+        const items = current.items;
+        current.items = [];
+        for (const held of items) deliverHeld(held);
       }
-      deliver(entry, completedAtMs);
+      deliver(entry, completedAtMs, deps.messageApi);
     },
   };
 }
