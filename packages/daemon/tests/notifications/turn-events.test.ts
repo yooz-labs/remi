@@ -153,6 +153,7 @@ describe('createTurnEventSink', () => {
         opts: {
           title: 'my-project: turn complete',
           body: 'All done, the tests pass.',
+          legacyEnabled: false,
           pushSecret: 'shh',
           kind: 'turn_complete',
         },
@@ -160,7 +161,7 @@ describe('createTurnEventSink', () => {
       // Dismiss-only: nothing to answer, nothing to collapse on.
       expect(sent[0]?.opts.category).toBeUndefined();
       expect(sent[0]?.opts.questionId).toBeUndefined();
-      expect(logs).toEqual(['[TurnComplete] my-project: turn complete']);
+      expect(logs).toEqual(['[TurnComplete] push requested']);
     });
 
     test('the body is one line and bounded, like the title', async () => {
