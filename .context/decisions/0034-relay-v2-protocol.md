@@ -109,6 +109,12 @@ Constants:
 The 1 MiB WebSocket message ceiling of Cloudflare Workers is the reason `MAX_FRAME` is half of it.
 That ceiling is the documented figure and is unverified here; R2 must confirm it against the deployed runtime and lower `MAX_PLAINTEXT` if it is wrong.
 
+**R2 finding (2026-10-04, read from Cloudflare's documentation, not measured on the deployed runtime).**
+Cloudflare documents 32 MiB (33,554,432 bytes) for a WebSocket message received by a Worker or a Durable Object, since 2025-10-31; the figure was 1 MiB before, and a larger message closes the socket with code 1009 ([Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/), [Workers WebSockets](https://developers.cloudflare.com/workers/runtime-apis/websockets/), [changelog 2025-10-31](https://developers.cloudflare.com/changelog/post/2025-10-31-increased-websocket-message-size-limit/)).
+`MAX_FRAME` (524,313 bytes) is below both figures, so `MAX_PLAINTEXT` stays 524288.
+The Worker also refuses a text message above `MAX_CONTROL_TEXT` and a binary message above `MAX_FRAME` itself, by size only (`docs/relay-worker-v2.md`); a test through the real Durable Object relays `MAX_FRAME` bytes intact and refuses `MAX_FRAME + 1`.
+Measuring it on the deployed Worker is left to the owner and is listed as unverified in `docs/relay-worker-deploy-runbook.md`.
+
 ## 3. Identities and the room id
 
 - Machine identity `(M_sk, M_pk)`: Ed25519, owned by the hub.

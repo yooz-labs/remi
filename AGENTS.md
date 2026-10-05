@@ -105,7 +105,7 @@ remi/
 ├── packages/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
-│   ├── signaling/       # Cloudflare Workers signaling / relay service
+│   ├── signaling/       # Cloudflare relay Worker (machine rooms, admission, global limiter, legacy /push)
 │   ├── macos/           # Native Mac app (Swift)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
@@ -123,7 +123,7 @@ Key directories to know:
 
 - `packages/daemon/src` — CLI, PTY / session management, transcript parsing, adapters, auth, mDNS
 - `packages/shared/src` — protocol and shared types consumed across packages
-- `packages/signaling/src` — Durable Object room logic and signaling utilities
+- `packages/signaling/src`: the relay Worker, with the front door (`index.ts`), the per-machine room (`connection-room.ts`), admission checks, the global limiter, and the legacy `/push` with APNS
 - `packages/web/src` — React UI, connection flow, chat / session components, hooks, lib utilities
 
 ## Differentiators
@@ -192,10 +192,19 @@ safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
 `network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, `--permanent-code` wins over `relay = false`, and `--no-relay` wins over both.
 With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `cli.ts` prints a notice (how to enable it, what to use today, and how to silence it with `network.relay = false` or `--no-relay`) and creates no adapter, so the daemon holds no connection to the Worker.
 `RelayAdapter` fails closed on its own as the second layer: it refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound `relay` payload before it is parsed (the signaling client has already parsed the outer frame), and acts on `peer-connected` and `peer-disconnected` only for the Worker role `client`.
-The role check matters because the Worker gives a socket that never joined the role `pending` and tells the host whenever any socket closes (`connection-room.ts`), and because the Worker can deliver a `relay` frame to the host with no peer ever having joined, so the frame drop is what closes that path.
+The role check was written against the pre-R2 Worker, whose room gave a socket that never joined the role `pending`, told the host whenever any socket closed and could deliver a `relay` frame to the host with no peer ever having joined, so the frame drop is what closed that path.
+That Worker is gone from this repository (R2, #1197, see the next paragraph); the adapter still speaks its v1 protocol until R3 (#1198) deletes it.
 A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the setting and now gets the boot notice instead of a relay.
 No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
 The rebuild is planned (`.context/strategy-2026-10.md` section 9, `.context/relay-rebuild-plan-2026-10.md`); nothing remote ships through the relay today.
+
+**The Worker in this repository is v2 (R2, #1197), and it is not deployed.**
+It is one Durable Object per machine, named by the room id (the hash of the machine's public key), with no time-to-live: a socket is admitted by a signature over a Worker-issued nonce (the host by the machine key, a client by an enrolled device key or a single-use pairing ticket) before anything else happens, the enrolled set changes only on the host's `enroll` and `revoke`, and a client and the host's pipe are then paired and every message is forwarded unparsed.
+Its rate limits go through one global Durable Object (`GlobalLimiter`), and its numbers are unmeasured defaults.
+What it sees and what it does not, its routes and messages, its limits and the known gaps are in `docs/relay-worker-v2.md`; the deploy steps for the owner are in `docs/relay-worker-deploy-runbook.md`.
+`/connect/<code>` and `/answer/<code>` are deleted from it, so the v1 `RelayAdapter` cannot reach it, and no shipped client speaks v2: the first real endpoints are R3 and R4, and until then the only ones are the fake host and fake client of `packages/signaling/tests/e2e`.
+Those tests run the real Durable Object in workerd under Miniflare (`bun test packages/signaling`); that is not the deployed Cloudflare runtime, and the hibernation threshold, alarm precision and billing there are unverified.
+The legacy `POST /push` is unchanged and stays until push privacy (R5) ships.
 
 **`--auth --permanent-code` is authenticated, not paired.**
 `cli.ts` builds the Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed, and `verifyResponse` adds an unknown key to `authorized_keys` and persists it.
@@ -633,7 +642,7 @@ those two are both exactly `{token, title, body}`.
 - Numbered option text appears only in the terminal UI, not in hook events.
 - `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
 - A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
-- Redeploy the signaling server after any `packages/signaling/` change.
+- Redeploy the signaling server after any `packages/signaling/` change (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
 
 ### No local model
 

@@ -1,14 +1,20 @@
-# Remi Signaling Worker
-# Handles WebRTC signaling for NAT traversal
+# Remi relay Worker (R2, ADR 0034): a courier for end-to-end encrypted frames
+# between a machine and its enrolled devices, plus the legacy /push route.
+# Deploy it only from the runbook in docs/relay-worker-deploy-runbook.md.
 
 name = "remi-signaling"
 main = "src/index.ts"
 compatibility_date = "2025-01-10"
 
-# Use Durable Objects for connection state
+# One ConnectionRoom per machine (named by the room id), one GlobalLimiter for
+# every rate limit.
 [[durable_objects.bindings]]
 name = "CONNECTIONS"
 class_name = "ConnectionRoom"
+
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "GlobalLimiter"
 
 [[migrations]]
 tag = "v1"
@@ -21,16 +27,20 @@ tag = "v2"
 tag = "v3"
 deleted_classes = ["DeviceRoom"]
 
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["GlobalLimiter"]
+
 # Development settings
 [dev]
 port = 8787
 local_protocol = "http"
 
 # Environment variables
+# The rooms have no time-to-live, so the old code and timeout variables are gone.
+# The abuse limits (src/limits.ts) are unmeasured defaults; set a variable of the
+# same name here to change one, for example LIMIT_IP_CLIENT = "10".
 [vars]
-MAX_CONNECTIONS_PER_ROOM = "2"
-CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
-CODE_LENGTH = "8"
 APNS_BUNDLE_ID = "live.yooz.remi"
 # APNS_KEY_ID, APNS_TEAM_ID, and APNS_PRIVATE_KEY must be set as secrets:
 #   wrangler secret put APNS_KEY_ID

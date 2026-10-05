@@ -4,6 +4,28 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Relay Worker v2: one room per machine, admitted by signature (#1197, [ADR 0034](.context/decisions/0034-relay-v2-protocol.md))
+
+The Worker in `packages/signaling` is rebuilt for relay protocol v2.
+It is not deployed by this change (the owner deploys, from `docs/relay-worker-deploy-runbook.md`), and no shipped client speaks it yet: the daemon's v1 adapter cannot reach it, and the relay stays off by default.
+
+#### Changed
+
+- One Durable Object per machine, named by the room id (the hash of the machine public key), with no time-to-live and an edge `ping`/`pong`.
+- A socket is admitted by an Ed25519 signature over a Worker-issued single-use nonce: the host by the machine key, a client by an enrolled device key or a single-use pairing ticket.
+  The enrolled set changes only on `enroll` and `revoke` from the admitted host; a revoked device is closed at the edge.
+- The Worker pairs a client with the host's pipe and forwards bytes it never parses; it never sees a session id, a device name or frame content (`docs/relay-worker-v2.md` lists the metadata it does see).
+- Rate limits go through one global Durable Object (`GlobalLimiter`) and fail closed; a cap on unadmitted sockets, a per-device budget and a client cap bound hello floods.
+  Every limit is an unmeasured default that a Worker variable can change.
+- `isSmallOrderPublicKey` refuses Ed25519 small-order keys at admission and enrollment.
+- The relay Worker is tested end to end: `bun test packages/signaling` runs the real Durable Object in workerd through Miniflare, with a fake host and fake client doing the real v2 handshake.
+
+#### Removed
+
+- The code-named room `/connect/<code>`, the `/answer/<code>` relay, the offer, answer and ice-candidate forwarding, and the Worker variables `MAX_CONNECTIONS_PER_ROOM`, `CONNECTION_TIMEOUT_MS` and `CODE_LENGTH`.
+
+The legacy `POST /push` is unchanged until push privacy ships.
+
 ### Relay: off by default, and closed without authentication (#1193)
 
 `network.relay` now defaults to `false`.

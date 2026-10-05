@@ -52,3 +52,17 @@ export {
   verifyAdmission,
 } from './pairing.ts';
 export { openSeal, pushAad, seal } from './seal.ts';
+export { isSmallOrderPublicKey } from './small-order.ts';
+export {
+  type Admit,
+  type HostCommand,
+  type HostOp,
+  MAX_WORKER_TEXT,
+  type Notice,
+  type WorkerPath,
+  type WorkerRole,
+  decodeAdmit,
+  decodeHostCommand,
+  encodeNotice,
+  parseWorkerPath,
+} from './worker-wire.ts';

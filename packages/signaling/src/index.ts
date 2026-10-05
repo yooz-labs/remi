@@ -1,18 +1,30 @@
 /**
- * Remi Signaling Worker
+ * Remi relay Worker (R2, #1197, ADR 0034).
  *
- * Handles signaling for P2P connections via message relay.
- * Uses Cloudflare Durable Objects for state management.
+ * A courier for end-to-end encrypted frames between a machine (the host) and
+ * the devices enrolled with it. It admits sockets, pairs a client with the
+ * host's pipe and forwards bytes it never parses. With conforming v2 endpoints,
+ * session payloads and device names are encrypted; private keys and the pairing
+ * secret never reach it. Public keys, admission metadata and hello/hello_ack are
+ * visible. The separate legacy /push route still receives plaintext notification data.
  *
- * Endpoints:
- * - GET /connect/:code: WebSocket upgrade for host/client (both use same code-based room)
- * - GET /health: Health check
+ * Routes (the version is part of the path and is never negotiated):
+ * - GET /v2/host/<rid>: the machine's control socket (WebSocket upgrade)
+ * - GET /v2/client/<rid>: an enrolled device, or one pairing with a ticket
+ * - GET /v2/pipe/<rid>/<cid>: the host's socket for one client connection
+ * - GET /health: health check
+ * - POST /push: the LEGACY plaintext push, unchanged until push privacy (R5) ships
+ *
+ * Deleted by R2: the code-named room `/connect/<code>`, the `/answer/<code>`
+ * relay and the offer, answer and ice-candidate forwarding.
  */
 
 import { errorToString } from '@remi/shared';
+import { parseWorkerPath } from '@remi/shared/relay/index.ts';
 import { sendApnsPush } from './apns.ts';
-import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
+import { GlobalLimiter, withinBudget } from './limiter.ts';
+import { type LimitEnv, limit } from './limits.ts';
 import { RateLimiter } from './rate-limiter.ts';
 
 // Cloudflare-specific types
@@ -20,10 +32,11 @@ import { RateLimiter } from './rate-limiter.ts';
 type DurableObjectNamespace = any;
 
 /** Environment bindings */
-interface Env {
+interface Env extends LimitEnv {
+  /** One room per machine, named by the room id. */
   CONNECTIONS: DurableObjectNamespace;
-  MAX_CONNECTIONS_PER_ROOM: string;
-  CONNECTION_TIMEOUT_MS: string;
+  /** The global rate limiter. */
+  LIMITER: DurableObjectNamespace;
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_PRIVATE_KEY?: string;
@@ -78,8 +91,6 @@ interface PushRequestBody {
   kind?: string;
 }
 
-/** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
-const rateLimiter = new RateLimiter(10, 60_000);
 /**
  * Push budget (epic #603 Phase 2, R3). The old single per-IP limiter (5/60s)
  * was shared across every daemon behind one NAT and across alert + dismiss
@@ -107,8 +118,6 @@ const DISMISS_AUTH_LIMIT = 300;
 const pushAuthRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
 const pushIpRateLimiter = new RateLimiter(5, 60_000);
 const dismissRateLimiter = new RateLimiter(DISMISS_AUTH_LIMIT, 60_000);
-/** Per-IP rate limiter for the answer relay: 10 answers per 60 seconds */
-const answerRateLimiter = new RateLimiter(10, 60_000);
 
 /**
  * A stable, non-secret rate-limit bucket key for an authenticated push identity
@@ -147,65 +156,45 @@ export default {
       });
     }
 
-    // Connect to a room by code (WebSocket upgrade for both host and client)
-    const connectMatch = url.pathname.match(/^\/connect\/([A-Z0-9-]+)$/i);
-    if (connectMatch && request.method === 'GET') {
-      const rawCode = connectMatch[1];
-      const code = normalizeCode(rawCode ?? '');
-
-      if (!code) {
+    // The relay: a WebSocket upgrade to a host, client or pipe route.
+    const route = request.method === 'GET' ? parseWorkerPath(url.pathname) : null;
+    if (route) {
+      if (request.headers.get('Upgrade') !== 'websocket') {
+        return new Response('Expected WebSocket', { status: 426 });
+      }
+      // Limits are global (one Durable Object counts for every isolate) and fail closed: a
+      // request that cannot be counted is refused. A request with no address header shares the
+      // key `unknown` instead of skipping the check.
+      const address = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      const perAddress = {
+        client: limit(env, 'LIMIT_IP_CLIENT'),
+        host: limit(env, 'LIMIT_IP_HOST'),
+        pipe: limit(env, 'LIMIT_IP_PIPE'),
+      }[route.role];
+      const windowMs = limit(env, 'LIMIT_WINDOW_MS');
+      try {
+        const allowed =
+          (await withinBudget(env.LIMITER, `ip:${route.role}:${address}`, perAddress, windowMs)) &&
+          (await withinBudget(
+            env.LIMITER,
+            `rid:${route.ridHex}`,
+            limit(env, 'LIMIT_RID'),
+            windowMs,
+          ));
+        if (!allowed) {
+          return new Response(
+            JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many connection attempts' }),
+            { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
+          );
+        }
+      } catch {
         return new Response(
-          JSON.stringify({ error: 'INVALID_CODE', message: 'Invalid connection code format' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } },
+          JSON.stringify({ error: 'LIMITER_UNAVAILABLE', message: 'Try again shortly' }),
+          { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '5' } },
         );
       }
-
-      // Rate limit per client IP (skip if IP unavailable)
-      const clientIp = request.headers.get('CF-Connecting-IP');
-      if (clientIp && !rateLimiter.check(clientIp)) {
-        return new Response(
-          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many connection attempts' }),
-          { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
-        );
-      }
-
-      // Both host and client connect to the same code-named Durable Object
-      const id = env.CONNECTIONS.idFromName(code);
-      const room = env.CONNECTIONS.get(id);
-
-      // Forward the WebSocket upgrade request (URL contains the code for the DO to extract)
-      return room.fetch(request);
-    }
-
-    // Answer relay (#591): phone -> daemon answer for a held permission, used
-    // when the phone has no live WebSocket (lock-screen / backgrounded). Forwards
-    // the answer into the daemon's room WebSocket. Code-gated like joining the
-    // room; the daemon verifies the Ed25519 `auth` signature before acting.
-    const answerMatch = url.pathname.match(/^\/answer\/([A-Z0-9-]+)$/i);
-    if (answerMatch && request.method === 'POST') {
-      const corsHeaders = {
-        'Access-Control-Allow-Origin': '*',
-        'Content-Type': 'application/json',
-      };
-      const answerCode = normalizeCode(answerMatch[1] ?? '');
-      if (!answerCode) {
-        return new Response(
-          JSON.stringify({ error: 'INVALID_CODE', message: 'Invalid connection code format' }),
-          { status: 400, headers: corsHeaders },
-        );
-      }
-      const answerIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-      if (!answerRateLimiter.check(answerIp)) {
-        return new Response(
-          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many answer requests' }),
-          { status: 429, headers: { ...corsHeaders, 'Retry-After': '60' } },
-        );
-      }
-      // Route to the same code-named room the daemon registered; the DO forwards
-      // the POST body to the host WebSocket (see ConnectionRoom.handleAnswerRelay).
-      const answerRoomId = env.CONNECTIONS.idFromName(answerCode);
-      const answerRoom = env.CONNECTIONS.get(answerRoomId);
-      return answerRoom.fetch(request);
+      // One Durable Object per machine, named by the room id. The room checks the route again.
+      return env.CONNECTIONS.get(env.CONNECTIONS.idFromName(route.ridHex)).fetch(request);
     }
 
     // Push notification trigger endpoint (authenticated, rate-limited)
@@ -398,5 +387,5 @@ export default {
   },
 };
 
-// Export the Durable Object class
-export { ConnectionRoom };
+// Export the Durable Object classes
+export { ConnectionRoom, GlobalLimiter };
