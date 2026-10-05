@@ -590,6 +590,95 @@ describe('ClaudeHarness.createSession', () => {
       }
     }, 15000);
   }
+  test('secure push context real held slot fans out without eviction and dismissal remains absorbing', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      },
+      4,
+      1,
+    );
+    const runtime = contexts.begin(sessionId);
+    const { snapshot: firstRecipient } = await pushRecipient();
+    const { snapshot: secondRecipient } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const first = contexts.capture(runtime, firstRecipient, event);
+    const second = contexts.capture(runtime, secondRecipient, event);
+    if (!first || !second) throw new Error('missing held recipient context');
+    expect(first?.payload.actionable).toBe(true);
+    expect(second?.payload.actionable).toBe(true);
+    expect(
+      contexts.capture(runtime, firstRecipient, { kind: 'turn_complete', logicalId: generateId() }),
+    ).toBeNull();
+    expect(contexts.isCurrent(first)).toBe(true);
+    const host = await relayV2.generateIdentity();
+    const metadata = {
+      ...first.content,
+      machinePublicKey: relayV2.b64u(host.signer.publicKey),
+      rid: Buffer.from(await relayV2.ridOf(host.signer.publicKey)).toString('hex'),
+    };
+    const payload = relayV2.buildPushPayload(first.payload);
+    const signature = await host.signer.sign(
+      await relayV2.buildPushContentSigningInput(metadata, payload),
+    );
+    expect(
+      relayV2.encodeSignedPushContent(metadata, payload, signature).length - payload.length,
+    ).toBe(324);
+    const dismiss = contexts.capture(runtime, firstRecipient, {
+      kind: 'dismiss',
+      logicalId: card.id,
+    });
+    expect(dismiss?.payload).toEqual({ type: 'dismiss', actionable: false });
+    expect(dismiss?.content.collapseId).toBe(first.content.collapseId);
+    expect(contexts.isCurrent(first)).toBe(false);
+    expect(contexts.capture(runtime, firstRecipient, event)).toBeNull();
+    expect(contexts.capture(runtime, firstRecipient, { kind: 'dismiss', logicalId: card.id })).toBe(
+      dismiss,
+    );
+    expect(contexts.isCurrent(second)).toBe(true);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+  });
+
+  test('secure push context real held cards refuse action for truncated and structured content', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const { snapshot: recipient } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const truncated = contexts.capture(runtime, recipient, { ...event, body: '😀'.repeat(140) });
+    expect(truncated?.payload.type).toBe('informational');
+    expect(truncated?.payload.actionable).toBe(false);
+    if (truncated?.payload.type !== 'informational') throw new Error('no informational fallback');
+    expect(new TextEncoder().encode(truncated.payload.body).length).toBeLessThanOrEqual(512);
+    const structured = { ...card, kind: 'multi_question' as const, questions: [] };
+    sessionRegistry.addQuestion(sessionId, structured);
+    const noActions = contexts.capture(runtime, recipient, { ...event, question: structured });
+    expect(noActions?.payload.type).toBe('informational');
+    expect(noActions?.payload.actionable).toBe(false);
+    expect(contexts.isCurrent(truncated)).toBe(false);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+  });
 
   test('push validity: an actual held hook keeps its captured deadline after configuration changes and closes on answer', async () => {
     const { decisions, card, response } = await holdPrompt(false);
