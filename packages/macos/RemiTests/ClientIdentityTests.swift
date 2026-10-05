@@ -17,6 +17,7 @@
 //
 
 import CryptoKit
+import Security
 import XCTest
 
 
@@ -111,6 +112,29 @@ final class ClientIdentityTests: XCTestCase {
         // crypto.ts toHex() is lowercase; the daemon compares strings, so
         // case must match exactly or a correct key would look unauthorized.
         XCTAssertEqual(identity.fingerprint, identity.fingerprint.lowercased())
+    }
+
+    /// R4: the native store must durably hold a validated PKCS8/public record,
+    /// not return a newly generated signer while leaving only a bare seed behind.
+    func testKeychainPersistsPKCS8AndPublicRecord() throws {
+        let identity = ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &result), errSecSuccess)
+        let data = try XCTUnwrap(result as? Data)
+        let record = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            "The real native Keychain entry must be a versioned PKCS8/public record")
+        XCTAssertEqual(record["version"] as? Int, 2)
+        let pkcs8 = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(record["pkcs8"] as? String)))
+        XCTAssertEqual(pkcs8.count, 48)
+        XCTAssertEqual(record["publicKey"] as? String, identity.publicKeyRaw.base64EncodedString())
     }
 
     // MARK: - Signing / verification
