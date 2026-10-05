@@ -49,9 +49,7 @@ async function hub() {
   const dir = home();
   const worker = await startWorker();
   workers.push(worker);
-  const range = reserveRange(1);
-  const port = range.base;
-  range.release();
+  const port = await reserveRange(1, 50, '127.0.0.1');
   const proc = spawn(dir, [
     'serve',
     '--relay',
