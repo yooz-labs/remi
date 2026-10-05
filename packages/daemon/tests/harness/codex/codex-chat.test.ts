@@ -2,12 +2,12 @@
  * Codex chat (#1180, Phase 6 of the Codex epic #1175): a session's history read from the
  * app-server's paged items, and its live `item/completed` frames, both as `transcript_content`.
  *
- * Everything under test is real: `createCodexChat`, the real `AppServerClient` talking to the
- * `FakeAppServer` (a real WebSocket server on a unix socket), and the daemon's own `MessageAPI`
- * that structures each message. The items are the real items of the spike (`realItem`,
- * `helpers/codex-threads.ts`); only the `thread/items/list` page around them is the generated
- * schema's shape (no real response was captured), which live step LV-5 checks, with whether the
- * app-server pages as assumed here.
+ * Synthetic edge cases use `createCodexChat`, the real `AppServerClient` talking to the
+ * `FakeAppServer` (a real WebSocket server on a unix socket), and the daemon's own `MessageAPI`.
+ * Their items come from captured Codex frames (`realItem`); `thread/items/list` request and result
+ * frames are now also captured in `fixtures/codex-app-server/lv5.jsonl`. The bounded live capture
+ * pins the page shape and id correspondence; the generated-shape helper here remains for paging
+ * and malformed-page cases not covered by that capture.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -21,6 +21,7 @@ import type {
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { AppServerClient } from '../../../src/harness/codex/app-server-client.ts';
 import { createCodexChat } from '../../../src/harness/codex/codex-chat.ts';
+import { loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
 import {
   type Json,
   agentMessageItem,
@@ -120,6 +121,76 @@ describe('createCodexChat', () => {
     live.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
 
   describe('history', () => {
+    test('parses the captured LV-5 first page and preserves its item ids as history ids', async () => {
+      const capture = loadFixtureFrames('lv5.jsonl');
+      const request = capture.find(
+        (entry) => entry.frame['method'] === 'thread/items/list' && entry.dir === 'out',
+      );
+      const response = capture.find((entry) => 'result' in entry.frame && entry.dir === 'in');
+      expect(request).toBeDefined();
+      expect(response).toBeDefined();
+      const requestParams = request?.frame['params'] as Record<string, unknown>;
+      const result = response?.frame['result'] as Record<string, unknown>;
+      const threadId = requestParams['threadId'] as string;
+      tracked = threadId;
+      roles[threadId] = 'main';
+      server.onRequest('thread/items/list', (params) => {
+        listCalls.push(params as Json);
+        return result;
+      });
+
+      const { messages, count } = await history();
+
+      const rows = result['data'] as Array<{ item: { id: string; type: string } }>;
+      expect(requestParams).toMatchObject({ limit: 100, sortDirection: 'asc', threadId });
+      expect(result).toHaveProperty('nextCursor', null);
+      expect(typeof result['backwardsCursor']).toBe('string');
+      expect(count).toBe(2);
+      expect(rows).toHaveLength(2);
+      const [userRow, assistantRow] = rows;
+      if (!userRow || !assistantRow) throw new Error('Expected two captured history rows');
+      expect(messages.map((m) => [m.entryUuid, m.role, m.content])).toEqual([
+        [userRow.item.id, 'user', 'Reply with exactly LV5 FIRST. Do not use any tools.'],
+        [assistantRow.item.id, 'assistant', 'LV5 FIRST'],
+      ]);
+      expect(new Set(rows.map((row) => row.item.type))).toEqual(
+        new Set(['userMessage', 'agentMessage']),
+      );
+      expect(messages.map((m) => m.entryUuid)).toEqual(rows.map((row) => row.item.id));
+      expect(listCalls).toEqual([requestParams]);
+    });
+
+    test('a captured command item has the same id in item/completed and thread/items/list', async () => {
+      const capture = loadFixtureFrames('lv5.jsonl');
+      const response = capture.find((entry) => entry.line === 20);
+      const completed = capture.find((entry) => entry.line === 3);
+      expect(response).toBeDefined();
+      expect(completed).toBeDefined();
+      const result = response?.frame['result'] as Record<string, unknown>;
+      const rows = result['data'] as Array<{ item: { id: string; type: string } }>;
+      const liveItem = (completed?.frame['params'] as { item: { id: string } }).item;
+      const historyRow = rows.find((row) => row.item.id === liveItem.id);
+      expect(historyRow?.item.type).toBe('commandExecution');
+
+      const request = capture.find(
+        (entry) =>
+          entry.frame['method'] === 'thread/items/list' &&
+          entry.dir === 'out' &&
+          (entry.frame['id'] as number) === 1002,
+      );
+      const threadId = (request?.frame['params'] as { threadId: string }).threadId;
+      tracked = threadId;
+      roles[threadId] = 'main';
+      server.onRequest('thread/items/list', () => result);
+      const { messages, count } = await history();
+
+      expect(count).toBe(5); // reasoning is retained in the fixture but excluded from chat
+      expect(messages.filter((message) => message.entryUuid === liveItem.id)).toHaveLength(1);
+      expect(messages.find((message) => message.entryUuid === liveItem.id)?.message.content).toBe(
+        'Used shell',
+      );
+    });
+
     test('reads the thread oldest first, a page at a time, following the cursor until there is none', async () => {
       servePages({
         '': itemsListPage(

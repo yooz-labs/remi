@@ -1,5 +1,5 @@
 {
-  "extractorVersion": 1,
+  "extractorVersion": 2,
   "cliVersion": "0.160.0",
   "files": [
     {
@@ -43,6 +43,14 @@
       "source": "expFlags.jsonl",
       "sourceSha256": "9501fc79362f2952a1e57232a7269fc2bbdd4932750dcfef460eb90a2c84915f",
       "frames": 1
+    },
+    {
+      "file": "lv5.jsonl",
+      "label": "real",
+      "source": "lv5.jsonl",
+      "sourceSha256": "1ef255d173b65c7cc02a38a0b5f63b73178d5117da7e2fe54614ebdb7affcdb3",
+      "frames": 20,
+      "redactions": ["reasoning-item-strings"]
     },
     {
       "file": "report-derived.jsonl",

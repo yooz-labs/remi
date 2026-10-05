@@ -9,12 +9,9 @@
  * `turn_complete_min_seconds`, the per-device preferences) and the notice text ("Codex stopped")
  * are the production ones. The only doubles are the network and the thread roles a test chooses.
  *
- * What no real frame shows, and live step LV-5 checks: a FAILED and an INTERRUPTED
- * `turn/completed`. The decline run answered `decline` (`expA-decline.jsonl:65`), not the
- * `cancel` the phone's No sends, and its `turn/completed` says `completed`; no recorded frame
- * shows the status of a turn that `cancel`, Esc or `turn/interrupt` ended. Those two are the
- * real frame with `status` and `error` set to the shapes of the generated schema
- * (`helpers/codex-threads.ts`).
+ * `lv5.jsonl` adds bounded real completions for a long answer, three interrupted turns and one
+ * failed turn. These supplement the synthetic mapper edge cases below; they do not expand the
+ * tested model or notification-device matrix.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -30,7 +27,7 @@ import { DEFAULT_PUSH_PREFERENCES } from '../../../src/notifications/push-prefer
 import { type TurnEventSink, createTurnEventSink } from '../../../src/notifications/turn-events.ts';
 import { turnFailedCollapseId } from '../../../src/notifications/turn-failed.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
-import { fixtureFrameAt } from '../../helpers/codex-fixtures.ts';
+import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
 import {
   type Json,
   agentMessageItem,
@@ -93,7 +90,7 @@ function deviceEntry(token: string): DeviceTokenEntry {
  */
 async function pushBodyOf(
   turnParams: unknown,
-  opts: { completed?: boolean } = {},
+  opts: { completed?: boolean; expectedBodies?: number; mainThread?: string } = {},
 ): Promise<string> {
   const registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
   registry.registerSession(
@@ -138,14 +135,14 @@ async function pushBodyOf(
     createCodexTurns({
       sessionId: SID,
       sink,
-      threadRole: (threadId) => ROLES[threadId] ?? null,
+      threadRole: (threadId) => ROLES[threadId] ?? (threadId === opts.mainThread ? 'main' : null),
       log: () => {},
     }).handleNotification('turn/completed', turnParams);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(
       bodies,
       opts.completed === true ? 'a turn_complete push' : 'a turn_failed push',
-    ).toHaveLength(1);
+    ).toHaveLength(opts.expectedBodies ?? 1);
     return bodies[0] ?? '';
   } finally {
     __resetLoggerForTests();
@@ -171,6 +168,71 @@ describe('createCodexTurns: turn/completed to turn events', () => {
     events = [];
     logs = [];
     sinkOverride = null;
+  });
+
+  test('the real LV-5 turns flow through the mapper and production sink', async () => {
+    const turns = loadFixtureFrames('lv5.jsonl')
+      .filter((entry) => entry.frame['method'] === 'turn/completed')
+      .map(
+        (entry) =>
+          entry.frame['params'] as {
+            threadId: string;
+            turn: {
+              status: string;
+              durationMs: number | null;
+              error?: Record<string, unknown> | null;
+            };
+          },
+      );
+    expect(turns.map((entry) => entry.turn.status)).toEqual([
+      'completed',
+      'interrupted',
+      'interrupted',
+      'interrupted',
+      'failed',
+    ]);
+
+    const long = turns[0];
+    if (!long) throw new Error('Expected the captured long turn');
+    expect(long.turn.durationMs).toBe(66965);
+    expect(await pushBodyOf(long, { completed: true, mainThread: long.threadId })).toContain(
+      'LV5 LONG',
+    );
+
+    for (const interrupted of turns.filter((entry) => entry.turn.status === 'interrupted')) {
+      const body = await pushBodyOf(interrupted, {
+        expectedBodies: 0,
+        mainThread: interrupted.threadId,
+      });
+      expect(body).toBe('');
+    }
+
+    const failed = turns.find((entry) => entry.turn.status === 'failed');
+    if (!failed) throw new Error('Expected the captured failed turn');
+    expect(failed.turn.error).toMatchObject({
+      codexErrorInfo: 'other',
+      additionalDetails: null,
+      misalignment: null,
+    });
+    const mapped: Recorded[] = [];
+    createCodexTurns({
+      sessionId: SID,
+      sink: recordingSink(mapped),
+      threadRole: (threadId) => (threadId === failed.threadId ? 'main' : null),
+      log: () => {},
+    }).handleNotification('turn/completed', failed);
+    expect(mapped).toEqual([
+      {
+        kind: 'failed',
+        sessionId: SID,
+        error: 'other',
+        errorDetails: `${String(failed.turn.error?.['message']).slice(0, 139)}…`,
+        agentName: 'Codex',
+      },
+    ]);
+    const failureBody = await pushBodyOf(failed, { mainThread: failed.threadId });
+    expect(failureBody).toContain('Unknown error.');
+    expect(failureBody).toContain('invalid_request_error');
   });
 
   describe('completed', () => {

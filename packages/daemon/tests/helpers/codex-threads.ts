@@ -92,15 +92,12 @@ export function fileChangeRequest(
  * `item/completed` for a user message (`:36`), a command (`:56`) and the final agent message
  * (`:67`).
  *
- * No real frame of an INTERRUPTED or FAILED turn exists. The spike's decline run answered
- * `decision: "decline"` (`expA-decline.jsonl:65`), which is NOT what the phone's No sends (that is
- * `cancel`), and its `turn/completed` says `status: "completed"` (`:141`); so no recorded frame
- * shows the status of a turn that `cancel`, Esc or `turn/interrupt` ended, and a failure was never
- * provoked. `turnCompletedFrame` builds those two from the real completed frame with `status`
- * and `error` set to the shapes of the generated schema (`Turn`, `TurnError`, `CodexErrorInfo`);
- * live step LV-5 checks them. Likewise the `thread/items/list` page of
- * `itemsListPage` is the generated schema's `ThreadItemsListResponse` around real items (no real
- * response was captured).
+ * Captured completed, interrupted and failed turns, plus a real `thread/items/list` request and
+ * response, are in `fixtures/codex-app-server/lv5.jsonl`. The original decline frame below still
+ * records `decision: "decline"` (`expA-decline.jsonl:65`) and `status: "completed"` (`:141`); it
+ * does not stand in for the captured phone-No, Esc or RPC-interrupt runs. `turnCompletedFrame`
+ * and `itemsListPage` continue to build schema-shaped cases for synthetic edge tests that are not
+ * present in the bounded live capture.
  */
 
 /** The turn id of the real accept run's frames (`expA-accept.jsonl:74`). */

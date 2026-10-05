@@ -140,7 +140,7 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
   `item/tool/requestUserInput` at `expC.jsonl:31` (`isBlocking: true`, `autoResolutionMs: null`), answered at `:34` with `{answers: {q1: {answers: ["Blue"]}}}`, resolved at `:35`.
 - **Not captured, labeled as such.**
   The `-32600 no rollout found for thread id <id>` error (the spike report, not a log); file-change, permissions and elicitation requests (generated schema only).
-  Not in any fixture, and still unverified without a real Codex: `cancel` from a second client, what a mid-approval subscriber disconnect does to a pending request (plan risk R1), `/new` rotation, `optOutNotificationMethods`, a failed-turn `turn/completed`, and keepalive on an idle connection.
+  At the Phase 1 spike date these remained unverified: `cancel` from a second client, what a mid-approval subscriber disconnect does to a pending request (plan risk R1), `/new` rotation, `optOutNotificationMethods`, failed-turn `turn/completed`, and keepalive on an idle connection. The later LV-5 fixture covers a failed turn event; the other approval/transport gaps remain.
 - **What the Phase 1 tests prove, by mutation.**
   Each of these fails a named test when applied: a flipped mask bit, a dropped pong, a skipped accept-key check, no request timeout, correlating a response by the wrong id, the client sending an error frame to an unknown server request.
   A summary of the roughly 100 mutants is in the PR description.
@@ -740,8 +740,7 @@ A second flake of the same run, found by the twenty-run loops and the fresh-clon
 ## Phase 6 amendment: turn events and chat (#1180)
 
 Phase 6 pushes how a Codex turn ended and serves the Codex session's chat.
-Nothing here was run against a real Codex: the tests use the spike's real frames, the stand-in app-server and fakes, and live step LV-5 is NOT done.
-Item 9 lists what LV-5 must check, and the lead decides when to run it.
+The automated tests do not launch Codex: they use captured frames, the stand-in app-server and test doubles for cases not captured. A bounded live LV-5 check ran on 2026-10-05 against Codex 0.160.0, GPT-6.1-Sol and one controlled account. Item 9 records the evidence and its limits. No physical iPhone or APNS delivery was tested.
 Items 12 to 15 record the review rework of PR #1209 (two fresh reviewers, no critical finding).
 
 1. **One sink for both harnesses.**
@@ -762,7 +761,7 @@ A failed turn carries no earlier answer (`TurnFailedEvent` has no such field sin
 Any other status (`inProgress`, a status a newer Codex adds, a missing one) is logged WITHOUT its value and does nothing.
 The sink applies the same gates as for Claude, and a failed turn is never muted by `on_turn_complete`.
 3. **Decisions inside that mapping.**
-A turn with no `final_answer` message has nothing to show, so it is silent, as an empty `last_assistant_message` is for Claude; a message with `phase: null` is "unknown" (the schema says callers must treat it so) and is not guessed to be final, which means a model that sends no phase never pushes "turn complete" (fails toward silence; LV-5 (e) confirms whether any model in use does that).
+A turn with no `final_answer` message has nothing to show, so it is silent, as an empty `last_assistant_message` is for Claude; a message with `phase: null` is "unknown" (the schema says callers must treat it so) and is not guessed to be final. LV-5 saw a `final_answer` on the sampled model only; it does not establish behavior for other models or for a model that sends no phase.
 Since the review a completed turn with no final answer logs ONE line without content, naming the turn's `itemsView` when Codex gave one of its three values, so that silence is not a mystery.
 An answer made only of removed characters, whitespace or zero-width joiners also has nothing visible to show: no push and one content-free log line.
 An interrupted turn is not announced.
@@ -810,15 +809,15 @@ Item ids over 200 characters are rejected before becoming chat; unlike a turn wi
 Typed chat stays refused (`acceptsTypedChat: false`): Phase 6 gives Codex a chat to read, not one to type into.
 8. **Boundary, as allowlists.**
 `CODEX_MAY_IMPORT` gains `api/message-api` (the history's bullet structurer) and `notifications/turn-events`, which a new test pins as imported only as a type by every Codex module; the debt list is unchanged.
-9. **What LV-5 must check (not run).**
-(a) that `thread/items/list` answers `{data: [{turnId, item, startedAtMs, completedAtMs}], nextCursor, backwardsCursor}` (the generated schema's shape, not a captured response), pages ascending as asked, and accepts `limit: 100` (it may give fewer or more; explicit reads handle both, and catch-up skips more than 100 raw entries);
-(b) what it answers for a thread with nothing written yet (assumed -32600 "no rollout found"; anything else reads as `LOAD_FAILED` until the first message);
-(c) whether its items include context Codex injects (an environment or instructions `userMessage`) that would show as chat bubbles;
-(d) the `turn/completed` of a turn ended by `cancel` (the phone's No), by Esc and by `turn/interrupt` (each assumed `status: "interrupted"`; no recorded frame shows any of them) and of a failed turn (assumed `status: "failed"` with `error: {message, codexErrorInfo, additionalDetails, misalignment}`, from a `turn/start` with a bad model);
-(e) that `turn/completed` arrives once per turn per connection and carries a `final_answer` agent message on the models in use (a model that sends no phase never pushes "turn complete");
-(f) that `durationMs` of a long turn is its wall-clock length, which is the whole gate;
-(g) that a shell command's `item/completed` and its `thread/items/list` entry carry the same item id (a client drops the second copy by it);
-(h) whether item and turn frames reach remi before its attach, and whether `thread/items/list` at the attach returns the first prompt (the catch-up depends on both answers).
+9. **LV-5 live evidence and limits** (redacted capture: `packages/daemon/tests/fixtures/codex-app-server/lv5.jsonl`; index provenance marks reasoning-item strings redacted).
+(a) Two real `thread/items/list` requests used `sortDirection: "asc"` and `limit: 100`; both responses had `data` entries with `turnId`, `item`, `startedAtMs`, and `completedAtMs`, plus `nextCursor` and `backwardsCursor`. One page held the controlled first prompt and its `final_answer`; a second held six rows. Multi-page cursor continuation was not exercised.
+(b) Before the first user message, `thread/items/list` returned -32601 and `thread/resume` returned -32600; after the first write both worked. The list error is specific to this method and state, not evidence that the app-server generally lacks the method.
+(c) Those two pages from this GPT-6.1-Sol/account sample had no injected environment or instruction message; this does not establish a model-wide rule.
+(d) A local WebSocket protocol client exercising the daemon phone-No path, a real TUI Esc and `turn/interrupt` each produced `status: "interrupted"` (24638, 15572 and 12091 ms). The first interrupt attempt returned -32600; a retry after the turn started succeeded. A bad-model turn reported `failed` after 243 ms with `codexErrorInfo: "other"`, the captured message, and null `additionalDetails` and `misalignment`.
+(e) The observer received one `turn/completed` for each of five subscribed turns: one long completed, three interrupted and one failed. The first minimal completed turn preceded observer subscription. Only the sampled model/account was checked; no general once-per-connection or no-`final_answer` claim follows.
+(f) The long turn's `durationMs` and observer wall time were both 66965 ms; it ran `sleep 61`, not a CPU workload.
+(g) The command `item/completed` id appears exactly once in the second captured list page.
+(h) Initial-attach event ordering was not measured. A later successful resume catch-up delivered ten `transcript_content` entries including the first prompt exactly once and no `structured_agent_output`.
 10. **Deviations from the plan.**
 `parseTurnCompleted` and `parseThreadItem` live in `thread-protocol.ts` (the plan listed no parser file); the history error is a `CodexHistoryError` (the plan said nothing of error text); the turn sink's `config` dependency is `{onTurnComplete, turnCompleteMinSeconds}` read per event; `startDaemon` in the characterization test takes optional extra arguments; the history is bounded (the plan had no bound); and Claude's `onTurnStop` is extracted into `createClaudeTurnStop` (the plan left `onTurnStop` in `cli.ts` and said it keeps its filter and timer lookup).
 The plan's mapping of `completed` said "`lastAssistantMessage` from the `agentMessage` with `phase:'final_answer'`": the last one is taken when there are several.

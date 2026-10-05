@@ -19,10 +19,10 @@
  *   `codexErrorInfo` as the code when it is a string. Never gated by
  *   `on_turn_complete` (a failed turn is the one turn end a user must not miss).
  * - `interrupted`: `turnSucceeded` only. Someone stopped the turn; that is neither
- *   a "done" push nor a failure, and it proves a failure notice stale. That a turn
- *   ended by the phone's No (`cancel`), Esc or `turn/interrupt` reports this status
- *   is an assumption: no recorded frame shows it (the spike's decline run answered
- *   `decline`, not `cancel`, and reported `completed`), and live step LV-5 checks it.
+ *   a "done" push nor a failure, and it proves a failure notice stale. The bounded
+ *   LV-5 capture showed this status after phone No (`cancel`), TUI Esc and
+ *   `turn/interrupt`; the earlier decline run answered `decline` and reported
+ *   `completed`, so it is not evidence for those stop paths.
  *
  * Only the session's own thread counts (`threadRole` is `main`): a subagent's
  * turn ends many times inside the main turn, and another window's thread is not
@@ -50,8 +50,9 @@
  * or while the link was down) is never seen, so it pushes nothing, and a stale
  * "Codex stopped" stays until the next completed or interrupted turn.
  *
- * What no real frame has shown yet: a `failed` or an `interrupted` turn (live
- * step LV-5). The shapes here follow the generated schema (`Turn`, `TurnError`).
+ * Real completed, interrupted and failed frames from the bounded Codex 0.160.0
+ * LV-5 capture are pinned in `fixtures/codex-app-server/lv5.jsonl`. Synthetic
+ * schema-shaped cases remain in the tests for edge conditions not captured live.
  */
 
 import type { UUID } from '@remi/shared';
