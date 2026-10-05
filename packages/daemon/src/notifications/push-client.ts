@@ -1,7 +1,7 @@
 /**
- * Push notification trigger client.
- * Sends a lightweight HTTP POST to the signaling server,
- * which forwards it to Apple's APNS.
+ * Explicit plaintext compatibility sender, OFF by default (#1200).
+ * An enabled caller needs a secret and an untouched secure-authority directory.
+ * Signed sealed delivery uses SecurePushTransport; this sender never falls back.
  */
 
 import { remiHome } from '../config/remi-home.ts';

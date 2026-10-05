@@ -633,3 +633,102 @@ test('secure transport refuses foreign or forged prepared capabilities and audie
   ).toThrow('SECURE_PUSH_AUDIENCE');
   expect(received.bodies).toHaveLength(0);
 });
+
+test('secure transport actual socket loss is uncertain and the same prepared request is never resent', async () => {
+  const f = await fixture();
+  const { createServer } = await import('node:http');
+  let effects = 0;
+  const server = createServer(async (req) => {
+    for await (const _chunk of req) {
+      /* Drain the actual request before destroying its response socket. */
+    }
+    effects++;
+    req.socket.destroy();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('owned listener missing');
+  try {
+    const Transport = await transportClass();
+    const audience = `http://127.0.0.1:${address.port}`;
+    const transport = Transport.forOwnedLoopbackTest({
+      store: f.store,
+      signer: f.signer,
+      audience,
+      ownedOrigin: audience,
+    });
+    const result = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+    expect(result.outcome).toBe('prepared');
+    if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+    await expect(transport.sendPrepared(result.prepared)).resolves.toMatchObject({
+      outcome: 'uncertain',
+      attempts: 1,
+    });
+    await expect(transport.sendPrepared(result.prepared)).resolves.toMatchObject({
+      outcome: 'uncertain',
+      attempts: 1,
+    });
+    expect(effects).toBe(1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+test('secure transport expired prepared request refuses at the synchronous effect boundary', async () => {
+  const f = await fixture();
+  const received = receiver(() => Response.json({}));
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const result = await transport.prepare(
+    f.snapshot,
+    { ...f.metadata, expiresAt: Math.floor(Date.now() / 1000) + 1 },
+    f.payload,
+    () => true,
+  );
+  expect(result.outcome).toBe('prepared');
+  if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, Math.max(0, result.prepared.expiresAt * 1000 - Date.now()) + 20),
+  );
+  await expect(transport.sendPrepared(result.prepared)).resolves.toMatchObject({
+    outcome: 'refused',
+    reason: 'EXPIRED',
+    attempts: 0,
+  });
+  expect(received.bodies).toHaveLength(0);
+});
+test('secure transport false machine signer and recipient mismatch fail closed', async () => {
+  const f = await fixture();
+  const received = receiver(() => Response.json({}));
+  const other = await r.generateIdentity();
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: { publicKey: f.signer.publicKey, sign: other.signer.sign.bind(other.signer) },
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  await expect(
+    transport.prepare(f.snapshot, f.metadata, f.payload, () => true),
+  ).resolves.toMatchObject({ outcome: 'refused', reason: 'INVALID_CONTENT' });
+  const genuine = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  await expect(
+    genuine.prepare(
+      f.snapshot,
+      { ...f.metadata, devicePublicKey: r.b64u(other.signer.publicKey) },
+      f.payload,
+      () => true,
+    ),
+  ).resolves.toMatchObject({ outcome: 'refused', reason: 'INVALID_CONTENT' });
+  expect(received.bodies).toHaveLength(0);
+});
