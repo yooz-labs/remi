@@ -21,6 +21,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -626,6 +627,11 @@ describe('the extractor', () => {
     return mkdtempSync(join(tmpdir(), 'remi-extractor-'));
   }
 
+  function indexedFixtureBytes(): Array<[string, string]> {
+    const names = ['index.json', ...readFixtureIndex().files.map((entry) => entry.file)].sort();
+    return names.map((name) => [name, readFileSync(join(FIXTURE_DIR, name), 'utf8')]);
+  }
+
   const frames = (text: string): Array<{ line?: number; frame: Record<string, unknown> }> =>
     text
       .trim()
@@ -734,6 +740,45 @@ describe('the extractor', () => {
       );
       const flags = frames(readFileSync(join(base, 'out', 'expFlags.jsonl'), 'utf8'));
       expect(flags.map((f) => f.line)).toEqual([11]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('requires an explicit scratch output and refuses the committed fixture tree before reading input', async () => {
+    const base = scratch();
+    const originalNames = readdirSync(FIXTURE_DIR).sort();
+    const originalBytes = indexedFixtureBytes();
+    try {
+      const raw = join(base, 'missing-raw');
+      const alias = join(base, 'fixture-alias');
+      symlinkSync(FIXTURE_DIR, alias, 'junction');
+
+      for (const args of [[raw], [raw, '--out'], [raw, '--out', '--source']]) {
+        const result = await spawnExtractor(args);
+        expect(result.code, args.join(' ')).toBe(2);
+        expect(result.err, args.join(' ')).toContain('--out is required');
+        expect(result.err, args.join(' ')).not.toContain('extraction failed');
+      }
+
+      const protectedTargets = [
+        FIXTURE_DIR,
+        join(FIXTURE_DIR, 'not-created-output'),
+        join(alias, 'not-created-output'),
+      ];
+      for (const target of protectedTargets) {
+        const result = await spawnExtractor([raw, '--out', target]);
+        expect(result.code, target).toBe(2);
+        expect(result.err, target).toContain(
+          '--out must be a scratch directory outside the committed fixture tree',
+        );
+        expect(result.err, target).not.toContain('extraction failed');
+      }
+
+      expect(existsSync(join(FIXTURE_DIR, 'not-created-output'))).toBe(false);
+      expect(existsSync(join(alias, 'not-created-output'))).toBe(false);
+      expect(readdirSync(FIXTURE_DIR).sort()).toEqual(originalNames);
+      expect(indexedFixtureBytes()).toEqual(originalBytes);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -1109,7 +1154,10 @@ describe('the extractor', () => {
   test('exits 2 with a usage line when given no input directory, and on a missing source file', async () => {
     const base = scratch();
     try {
-      const none = await spawnExtractor([], { ...process.env, CODEX_SPIKE_DIR: '' });
+      const none = await spawnExtractor(['--out', join(base, 'out')], {
+        ...process.env,
+        CODEX_SPIKE_DIR: '',
+      });
       expect(none.code).toBe(2);
       expect(none.err).toContain('usage');
       mkdirSync(join(base, 'empty'));

@@ -3,8 +3,8 @@
  * Extract redacted Codex app-server fixtures from the spike's raw frame logs
  * (epic #1175, phase 1 #1181). A dev tool, never run by CI.
  *
- *   bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--source <basename.jsonl>] [--out <dir>]
- *   CODEX_SPIKE_DIR=<raw-log-dir> bun scripts/extract-codex-fixtures.ts
+ *   bun scripts/extract-codex-fixtures.ts <raw-log-dir> --out <scratch-dir> [--source <basename.jsonl>]
+ *   CODEX_SPIKE_DIR=<raw-log-dir> bun scripts/extract-codex-fixtures.ts --out <scratch-dir>
  *
  * The raw logs hold local paths, thread ids and account metadata, so they are
  * read here and never copied: only frames on the method allowlist survive, each
@@ -14,13 +14,23 @@
  * `approved-free-text.json`), and nothing is written when it finds a
  * leak. Output is deterministic for the same inputs, and `index.json` records
  * each source file's sha256 so a later run can tell whether its inputs changed.
+ * Always extract to an explicit scratch directory. Review and scan the output,
+ * then merge selected captures and index entries into the committed fixtures.
  *
  * No path or name from the raw logs is written in this file: roots are
  * discovered from the data (`codexHome`, the threads' `cwd`).
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   APPROVED_FREE_TEXT_FILE,
   FIXTURE_DIR,
@@ -382,7 +392,20 @@ function syntheticFromSchema(r: Redactor): FixtureFrame[] {
 
 const toLine = (f: FixtureFrame): string => `${JSON.stringify(f)}\n`;
 
-/** `<raw-log-dir>` (or CODEX_SPIKE_DIR) and an optional `--out <dir>` (default: the committed fixture directory). */
+/** Resolve an output path through its nearest existing ancestor to detect symlink aliases. */
+function resolveThroughExistingAncestors(path: string): string {
+  let ancestor = resolve(path);
+  const suffix: string[] = [];
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    suffix.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+  return resolve(realpathSync(ancestor), ...suffix);
+}
+
+/** `<raw-log-dir>` (or CODEX_SPIKE_DIR) and a required `--out <scratch-dir>`. */
 function parseArgs(argv: string[]): {
   rawDir: string;
   outDir: string;
@@ -398,7 +421,22 @@ function parseArgs(argv: string[]): {
     args.splice(flag, 2);
     return value;
   };
-  const outDir = resolve(take('--out') ?? FIXTURE_DIR);
+  const outIndex = args.indexOf('--out');
+  const outValue = outIndex < 0 ? undefined : args[outIndex + 1];
+  if (!outValue || outValue.startsWith('--')) {
+    console.error(
+      '--out is required; choose a scratch directory outside the committed fixture tree',
+    );
+    process.exit(2);
+  }
+  args.splice(outIndex, 2);
+  const outDir = resolve(outValue);
+  const actualOut = resolveThroughExistingAncestors(outDir);
+  const fixtureRoot = realpathSync(FIXTURE_DIR);
+  if (actualOut === fixtureRoot || actualOut.startsWith(`${fixtureRoot}${sep}`)) {
+    console.error('--out must be a scratch directory outside the committed fixture tree');
+    process.exit(2);
+  }
   const approvedFile = resolve(take('--approved') ?? APPROVED_FREE_TEXT_FILE);
   const sourceIndex = args.indexOf('--source');
   if (sourceIndex >= 0) {
@@ -427,7 +465,7 @@ function parseArgs(argv: string[]): {
   const raw = args[0] ?? process.env['CODEX_SPIKE_DIR'];
   if (!raw) {
     console.error(
-      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--source <basename.jsonl>] [--out <dir>] [--approved <file>] [--show-unapproved] (or CODEX_SPIKE_DIR)',
+      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> --out <scratch-dir> [--source <basename.jsonl>] [--approved <file>] [--show-unapproved] (or CODEX_SPIKE_DIR)',
     );
     process.exit(2);
   }
