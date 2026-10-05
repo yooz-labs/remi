@@ -87,4 +87,20 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertEqual(try state.currentAuthority(), .init(publicKey: key, revision: revision))
     }
 
+
+    func testCurrentGenerationRejectsMalformedAuthorityWithoutPublishingIt() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("push.sqlite"))
+        let lease = try state.acquireIdentityMutation()
+        defer { lease.release() }
+        let generation = try lease.invalidateIdentityAuthority()
+        let key = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let revision = UUID().uuidString
+        XCTAssertThrowsError(try lease.installIdentityAuthority(publicKey: Data(repeating: 0, count: 32), revision: revision, generation: generation),
+                             "An actual current lease cannot authorize a small-order device key")
+        XCTAssertThrowsError(try lease.installIdentityAuthority(publicKey: key, revision: "invalid", generation: generation))
+        XCTAssertNil(try state.currentAuthority())
+        XCTAssertNoThrow(try lease.installIdentityAuthority(publicKey: key, revision: revision, generation: generation))
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: key, revision: revision))
+    }
+
 }
