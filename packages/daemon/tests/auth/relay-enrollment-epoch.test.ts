@@ -41,6 +41,7 @@ test('secure enrollment: actual pairing persists activation and fresh private en
   await trust.addAuthorizedKey(identity.publicKey, 'synthetic enrolled');
   const first = await devices.add(identity.publicKey, 'synthetic first');
   const initial = epoch();
+  expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(true);
   const activated = JSON.parse(
     fs.readFileSync(path.join(directory, 'secure_push_activation.json'), 'utf8'),
   );
