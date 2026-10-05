@@ -30,6 +30,12 @@ import Security
 /// instance.
 struct ClientIdentity {
     let privateKey: Curve25519.Signing.PrivateKey
+    let revision: String
+
+    init(privateKey: Curve25519.Signing.PrivateKey, revision: String = UUID().uuidString) {
+        self.privateKey = privateKey
+        self.revision = revision
+    }
 
     var publicKey: Curve25519.Signing.PublicKey { privateKey.publicKey }
 
@@ -89,77 +95,140 @@ struct ClientIdentity {
     }
 }
 
-/// Loads or creates this app's `ClientIdentity`, persisted in the Keychain
-/// so explicit local authorization survives relaunches (#873). Regenerating
-/// a key would require another human approval on the daemon machine.
-///
-/// No new entitlement is needed: a sandboxed app can create and read its own
-/// default-access-group Keychain items without the `keychain-access-groups`
-/// entitlement, which is only required to SHARE items with other apps. That
-/// matters here — Remi.entitlements is deliberately minimal (#649/#651) and
-/// this must not be the thing that grows it.
-enum ClientIdentityStore {
-    private static let defaultService = "live.yooz.remi.client-identity"
-    private static let defaultAccount = "ed25519-private-key"
+/// Strict RFC8410 encoding is native-only. CryptoKit exports a seed, not PKCS8;
+/// this fixed DER wrapper is tested against actual shared WebCrypto exports (#1199).
+/// Neither this representation nor its seed is ever returned to JavaScript.
+enum NativeIdentityError: Error {
+    case malformed, publicMismatch, changed, conflict
+    case keychain(OSStatus)
+}
 
-    /// Idempotent across calls and across relaunches: the first call
-    /// generates and persists a fresh keypair, every later call (this
-    /// process or a future one) returns the SAME key.
-    static func loadOrCreate(
-        service: String = defaultService, account: String = defaultAccount
-    ) -> ClientIdentity {
-        if let raw = read(service: service, account: account),
-            let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: raw)
-        {
-            return ClientIdentity(privateKey: key)
+enum Ed25519PKCS8 {
+    private static let prefix = Data([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+                                     0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20])
+    static func encode(_ key: Curve25519.Signing.PrivateKey) -> Data {
+        prefix + key.rawRepresentation
+    }
+    static func decode(_ pkcs8: Data, publicKey: Data) throws -> Curve25519.Signing.PrivateKey {
+        guard pkcs8.count == 48, pkcs8.prefix(16) == prefix, publicKey.count == 32 else {
+            throw NativeIdentityError.malformed
         }
-        let fresh = Curve25519.Signing.PrivateKey()
-        write(fresh.rawRepresentation, service: service, account: account)
-        return ClientIdentity(privateKey: fresh)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: pkcs8.suffix(32))
+        guard key.publicKey.rawRepresentation == publicKey else {
+            throw NativeIdentityError.publicMismatch
+        }
+        let probe = Data("remi native identity validation".utf8)
+        guard key.publicKey.isValidSignature(try key.signature(for: probe), for: probe) else {
+            throw NativeIdentityError.publicMismatch
+        }
+        return key
+    }
+}
+
+/// The native Keychain stores a versioned PKCS8/public record. Only exact
+/// errSecItemNotFound permits creation; corruption and read errors never rotate a key.
+/// Migration/replacement uses SecItemUpdate, preserving the previous item on failure.
+enum ClientIdentityStore {
+    static let defaultService = "live.yooz.remi.client-identity"
+    static let defaultAccount = "ed25519-private-key"
+    private struct Record: Codable {
+        let version: Int
+        let pkcs8: Data
+        let publicKey: Data
+        let revision: String
+        init(_ identity: ClientIdentity) {
+            version = 2
+            pkcs8 = Ed25519PKCS8.encode(identity.privateKey)
+            publicKey = identity.publicKeyRaw
+            revision = identity.revision
+        }
+        func identity() throws -> ClientIdentity {
+            guard version == 2, UUID(uuidString: revision) != nil else {
+                throw NativeIdentityError.malformed
+            }
+            return ClientIdentity(privateKey: try Ed25519PKCS8.decode(pkcs8, publicKey: publicKey),
+                                  revision: revision)
+        }
     }
 
-    /// Test-only teardown: deletes the Keychain item so a test can assert
-    /// fresh-vs-persisted behavior without leaking state into later runs.
+    static func loadOrCreate(service: String = defaultService, account: String = defaultAccount) throws -> ClientIdentity {
+        if let identity = try load(service: service, account: account) { return identity }
+        let fresh = ClientIdentity(privateKey: .init())
+        do { try persist(fresh, service: service, account: account, updating: false) }
+        catch NativeIdentityError.keychain(errSecDuplicateItem) {
+            // A concurrent first creation won. Use its durable identity, never overwrite it.
+            guard let winner = try load(service: service, account: account) else { throw NativeIdentityError.changed }
+            return winner
+        }
+        return fresh
+    }
+
+    static func load(service: String = defaultService, account: String = defaultAccount) throws -> ClientIdentity? {
+        guard let data = try read(service: service, account: account) else { return nil }
+        if data.count == 32 {
+            // One-time inward migration of the existing native seed, with no deletion.
+            let identity = ClientIdentity(privateKey: try .init(rawRepresentation: data))
+            try persist(identity, service: service, account: account, updating: true)
+            return identity
+        }
+        let record: Record
+        do { record = try JSONDecoder().decode(Record.self, from: data) }
+        catch { throw NativeIdentityError.malformed }
+        return try record.identity()
+    }
+
+    /// An explicit inward import. A conflicting durable identity is untouched unless
+    /// the caller presents its exact revision after a human chose replacement.
+    static func importIdentity(pkcs8: Data, publicKey: Data, replacing revision: String? = nil,
+                               service: String = defaultService, account: String = defaultAccount) throws -> ClientIdentity {
+        let key = try Ed25519PKCS8.decode(pkcs8, publicKey: publicKey)
+        let existing = try load(service: service, account: account)
+        if let existing, existing.publicKeyRaw == publicKey { return existing }
+        if let existing {
+            guard revision == existing.revision else { throw NativeIdentityError.conflict }
+        } else if revision != nil { throw NativeIdentityError.changed }
+        let imported = ClientIdentity(privateKey: key)
+        try persist(imported, service: service, account: account, updating: existing != nil)
+        return imported
+    }
+
     #if DEBUG
-    static func resetForTesting(service: String = defaultService, account: String = defaultAccount)
-    {
+    static func resetForTesting(service: String, account: String) {
         SecItemDelete(query(service: service, account: account) as CFDictionary)
     }
     #endif
 
     private static func query(service: String, account: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
     }
-
-    private static func read(service: String, account: String) -> Data? {
-        var attributes = query(service: service, account: account)
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
+    private static func read(service: String, account: String) throws -> Data? {
+        var q = query(service: service, account: account)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw NativeIdentityError.keychain(status) }
+        guard let data = result as? Data else { throw NativeIdentityError.malformed }
         return data
     }
-
-    @discardableResult
-    private static func write(_ data: Data, service: String, account: String) -> Bool {
-        // Idempotent even if a previous write left something malformed
-        // (e.g. wrong length after a future format change) — always start
-        // from a clean slate rather than risk SecItemAdd's "already exists"
-        // error hiding a stale, unreadable key underneath.
-        SecItemDelete(query(service: service, account: account) as CFDictionary)
-
-        var attributes = query(service: service, account: account)
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        if status != errSecSuccess {
-            NSLog("[ClientIdentityStore] Keychain write failed: status \(status)")
+    private static func persist(_ identity: ClientIdentity, service: String, account: String, updating: Bool) throws {
+        let data = try JSONEncoder().encode(Record(identity))
+        let q = query(service: service, account: account)
+        let status: OSStatus
+        if updating {
+            status = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        } else {
+            var attributes = q
+            attributes[kSecValueData as String] = data
+            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            status = SecItemAdd(attributes as CFDictionary, nil)
         }
-        return status == errSecSuccess
+        guard status == errSecSuccess else { throw NativeIdentityError.keychain(status) }
+        guard let verified = try read(service: service, account: account), verified == data else {
+            throw NativeIdentityError.changed
+        }
+        _ = try JSONDecoder().decode(Record.self, from: verified).identity()
     }
 }

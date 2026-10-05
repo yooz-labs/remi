@@ -69,28 +69,28 @@ final class ClientIdentityTests: XCTestCase {
 
     // MARK: - Keychain persistence
 
-    func testLoadOrCreatePersistsAcrossInstantiations() {
-        let first = ClientIdentityStore.loadOrCreate(service: service, account: account)
-        let second = ClientIdentityStore.loadOrCreate(service: service, account: account)
+    func testLoadOrCreatePersistsAcrossInstantiations() throws {
+        let first = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let second = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         XCTAssertEqual(
             first.publicKeyRaw, second.publicKeyRaw,
             "a fresh loadOrCreate() call must return the SAME key as before, not regenerate one")
         XCTAssertEqual(first.fingerprint, second.fingerprint)
     }
 
-    func testResetForTestingForcesAFreshKey() {
-        let first = ClientIdentityStore.loadOrCreate(service: service, account: account)
+    func testResetForTestingForcesAFreshKey() throws {
+        let first = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         ClientIdentityStore.resetForTesting(service: service, account: account)
-        let second = ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let second = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         XCTAssertNotEqual(
             first.publicKeyRaw, second.publicKeyRaw,
             "with the Keychain item deleted, loadOrCreate() must generate a new key")
     }
 
-    func testDistinctServiceAccountPairsGetIndependentKeys() {
-        let a = ClientIdentityStore.loadOrCreate(service: service, account: account)
+    func testDistinctServiceAccountPairsGetIndependentKeys() throws {
+        let a = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         let otherAccount = "\(account)-other"
-        let b = ClientIdentityStore.loadOrCreate(service: service, account: otherAccount)
+        let b = try ClientIdentityStore.loadOrCreate(service: service, account: otherAccount)
         defer { ClientIdentityStore.resetForTesting(service: service, account: otherAccount) }
         XCTAssertNotEqual(a.publicKeyRaw, b.publicKeyRaw)
     }
@@ -105,8 +105,8 @@ final class ClientIdentityTests: XCTestCase {
             ClientIdentity.fingerprint(ofPublicKeyRaw: publicKeyRaw), "f851bb1f053baacf")
     }
 
-    func testFingerprintIsSixteenHexCharacters() {
-        let identity = ClientIdentityStore.loadOrCreate(service: service, account: account)
+    func testFingerprintIsSixteenHexCharacters() throws {
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         XCTAssertEqual(identity.fingerprint.count, 16)
         XCTAssertTrue(identity.fingerprint.allSatisfy(\.isHexDigit))
         // crypto.ts toHex() is lowercase; the daemon compares strings, so
@@ -117,7 +117,7 @@ final class ClientIdentityTests: XCTestCase {
     /// R4: the native store must durably hold a validated PKCS8/public record,
     /// not return a newly generated signer while leaving only a bare seed behind.
     func testKeychainPersistsPKCS8AndPublicRecord() throws {
-        let identity = ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -161,14 +161,14 @@ final class ClientIdentityTests: XCTestCase {
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {
-        let identity = ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         let challenge = Data("auth-challenge-fixture".utf8)
         let signature = try identity.sign(challenge)
         XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: challenge))
     }
 
     func testSignedChallengeFailsAgainstADifferentKey() throws {
-        let identity = ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         let impostor = ClientIdentity(privateKey: .init())
         let challenge = Data("auth-challenge-fixture".utf8)
         let signature = try identity.sign(challenge)

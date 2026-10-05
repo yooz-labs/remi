@@ -38,24 +38,32 @@ final class HubClient: ObservableObject {
     /// This app's Ed25519 identity (#872), for completing the daemon's
     /// `auth_challenge` handshake. Injectable so tests can give a client its
     /// own throwaway identity instead of touching the real Keychain item.
-    private let identity: ClientIdentity
+    private var identity: ClientIdentity?
 
-    var publicFingerprint: String { identity.fingerprint }
-    var publicIdentityJSON: String { identity.publicIdentityJSON }
-    var authorizeCommand: String { identity.authorizeCommand }
+    var publicFingerprint: String { identity?.fingerprint ?? "" }
+    var publicIdentityJSON: String { identity?.publicIdentityJSON ?? "" }
+    var authorizeCommand: String { identity?.authorizeCommand ?? "" }
     /// Present only for a valid signed challenge's manual-approval refusal (#873).
     @Published private(set) var approvalErrorCode: String?
 
     init(
         scanPorts: [Int] = Array(basePort..<(basePort + portRange)),
-        identity: ClientIdentity = ClientIdentityStore.loadOrCreate()
+        identity: ClientIdentity? = nil
     ) {
         self.scanPorts = scanPorts
-        self.identity = identity
+        if let identity { self.identity = identity }
+        else {
+            do { self.identity = try ClientIdentityStore.loadOrCreate() }
+            catch {
+                self.identity = nil
+                self.phase = .identityUnavailable(reason: "The durable native identity could not be loaded. Its Keychain entry was preserved.")
+            }
+        }
     }
 
     enum Phase: Equatable {
         case scanning
+        case identityUnavailable(reason: String)
         case connected(port: Int, isHub: Bool)
         case unreachable
         /// Authentication refusal; the error code distinguishes manual approval
@@ -144,6 +152,8 @@ final class HubClient: ObservableObject {
 
     var menuStatusLine: String {
         switch phase {
+        case let .identityUnavailable(reason):
+            return reason
         case .scanning:
             return "Hub: looking…"
         case .unreachable:
@@ -201,7 +211,7 @@ final class HubClient: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     func start() {
-        guard !started else { return }
+        guard !started, identity != nil else { return }
         started = true
         Task { await scanAndConnect() }
     }
@@ -219,7 +229,7 @@ final class HubClient: ObservableObject {
         switch phase {
         case .unreachable, .rejected:
             Task { await scanAndConnect(preferring: lastConnectedPort) }
-        case .scanning, .connected:
+        case .identityUnavailable, .scanning, .connected:
             return
         }
     }
@@ -445,6 +455,7 @@ final class HubClient: ObservableObject {
             handleAuthRejected(port: port, reason: "the hub's public key fingerprint does not match its claim")
             return
         }
+        guard let identity else { return }
         pendingChallenge = (challengeData, serverPublicKeyRaw)
         do {
             let signature = try identity.sign(challengeData)
