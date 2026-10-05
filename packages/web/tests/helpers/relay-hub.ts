@@ -21,7 +21,7 @@ const processes: ReturnType<typeof Bun.spawn>[] = [];
 const workers: TestWorker[] = [];
 const sockets: WebSocket[] = [];
 const CLI = resolve(import.meta.dir, '../../../daemon/src/cli.ts');
-afterEach(async () => {
+export async function cleanupOwnedRelayFixtures() {
   for (const socket of sockets.splice(0)) socket.close();
   for (const proc of processes.splice(0)) {
     if (proc.exitCode === null) proc.kill('SIGTERM');
@@ -29,7 +29,8 @@ afterEach(async () => {
   }
   for (const worker of workers.splice(0)) await worker.stop();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-});
+}
+afterEach(cleanupOwnedRelayFixtures);
 function home() {
   const dir = mkdtempSync(join(tmpdir(), 'remi-r3-'));
   chmodSync(dir, 0o700);
