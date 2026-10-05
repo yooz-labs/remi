@@ -53,7 +53,7 @@ async function context() {
     keyVersion: 1,
     collapseId: r.b64u(seed('push collapse').slice(0, 16)),
     revision: 1,
-    kind: 'question',
+    kind: 'question' as const,
     nonce: r.b64u(seed('push content nonce')),
     issuedAt: 1000,
     expiresAt: 1100,
@@ -154,9 +154,14 @@ test('whole signed envelope refuses oversized content without truncation', async
   const encode =
     required<(c: unknown, p: Uint8Array, s: Uint8Array) => Uint8Array>('encodeSignedPushContent');
   const { content } = await context();
-  expect(codeOfSync(() => encode(content, new Uint8Array(2048), new Uint8Array(64)))).toBe(
-    'OVERSIZE',
+  const complete = text(
+    JSON.stringify({
+      ...payload,
+      options: payload.options.map((o) => ({ ...o, description: 'x'.repeat(450) })),
+    }),
   );
+  expect(complete.length).toBeLessThanOrEqual(2048);
+  expect(codeOfSync(() => encode(content, complete, new Uint8Array(64)))).toBe('OVERSIZE');
 });
 
 test('submission codec refuses duplicate or unknown JSON and preserves typed uncertain outcome', () => {
@@ -291,14 +296,14 @@ async function signedSubmission() {
     sealed: r.b64u(sealed),
   };
   const signature = r.b64u(await machine.sign(await build(unsigned)));
-  return { machine, recipient, unsigned, signed: { ...unsigned, signature } };
+  return { machine, recipient, content, unsigned, signed: { ...unsigned, signature } };
 }
 
 test('actual outer machine proof binds every submission field and distinguishes content signatures', async () => {
   const verify = required<typeof r.verifyPushSubmit>('verifyPushSubmit');
   const encode = required<typeof r.encodePushSubmit>('encodePushSubmit');
   const decode = required<typeof r.decodePushSubmit>('decodePushSubmit');
-  const { signed, unsigned, machine } = await signedSubmission();
+  const { signed, content, machine } = await signedSubmission();
   const expected = { rid: signed.rid, audience: signed.audience };
   const baseline = await verify(decode(encode(signed)), expected, 1001);
   expect(baseline.requestDigest).toMatch(/^[0-9a-f]{64}$/);
@@ -330,7 +335,7 @@ test('actual outer machine proof binds every submission field and distinguishes 
   const contentSignature = await machine.sign(
     await required<typeof r.buildPushContentSigningInput>('buildPushContentSigningInput')(
       {
-        ...unsigned,
+        ...content,
         nonce: r.b64u(seed('content nonce')),
         expiresAt: 1100,
       } as r.PushContentMetadata,
