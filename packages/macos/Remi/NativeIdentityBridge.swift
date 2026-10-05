@@ -1,5 +1,11 @@
 import Foundation
 import WebKit
+import LocalAuthentication
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Dedicated WebKit ingress retains actual frame provenance. Capacitor's generic
 /// CAPPluginCall drops WKScriptMessage.frameInfo and cannot enforce this boundary.
@@ -10,12 +16,21 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     let scheme: String
     private let service: String
     private let account: String
+    private var unlockedRevision: String?
+    private var inactiveObserver: NSObjectProtocol?
 
     init(scheme: String, service: String, account: String) {
         self.scheme = scheme
         self.service = service
         self.account = account
+        super.init()
+        inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.unlockedRevision = nil }
+            }
     }
+
+    deinit { if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) } }
 
     static func isBundledDocument(_ url: URL?, scheme: String) -> Bool {
         guard let url, url.scheme == scheme, url.host == "localhost", url.port == nil,
@@ -35,6 +50,25 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
               Self.isBundledDocument(frame.request.url, scheme: scheme),
               Self.isBundledDocument(message.webView?.url, scheme: scheme)
         else { replyHandler(nil, "Native identity request refused"); return }
+        if let request = message.body as? [String: Any], request["op"] as? String == "unlock" {
+            Task { @MainActor in
+                do {
+                    guard JSONSerialization.isValidJSONObject(request),
+                          try JSONSerialization.data(withJSONObject: request).count <= 8192,
+                          Set(request.keys) == ["op", "revision", "publicKey"],
+                          let identity = try ClientIdentityStore.load(service: service, account: account),
+                          request["revision"] as? String == identity.revision,
+                          try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw,
+                          await NativeForegroundUnlock.authenticate(),
+                          Self.isBundledDocument(message.webView?.url, scheme: scheme),
+                          try ClientIdentityStore.load(service: service, account: account)?.revision == identity.revision
+                    else { throw NativeIdentityError.changed }
+                    unlockedRevision = identity.revision
+                    replyHandler(publicRecord(identity), nil)
+                } catch { replyHandler(nil, "Native identity unlock refused") }
+            }
+            return
+        }
         do { replyHandler(try handle(message.body), nil) }
         catch { replyHandler(nil, "Native identity request refused"); }
     }
@@ -48,7 +82,9 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     private func publicRecord(_ identity: ClientIdentity) -> [String: Any] {
         ["exists": true, "publicKey": identity.publicKeyRaw.base64EncodedString(),
-         "fingerprint": identity.fingerprint, "revision": identity.revision]
+         "fingerprint": identity.fingerprint, "revision": identity.revision,
+         "requiresAppUnlock": identity.requiresAppUnlock,
+         "locked": identity.requiresAppUnlock && unlockedRevision != identity.revision]
     }
 
     private func handle(_ body: Any) throws -> [String: Any] {
@@ -68,18 +104,24 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }
             return publicRecord(try ClientIdentityStore.loadOrCreate(service: service, account: account))
         case "import":
-            guard Set(request.keys) == ["op", "pkcs8", "publicKey", "revision"] else {
+            guard Set(request.keys) == ["op", "pkcs8", "publicKey", "revision", "requiresAppUnlock"] else {
                 throw NativeIdentityError.malformed
             }
+            guard let protected = request["requiresAppUnlock"] as? NSNumber,
+                  CFGetTypeID(protected) == CFBooleanGetTypeID() else { throw NativeIdentityError.malformed }
             let previous = try ClientIdentityStore.load(service: service, account: account)
             let revision = request["revision"] as? String
             guard request["revision"] is NSNull || revision != nil else { throw NativeIdentityError.malformed }
             let imported = try ClientIdentityStore.importIdentity(
                 pkcs8: bytes(request["pkcs8"], count: 48...48),
                 publicKey: bytes(request["publicKey"], count: 32...32), replacing: revision,
+                requiresAppUnlock: protected.boolValue,
                 service: service, account: account)
+            // Only an explicit foreground import has decrypted the legacy identity.
+            // The durable policy still denies all background answers.
+            if imported.requiresAppUnlock { unlockedRevision = imported.revision }
             var response = publicRecord(imported)
-            let replaced = previous != nil && previous?.publicKeyRaw != imported.publicKeyRaw
+            let replaced = previous != nil && previous?.revision != imported.revision
             response["requiresRestart"] = scheme == "remi-app" && replaced
             if replaced { NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil) }
             return response
@@ -90,6 +132,9 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                   identity.revision == revision,
                   try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw
             else { throw NativeIdentityError.changed }
+            guard !identity.requiresAppUnlock || unlockedRevision == identity.revision else {
+                throw NativeIdentityError.changed
+            }
             let signature = try identity.sign(bytes(request["message"], count: 1...4096))
             var response = publicRecord(identity)
             response["signature"] = signature.base64EncodedString()
@@ -101,4 +146,30 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
 
 extension Notification.Name {
     static let nativeIdentityReplaced = Notification.Name("remi.native-identity-replaced")
+}
+
+/// An explicit foreground action, never called by the background answer relay.
+/// Device authentication unlocks the current app session; it does not re-encrypt
+/// the Keychain record with the legacy passphrase or enable background signing.
+@MainActor
+enum NativeForegroundUnlock {
+    static var inactiveNotification: Notification.Name {
+        #if os(macOS)
+        return NSApplication.didResignActiveNotification
+        #else
+        return UIApplication.willResignActiveNotification
+        #endif
+    }
+    static func authenticate() async -> Bool {
+        #if os(macOS)
+        guard NSApplication.shared.isActive else { return false }
+        #else
+        guard UIApplication.shared.applicationState == .active else { return false }
+        #endif
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
+        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication,
+            localizedReason: "Unlock Remi's signing identity for this app session")) == true
+    }
 }

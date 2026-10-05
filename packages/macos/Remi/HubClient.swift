@@ -39,6 +39,10 @@ final class HubClient: ObservableObject {
     /// `auth_challenge` handshake. Injectable so tests can give a client its
     /// own throwaway identity instead of touching the real Keychain item.
     private var identity: ClientIdentity?
+    private var identityObserver: NSObjectProtocol?
+    private var inactiveObserver: NSObjectProtocol?
+    private var foregroundUnlocked = false
+    var canUnlockIdentity: Bool { identity?.requiresAppUnlock == true && !foregroundUnlocked }
 
     var publicFingerprint: String { identity?.fingerprint ?? "" }
     var publicIdentityJSON: String { identity?.publicIdentityJSON ?? "" }
@@ -59,6 +63,46 @@ final class HubClient: ObservableObject {
                 self.phase = .identityUnavailable(reason: "The durable native identity could not be loaded. Its Keychain entry was preserved.")
             }
         }
+        if canUnlockIdentity { phase = .identityUnavailable(reason: "Open Remi and unlock this protected identity. Background answers remain disabled.") }
+        identityObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.invalidateIdentity() }
+            }
+        inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.identity?.requiresAppUnlock == true else { return }
+                    self.foregroundUnlocked = false
+                    self.started = false
+                    self.reconnectTask?.cancel()
+                    self.reconnectTask = nil
+                    self.teardownSocket()
+                    self.phase = .identityUnavailable(reason: "Open Remi and unlock this protected identity. Background answers remain disabled.")
+                }
+            }
+    }
+
+    deinit {
+        if let identityObserver { NotificationCenter.default.removeObserver(identityObserver) }
+        if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
+    }
+
+    private func invalidateIdentity() {
+        started = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        teardownSocket()
+        identity = nil
+        approvalErrorCode = nil
+        phase = .identityUnavailable(reason: "The native signing identity changed. Restart Remi before connecting with the new identity.")
+    }
+
+    func unlockIdentity() async {
+        guard let captured = identity, captured.requiresAppUnlock,
+              await NativeForegroundUnlock.authenticate(), identity?.revision == captured.revision else { return }
+        foregroundUnlocked = true
+        phase = .scanning
+        start()
     }
 
     enum Phase: Equatable {
@@ -211,7 +255,7 @@ final class HubClient: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     func start() {
-        guard !started, identity != nil else { return }
+        guard !started, identity != nil, !canUnlockIdentity else { return }
         started = true
         Task { await scanAndConnect() }
     }
@@ -266,6 +310,7 @@ final class HubClient: ObservableObject {
         phase = .scanning
         let ports = Self.scanOrder(hintPort: hintPort, ports: scanPorts)
         let responders = await Self.probe(ports: ports)
+        guard identity != nil, !canUnlockIdentity else { return }
         guard let port = Self.choosePort(responders: responders, hint: hintPort) else {
             phase = .unreachable
             scheduleReconnect()

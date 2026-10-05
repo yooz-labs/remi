@@ -234,14 +234,14 @@ final class ClientIdentityTests: XCTestCase {
             "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'public'})",
             arguments: [:], in: nil, contentWorld: .page)
         let record = try XCTUnwrap(publicReply as? [String: Any])
-        XCTAssertEqual(Set(record.keys), Set(["exists", "publicKey", "fingerprint", "revision"]))
+        XCTAssertEqual(Set(record.keys), Set(["exists", "publicKey", "fingerprint", "revision", "requiresAppUnlock", "locked"]))
         XCTAssertEqual(record["publicKey"] as? String, identity.publicKeyRaw.base64EncodedString())
         let message = Data("real WK native signing".utf8)
         let signing = "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message})"
         let signed = try await web.callAsyncJavaScript(signing, arguments: ["revision":identity.revision,
             "publicKey":identity.publicKeyRaw.base64EncodedString(), "message":message.base64EncodedString()], in: nil, contentWorld: .page)
         let reply = try XCTUnwrap(signed as? [String: Any])
-        XCTAssertEqual(Set(reply.keys), Set(["exists", "publicKey", "fingerprint", "revision", "signature"]))
+        XCTAssertEqual(Set(reply.keys), Set(["exists", "publicKey", "fingerprint", "revision", "requiresAppUnlock", "locked", "signature"]))
         let signature = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(reply["signature"] as? String)))
         XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: message))
         let stale = try await web.callAsyncJavaScript(
