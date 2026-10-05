@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		120000050000000000000002 /* NativePushPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000050000000000000001 /* NativePushPresentationTests.swift */; };
+		120000050000000000000004 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000050000000000000003 /* NotificationService.swift */; };
 		119900020000000000000003 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
 		119900020000000000000002 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
 		0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */; };
@@ -51,6 +53,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		120000050000000000000001 /* NativePushPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushPresentationTests.swift; sourceTree = SOURCE_ROOT; };
+		120000050000000000000003 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../web/ios/App/RemiNotificationService/NotificationService.swift; sourceTree = SOURCE_ROOT; };
 		119900020000000000000001 /* NativeIdentityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativeIdentityBridge.swift; path = NativeIdentityBridge.swift; sourceTree = "<group>"; };
 		03E03C1A89AE93F94D40EA16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupCommands.swift; sourceTree = "<group>"; };
@@ -125,6 +129,8 @@
 			children = (
 				7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */,
 				55D0D50141E60616E472B2C5 /* ClientIdentityTests.swift */,
+				120000050000000000000001 /* NativePushPresentationTests.swift */,
+				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
 				69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */,
@@ -305,6 +311,8 @@
 				55BD09EFD7CB8CA48CCE0840 /* ClientIdentity.swift in Sources */,
 				119900020000000000000003 /* NativeIdentityBridge.swift in Sources */,
 				E930A603D1AABF15D2F6197D /* ClientIdentityTests.swift in Sources */,
+				120000050000000000000002 /* NativePushPresentationTests.swift in Sources */,
+				120000050000000000000004 /* NotificationService.swift in Sources */,
 				5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */,
 				B2EF1C7D36471D46EACF2DD6 /* DistSchemeHandlerServingTests.swift in Sources */,
 				787301FFD777594190359E77 /* DistSchemeHandlerTests.swift in Sources */,
