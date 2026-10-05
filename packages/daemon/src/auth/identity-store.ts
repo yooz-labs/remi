@@ -18,6 +18,7 @@ import {
   fromBase64,
   importPublicKey,
   isEncrypted,
+  isSmallOrderPublicKey,
   serializeIdentity,
   toBase64,
   unlockIdentity,
@@ -61,8 +62,19 @@ function derivedFingerprint(publicKey: string): string {
 }
 /** Import and derive before a transaction lock; never await while holding the lock. */
 export async function validatePublicKey(publicKey: string): Promise<string> {
-  await importPublicKey(publicKeyBytes(publicKey));
+  const raw = publicKeyBytes(publicKey);
+  if (isSmallOrderPublicKey(new Uint8Array(raw)))
+    throw new DOMException('Ed25519 small-order public key refused', 'DataError');
+  await importPublicKey(raw);
   return derivedFingerprint(publicKey);
+}
+/** Sensitive JSON parser tokens and arbitrary exception messages never enter logs or wire. */
+function safeAuthReadError(error: unknown): string {
+  if (error instanceof SyntaxError) return 'invalid JSON';
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return typeof code === 'string' && /^E[A-Z]+$/.test(code)
+    ? `filesystem error ${code}`
+    : 'invalid or unreadable auth data';
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -121,7 +133,7 @@ export class IdentityStore {
       return deserializeIdentity(fs.readFileSync(this.identityPath, 'utf-8'));
     } catch (err) {
       throw new Error(
-        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${errorToString(err)}`,
+        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${safeAuthReadError(err)}`,
       );
     }
   }
@@ -155,7 +167,9 @@ export class IdentityStore {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw new Error(`Auth store is corrupt or unreadable (${filePath}): ${errorToString(err)}`);
+      throw new Error(
+        `Auth store is corrupt or unreadable (${filePath}): ${safeAuthReadError(err)}`,
+      );
     }
   }
   loadAuthorizedKeys(): AuthorizedKeysFile {

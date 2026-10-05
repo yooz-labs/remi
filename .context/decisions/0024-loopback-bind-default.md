@@ -14,6 +14,14 @@
 > `require_local_auth` is removed; old TOML values are ignored with a visible notice, and `--no-tofu` is accepted with a retirement notice.
 > Existing authorized keys remain valid. Explicit `--no-auth`/`auth.enabled = false` still disables auth with a warning, including on loopback.
 > Evidence: real isolated stock-hub WebSocket and HTTP tests in `first-connect-process.test.ts`, real crypto/store tests in `first-connect-approval.test.ts`, and simultaneous approval/touch/revoke processes with a continuous JSON reader.
+> **Review corrections for #873 (2026-10-05).**
+> WebCrypto import alone accepts small-order Ed25519 keys on both pinned Bun runtimes; direct admission now rejects them with the same reviewed validator used by the relay.
+> The encodings/algorithm were copied unchanged from relay epic commit `6f090f42ac32a1569169c77744e646d609d960e6`, `packages/shared/src/relay/small-order.ts`, into neutral `packages/shared/src/ed25519-public-key.ts`; the independent arithmetic test was copied with its import adapted.
+> Root will replace the relay helper with a re-export during integration, keeping one reviewed list. Legacy low-order authorized records remain stored, but those keys cannot authenticate; valid keys alongside them continue to work.
+> Only exact `auth.enabled` values `"auto"`, `true` or `false` pass runtime validation; malformed values fail before opening a listener. Only exact false or `--no-auth` disables authentication.
+> Storage failures return exactly `AUTH_STORE_ERROR` on the wire. Local diagnostics retain operation/path and sanitized error context; raw JSON parser tokens and key material are not logged.
+> Evidence: `auth-security-review.test.ts`, the independent shared arithmetic test, and real isolated malformed-config/storage process checks in `first-connect-process.test.ts`.
+>
 > This evidence does not cover signed physical iPhone execution or signed sandboxed macOS lifecycle acceptance; those remain owner hardware gates.
 
 > **Amended 2026-10-04 by #1193.**

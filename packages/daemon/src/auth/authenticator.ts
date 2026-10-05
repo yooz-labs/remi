@@ -218,7 +218,7 @@ export class Authenticator {
     } catch (err) {
       const detail = errorToString(err);
       console.error(`Auth store error during verification: ${detail}`);
-      return { result: createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`) };
+      return { result: createAuthResult(false, undefined, 'AUTH_STORE_ERROR') };
     }
 
     // #873: verified unknown identities request local human approval, never trust on first use.
@@ -229,9 +229,9 @@ export class Authenticator {
         // Concurrent explicit approval still requires a fresh challenge; no implicit admission.
         if (!(err instanceof DuplicateKeyError)) {
           const code =
-            err instanceof PendingQueueFullError
-              ? 'PENDING_QUEUE_FULL'
-              : `AUTH_STORE_ERROR: ${errorToString(err)}`;
+            err instanceof PendingQueueFullError ? 'PENDING_QUEUE_FULL' : 'AUTH_STORE_ERROR';
+          if (!(err instanceof PendingQueueFullError))
+            console.error(`Auth store error during pending registration: ${errorToString(err)}`);
           return { result: createAuthResult(false, undefined, code) };
         }
       }
