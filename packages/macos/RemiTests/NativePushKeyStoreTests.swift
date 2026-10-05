@@ -9,6 +9,9 @@ final class NativePushKeyStoreTests: XCTestCase {
     override func setUp() { service = "live.yooz.remi.tests.push-" + UUID().uuidString }
     override func tearDown() {
         SecItemDelete(query as CFDictionary)
+        var secondary = query
+        secondary[kSecAttrService as String] = service + ".secondary"
+        SecItemDelete(secondary as CFDictionary)
     }
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
@@ -73,4 +76,25 @@ final class NativePushKeyStoreTests: XCTestCase {
         XCTAssertThrowsError(try store().loadOrCreate())
         XCTAssertEqual(try bytes(), corrupt)
     }
+
+    func testDurableReadBackMismatchRefusesWithoutDeletingEitherOwnedKey() throws {
+        let secondary = NativePushKeyStore(service: service + ".secondary", account: account, accessGroup: nil)
+        let other = try secondary.loadOrCreate()
+        var operations = NativeKeychainOperations.system
+        var reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            var query = request as NSDictionary as! [String: Any]
+            // Redirect only the actual post-add OS read into another disposable
+            // real Keychain item. Production persistence/validation is unchanged.
+            if reads > 1 { query[kSecAttrService as String] = self.service + ".secondary" }
+            return SecItemCopyMatching(query as CFDictionary, result)
+        }
+        XCTAssertThrowsError(try store(operations: operations).loadOrCreate(),
+                             "A mismatching durable read-back cannot publish the created push key")
+        let retained = try XCTUnwrap(store().load())
+        XCTAssertNotEqual(retained.publicKey, other.publicKey)
+        XCTAssertEqual(try secondary.load().map { $0.publicKey }, other.publicKey)
+    }
+
 }
