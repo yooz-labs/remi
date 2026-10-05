@@ -478,9 +478,10 @@ export class NotificationDispatcher {
     // Reporting `pushed` for a fan-out of zero would claim a card reached a
     // lock screen it never appears on; `no_channel` is the honest outcome.
     const wanting = tokensWanting(deviceTokens.values(), 'question');
+    const secure = this.deps.securePush;
     // No reachable device: nobody can be pushed. If a client is attached the
     // user is still reachable in-app (held case); otherwise there is no channel.
-    if (wanting.length === 0) {
+    if (wanting.length === 0 && !secure?.hasRecipients('question')) {
       if (!hasActiveClient) {
         log(
           deviceTokens.size === 0
@@ -539,14 +540,14 @@ export class NotificationDispatcher {
         failed: `Push notification failed for session ${pushSessionId}`,
       }),
     );
-    // Delivered if ANY registered device accepted the push. For a HELD
-    // escalation we gate on THIS push result — not on socket-attachment —
-    // because the attached client may be backgrounded (that is WHY we push). A
-    // failed push therefore fails the hold open fast rather than stalling on an
-    // unreliable `in_app`; the in-app answer path still works, routing via the
-    // PTY to the native prompt after fail-open. (The no-token branch above falls
-    // back to the socket signal since there is no push channel at all; Phase 7's
-    // presence signal hardens that remaining `in_app` trust.)
+    if (secure)
+      perToken.push(
+        secure
+          .send({ kind: 'question', logicalId: question.id, question, title, body })
+          .then((outcome) => outcome === 'pushed'),
+      );
+    // Diagnostic APNs acceptance only. Held hooks keep their own captured
+    // deadline and resolve only through the harness's human-answer paths (#1126).
     return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
   }
 
