@@ -337,6 +337,12 @@ final class ClientIdentityTests: XCTestCase {
             in:nil,contentWorld:.page)
         let signature = try XCTUnwrap(Data(base64Encoded:try XCTUnwrap((signed as? [String:Any])?["signature"] as? String)))
         XCTAssertTrue(legacy.publicKey.isValidSignature(signature,for:message))
+        _ = try await web.callAsyncJavaScript(
+            "window.nativeLockEvents = 0; window.addEventListener('remi:native-identity-locked', () => { ++window.nativeLockEvents; });",
+            arguments:[:],in:nil,contentWorld:.page)
+        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        let lockEvents = try await web.callAsyncJavaScript("return window.nativeLockEvents",arguments:[:],in:nil,contentWorld:.page)
+        XCTAssertEqual(lockEvents as? Int,1,"Actual native inactivity must notify the web channel owner without exposing identity bytes")
         active = false // Sign must check OS state even if no inactive callback has arrived yet.
         let inactiveSign = try await web.callAsyncJavaScript(
             "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message}); return true } catch { return false }",
