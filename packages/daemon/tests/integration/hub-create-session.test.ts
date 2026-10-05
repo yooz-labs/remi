@@ -10,9 +10,9 @@
  * record the argv they were started with, so everything asserted is what the
  * CHILD's agent saw, or what came back over the socket.
  *
- * Not covered here, because it needs the owner (LV-4): that a Codex session
- * created this way reaches its prompt headless, with no one to dismiss an
- * Update or Trust modal, against a real Codex.
+ * Not covered here, because it needs a real Codex: what one does at an Update or Trust modal
+ * when nothing dismisses it. LV-4 (live, Codex 0.160.0) showed a session created this way
+ * reaching its prompt headless, but no modal appeared in any launch.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
@@ -96,10 +96,13 @@ async function startHub(
     const agents = installFakeAgents(dirs.home, which);
     server = FakeAppServer.start();
     // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
-    const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+    // The hub's children probe from `base_port` (which `REMI_PORT` sets) over the next 20 ports, and
+    // the default base, 18765, is shared by every hub on the machine and by real sessions: so the
+    // whole run of 20 is reserved, the hub takes its first port, and its children take the rest.
+    const port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
     const hub = await spawnHub(
       dirs,
-      { ...agents.env, CODEX_HOME: server.codexHome },
+      { ...agents.env, CODEX_HOME: server.codexHome, REMI_PORT: String(port) },
       cliPath,
       port,
     );
@@ -163,6 +166,39 @@ function childEntries(r: Running): Array<{ pid: number; sessionId: string }> {
 
 /** The fake records whole or not at all, so the file existing is the whole list (P11). */
 const waitForArgv = (dir: string): Promise<string[]> => waitForRecordedArgv(dir);
+
+/**
+ * What a failure needs to explain itself: the hub's own output and the children's log (the hub
+ * starts them detached, with their output in `daemon.log` under the isolated home), each cut to its
+ * last 1500 characters.
+ */
+function logTails(r: Running): string {
+  const childLog = path.join(r.hub.home, '.remi', 'daemon.log');
+  const child = fs.existsSync(childLog) ? fs.readFileSync(childLog, 'utf-8') : '(no child log)';
+  return `hub log tail:\n${r.log.text.slice(-1500)}\nchild log tail:\n${child.slice(-1500)}`;
+}
+
+/** The message for an assertion on a `create_session_response`: the response itself, and the logs. */
+const why = (r: Running, response: object): string =>
+  `response: ${JSON.stringify(response)}\n${logTails(r)}`;
+
+/**
+ * Wait for the fake agent a CLI asked the hub for. A CLI that exits first (the hub said no) ends the
+ * wait at once instead of after the 20 s timeout, and the error says what it and the hub printed.
+ */
+async function waitForArgvOf(
+  r: Running,
+  dir: string,
+  cli: { proc: Bun.Subprocess; output: { text: string } },
+): Promise<string[]> {
+  try {
+    return await waitForRecordedArgv(dir, { stillRunning: () => cli.proc.exitCode === null });
+  } catch (error) {
+    throw new Error(
+      `${(error as Error).message}\ncli exit ${cli.proc.exitCode}, its output:\n${cli.output.text.slice(-1500)}\n${logTails(r)}`,
+    );
+  }
+}
 
 describe('startHub when the hub cannot start (Q2)', () => {
   // The isolated directories and the fake app-server were made before `spawnHub` ran, and a throw
@@ -233,9 +269,13 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {
     const r = await startHub({ codex: true });
     const { response } = await ask(r, { harness: 'codex', args: ['-m', 'fixture-model'] });
-    expect(response.success).toBe(true);
+    expect(response.success, why(r, response)).toBe(true);
     expect(response.sessionId).toMatch(UUID_RE);
     expect(response.port).toBeGreaterThan(0);
+    // The child's port is probed from the range this test reserved (the hub's own port and the 19
+    // above it), not from 18765, which every hub on the machine and the owner's own sessions share.
+    expect(response.port).toBeGreaterThan(r.hub.port);
+    expect(response.port).toBeLessThan(r.hub.port + 20);
     // The hub cannot know that Codex reached its prompt: it says so, and what to do.
     expect(noticeOf(response)).toContain('remi attach');
     expect(noticeOf(response)).toContain('Update or Trust');
@@ -283,7 +323,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test("a Claude request with a model starts Claude with it, beside remi's own launch flags", async () => {
     const r = await startHub({ claude: true });
     const { response } = await ask(r, { harness: 'claude', args: ['--model', 'opus'] });
-    expect(response.success).toBe(true);
+    expect(response.success, why(r, response)).toBe(true);
     expect('notice' in response).toBe(false);
     const argv = await waitForArgv(r.agents.claudeDir);
     // The model the request named, and remi's own `--session-id <uuid> -n remi:<port>`.
@@ -297,7 +337,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('a request that names no harness and brings no arguments is the Claude launch it always was', async () => {
     const r = await startHub({ claude: true, codex: true });
     const { response } = await ask(r);
-    expect(response.success).toBe(true);
+    expect(response.success, why(r, response)).toBe(true);
     expect('notice' in response).toBe(false);
     const argv = await waitForArgv(r.agents.claudeDir);
     expect(argv).toHaveLength(4);
@@ -309,7 +349,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('a harness that is not installed is refused, and nothing is spawned', async () => {
     const r = await startHub({ claude: true });
     const { response } = await ask(r, { harness: 'codex' });
-    expect(response.success).toBe(false);
+    expect(response.success, why(r, response)).toBe(false);
     expect(response.error).toContain('codex');
     expect(response.sessionId).toBeUndefined();
     expect('notice' in response).toBe(false);
@@ -336,11 +376,28 @@ describe('a hub creating a session for a harness (#1179)', () => {
     async (_name, options) => {
       const r = await startHub({ claude: true, codex: true });
       const { response } = await ask(r, options);
-      expect(response.success).toBe(false);
+      expect(response.success, why(r, response)).toBe(false);
       expect(typeof response.error).toBe('string');
       expect(childEntries(r)).toEqual([]);
       expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
       expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
+    },
+    60000,
+  );
+
+  test.each([['untrusted'], ['on-request'], ['never']])(
+    'a Codex request with -a %s is refused with its reason, and nothing is spawned (LV-4)',
+    async (value) => {
+      // Codex 0.160.0 rejects `-a untrusted` with exit 2, which used to kill the child: a remote
+      // request carries no -a at all, because no value of it can be shown to tighten the host.
+      const r = await startHub({ claude: true, codex: true });
+      const { response } = await ask(r, { harness: 'codex', args: ['-m', 'x', '-a', value] });
+      expect(response.success, why(r, response)).toBe(false);
+      expect(response.error).toContain('-a/--ask-for-approval is not allowed');
+      expect(response.error).toContain('may only tighten');
+      expect(response.sessionId).toBeUndefined();
+      expect(childEntries(r)).toEqual([]);
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
     },
     60000,
   );
@@ -410,7 +467,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
 
     const { response } = await ask(r, { harness: 'codex', args: ['resume', THREAD.toUpperCase()] });
 
-    expect(response.success).toBe(false);
+    expect(response.success, why(r, response)).toBe(false);
     const id8 = remiSessionId.slice(0, 8);
     // The client is told that the thread is open, and nothing about the session that holds it:
     // not its id, not its port, not the thread it asked about (P4).
@@ -459,7 +516,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
       const r = await startHub({ claude: true, codex: true });
       writeAmbiguousStore(r);
       const { response } = await ask(r, { harness: 'codex', args: ['resume', THREAD] });
-      expect(response.success).toBe(false);
+      expect(response.success, why(r, response)).toBe(false);
       expect(response.error).toBe(
         "That Codex thread cannot be resumed from here: the host's records of it are ambiguous.",
       );
@@ -480,7 +537,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
         harness: 'claude',
         args: ['--resume', '3f9c2a1e-0000-4000-8000-000000000042'],
       });
-      expect(response.success).toBe(false);
+      expect(response.success, why(r, response)).toBe(false);
       expect(response.error).toContain('could not be started');
       expect(childEntries(r)).toEqual([]);
       expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
@@ -517,7 +574,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
         const r = await startHub({ claude: true, codex: true });
         const remiSessionId = await holdClaudeSession(r);
         const { response } = await ask(r, options);
-        expect(response.success).toBe(false);
+        expect(response.success, why(r, response)).toBe(false);
         expect(response.error).toBe(GENERIC);
         expect(childEntries(r)).toEqual([]);
         expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
@@ -574,7 +631,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
       const r = await startHub({ claude: true, codex: true });
       for (const options of [{}, { harness: 'codex' }]) {
         const { response } = await ask(r, { ...options, directory });
-        expect(response.success).toBe(false);
+        expect(response.success, why(r, response)).toBe(false);
         expect(response.error).toContain('Invalid directory');
       }
       expect(childEntries(r)).toEqual([]);
@@ -669,9 +726,40 @@ function runCli(r: Running, args: readonly string[]) {
 }
 
 describe('the CLI creating a session on a hub (#1179)', () => {
+  test('a CLI that exits before the agent starts ends the wait at once, and the error says what it and the hub printed', async () => {
+    const r = await startHub({ codex: true });
+    const proc = Bun.spawn(['sh', '-c', 'echo refused by the hub; exit 3'], { stdout: 'pipe' });
+    sleepers.push(proc);
+    const output = { text: '' };
+    collect(proc.stdout, output);
+    // The children's log is where the hub's detached children write: put a line in it.
+    fs.mkdirSync(path.join(r.hub.home, '.remi'), { recursive: true });
+    fs.writeFileSync(path.join(r.hub.home, '.remi', 'daemon.log'), 'earlier\nchild said hello\n');
+    await proc.exited;
+    await pollUntil(() => output.text.includes('refused by the hub'), 5000, 'the CLI output');
+    const started = Date.now();
+    const error = await waitForArgvOf(r, r.agents.codexDir, { proc, output }).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain('exited early');
+    expect(message).toContain('cli exit 3');
+    expect(message).toContain('refused by the hub');
+    expect(message).toContain('hub log tail');
+    expect(message).toContain('child log tail');
+    expect(message).toContain('child said hello');
+    // Not the 20 s the wait takes when nothing says the CLI is gone.
+    expect(Date.now() - started).toBeLessThan(5000);
+    // And the message of a response assertion carries the response and both log tails.
+    const explained = why(r, { success: false, error: 'no way' });
+    expect(explained).toContain('"error":"no way"');
+    expect(explained).toContain('hub log tail');
+    expect(explained).toContain('child log tail');
+    expect(explained).toContain('child said hello');
+  }, 60000);
+
   test('remi codex --host starts a Codex session there with the arguments after --', async () => {
     const r = await startHub({ codex: true });
-    const { output, stderr } = runCli(r, [
+    const cli = runCli(r, [
       'codex',
       '--host',
       'localhost',
@@ -683,7 +771,12 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       '-m',
       'some-model',
     ]);
-    expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen', '-m', 'some-model']);
+    const { output, stderr } = cli;
+    expect(await waitForArgvOf(r, r.agents.codexDir, cli)).toEqual([
+      '--no-alt-screen',
+      '-m',
+      'some-model',
+    ]);
     // What the hub said about readiness reaches the person at the CLI: the condition only. The CLI
     // attaches itself, so the remedy (`remi attach`, which the notice's second line names) is
     // already being done and is not repeated (G11).
@@ -759,7 +852,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
 
   test('the same resume after -- is sent to the hub, which spawns Claude with it', async () => {
     const r = await startHub({ claude: true });
-    runCli(r, [
+    const cli = runCli(r, [
       'new',
       '--host',
       'localhost',
@@ -771,7 +864,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       '--resume',
       '3f9c2a1e-0000-4000-8000-000000000042',
     ]);
-    expect((await waitForArgv(r.agents.claudeDir)).slice(0, 2)).toEqual([
+    expect((await waitForArgvOf(r, r.agents.claudeDir, cli)).slice(0, 2)).toEqual([
       '--resume',
       '3f9c2a1e-0000-4000-8000-000000000042',
     ]);
@@ -779,7 +872,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
 
   test('remi new --host --harness codex is the same request', async () => {
     const r = await startHub({ codex: true });
-    runCli(r, [
+    const cli = runCli(r, [
       'new',
       '--host',
       'localhost',
@@ -790,7 +883,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       '--harness',
       'codex',
     ]);
-    expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen']);
+    expect(await waitForArgvOf(r, r.agents.codexDir, cli)).toEqual(['--no-alt-screen']);
   }, 90000);
 
   test('a hub that does not offer the harness is told so by the client, which starts nothing', async () => {

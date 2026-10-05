@@ -11,7 +11,9 @@
  *   `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`,
  *   `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`,
  *   `-h/--help`, `-V/--version` and `--no-alt-screen`, and refuses every other
- *   flag. A denylist is not enough: the one this file started with missed
+ *   flag. A value is passed on as typed, so Codex reports its own error for
+ *   one it does not accept (0.160.0 takes only `on-request` and `never` for
+ *   `-a`). A denylist is not enough: the one this file started with missed
  *   `--worktree` (it moves the session's cwd like `-C/--cd`) and
  *   `--not-so-yolo` within one Codex release, and a flag remi does not know
  *   fails silently (an approval path that never reaches the phone), where a
@@ -20,9 +22,9 @@
  * - `validateCodexRemoteArgs` is for a request that arrives over the wire
  *   (the hub's `create_session_request`, #1179): loopback clients and capability-token holders skip auth, so
  *   unvalidated arguments would be a remote privilege boundary. It allows a
- *   model, an approval policy, a sandbox mode and `resume <uuid>`, with bounded
+ *   model, a read-only sandbox and `resume <uuid>`, with bounded
  *   size, and is total: any input that is not an array of those is a refusal,
- *   never a throw.
+ *   never a throw. It refuses `-a` in every form, see `REMOTE_APPROVAL_REFUSAL`.
  *
  * What ships for subcommands: Codex reads an unknown name or alias as a
  * subcommand, so remi does not rely on a list of names for safety. The
@@ -44,10 +46,19 @@
  * validator is the hub's (`HarnessRegistry`, #1179), and the child daemon the
  * hub spawns then validates the same arguments again with the local one.
  *
- * Not verified, because remi must not start Codex to find out: the flag lists
- * come from the epic plan, the spike, and a read-only look at the embedded
- * clap strings of Codex 0.160.0 by a reviewer. `-i/--image` is treated as
- * taking one value; a comma-separated list is one value and passes through.
+ * What a live run (LV-4, Codex 0.160.0) showed, by the exit code of `codex <flags> --help`
+ * (clap parsed the flags; none of them was run in a session): `-m <model>`, `-a on-request`,
+ * `-a never`, `-s read-only` and `-s workspace-write` parse, and `-a untrusted` is REJECTED
+ * (exit 2: `--ask-for-approval` accepts only `on-request` and `never`). Through a hub, `-m` and
+ * `-s read-only` also came up as a session; `-s workspace-write` and `-a on-request` were refused
+ * there by design, so they were never run in one. The first remote allowlist took `untrusted`
+ * from embedded help strings, never from a run, and every remote request with `-a` then produced
+ * a dead child.
+ *
+ * Still not verified by a run: the rest of the local flag list (`--add-dir`, `-i/--image`, ...)
+ * comes from the epic plan, the spike, and a read-only look at the embedded clap strings of Codex
+ * 0.160.0 by a reviewer. `-i/--image` is treated as taking one value; a comma-separated list is
+ * one value and passes through.
  */
 
 import * as fs from 'node:fs';
@@ -299,20 +310,33 @@ const REMOTE_MAX_ARG_LENGTH = 256;
 /** A model name: no leading hyphen, so it can never read as a flag. */
 const REMOTE_MODEL_PATTERN = /^[A-Za-z0-9._:[\]][A-Za-z0-9._:[\]-]{0,63}$/;
 /**
- * A remote request may only TIGHTEN the posture the host chose, never loosen it (ADR 0033,
- * Phase 5 review): `untrusted` asks for every command and `read-only` writes nothing, while
- * `on-request` and `workspace-write` are looser than a host's stricter default. Widening needs
- * a person at the terminal (Claude's allowlist leaves out `--permission-mode` for the same reason).
+ * A remote request may only TIGHTEN the posture the host chose, never loosen it (ADR 0033, H3):
+ * `read-only` writes nothing, while `workspace-write` is looser than a host's stricter default.
+ * Widening needs a person at the terminal (Claude's allowlist leaves out `--permission-mode` for
+ * the same reason).
  */
-const REMOTE_APPROVAL_POLICY = 'untrusted';
 const REMOTE_SANDBOX_MODE = 'read-only';
+
+/**
+ * Why a remote request cannot carry `-a`, in any form (LV-4): Codex 0.160.0 takes only
+ * `on-request` and `never` for it (`untrusted`, which this allowlist once required, makes Codex
+ * exit 2), and neither can be shown to tighten a posture remi cannot read, since the host's own
+ * configuration may already ask for more than `on-request`.
+ */
+const REMOTE_APPROVAL_REFUSAL =
+  "remote codex arguments: -a/--ask-for-approval is not allowed: a remote request may only tighten the host's posture, and no value of it can be shown to tighten it (Codex accepts only on-request and never, and the host's own setting may already be stricter); set it in the host's Codex configuration or at its terminal";
+
+/** `-a`, `-a=x`, `-ax` and the long flag with or without `=value`: every way clap takes the flag. */
+function isApprovalFlag(token: string): boolean {
+  return token.startsWith('-a') || /^--ask-for-approval(=|$)/.test(token);
+}
 
 /**
  * Validate the arguments of a Codex session requested over the wire
  * (default-deny). Accepted, each at most once and in any order: `-m` or
- * `--model` followed by a model name, `-a untrusted`, `-s read-only`, and
- * `resume <uuid>` (UNVERIFIED headless, an LV-4 item). A remote request may only
- * tighten the host's posture: `-a on-request` and `-s workspace-write` are refused.
+ * `--model` followed by a model name, `-s read-only`, and `resume <uuid>` (verified headless by
+ * LV-4). A remote request may only tighten the host's posture: `-s workspace-write` is refused,
+ * and so is `-a` with any value or spelling (`REMOTE_APPROVAL_REFUSAL`).
  * Everything else is
  * refused, including a prompt, `--`, `--no-alt-screen` (remi adds it) and the
  * `--flag=value` spelling. At most 16 arguments of at most 256 characters
@@ -345,21 +369,13 @@ export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
     const token = tokens[i] as string;
     const value = tokens[i + 1];
     let slot: string;
+    if (isApprovalFlag(token)) return refuse(REMOTE_APPROVAL_REFUSAL);
     switch (token) {
       case '-m':
       case '--model':
         slot = 'model';
         if (value === undefined || !REMOTE_MODEL_PATTERN.test(value)) {
           return refuse(`remote codex arguments: ${token} needs a model name`);
-        }
-        flags.push(token, value);
-        break;
-      case '-a':
-        slot = 'approval';
-        if (value !== REMOTE_APPROVAL_POLICY) {
-          return refuse(
-            `remote codex arguments: -a may only be ${REMOTE_APPROVAL_POLICY} (a remote request can tighten the host's posture, never loosen it)`,
-          );
         }
         flags.push(token, value);
         break;

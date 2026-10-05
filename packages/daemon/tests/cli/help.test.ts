@@ -248,6 +248,24 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('run codex directly');
   });
 
+  test('remi codex --help lists what a remote request may carry, and no -a (LV-4)', () => {
+    // Codex 0.160.0 rejects `-a untrusted`, the one value the help used to advertise, and no
+    // other value can be shown to tighten the host: a remote request carries no -a at all.
+    const words = (command: string): string =>
+      plain(formatCommandHelp(command)).replace(/\s+/g, ' ');
+    const codex = words('codex');
+    expect(codex).toContain(
+      'accepts only -m/--model <name>, -s read-only and `resume <thread id>`',
+    );
+    expect(codex).toContain('carries no -a at all');
+    expect(codex).not.toContain('-a untrusted');
+    expect(codex).not.toContain('resume is unverified');
+    // The local launch passes -a through; Codex rejects any other value, and the help says which it takes.
+    expect(codex).toContain('-a takes only on-request or never');
+    // LV-4 ran Claude's --resume through a hub, so `remi new --help` no longer calls it unverified.
+    expect(words('new')).not.toContain('unverified');
+  });
+
   test('every subcommand still has a help entry', () => {
     for (const command of ['codex', 'new', 'ls', 'serve']) {
       expect(formatCommandHelp(command)).not.toContain('No help available');

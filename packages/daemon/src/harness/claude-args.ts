@@ -22,9 +22,11 @@
  * Claude's launch adds `--session-id` and `-n` itself, so neither is allowed.
  *
  * `--resume` through a hub spawns a child daemon that passes the arguments on (#1179).
- * It is UNVERIFIED against a real Claude: whether a resumed session keeps a permissive
- * permission mode from its earlier life is unknown, and is on the LV-4 checklist (the
- * Claude half). That a resumed session then behaves (binding, hooks) is #1129's.
+ * LV-4 (live, Claude Code 2.1.289) ran it: the spawn and `--resume <id>` work, and a session
+ * started with `--permission-mode acceptEdits` came back in that mode when resumed through the
+ * hub, whose child's arguments named no mode: Claude restores the session's earlier mode on
+ * resume (`bypassPermissions` was not tried). That a resumed session then behaves (binding,
+ * hooks) is #1129's.
  *
  * Lives beside Claude's side of the seam, not in `harness/codex/`, whose
  * boundary keeps Claude out; `cli.ts` is the one importer (`HarnessRegistry`).
