@@ -732,3 +732,64 @@ test('secure transport false machine signer and recipient mismatch fail closed',
   ).resolves.toMatchObject({ outcome: 'refused', reason: 'INVALID_CONTENT' });
   expect(received.bodies).toHaveLength(0);
 });
+
+test('secure transport refuses response-selected redirect authority without a second network effect', async () => {
+  const f = await fixture();
+  const destination = receiver(async (_req, body) => {
+    const input = await submissionInput(body);
+    return new Response(
+      r.encodePushSubmitResult({
+        v: 2,
+        outcome: 'accepted',
+        requestDigest: Buffer.from(input.subarray(input.length - 32)).toString('hex'),
+      }),
+    );
+  });
+  const configured = receiver(
+    () =>
+      new Response(null, {
+        status: 307,
+        headers: { location: `${destination.server.url.origin}/unconfigured` },
+      }),
+  );
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: configured.server.url.origin,
+    ownedOrigin: configured.server.url.origin,
+  });
+  const result = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  expect(result.outcome).toBe('prepared');
+  if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+  await expect(transport.sendPrepared(result.prepared)).resolves.toMatchObject({
+    outcome: 'uncertain',
+    attempts: 1,
+  });
+  expect(configured.bodies).toHaveLength(1);
+  expect(destination.bodies).toHaveLength(0);
+});
+test('secure transport corrupt current subscription refuses with fixed local STORE_ERROR', async () => {
+  const f = await fixture();
+  const received = receiver(() => Response.json({}));
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const result = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  expect(result.outcome).toBe('prepared');
+  if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(join(f.directory, 'secure_push_subscriptions.json'), 'PRIVATE_STORE_SENTINEL', {
+    mode: 0o600,
+  });
+  await expect(transport.sendPrepared(result.prepared)).resolves.toEqual({
+    outcome: 'refused',
+    reason: 'STORE_ERROR',
+    attempts: 0,
+  });
+  expect(received.bodies).toHaveLength(0);
+});
