@@ -18,6 +18,11 @@ type QRConstructor = new (options: { formats: string[] }) => QRDetector;
 /** Local codes get useful copy; provider/engine messages never become UI text. */
 function pairingErrorMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  if (
+    message ===
+    'Relay pairing is unavailable in the Android app until its native identity provider is supported.'
+  )
+    return message;
   if (message === 'TOKEN' || message === 'Pairing token exceeds limit.')
     return 'Pairing token is invalid. Copy the complete token from remi pair.';
   if (message === 'EXPIRED' || message === 'Pairing token expired.')

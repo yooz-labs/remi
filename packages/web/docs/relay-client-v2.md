@@ -43,6 +43,11 @@ implicitly enabling background signing. Native storage uses device Keychain
 protection; the old passphrase does not encrypt the native record. A macOS identity
 replacement requires restarting its captured direct-client context.
 
+Relay pairing is unavailable in the native Android app until it has a native
+identity provider; it refuses before reading or creating a browser relay identity.
+The existing Android direct connection path is unchanged. An Android browser is
+a browser, and can use the browser provider where its crypto engine supports it.
+
 Browser-only identities still use browser persistence, optionally encrypted with
 a passphrase. This is not OS Keychain storage. Completed machine pins currently
 remain public browser/WebView storage; R5 must establish native notification trust

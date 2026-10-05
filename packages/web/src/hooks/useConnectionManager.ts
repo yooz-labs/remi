@@ -22,6 +22,7 @@ import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-cli
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
 import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
+import { isNative } from '@/lib/platform';
 import { RelayMachineChannel, type RelayMachinePin } from '@/lib/relay-machine-channel';
 import { RelayTransport, type ConnectionTransport } from '@/lib/relay-transport';
 import { rememberRelayPin } from '@/lib/relay-pins';
@@ -789,6 +790,8 @@ export function useConnectionManager(
   );
 
   const connectRelay = useCallback(async (input: string | RelayMachinePin, signal?: AbortSignal): Promise<ConnectionId> => {
+    // #1199: native relay identities must stay in a platform provider, including cached keys.
+    if (isNative() && !usesNativeIdentity()) throw new Error('Relay pairing is unavailable in the Android app until its native identity provider is supported.');
     let tokenOrPin = input;
     let identity = identityRef.current;
     if (!identity) {
