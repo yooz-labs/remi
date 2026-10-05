@@ -641,10 +641,18 @@ describe('CodexHarness', () => {
   describe('what Codex printed when it died at startup (LV-4)', () => {
     // Codex 0.160.0 exits 2 with a flag error on its terminal; that output used to go nowhere, so
     // only `exited with code 2` reached a log. These run a real fake `codex` that prints a text and
-    // exits, in a real PTY, and read what the session logs.
+    // exits, in a real PTY, and read what the session logs. Each session is registered with the
+    // registry first, as `createNewSession` does before it starts one.
     const ERROR = "error: invalid value 'never-seen' for '--ask-for-approval' [possible values]";
     /** The log entries that carry what the child printed. */
     const printed = (): string[] => logs.filter((l) => l.includes('its first output'));
+    /** The part of such an entry that is the child's text. */
+    const textOf = (entry: string | undefined): string => {
+      const marker = 'redacted and escaped): ';
+      return (entry ?? '').slice((entry ?? '').indexOf(marker) + marker.length);
+    };
+    /** A UTF-16 surrogate with no partner: a cut inside a pair leaves one. */
+    const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
     function fakeCodex(
       print: string,
@@ -669,10 +677,14 @@ describe('CodexHarness', () => {
       }
     });
 
-    /** A session built like `create`, but with the sends recorded, so a test can say nothing was sent. */
-    function createSending(deps: CodexLaunchDeps) {
+    /**
+     * A registered session built like `create`, with what it sends to clients kept apart: the raw PTY
+     * frames an attached client gets (by design), and every other message.
+     */
+    function createSending(deps: CodexLaunchDeps, passThrough = false) {
       const sessionId = crypto.randomUUID() as UUID;
-      const sent: unknown[] = [];
+      const raw: Array<{ data?: string }> = [];
+      const others: unknown[] = [];
       const messages: Message[] = [];
       const messageApi = new MessageAPI(
         { sessionId, initialBulletId: 1, maxBulletLength: 500 },
@@ -682,14 +694,18 @@ describe('CodexHarness', () => {
         sessionId,
         workingDirectory: workDir,
         extraArgs: [],
-        passThrough: false,
+        passThrough,
         reservedRows: 0,
         messageApi,
-        sendAndRecord: (...a) => sent.push(a),
-        sendMessage: (...a) => sent.push(a),
+        sendAndRecord: (...a) => others.push(a),
+        sendMessage: (_id, message) => {
+          if (message.type === 'raw_pty_output') raw.push(message as { data?: string });
+          else others.push(message);
+        },
       });
+      deps.sessionRegistry.registerSession(sessionId, workDir, session.pty, messageApi);
       launched.push(session);
-      return { session, sent, messages };
+      return { session, sessionId, registry: deps.sessionRegistry, raw, others, messages };
     }
 
     const exited = (session: HarnessSession) =>
@@ -705,23 +721,35 @@ describe('CodexHarness', () => {
       expect(entries[0]).toContain(ERROR);
       expect(entries[0]).toContain('code 2');
       expect(entries[0]).toContain('before it named a thread');
-      // Nothing logs it a second time when the session is torn down.
-      session.dispose();
-      expect(printed()).toHaveLength(1);
     });
 
-    test('it goes to the log alone: no client message, structured message or raw frame carries it', async () => {
+    test('the captured copy goes to the log alone: an attached client gets the bytes once, as raw frames, and no other message carries them', async () => {
       fakeCodex(ERROR, 2);
-      const { session, sent, messages } = createSending(buildDeps(startServer()));
+      const { session, sessionId, registry, raw, others, messages } = createSending(
+        buildDeps(startServer()),
+      );
+      expect(registry.attachConnection(sessionId, crypto.randomUUID() as UUID)).toBeDefined();
+      expect(registry.getSession(sessionId)?.attachedConnections.size).toBe(1);
       await session.start();
       await exited(session);
       expect(printed()).toHaveLength(1);
-      expect(JSON.stringify(sent)).not.toContain('invalid value');
-      expect(JSON.stringify(messages)).not.toContain('invalid value');
+      // By design an attached client reads what the child wrote, as raw PTY frames: once, whatever
+      // the log keeps. A second copy of the captured text sent as a frame would double it here.
+      const wire = Buffer.concat(raw.map((f) => Buffer.from(f.data ?? '', 'base64'))).toString(
+        'utf8',
+      );
+      expect(wire).toBe(`${ERROR}\r\n`);
+      // Nothing else carries the text or its base64 (a frame's data is base64, so a text check
+      // alone could not see one).
+      const encoded = [`${ERROR}\r\n`, ERROR].map((t) => Buffer.from(t).toString('base64'));
+      for (const text of [JSON.stringify(others), JSON.stringify(messages)]) {
+        expect(text).not.toContain('invalid value');
+        for (const b64 of encoded) expect(text).not.toContain(b64);
+      }
     });
 
     test('what is logged is escaped and one line: a terminal sequence, a bidi override and the line ends are written out', async () => {
-      fakeCodex('\u001b[31mboom\u001b[0m \u202e after', 2);
+      fakeCodex('\u001b[31mboom\u001b[0m ‮ after', 2);
       const { session } = createSending(buildDeps(startServer()));
       await session.start();
       await exited(session);
@@ -729,24 +757,110 @@ describe('CodexHarness', () => {
       expect(entry).toContain('\\u001B[31mboom\\u001B[0m \\u202E after');
       // The terminal turns the newline into carriage return and newline; both stay visible text.
       expect(entry).toContain('\\u000D\\n');
-      expect(entry).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/);
+      expect(entry).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‮]/);
       expect(entry).not.toContain('\n');
     });
 
-    test('at most the first 2 KB is kept, however much it printed', async () => {
-      // A short first chunk and a long second one, so the chunk that crosses the cap is not one that
-      // ends on it (the terminal hands output over in 1024-character pieces), and keeping the LAST
-      // 2 KB instead of the first would show.
+    test('a full thread id, the working directory and the home directory are cut before the line is logged', async () => {
+      // Fabricated ids; the paths are this test's own and the real home, printed at run time.
+      const lower = '01950000-0000-7000-8000-00000000abcd';
+      const upper = '01950000-0000-7000-8000-00000000BEEF';
+      fakeCodex(
+        `thread ${lower} and ${upper} in ${workDir}/sub; config ${os.homedir()}/secret/file`,
+        2,
+      );
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      const [entry] = printed();
+      expect(textOf(entry)).toContain(
+        'thread 0000abcd and 0000BEEF in <cwd>/sub; config ~/secret/file',
+      );
+      for (const secret of [lower, upper, workDir, os.homedir()]) {
+        expect(entry).not.toContain(secret);
+      }
+    });
+
+    test('the working directory is replaced before the home directory, though the first holds the second', async () => {
+      const savedHome = process.env['HOME'];
+      process.env['HOME'] = tmpDir;
+      try {
+        fakeCodex(`${workDir}/f ${tmpDir}/other`, 2);
+        const { session } = createSending(buildDeps(startServer()));
+        await session.start();
+        await exited(session);
+        const [entry] = printed();
+        expect(textOf(entry)).toContain('<cwd>/f ~/other');
+      } finally {
+        if (savedHome === undefined) Reflect.deleteProperty(process.env, 'HOME');
+        else process.env['HOME'] = savedHome;
+      }
+    });
+
+    test("a wrapper session captures nothing: its terminal is the person's, who sees the error there", async () => {
+      fakeCodex(ERROR, 2);
+      const { session } = createSending(buildDeps(startServer()), true);
+      await session.start();
+      await exited(session);
+      expect(printed()).toEqual([]);
+    });
+
+    test('what is kept is the first 1 KB and the last 1 KB, with the count of what lies between', async () => {
+      // A short first chunk and a long second one, so the chunk that crosses a cap is not one that
+      // ends on it (the terminal hands output over in 1024-character pieces): keeping only the first
+      // 2 KB, or only the last, or the first 1 KB of each chunk would all show.
       fakeCodex('HEAD-OF-OUTPUT', 2, undefined, `${'x'.repeat(3000)} END-OF-OUTPUT`);
       const { session } = createSending(buildDeps(startServer()));
       await session.start();
       await exited(session);
       const [entry] = printed();
-      // The first 2048 characters: the 16 of the head and its line end, then 2032 of the rest.
-      expect(entry).toContain(`HEAD-OF-OUTPUT\\u000D\\n${'x'.repeat(2032)}`);
-      expect(entry).not.toContain('x'.repeat(2033));
-      expect(entry).not.toContain('END-OF-OUTPUT');
-      expect(entry?.length).toBeLessThan(2048 + 400);
+      // 16 characters of head and line end, 3000 x, 14 of ' END-OF-OUTPUT' and the line end: 3032
+      // in all; the first 1024 (16 and 1008 x) and the last 1024 (1008 x and 16) leave 984.
+      expect(entry).toContain(
+        `HEAD-OF-OUTPUT\\u000D\\n${'x'.repeat(1008)}[984 characters omitted]${'x'.repeat(1008)} END-OF-OUTPUT\\u000D\\n`,
+      );
+    });
+
+    test('an output shorter than the two pieces is kept whole, with no gap marker', async () => {
+      fakeCodex(ERROR, 2);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      expect(printed()[0]).not.toContain('omitted');
+    });
+
+    test('the logged text is capped after escaping, which can make it six times longer', async () => {
+      fakeCodex('\u001b'.repeat(1500), 2);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      const text = textOf(printed()[0]);
+      expect(text.length).toBe(4096 + '[cut]'.length);
+      expect(text.endsWith('[cut]')).toBe(true);
+    });
+
+    test('a cut is never inside a surrogate pair: not at the cap of the line, and not at the ends of the two kept pieces', async () => {
+      // 680 escapes are 4080 characters once written out and an x makes 4081, so the cap of 4096
+      // falls 15 units into a run of emoji (pairs of two units): in the middle of one.
+      fakeCodex(`${'\u001b'.repeat(680)}x${'😀'.repeat(400)}`, 2);
+      const first = createSending(buildDeps(startServer()));
+      await first.session.start();
+      await exited(first.session);
+      const [capped] = printed();
+      expect(textOf(capped)).toMatch(/\[cut\]$/);
+      expect(capped).not.toMatch(LONE_SURROGATE);
+
+      logs.length = 0;
+      // The first piece ends 1023 x and a high surrogate in, and the last piece begins on a low one.
+      fakeCodex(`${'x'.repeat(1023)}😀${'m'.repeat(3000)}😀${'z'.repeat(1021)}`, 2);
+      const second = createSending(buildDeps(startServer()));
+      await second.session.start();
+      await exited(second.session);
+      const [pieces] = printed();
+      expect(pieces).not.toMatch(LONE_SURROGATE);
+      expect(textOf(pieces)).toContain(
+        `${'x'.repeat(1023)}[3004 characters omitted]${'z'.repeat(1021)}\\u000D\\n`,
+      );
     });
 
     test('a Codex that exits after the startup window logs nothing, its exit code is all there is', async () => {
@@ -764,6 +878,29 @@ describe('CodexHarness', () => {
       await session.start();
       await exited(session);
       expect(printed()).toHaveLength(1);
+    });
+
+    test('a stop that remi asks for inside the window is not a startup failure, and is not logged as one', async () => {
+      fakeCodex(ERROR, null);
+      const { session, sessionId, registry } = createSending(buildDeps(startServer()));
+      await session.start();
+      await waitForRecordedArgv(fakeDir);
+      await sleep(300);
+      registry.closeSession(sessionId, 'forced');
+      await exited(session);
+      expect(printed()).toEqual([]);
+    });
+
+    test('a daemon shutting down disposes the session first: the exit that follows is not logged either', async () => {
+      fakeCodex(ERROR, null);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await waitForRecordedArgv(fakeDir);
+      await sleep(300);
+      session.dispose();
+      session.pty.signal('SIGKILL');
+      await exited(session);
+      expect(printed()).toEqual([]);
     });
 
     test('a session that has named its thread logs nothing when Codex later exits, however soon', async () => {
