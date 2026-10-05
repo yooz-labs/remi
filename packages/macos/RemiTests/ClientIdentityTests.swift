@@ -20,6 +20,8 @@ import CryptoKit
 import CoreImage
 import AppKit
 import Security
+import ImageIO
+import Vision
 import WebKit
 import XCTest
 
@@ -313,10 +315,55 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertTrue(opaqueWhiteBorder, "QR fixture must have four opaque white modules on every side")
     }
 
+    private func logPairingQRDiagnostics(_ data: Data, expectedToken: String) {
+        // Test-only diagnostics for the macOS 14 CI failure. Never log token bytes.
+        print("QR diagnostic OS=\(ProcessInfo.processInfo.operatingSystemVersionString) imageBytes=\(data.count)")
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary) else {
+            print("QR diagnostic source=false")
+            return
+        }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? Int
+        let height = properties?[kCGImagePropertyPixelHeight] as? Int
+        print("QR diagnostic source=true imageCount=\(CGImageSourceGetCount(source)) width=\(width ?? -1) height=\(height ?? -1) intDimensions=\(width != nil && height != nil)")
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0,
+            [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else {
+            print("QR diagnostic cgImage=false")
+            return
+        }
+        print("QR diagnostic cgImage=true width=\(image.width) height=\(image.height) bitsPerComponent=\(image.bitsPerComponent) bitsPerPixel=\(image.bitsPerPixel) alphaInfo=\(image.alphaInfo.rawValue)")
+        let defaultRevision = VNDetectBarcodesRequest().revision
+        let supported = VNDetectBarcodesRequest.supportedRevisions
+        print("QR diagnostic defaultRevision=\(defaultRevision) supportedRevisions=\(Array(supported))")
+        for cpuOnly in [false, true] {
+            for revision in [defaultRevision] + Array(supported) {
+                let request = VNDetectBarcodesRequest()
+                request.symbologies = [.qr]
+                request.revision = revision
+                request.usesCPUOnly = cpuOnly
+                do {
+                    try VNImageRequestHandler(cgImage: image).perform([request])
+                    let observations = request.results ?? []
+                    print("QR diagnostic cpuOnly=\(cpuOnly) revision=\(revision) resultCount=\(observations.count)")
+                    for (index, observation) in observations.enumerated() {
+                        let payload = observation.payloadStringValue
+                        let ascii = payload?.utf8.allSatisfy { $0 >= 33 && $0 <= 126 } ?? false
+                        print("QR diagnostic cpuOnly=\(cpuOnly) revision=\(revision) result=\(index) payloadPresent=\(payload != nil) payloadBytes=\(payload?.utf8.count ?? -1) prefix=\(payload?.hasPrefix("remi-pair2:") ?? false) ascii=\(ascii) exactFixture=\(payload == expectedToken)")
+                    }
+                } catch {
+                    let failure = error as NSError
+                    print("QR diagnostic cpuOnly=\(cpuOnly) revision=\(revision) errorDomain=\(failure.domain) errorCode=\(failure.code)")
+                }
+            }
+        }
+    }
+
     @MainActor
     func testNativePairingQRHasGuardedBundledIngress() async throws {
         let (token, fixtureImage) = try generatedPairingQRImage()
         var image = fixtureImage
+        logPairingQRDiagnostics(image, expectedToken: token)
         XCTAssertEqual(try NativePairingQRDecoder.decode(image), token, "Actual Vision must decode the actual shared token bytes")
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes + 1)))
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(image + Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes)), "Even a valid QR with oversized trailing bytes must refuse before decode")
