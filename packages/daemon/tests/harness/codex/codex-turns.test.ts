@@ -984,7 +984,9 @@ describe('createCodexTurns: a completed turn with nothing to show (#1180 review)
       ),
     );
 
-    expect((events[0] as { lastAssistantMessage?: string }).lastAssistantMessage).toBe('\u200dok\u200d');
+    expect((events[0] as { lastAssistantMessage?: string }).lastAssistantMessage).toBe(
+      '\u200dok\u200d',
+    );
     expect(logs).toEqual([]);
   });
 

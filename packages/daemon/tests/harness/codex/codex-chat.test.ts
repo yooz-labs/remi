@@ -1243,7 +1243,12 @@ describe('createCodexChat', () => {
     });
 
     test('goes out as transcript_content only: no structured output to every connection, and each message still carries its structure', async () => {
-      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'hello') }], null) });
+      servePages({
+        '': itemsListPage(
+          [{ item: agentMessageItem('a1', '- first\n- second', 'final_answer') }],
+          null,
+        ),
+      });
 
       await make().catchUp();
 
@@ -1251,8 +1256,11 @@ describe('createCodexChat', () => {
       // well would double the replay buffer and, in a bound chat, be one more message per entry.
       expect(structured).toEqual([]);
       expect(live.map((m) => m.type)).toEqual(['transcript_content']);
-      expect(transcripts()[0]?.message.content).toBe('hello');
-      expect(transcripts()[0]?.message.bullets.length).toBeGreaterThan(0);
+      expect(transcripts()[0]?.message.content).toBe('- first\n- second');
+      expect(transcripts()[0]?.message.bullets.map((b) => b.content)).toEqual([
+        '- first',
+        '- second',
+      ]);
     });
 
     test('an item already delivered live is not sent again, and the rest still is', async () => {

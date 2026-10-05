@@ -364,9 +364,8 @@ describe('parseThreadItem (#1180)', () => {
     expect(parseThreadItem(userMessageItem('i'.repeat(200), 'x'))).toMatchObject({
       id: 'i'.repeat(200),
     });
-    for (const make of [userMessageItem, agentMessageItem]) {
-      expect(parseThreadItem(make('i'.repeat(201), 'x'))).toBeNull();
-    }
+    expect(parseThreadItem(userMessageItem('i'.repeat(201), 'x'))).toBeNull();
+    expect(parseThreadItem(agentMessageItem('i'.repeat(201), 'x', 'final_answer'))).toBeNull();
     expect(parseThreadItem(realItem('commandExecution', { id: 'i'.repeat(201) }))).toBeNull();
   });
 
