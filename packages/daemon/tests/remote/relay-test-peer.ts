@@ -94,9 +94,7 @@ export interface AuthenticatedRelayPeer {
  * `remove()` deletes the directory; `dir` also holds the client identity the
  * handshake helper below creates.
  */
-export async function makeAuthenticator(
-  tofuMode: 'auto-accept' | 'reject' = 'auto-accept',
-): Promise<{
+export async function makeAuthenticator(): Promise<{
   authenticator: Authenticator;
   store: IdentityStore;
   dir: string;
@@ -106,7 +104,7 @@ export async function makeAuthenticator(
   const store = new IdentityStore(dir);
   await store.generate('testpass');
   const identity = await store.unlock('testpass');
-  const authenticator = new Authenticator({ identity, identityStore: store, tofuMode });
+  const authenticator = new Authenticator({ identity, identityStore: store });
   return {
     authenticator,
     store,
@@ -118,7 +116,7 @@ export async function makeAuthenticator(
 export async function startAuthenticatedRelayPeer(
   events: Partial<AdapterEvents>,
 ): Promise<AuthenticatedRelayPeer> {
-  const { authenticator, dir } = await makeAuthenticator();
+  const { authenticator, dir, store } = await makeAuthenticator();
   const transport = new RecordingTransport();
   let adapter: RelayAdapter | null = null;
   try {
@@ -143,6 +141,7 @@ export async function startAuthenticatedRelayPeer(
     const clientStore = new IdentityStore(path.join(dir, 'client'));
     await clientStore.generate('clientpass');
     const client = await clientStore.unlock('clientpass');
+    await store.addAuthorizedKey(client.publicKeyRaw, 'local-test-client');
     const clientEphemeral = await generateEphemeralKeyPair();
     const kexSignature = await sign(
       client.privateKey,

@@ -100,14 +100,14 @@ describe('capability token file', () => {
   });
 });
 
-describe('shouldSkipAuthForPeer with require_local_auth', () => {
-  test('today: loopback is exempt, remote is not', () => {
-    expect(shouldSkipAuthForPeer(true, '127.0.0.1')).toBe(true);
+describe('shouldSkipAuthForPeer requires capability (#873)', () => {
+  test('bare loopback and remote peers require proof', () => {
+    expect(shouldSkipAuthForPeer(true, '127.0.0.1')).toBe(false);
     expect(shouldSkipAuthForPeer(true, '192.168.1.5')).toBe(false);
   });
 
   test('with the exemption retired, loopback needs proof', () => {
-    const opts = { requireLocalAuth: true };
+    const opts = {};
     expect(shouldSkipAuthForPeer(true, '127.0.0.1', opts)).toBe(false);
     expect(shouldSkipAuthForPeer(true, '127.0.0.1', { ...opts, hasCapability: true })).toBe(true);
   });
@@ -115,15 +115,17 @@ describe('shouldSkipAuthForPeer with require_local_auth', () => {
   test('a capability token never admits a REMOTE peer', () => {
     // The token proves same-machine file access, so it is meaningless from
     // another host; a stolen one must not become a remote bypass.
-    expect(
-      shouldSkipAuthForPeer(true, '192.168.1.5', { requireLocalAuth: true, hasCapability: true }),
-    ).toBe(false);
     expect(shouldSkipAuthForPeer(true, '192.168.1.5', { hasCapability: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(true, 'localhost', { hasCapability: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(true, null, { hasCapability: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(true, '192.168.1.5', { hasCapability: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(true, 'localhost', { hasCapability: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(true, null, { hasCapability: true })).toBe(false);
   });
 
   test('with no authenticator the question is moot', () => {
     expect(shouldSkipAuthForPeer(false, '127.0.0.1')).toBe(false);
-    expect(shouldSkipAuthForPeer(false, '127.0.0.1', { requireLocalAuth: true })).toBe(false);
+    expect(shouldSkipAuthForPeer(false, '127.0.0.1', {})).toBe(false);
   });
 });
 
@@ -143,7 +145,7 @@ describe('WebSocketServer honors the capability token', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function startServer(requireLocalAuth: boolean): Promise<void> {
+  async function startServer(): Promise<void> {
     port = await reserveRange(1);
     const store = new IdentityStore(path.join(dir, 'identity'));
     await store.generate('testpass');
@@ -152,7 +154,6 @@ describe('WebSocketServer honors the capability token', () => {
       port,
       host: '127.0.0.1',
       capabilityToken: TOKEN,
-      requireLocalAuth,
       connection: {
         authenticator: new Authenticator({ identity, identityStore: store }),
       },
@@ -189,23 +190,23 @@ describe('WebSocketServer honors the capability token', () => {
     });
   }
 
-  test('today a bare local client is still exempt (default off)', async () => {
-    await startServer(false);
-    expect(await firstMessageType(null)).toBe('none');
+  test('bare local client is challenged by default', async () => {
+    await startServer();
+    expect(await firstMessageType(null)).toBe('auth_challenge');
   });
 
   test('with the exemption retired a bare local client is challenged', async () => {
-    await startServer(true);
+    await startServer();
     expect(await firstMessageType(null)).toBe('auth_challenge');
   });
 
   test('a valid token skips the challenge', async () => {
-    await startServer(true);
+    await startServer();
     expect(await firstMessageType(TOKEN)).toBe('none');
   });
 
   test('a wrong token does not', async () => {
-    await startServer(true);
+    await startServer();
     expect(await firstMessageType('b'.repeat(64))).toBe('auth_challenge');
     expect(await firstMessageType(TOKEN.slice(0, 32))).toBe('auth_challenge');
   });
@@ -213,7 +214,7 @@ describe('WebSocketServer honors the capability token', () => {
   test('/auth-info reports what the WebSocket will actually do', async () => {
     // The probe and the upgrade must agree, or a client decides its handshake
     // from one and then gets the other.
-    await startServer(true);
+    await startServer();
     const bare = await fetch(`http://127.0.0.1:${port}/auth-info`);
     expect(((await bare.json()) as { authRequired: boolean }).authRequired).toBe(true);
 

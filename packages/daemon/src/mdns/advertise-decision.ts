@@ -71,6 +71,6 @@ export function mdnsSuppressionMessage(suppression: MdnsSuppression): string {
     case 'config':
       return `[mDNS] Not advertising: network.mdns = false in ${configPathForDisplay()}.`;
     case 'loopback':
-      return `[mDNS] Not advertising: bound to ${suppression.bindHost}, so there is nothing to discover off this machine (loopback is the default since #880). Set daemon.bind in ${configPathForDisplay()} to advertise on your network — and set auth.enabled = true with it, because "auto" resolves to false on every bind.`;
+      return `[mDNS] Not advertising: bound to ${suppression.bindHost}, so there is nothing to discover off this machine (loopback is the default since #880). Set daemon.bind in ${configPathForDisplay()} to advertise on your network — and keep auth.enabled enabled with it; "auto" requires authentication on every bind (#873).`;
   }
 }

@@ -80,13 +80,11 @@ describe('mdnsSuppression', () => {
 });
 
 describe('mdnsSuppressionMessage', () => {
-  test('the loopback message names the remedy AND the auth trap', () => {
+  test('the loopback message names the remedy and reminds users to retain auth', () => {
     const msg = mdnsSuppressionMessage({ kind: 'loopback', bindHost: '127.0.0.1' });
     expect(msg).toContain('127.0.0.1');
     expect(msg).toContain('daemon.bind');
-    // Naming bind alone would walk the user into the #880 exposure: "auto"
-    // resolves to false on every bind, so a widened bind with default auth is
-    // the unauthenticated LAN path 0.7.6 just closed.
+    // #873: auto now requires authentication; a widened bind should keep it on.
     expect(msg).toContain('auth.enabled');
   });
 

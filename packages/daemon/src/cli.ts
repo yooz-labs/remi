@@ -346,6 +346,11 @@ for (const line of bootNoticeLines(
   process.stderr.write(`${line}\n`);
 }
 
+if (loadedConfig.removedRequireLocalAuth)
+  console.error(
+    'daemon.require_local_auth is retired and ignored (#873). Loopback clients must prove identity or present the local capability token when authentication is enabled.',
+  );
+
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
   process.exit(runConfigCommand(parsedArgs.subcommandArg, remiConfig));
@@ -398,7 +403,8 @@ const cliStopAll = parsedArgs.stopAll;
 const cliUsePassphrase = parsedArgs.usePassphrase;
 const cliDecrypt = parsedArgs.decrypt;
 const cliEncrypt = parsedArgs.encrypt;
-const cliNoTofu = parsedArgs.noTofu;
+if (parsedArgs.noTofu)
+  console.error('--no-tofu is retired (#873): unknown client keys always require local approval.');
 const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
 const cliPublicOnly = parsedArgs.publicOnly;
@@ -2124,8 +2130,8 @@ const sharedEvents = {
 // auto-selection probes with it long before this point (#880).
 
 // Local capability token (#869). Created on first run with mode 0600 so the
-// CLI can prove it is a local client without a TOFU round trip. Generated
-// unconditionally, even while `require_local_auth` is false, so that turning
+// CLI can prove it is a local client without an identity handshake (#873). Generated
+// unconditionally, so that turning
 // the flag on later never has to also create a secret mid-flight.
 //
 // NOT fatal if it cannot be written. An unwritable `~/.remi` is a broken
@@ -2145,9 +2151,9 @@ try {
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Priority: CLI flag > config file > default (off)
+// #873: CLI flag > config file > default (on for every bind).
 const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
+const authEnabled = cliAuth ?? (configAuth === 'auto' ? true : configAuth);
 
 let authenticator: Authenticator | undefined;
 /** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
@@ -2160,7 +2166,7 @@ if (authEnabled) {
   if (!identityStore.exists()) {
     console.log('No identity found. Generating new Ed25519 keypair...');
     try {
-      const newIdentity = await identityStore.generate();
+      const newIdentity = await identityStore.generate(undefined, false);
       console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
       const detail = errorToString(err);
@@ -2210,8 +2216,7 @@ if (authEnabled) {
     }
   }
 
-  const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
-  authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+  authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
   // Published in every auth challenge so phones can pin it and seal
   // lock-screen answers to this daemon (#875). Non-fatal: without it the
   // daemon simply cannot open sealed answers and says so when one arrives,
@@ -2224,7 +2229,9 @@ if (authEnabled) {
     logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
   }
   serverFingerprint = storedIdentity.fingerprint;
-  console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
+  console.log(
+    `Authentication enabled (fingerprint: ${serverFingerprint}, unknown keys require local approval)`,
+  );
 } else {
   if (!isLocalhostBind) {
     // #880. This is the ONLY signal an install that pre-dates the loopback
@@ -2259,7 +2266,9 @@ if (authEnabled) {
       `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ${configPathForDisplay()} (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
-    console.log('Authentication disabled (localhost binding)');
+    console.error(
+      'WARNING: authentication disabled. Any local process able to reach this port can approve permission prompts and type into your session. Use --auth to require proof of identity.',
+    );
   }
 }
 
@@ -2273,7 +2282,6 @@ const wsAdapter = new WebSocketAdapter(
     authenticator,
     allowedOrigins: remiConfig.daemon.allowed_origins,
     capabilityToken: localCapabilityToken,
-    requireLocalAuth: remiConfig.daemon.require_local_auth,
   },
   sharedEvents,
 );
@@ -2482,7 +2490,6 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
-          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );
@@ -2819,7 +2826,6 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
-          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );

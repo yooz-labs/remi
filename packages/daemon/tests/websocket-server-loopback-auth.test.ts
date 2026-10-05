@@ -1,14 +1,8 @@
 /**
- * Integration tests for the localhost-no-auth path (#257).
+ * Integration tests for loopback admission (#873), real Bun HTTP/WebSocket endpoints.
  *
- * Verifies that even when the daemon is configured with an authenticator
- * (e.g. running with --auth on a 0.0.0.0 bind), peers connecting from the
- * loopback interface skip the auth challenge entirely. Also exercises the
- * /auth-info HTTP probe used by the web client to surface the passphrase
- * prompt inline in the Connect modal before opening the WebSocket.
- *
- * No mocks: real Bun HTTP/WebSocket server, real Ed25519 keypair, real WS
- * client. Tests are gated to localhost so the loopback exemption applies.
+ * Bare loopback peers are challenged on loopback and wildcard binds; explicit
+ * auth-off remains supported. /auth-info reports the same policy as WebSocket.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -56,7 +50,7 @@ describe('WebSocketServer loopback auth skip (#257)', () => {
     }
   });
 
-  test('loopback peer never receives auth_challenge even with authenticator configured', async () => {
+  test('loopback peer receives auth_challenge even with authenticator configured', async () => {
     const port = basePort;
     const server = new WebSocketServer({
       port,
@@ -70,26 +64,26 @@ describe('WebSocketServer loopback auth skip (#257)', () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       const received: ProtocolMessage[] = [];
 
-      const helloAckPromise = new Promise<void>((resolve, reject) => {
+      const challengePromise = new Promise<void>((resolve, reject) => {
         ws.onopen = () => {
           ws.send(serialize(createHello('test-client', '1.0.0')));
         };
         ws.onmessage = (e) => {
           const msg = deserialize(e.data.toString());
           if (msg) received.push(msg);
-          if (msg?.type === 'hello_ack') resolve();
+          if (msg?.type === 'auth_challenge') resolve();
         };
         ws.onerror = () => reject(new Error('WebSocket error'));
         setTimeout(() => reject(new Error('Timeout waiting for hello_ack')), 3000);
       });
 
-      await helloAckPromise;
+      await challengePromise;
       ws.close();
 
       // No auth_challenge should ever have been sent.
       const types = received.map((m) => m.type);
-      expect(types).not.toContain('auth_challenge');
-      expect(types).toContain('hello_ack');
+      expect(types).toContain('auth_challenge');
+      expect(types).not.toContain('hello_ack');
     } finally {
       await server.stop();
     }
@@ -110,25 +104,25 @@ describe('WebSocketServer loopback auth skip (#257)', () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       const received: ProtocolMessage[] = [];
 
-      const helloAckPromise = new Promise<void>((resolve, reject) => {
+      const challengePromise = new Promise<void>((resolve, reject) => {
         ws.onopen = () => {
           ws.send(serialize(createHello('test-client', '1.0.0')));
         };
         ws.onmessage = (e) => {
           const msg = deserialize(e.data.toString());
           if (msg) received.push(msg);
-          if (msg?.type === 'hello_ack') resolve();
+          if (msg?.type === 'auth_challenge') resolve();
         };
         ws.onerror = () => reject(new Error('WebSocket error'));
         setTimeout(() => reject(new Error('Timeout waiting for hello_ack')), 3000);
       });
 
-      await helloAckPromise;
+      await challengePromise;
       ws.close();
 
       const types = received.map((m) => m.type);
-      expect(types).not.toContain('auth_challenge');
-      expect(types).toContain('hello_ack');
+      expect(types).toContain('auth_challenge');
+      expect(types).not.toContain('hello_ack');
     } finally {
       await server.stop();
     }
@@ -214,9 +208,9 @@ describe('WebSocketServer /auth-info endpoint (#257)', () => {
     }
   });
 
-  test('reports authRequired=false for loopback caller even with authenticator', async () => {
+  test('reports authRequired=true for bare loopback caller with authenticator', async () => {
     // The probe must answer from the same vantage point as the WebSocket
-    // upgrade so the modal trusts it: loopback peers skip auth.
+    // upgrade so the modal trusts it: bare loopback peers require auth.
     const port = basePort + 1;
     const server = new WebSocketServer({
       port,
@@ -229,7 +223,7 @@ describe('WebSocketServer /auth-info endpoint (#257)', () => {
       const res = await fetch(`http://127.0.0.1:${port}/auth-info`);
       expect(res.status).toBe(200);
       const data = (await res.json()) as { authRequired: boolean; fingerprint: string | null };
-      expect(data.authRequired).toBe(false);
+      expect(data.authRequired).toBe(true);
       // Fingerprint is exposed so the UI can pin it for TOFU.
       expect(data.fingerprint).toBe(authenticator.serverFingerprint);
     } finally {
