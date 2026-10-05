@@ -194,18 +194,17 @@ describe('Authenticator', () => {
     });
   });
 
-  describe('TOFU (Trust On First Use)', () => {
+  describe('local approval replaces TOFU (#873)', () => {
     let tofuAuthenticator: Authenticator;
     let unknownIdentity: UnlockedIdentity;
     let unknownPublicKeyBase64: string;
     let unknownFingerprint: string;
 
     beforeEach(async () => {
-      // Create authenticator with TOFU enabled
+      // Create the default authenticator: unknown keys require local approval (#873).
       tofuAuthenticator = new Authenticator({
         identity: serverIdentity,
         identityStore: store,
-        tofuMode: 'auto-accept',
       });
 
       // Create an unknown client (not pre-authorized)
@@ -215,7 +214,7 @@ describe('Authenticator', () => {
       unknownFingerprint = unknownId.fingerprint;
     });
 
-    test('auto-accept mode: unknown client with valid signature is accepted', async () => {
+    test('unknown client with valid signature remains rejected', async () => {
       const challenge = tofuAuthenticator.createChallenge('conn-tofu');
 
       const challengeData = fromBase64(challenge.challenge);
@@ -223,11 +222,12 @@ describe('Authenticator', () => {
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
       const { result } = await tofuAuthenticator.verifyResponse('conn-tofu', response);
-      expect(result.success).toBe(true);
-      expect(result.serverSignature).toBeDefined();
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('UNKNOWN_KEY');
+      expect(result.serverSignature).toBeUndefined();
     });
 
-    test('auto-accept mode: client key is added to authorized keys', async () => {
+    test('unknown client key is pending and never added to authorized keys', async () => {
       const challenge = tofuAuthenticator.createChallenge('conn-tofu');
 
       const challengeData = fromBase64(challenge.challenge);
@@ -236,11 +236,12 @@ describe('Authenticator', () => {
 
       await tofuAuthenticator.verifyResponse('conn-tofu', response);
 
-      // Key should now be in the store
-      expect(store.isAuthorized(unknownPublicKeyBase64, unknownFingerprint)).toBe(true);
+      // Key is pending; it is not authorized.
+      expect(store.isAuthorized(unknownPublicKeyBase64, unknownFingerprint)).toBe(false);
+      expect(store.listPendingKeys()[0]?.fingerprint).toBe(unknownFingerprint);
     });
 
-    test('auto-accept mode: bad signature never triggers TOFU', async () => {
+    test('bad signature never creates trust or a pending request', async () => {
       const _challenge = tofuAuthenticator.createChallenge('conn-tofu');
 
       // Sign wrong data
@@ -260,7 +261,6 @@ describe('Authenticator', () => {
       const rejectAuthenticator = new Authenticator({
         identity: serverIdentity,
         identityStore: store,
-        tofuMode: 'reject',
       });
 
       const challenge = rejectAuthenticator.createChallenge('conn-reject');
@@ -274,7 +274,7 @@ describe('Authenticator', () => {
       expect(result.error).toBe('UNKNOWN_KEY');
     });
 
-    test('already-authorized key does not trigger TOFU', async () => {
+    test('already-authorized key is admitted without pending approval', async () => {
       // Pre-authorize the client
       await store.addAuthorizedKey(unknownPublicKeyBase64, 'Pre-Authorized');
 
@@ -294,7 +294,7 @@ describe('Authenticator', () => {
       expect(matching[0]?.label).toBe('Pre-Authorized');
     });
 
-    test('default TOFU mode is reject', async () => {
+    test('default authenticator rejects unknown clients', async () => {
       const defaultAuth = new Authenticator({
         identity: serverIdentity,
         identityStore: store,
@@ -310,7 +310,7 @@ describe('Authenticator', () => {
       expect(result.error).toBe('UNKNOWN_KEY');
     });
 
-    test('auto-accept mode: handles race condition when key is added concurrently', async () => {
+    test('explicit concurrent authorization is observed by the handshake', async () => {
       const challenge = tofuAuthenticator.createChallenge('conn-race');
 
       const challengeData = fromBase64(challenge.challenge);
@@ -320,7 +320,7 @@ describe('Authenticator', () => {
       // Simulate concurrent authorization (another connection added the key first)
       await store.addAuthorizedKey(unknownPublicKeyBase64, 'concurrent-add');
 
-      // TOFU should still succeed (catches DuplicateKeyError)
+      // Explicit local approval completed before verification, so authentication succeeds.
       const { result } = await tofuAuthenticator.verifyResponse('conn-race', response);
       expect(result.success).toBe(true);
     });

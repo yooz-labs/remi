@@ -214,10 +214,11 @@ test('real processes approve, touch and revoke without lost grants or resurrecte
   }
   fs.writeFileSync(path.join(dir, 'worker-public.json'), JSON.stringify(fingerprints));
   const worker = path.join(import.meta.dir, 'approval-store-worker.ts');
+  const observer = spawn(dir, [dir, 'observe'], worker);
   const children = ['approve', 'touch', 'revoke'].map((mode) => spawn(dir, [dir, mode], worker));
   await wait(
     () =>
-      ['approve', 'touch', 'revoke'].every((mode) =>
+      ['approve', 'touch', 'revoke', 'observe'].every((mode) =>
         fs.existsSync(path.join(dir, `ready-${mode}`)),
       ),
     'all workers ready',
@@ -228,6 +229,13 @@ test('real processes approve, touch and revoke without lost grants or resurrecte
     expect(stderr).toBe('');
     expect(code).toBe(0);
   }
+  fs.writeFileSync(path.join(dir, 'writers-done'), 'done');
+  const [observerCode, observerErrors] = await Promise.all([
+    observer.exited,
+    new Response(observer.stderr).text(),
+  ]);
+  expect(observerErrors).toBe('');
+  expect(observerCode).toBe(0);
   expect(
     store
       .listAuthorizedKeys()
@@ -239,3 +247,57 @@ test('real processes approve, touch and revoke without lost grants or resurrecte
     JSON.parse(fs.readFileSync(path.join(dir, 'authorized_keys.json'), 'utf8')).keys,
   ).toHaveLength(20);
 }, 30000);
+
+test('retired local setting is visibly ignored without changing unrelated TOML values', async () => {
+  const dir = directory();
+  fs.mkdirSync(path.join(dir, '.remi'));
+  const configPath = path.join(dir, '.remi', 'config.toml');
+  const source =
+    '[daemon]\nrequire_local_auth = false\nbind = "127.0.0.1"\n[display]\nmax_bullet_length = 321\n';
+  fs.writeFileSync(configPath, source);
+  const result = await cli(dir, ['config', 'show']);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain('require_local_auth is retired and ignored');
+  expect(result.stdout).toContain('321');
+  expect(result.stdout).not.toContain('require_local_auth');
+  expect(fs.readFileSync(configPath, 'utf8')).toBe(source);
+});
+
+for (const optOut of ['flag', 'config'] as const) {
+  test(`explicit auth opt-out by ${optOut} warns even on loopback`, async () => {
+    const dir = directory();
+    if (optOut === 'config') {
+      fs.mkdirSync(path.join(dir, '.remi'));
+      fs.writeFileSync(path.join(dir, '.remi', 'config.toml'), '[auth]\nenabled = false\n');
+    }
+    const port = await reserveRange(1);
+    const hub = spawn(dir, [
+      'serve',
+      '--port',
+      String(port),
+      '--no-mdns',
+      '--no-relay',
+      '--no-telegram',
+      ...(optOut === 'flag' ? ['--no-auth'] : []),
+    ]);
+    const stderr = new Response(hub.stderr).text();
+    await wait(
+      () => fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')) || hub.exitCode !== null,
+      'opt-out hub',
+    );
+    expect(hub.exitCode).toBeNull();
+    const client = await connection(port);
+    client.ws.send(serialize(createHello('auth-off-test', '1.0.0')));
+    await wait(
+      () => client.messages.some((m) => m.type === 'hello_ack'),
+      'explicit auth-off connection',
+    );
+    expect(client.messages.some((m) => m.type === 'auth_challenge')).toBe(false);
+    expect((await (await fetch(`http://127.0.0.1:${port}/auth-info`)).json()).authRequired).toBe(
+      false,
+    );
+    hub.kill('SIGTERM');
+    await hub.exited;
+    expect(await stderr).toContain('WARNING: authentication disabled');
+  }, 20000);
+}

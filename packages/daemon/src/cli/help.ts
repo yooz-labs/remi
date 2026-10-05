@@ -461,7 +461,7 @@ export function formatHelp(version: string): string {
     ),
     '',
     entry('--no-mdns', 'Disable mDNS advertising'),
-    entry('--no-tofu', 'Reject unknown clients'),
+    entry('--no-tofu', 'Retired: unknown clients always need local approval'),
     entry('--push-secret SECRET', 'APNS push auth (env: REMI_PUSH_SECRET)'),
     entry('--orphan-timeout SECS', 'Orphan session timeout (default: 300)'),
     entry('--max-bullet-length N', 'Truncate bullets (default: 500, 0=off)'),

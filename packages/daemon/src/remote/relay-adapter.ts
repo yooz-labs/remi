@@ -209,17 +209,6 @@ export class RelayAdapter implements ConnectionAdapter {
       );
     }
 
-    if (this.config.authenticator?.acceptsUnknownKeys) {
-      // The handshake authenticates a key, but trust on first use ADDS the
-      // first unknown key it is shown, so the room code is the only gate on a
-      // first connection. Not widened here (the v1 permanent mode is replaced
-      // by the relay rebuild, #1198); stated at boot instead.
-      console.warn(
-        'Relay: unless --no-tofu is set, any client that knows the room code is added to the authorized keys on its first connection.\n' +
-          'Pass --no-tofu to refuse unknown keys.',
-      );
-    }
-
     const rotateOnReconnect = this.config.rotateCode !== false;
 
     const createTransport =

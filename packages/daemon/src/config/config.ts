@@ -37,22 +37,6 @@ export interface DaemonConfig {
    * host yourself; the daemon logs the exact line to add when it refuses one.
    */
   readonly allowed_origins: readonly string[];
-  /**
-   * Retire the blanket loopback auth exemption (#869).
-   *
-   * With it false (today's default), any process on this machine can open the
-   * daemon's WebSocket and answer a permission prompt: it sends no `Origin`,
-   * which makes it indistinguishable from the CLI. With it true, a loopback
-   * peer must present the capability token from `~/.remi/capability.key` or
-   * complete the Ed25519 challenge, exactly like a remote client.
-   *
-   * Default false ONLY because the macOS app cannot yet do either: it is
-   * sandboxed away from `~/.remi` by design (#649/#651) and has no identity of
-   * its own yet. Turning this on before that ships locks it out. The CLI
-   * already sends the token, so a machine that only uses the CLI and the web
-   * client can turn this on today.
-   */
-  readonly require_local_auth: boolean;
 }
 
 /** Network settings */
@@ -64,30 +48,8 @@ export interface NetworkConfig {
 
 /** Authentication settings (restart required) */
 export interface AuthConfig {
-  /**
-   * `true` = always require auth, `false` = never.
-   *
-   * `"auto"` is the DEFAULT and currently resolves to `false` on every bind
-   * address, including `0.0.0.0`: `cli.ts` computes `isLocalhostBind` on the
-   * line above the decision and then does not consult it
-   * (`cliAuth ?? (configAuth === 'auto' ? false : configAuth)`). This comment
-   * used to claim "auto = based on bind address", which is what the name
-   * suggests and what the code does not do; #880 tracks whether the code or the
-   * name is wrong. Until that is settled, read `"auto"` as "off", and do not
-   * assume exposing the daemon on a network turns authentication on.
-   *
-   * This is now load-bearing in the other direction. `daemon.bind` defaults to
-   * LOOPBACK precisely because this resolves off (#880): together, the previous
-   * `0.0.0.0` default and this one admitted unauthenticated `answer` /
-   * `user_input` from any host on the LAN. So anyone WIDENING the bind -- in
-   * config or in the default -- is turning that exposure back on, and owes the
-   * auth story first. Note that "turn auth on" is not by itself enough either:
-   * TOFU is auto-accept unless `--no-tofu` is passed -- decided at the CALL
-   * SITE in `cli.ts`, not by `Authenticator`, whose own default is `'reject'`.
-   * Do not "correct" this by checking `authenticator.ts` alone; it says the
-   * opposite and the call site wins. So an authenticator on a network bind
-   * admits any freshly-generated key on first sight, and persists it.
-   */
+  /** #873: auto and true require identity or local capability on every bind.
+   * Explicit false disables authentication and prints a boot warning. */
   readonly enabled: 'auto' | boolean;
 }
 
@@ -222,60 +184,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
   daemon: {
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
-    // #880: LOOPBACK, not 0.0.0.0. The pairing of this default with
-    // `auth.enabled = "auto"` -- which resolves to `false` on every bind (see
-    // AuthConfig.enabled) -- meant every default install accepted UNAUTHENTICATED
-    // control from any host on the LAN. Traced end to end: no authenticator
-    // means the connection never enters `authenticating` and routes messages
-    // straight to the handler map (`connection.ts`); the Origin gate admits a
-    // null/absent Origin, which is exactly what a non-browser client sends
-    // (`origin-policy.ts`); and mDNS advertises the port by default. A LAN peer
-    // could send `answer` (approve any pending permission -- i.e. arbitrary tool
-    // execution) or `user_input` (type into the live Claude session).
-    //
-    // Loopback is the correct default for a tool whose whole job is answering
-    // permission prompts. Remote access is now an explicit opt-in: set `bind`
-    // and read the auth warning that comes with it.
-    //
-    // SCOPE, stated so this does not read as more than it is: this closes the
-    // unauthenticated LAN path. It does NOT touch the relay path, which dials
-    // outward and is unaffected by the bind (it was closed separately, #1193:
-    // off by default, and refusing every peer without an authenticator) -- nor
-    // the local-process path, where any process on this machine is exempted
-    // from auth while `require_local_auth` is false (#869).
-    //
-    // NAME THE DIRECTION on the relay -- an earlier draft of this comment said
-    // "the same `answer`/`user_input` power the LAN peer had", which conflates
-    // the two halves, the exact error AGENTS.md records a previous draft making.
-    // Before #1193, traced: outbound `sendRaw` REFUSED without `sessionKeys`
-    // (`relay-adapter.ts`), which rotating-code mode never derives; inbound fell
-    // through to `handleRelayMessage(rawPayload)` in plaintext. So it was
-    // inbound INJECTION, not the LAN peer's bidirectional control -- the daemon
-    // could not answer back at all (#881). Both halves now refuse without an
-    // authenticator.
-    //
-    // It also does not reach an install that already MATERIALIZED the old
-    // default: `remi config init` writes `bind = "${DEFAULT_CONFIG.daemon.bind}"`
-    // into config.toml (see initConfigFile below), and a value on disk beats a
-    // changed default. Those users keep the exposure and get no breakage to
-    // notice it by -- hence the boot warning in cli.ts, which is the only signal
-    // they will get.
-    //
-    // Deliberately NOT fixed by making `"auto"` bind-aware, which is what #880's
-    // title asks for. That alone is insufficient: `cli.ts` constructs the
-    // Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed
-    // (the Authenticator class itself defaults to `'reject'`, so checking only
-    // authenticator.ts would say this claim is wrong -- the call site is what
-    // decides), and an auto-accept TOFU admits any freshly-generated key on
-    // first sight AND persists it as authorized. Auth-on-network without a real
-    // pairing flow is first-comer-wins, which reads as "handled" while it is
-    // not. The `"auto"` semantics + TOFU belong in one tested change with the
-    // phone pairing flow; this one closes the LAN path without depending on it.
+    // #880/#873: remote binding remains opt-in; auth defaults on for every bind.
     bind: '127.0.0.1',
     orphan_timeout: 300,
     persist_sessions: true,
     allowed_origins: [],
-    require_local_auth: false,
   },
   network: {
     mdns: true,
@@ -404,6 +317,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
  */
 export interface LoadedConfig {
   readonly config: RemiConfig;
+  readonly removedRequireLocalAuth: boolean;
   /** Top-level keys present in the removed `[auto_approve]` table, sorted.
    *  Empty when the file has no such table. */
   readonly removedAutoApproveKeys: readonly string[];
@@ -446,6 +360,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
         config: deepMerge(DEFAULT_CONFIG, {}),
         removedAutoApproveKeys: [],
         subagentAlertFromLegacy: false,
+        removedRequireLocalAuth: false,
       };
     }
     throw new Error(
@@ -469,6 +384,10 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     validatePrompts(config.prompts, configPath);
     return {
       config,
+      removedRequireLocalAuth:
+        typeof parsed['daemon'] === 'object' &&
+        parsed['daemon'] !== null &&
+        'require_local_auth' in parsed['daemon'],
       removedAutoApproveKeys: legacy.keys,
       subagentAlertFromLegacy: legacy.subagentAlert !== undefined,
     };
@@ -723,10 +642,6 @@ persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions al
 # Only a web client you host yourself does. Example:
 #   allowed_origins = ["https://remi.example.com"]
 allowed_origins = []
-# Require loopback clients to prove themselves (#869). Off by default until
-# the macOS app ships its own identity; safe to turn on if you only use the
-# CLI and the web client.
-require_local_auth = false
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
@@ -818,7 +733,6 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
   lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
-  lines.push(`  require_local_auth = ${config.daemon.require_local_auth}`);
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);

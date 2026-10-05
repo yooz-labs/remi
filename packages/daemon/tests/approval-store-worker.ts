@@ -13,3 +13,11 @@ if (mode === 'approve')
 if (mode === 'revoke') for (const fp of keys.slice(0, 10)) store.removeAuthorizedKey(fp);
 if (mode === 'touch')
   for (let i = 0; i < 200; i++) for (const fp of keys) store.touchAuthorizedKey(fp);
+
+if (mode === 'observe') {
+  while (!fs.existsSync(path.join(dir, 'writers-done'))) {
+    const raw = fs.readFileSync(path.join(dir, 'authorized_keys.json'), 'utf8');
+    JSON.parse(raw);
+    await Bun.sleep(0);
+  }
+}

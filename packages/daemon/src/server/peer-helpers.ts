@@ -1,31 +1,6 @@
-/**
- * Peer-address helpers for the WebSocket server.
- *
- * Used to decide whether an inbound connection is from the local machine,
- * which lets us safely skip auth challenges for loopback peers even when
- * the daemon is bound to 0.0.0.0 with auth otherwise enabled.
- *
- * SECURITY NOTE — same-host reverse proxy.
- * The loopback bypass keys off the actual TCP peer address (read via
- * Bun.serve's `server.requestIP(req)`, never from a header) so over-the-
- * wire spoofing is not possible. HOWEVER: if remi is ever fronted by a
- * same-host reverse proxy (nginx, caddy, cloudflared, etc.), every
- * proxied request — including from genuinely remote attackers — arrives
- * on `127.0.0.1` and would be classified as loopback here. That would
- * silently bypass auth for the entire internet.
- *
- * If you introduce a same-host proxy in front of remi, you MUST either
- *   1) drop the loopback exemption entirely, or
- *   2) replace the TCP-peer check with a proxy-aware policy (PROXY
- *      protocol parsing, a trusted-CIDR allowlist for the proxy with
- *      auth required for everyone else, or terminate TLS in remi
- *      directly so the TCP peer remains authoritative).
- *
- * The bypass is safe only while remi terminates the TCP connection itself.
- * This comment exists so the next person who shapes the deployment
- * notices the assumption before regretting it.
- */
+import { isIP } from 'node:net';
 
+/** TCP peer classification. Headers and client addresses never confer local capability admission. */
 /**
  * Return true if `host` is a loopback (this-machine) address.
  *
@@ -64,35 +39,17 @@ export function isLoopbackAddress(host: string | null | undefined): boolean {
   return isIPv4Loopback(lower);
 }
 
-/**
- * Decide whether a connection from `peerAddress` should bypass an otherwise-
- * configured authenticator (i.e. skip auth_challenge). Centralizes the
- * loopback exemption used by both the WS upgrade and the /auth-info probe so
- * the two paths cannot drift.
- *
- * Returns `true` only when an authenticator is configured AND the peer is on
- * a loopback address. Non-loopback peers always require auth when an
- * authenticator is configured; without an authenticator the bypass is moot.
- *
- * #869: the blanket loopback exemption is what lets any local process answer
- * a permission prompt. `requireLocalAuth` retires it, at which point a
- * loopback peer must present the capability token (see
- * `auth/capability-token.ts`) or complete the Ed25519 challenge like any
- * remote client. It is opt-in until every client can do one or the other:
- * the macOS app is sandboxed away from `~/.remi` by design and needs its own
- * identity first, so flipping this default before that ships would lock it out.
- */
+/** #873: only a valid daemon capability over actual TCP loopback replaces a challenge. */
 export function shouldSkipAuthForPeer(
   hasAuthenticator: boolean,
   peerAddress: string | null | undefined,
-  options: { readonly requireLocalAuth?: boolean; readonly hasCapability?: boolean } = {},
+  options: { readonly hasCapability?: boolean } = {},
 ): boolean {
   if (!hasAuthenticator) return false;
-  if (!isLoopbackAddress(peerAddress)) return false;
+  if (!peerAddress || isIP(peerAddress) === 0 || !isLoopbackAddress(peerAddress)) return false;
   // A valid capability token is proof in its own right, so the challenge is
   // redundant whether or not the exemption is retired.
-  if (options.hasCapability) return true;
-  return !options.requireLocalAuth;
+  return options.hasCapability === true;
 }
 
 /** True for any address in 127.0.0.0/8. */

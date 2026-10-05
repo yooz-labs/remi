@@ -223,13 +223,13 @@ describe('Connection auth state machine', () => {
       expect(connA.connectionClientFingerprint).not.toBe(connB.connectionClientFingerprint);
     });
 
-    test('a forged clientFingerprint claim is ignored: the DERIVED fingerprint is bound, not the claim (#671 critical)', async () => {
+    test('a forged clientFingerprint is refused and cannot bind identity (#671/#873)', async () => {
       // The client's Ed25519 signature only proves possession of
       // clientPublicKey; AuthResponseMessage.clientFingerprint is a
       // client-supplied wire field the signature says nothing about. An
       // already-authorized client lying about its OWN fingerprint (claiming
       // an arbitrary forged value instead of its real one) must still get
-      // its REAL, server-derived fingerprint bound to the connection.
+      // no authenticated identity bound to the connection (#873 rejects the mismatch).
       const ws = new MockWebSocket();
       const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
 
@@ -241,8 +241,8 @@ describe('Connection auth state machine', () => {
       );
       await new Promise((r) => setTimeout(r, 100));
 
-      expect(conn.connectionState).toBe('connecting');
-      expect(conn.connectionClientFingerprint).toBe(clientFingerprint);
+      expect(conn.connectionState).toBe('disconnected');
+      expect(conn.connectionClientFingerprint).toBeNull();
       expect(conn.connectionClientFingerprint).not.toBe(forgedClaim);
     });
 
@@ -258,7 +258,6 @@ describe('Connection auth state machine', () => {
       const tofuAuthenticator = new Authenticator({
         identity: serverIdentity,
         identityStore: store,
-        tofuMode: 'auto-accept',
       });
 
       const attackerIdFile = await createIdentity('attackerpass');
@@ -284,18 +283,16 @@ describe('Connection auth state machine', () => {
       );
       await new Promise((r) => setTimeout(r, 100));
 
-      // Auth succeeds (TOFU auto-accepts the attacker's own, never-seen key)...
-      expect(conn.connectionState).toBe('connecting');
-      // ...but the identity bound to the connection is the attacker's OWN
-      // derived fingerprint, never the victim's claimed one.
+      // Auth fails: neither trust nor a pending request is created for a spoofed identity.
+      expect(conn.connectionState).toBe('disconnected');
+      // No identity is bound, especially not the victim claim.
       const attackerDerivedFingerprint = await fingerprint(fromBase64(attackerIdFile.publicKey));
-      expect(conn.connectionClientFingerprint).toBe(attackerDerivedFingerprint);
+      expect(conn.connectionClientFingerprint).toBeNull();
       expect(conn.connectionClientFingerprint).not.toBe(clientFingerprint);
 
-      // The authorized-keys store also recorded the attacker under their OWN
-      // correctly-derived fingerprint, not the forged claim (defense in depth
-      // in IdentityStore/createAuthorizedKey, unaffected by this fix).
-      expect(store.isAuthorized(attackerIdFile.publicKey, attackerDerivedFingerprint)).toBe(true);
+      // No grant or candidate exists under either fingerprint.
+      expect(store.isAuthorized(attackerIdFile.publicKey, attackerDerivedFingerprint)).toBe(false);
+      expect(store.listPendingKeys()).toHaveLength(0);
     });
 
     test('rejects non-auth messages during authenticating state', () => {

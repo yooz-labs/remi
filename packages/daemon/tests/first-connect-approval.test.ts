@@ -94,3 +94,45 @@ test('corrupt stores and malformed explicit keys are refused without overwriting
   ).rejects.toThrow();
   expect(fs.readFileSync(path.join(dir, 'authorized_keys.json'), 'utf8')).toBe('{corrupt');
 });
+
+test('authorized or pending JSON null and malformed key records fail visibly', async () => {
+  const { dir, store, client } = await setup();
+  fs.writeFileSync(path.join(dir, 'pending_keys.json'), 'null');
+  expect(() => store.listPendingKeys()).toThrow();
+  expect(fs.readFileSync(path.join(dir, 'pending_keys.json'), 'utf8')).toBe('null');
+  fs.rmSync(path.join(dir, 'pending_keys.json'));
+  fs.writeFileSync(path.join(dir, 'authorized_keys.json'), 'null');
+  await expect(store.addAuthorizedKey(client.publicKey, 'valid')).rejects.toThrow();
+  expect(fs.readFileSync(path.join(dir, 'authorized_keys.json'), 'utf8')).toBe('null');
+});
+
+test('malformed and noncanonical challenge keys never create candidates', async () => {
+  const { auth, store, client, response } = await setup();
+  const valid = await response('malformed');
+  expect(
+    (await auth.verifyResponse('malformed', { ...valid, clientPublicKey: 'AAAA' })).result.success,
+  ).toBe(false);
+  const alternative = await response('noncanonical');
+  expect(
+    (
+      await auth.verifyResponse('noncanonical', {
+        ...alternative,
+        clientPublicKey: client.publicKey.replace(/=$/, ''),
+      })
+    ).result.success,
+  ).toBe(false);
+  expect(store.listPendingKeys()).toHaveLength(0);
+});
+
+test('revoked key can request approval again but no stale candidate resurrects trust', async () => {
+  const { store, auth, client, response } = await setup();
+  await auth.verifyResponse('unknown', await response('unknown'));
+  await store.addAuthorizedKey(client.publicKey, 'explicit');
+  expect(store.removeAuthorizedKey(client.fingerprint)).toBe(true);
+  expect(store.listPendingKeys()).toHaveLength(0);
+  expect((await auth.verifyResponse('revoked', await response('revoked'))).result.error).toBe(
+    'UNKNOWN_KEY',
+  );
+  expect(store.listPendingKeys()).toHaveLength(1);
+  expect(store.isAuthorized(client.publicKey, client.fingerprint)).toBe(false);
+});

@@ -1,14 +1,26 @@
 # ADR 0024: The daemon binds loopback by default; reaching it off-machine is opt-in
 
-**Status:** accepted; amended by #1193 (2026-10-04)
+**Status:** accepted; amended by #1193 (2026-10-04) and #873 (2026-10-05)
 **Date:** 2026-08-11
 **Owner:** Seyed Yahya Shirazi
+
+> **Amended 2026-10-05 by #873.**
+> The historical auth-off and loopback-exemption descriptions below no longer describe the current code.
+> `cli.ts` resolves `auth.enabled = "auto"` to true on every bind and constructs an authenticator without automatic trust.
+> `WebSocketServer` applies one capability policy to WebSocket upgrades, `/auth-info` and `/answer`: only a valid capability on an actual loopback TCP peer replaces the identity challenge.
+> A correctly signed unknown key is rejected with `UNKNOWN_KEY` and becomes a bounded pending candidate (32 canonical public keys, ten-minute TTL, no retry extension).
+> Exact local `remi authorize <fingerprint>` approval persists the grant before deleting its candidate; authorization, touch, revoke and pending transactions use one interprocess lock and atomic restricted files.
+> Detached signed answers are authorized-only and never add candidates.
+> `require_local_auth` is removed; old TOML values are ignored with a visible notice, and `--no-tofu` is accepted with a retirement notice.
+> Existing authorized keys remain valid. Explicit `--no-auth`/`auth.enabled = false` still disables auth with a warning, including on loopback.
+> Evidence: real isolated stock-hub WebSocket and HTTP tests in `first-connect-process.test.ts`, real crypto/store tests in `first-connect-approval.test.ts`, and simultaneous approval/touch/revoke processes with a continuous JSON reader.
+> This evidence does not cover signed physical iPhone execution or signed sandboxed macOS lifecycle acceptance; those remain owner hardware gates.
 
 > **Amended 2026-10-04 by #1193.**
 > The relay is no longer default-on and no longer accepts a peer without an authenticator, so the "Not closed" bullet below about the relay is history, kept as written because it records what was true when this ADR was decided.
 > `network.relay` defaults to `false`; with it on and no `--auth --permanent-code` the daemon prints a notice and registers no relay at all; the relay adapter itself refuses every peer and drops every inbound frame without an authenticator.
 > Nothing remote ships through the relay today, so "SSH tunnels and the relay are untouched" below is likewise history: SSH tunnels are the one remote path that still works on a stock install.
-> Still not closed by either change: with `--auth --permanent-code` and trust on first use (the default), any client that knows the room code is added to the authorized keys on its first connection; the relay rebuild (#1198) replaces that with a pairing secret.
+> Historical state before #873: with `--auth --permanent-code` and trust on first use (the default), any client that knows the room code is added to the authorized keys on its first connection; the relay rebuild (#1198) replaces that with a pairing secret.
 
 > Numbered 0024, not 0023: 0023 (`artifact-deletion-is-proved-not-judged`) is
 > claimed by an un-merged branch.

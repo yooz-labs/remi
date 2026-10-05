@@ -45,7 +45,7 @@ export async function performAuthHandshake(
   if (!store.exists()) {
     console.error('No client identity found. Generating new Ed25519 keypair...');
     try {
-      const newIdentity = await store.generate();
+      const newIdentity = await store.generate(undefined, false);
       console.error(`Client identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
       const detail = errorToString(err);
@@ -131,7 +131,13 @@ export async function performAuthHandshake(
         if (msg.success) {
           resolve({ identity });
         } else {
-          reject(new Error(`Authentication failed: ${msg.error ?? 'unknown'}`));
+          reject(
+            new Error(
+              msg.error === 'UNKNOWN_KEY'
+                ? `Approval needed for this client (${identity.fingerprint}). On the daemon machine, compare this fingerprint and run: remi authorize ${identity.fingerprint} --label device-name. Then reconnect. Export only public data with remi key-export --public-only.`
+                : `Authentication failed: ${msg.error ?? 'unknown'}`,
+            ),
+          );
         }
       }
     };

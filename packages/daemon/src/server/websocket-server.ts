@@ -47,13 +47,6 @@ export interface ServerConfig {
    * capability path entirely, leaving the Ed25519 challenge as the only proof.
    */
   readonly capabilityToken?: string;
-
-  /**
-   * Retire the blanket loopback auth exemption (#869). When true, a loopback
-   * peer must present the capability token or complete the Ed25519 challenge,
-   * exactly like a remote one. Opt-in until every client can do one of those.
-   */
-  readonly requireLocalAuth?: boolean;
 }
 
 /**
@@ -165,7 +158,6 @@ export class WebSocketServer {
       allowedOrigins: config.allowedOrigins ?? [],
       logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
       capabilityToken: config.capabilityToken ?? '',
-      requireLocalAuth: config.requireLocalAuth ?? false,
     };
     this.events = events;
   }
@@ -308,7 +300,6 @@ export class WebSocketServer {
           const authenticator = self.config.connection?.authenticator;
           const authRequired =
             !shouldSkipAuthForPeer(!!authenticator, peer?.address, {
-              requireLocalAuth: self.config.requireLocalAuth,
               hasCapability: capabilityTokenMatches(
                 req.headers.get(CAPABILITY_HEADER),
                 self.config.capabilityToken,
@@ -501,7 +492,6 @@ export class WebSocketServer {
     if (
       authenticator &&
       !shouldSkipAuthForPeer(true, peerAddress, {
-        requireLocalAuth: this.config.requireLocalAuth,
         hasCapability: capabilityTokenMatches(
           req.headers.get(CAPABILITY_HEADER),
           this.config.capabilityToken,
@@ -593,7 +583,6 @@ export class WebSocketServer {
     let perConnectionConfig = this.config.connection;
     if (
       shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress, {
-        requireLocalAuth: this.config.requireLocalAuth,
         hasCapability: ws.data.hasCapability,
       })
     ) {

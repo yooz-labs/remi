@@ -3,8 +3,8 @@
  *
  * Handles the Ed25519 challenge-response handshake:
  * 1. Generate a random one-time challenge, include server's fingerprint and public key
- * 2. Verify client's Ed25519 signature first (bad signatures never trigger TOFU)
- * 3. Check authorized keys; if unknown and TOFU is enabled, auto-accept
+ * 2. Verify client's Ed25519 signature first (bad signatures never create candidates)
+ * 3. Check authorized keys; verified unknown keys request local approval
  * 4. Sign the same challenge with the server's private key (mutual authentication)
  *
  * Each challenge is consumed on first verification attempt (one-time use)
@@ -21,7 +21,6 @@ import { errorToString } from '@remi/shared';
 import {
   createAuthChallenge,
   createAuthResult,
-  fingerprint,
   fromBase64,
   generateChallenge,
   importPublicKey,
@@ -29,7 +28,12 @@ import {
   sign,
   verify,
 } from '@remi/shared';
-import { DuplicateKeyError, type IdentityStore } from './identity-store.ts';
+import {
+  DuplicateKeyError,
+  type IdentityStore,
+  PendingQueueFullError,
+  validatePublicKey,
+} from './identity-store.ts';
 
 /**
  * Outcome of `verifyResponse` (#671 follow-up). `result` is the wire
@@ -48,18 +52,14 @@ export interface VerifyResponseOutcome {
   readonly verifiedFingerprint?: string;
 }
 
-export type TofuMode = 'auto-accept' | 'reject';
-
 export interface AuthenticatorConfig {
   readonly identity: UnlockedIdentity;
   readonly identityStore: IdentityStore;
-  readonly tofuMode?: TofuMode;
 }
 
 export class Authenticator {
   private readonly identity: UnlockedIdentity;
   private readonly store: IdentityStore;
-  private readonly tofuMode: TofuMode;
   /** Published in every challenge so phones can pin it (#875). */
   private answerEncryptionKey: string | undefined;
   /** Active challenges keyed by connection ID */
@@ -68,12 +68,6 @@ export class Authenticator {
   constructor(config: AuthenticatorConfig) {
     this.identity = config.identity;
     this.store = config.identityStore;
-    this.tofuMode = config.tofuMode ?? 'reject';
-  }
-
-  /** True when an unknown key is added to the authorized keys on first sight (trust on first use). */
-  get acceptsUnknownKeys(): boolean {
-    return this.tofuMode === 'auto-accept';
   }
 
   /**
@@ -170,14 +164,14 @@ export class Authenticator {
    * Returns a `VerifyResponseOutcome`: the wire `AuthResultMessage` plus,
    * on success, the server-derived `verifiedFingerprint`.
    *
-   * Order: verify signature first (bad sigs never trigger TOFU),
-   * then check authorization, then TOFU if applicable.
+   * Order: verify signature and derived fingerprint, then check authorization,
+   * then persist an untrusted pending candidate if the key is unknown.
    *
    * `response.clientFingerprint` is NEVER used for authorization or identity
    * binding (#671): it is a client-supplied wire field, and Ed25519
    * signature verification only proves possession of `clientPublicKey`, not
    * that the claimed fingerprint actually hashes from that key. Every
-   * identity-bearing check here (authorized-keys lookup, TOFU, lastUsedAt,
+   * identity-bearing check here (authorized-keys lookup, pending registration, lastUsedAt,
    * and the fingerprint returned to the caller) uses `derivedFingerprint`,
    * computed server-side from the verified public key.
    */
@@ -196,6 +190,7 @@ export class Authenticator {
     // Step 1: Verify the signature FIRST (before checking authorization)
     let derivedFingerprint: string;
     try {
+      derivedFingerprint = await validatePublicKey(response.clientPublicKey);
       const clientPublicKeyRaw = fromBase64(response.clientPublicKey);
       const clientPublicKey = await importPublicKey(clientPublicKeyRaw);
       const challengeData = fromBase64(challenge);
@@ -208,7 +203,9 @@ export class Authenticator {
       // Derive the fingerprint from the VERIFIED public key, not from the
       // client's claim (#671) — this is the only fingerprint value ever
       // treated as this client's identity from here on.
-      derivedFingerprint = await fingerprint(clientPublicKeyRaw);
+      if (response.clientFingerprint !== derivedFingerprint) {
+        return { result: createAuthResult(false, undefined, 'FINGERPRINT_MISMATCH') };
+      }
     } catch (err) {
       const code = err instanceof DOMException ? 'INVALID_KEY_DATA' : 'VERIFICATION_ERROR';
       return { result: createAuthResult(false, undefined, code) };
@@ -224,27 +221,21 @@ export class Authenticator {
       return { result: createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`) };
     }
 
-    // Step 3: TOFU - if not authorized and auto-accept is enabled, add the key
+    // #873: verified unknown identities request local human approval, never trust on first use.
     if (!isAuthorized) {
-      if (this.tofuMode === 'auto-accept') {
-        try {
-          const label = `tofu-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`;
-          await this.store.addAuthorizedKey(response.clientPublicKey, label);
-          console.log(`New client auto-accepted (TOFU): ${derivedFingerprint} [${label}]`);
-          isAuthorized = true;
-        } catch (err) {
-          if (err instanceof DuplicateKeyError) {
-            // Race condition: another connection added the key first
-            isAuthorized = true;
-          } else {
-            const detail = errorToString(err);
-            console.error(`TOFU auto-accept failed: ${detail}`);
-            return { result: createAuthResult(false, undefined, 'TOFU_FAILED') };
-          }
+      try {
+        await this.store.registerPendingKey(response.clientPublicKey);
+      } catch (err) {
+        // Concurrent explicit approval still requires a fresh challenge; no implicit admission.
+        if (!(err instanceof DuplicateKeyError)) {
+          const code =
+            err instanceof PendingQueueFullError
+              ? 'PENDING_QUEUE_FULL'
+              : `AUTH_STORE_ERROR: ${errorToString(err)}`;
+          return { result: createAuthResult(false, undefined, code) };
         }
-      } else {
-        return { result: createAuthResult(false, undefined, 'UNKNOWN_KEY') };
       }
+      return { result: createAuthResult(false, undefined, 'UNKNOWN_KEY') };
     }
 
     // Update lastUsedAt (non-critical; don't let failures break auth)
@@ -273,7 +264,7 @@ export class Authenticator {
    * trust model the WebSocket uses: (1) verify the client's Ed25519 signature
    * over `message`, then (2) require the key to be in the authorized-keys store
    * (the exact gate `verifyResponse` step 2 applies). Unlike the live handshake,
-   * this path does NOT TOFU-accept unknown keys — a relayed answer must come
+   * this path does NOT register unknown candidates — a relayed answer must come
    * from an already-trusted client, never bootstrap trust.
    *
    * `message` is the canonical request string the client signed (the caller is
@@ -286,7 +277,10 @@ export class Authenticator {
     clientPublicKeyBase64: string,
     clientFingerprint: string,
   ): Promise<boolean> {
+    let derivedFingerprint: string;
     try {
+      derivedFingerprint = await validatePublicKey(clientPublicKeyBase64);
+      if (clientFingerprint !== derivedFingerprint) return false;
       const clientPublicKey = await importPublicKey(fromBase64(clientPublicKeyBase64));
       const data = new TextEncoder().encode(message).buffer as ArrayBuffer;
       const valid = await verify(clientPublicKey, data, signatureBase64);
@@ -297,7 +291,7 @@ export class Authenticator {
     }
 
     try {
-      return this.store.isAuthorized(clientPublicKeyBase64, clientFingerprint);
+      return this.store.isAuthorized(clientPublicKeyBase64, derivedFingerprint);
     } catch (err) {
       console.error(`Auth store error during detached verification: ${errorToString(err)}`);
       return false;
