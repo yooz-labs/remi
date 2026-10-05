@@ -21,10 +21,12 @@ function Harness() {
 }
 
 export async function start() {
-  saveIdentity(await createIdentity());
+  const identity = await createIdentity();
+  saveIdentity(identity);
   const container = document.createElement('div');
   document.body.append(container);
   createRoot(container).render(<Harness />);
+  return { publicKey: identity.publicKey, fingerprint: identity.fingerprint };
 }
 export function connectTo(url: string) { connect(url); }
 export function reached() { return checkpointReached; }

@@ -36,14 +36,15 @@ afterAll(async () => {
   await rm(privateDir, { recursive: true, force: true });
 });
 
-async function realDaemon() {
-  const identity = await unlockIdentity(await createIdentity());
+async function realDaemon(claimedFingerprint?: string) {
+  const generated = await unlockIdentity(await createIdentity());
+  const identity = claimedFingerprint ? { ...generated, fingerprint: claimedFingerprint as typeof generated.fingerprint } : generated;
   const store = new IdentityStore(join(privateDir, crypto.randomUUID()));
   const held = await occupyEphemeral('127.0.0.1');
   await new Promise<void>((resolve) => held.server.close(() => resolve()));
   const adapter = new WebSocketAdapter({ port: held.port, host: '127.0.0.1', authenticator: new Authenticator({ identity, identityStore: store }) });
   await adapter.start();
-  return { adapter, store, url: `ws://127.0.0.1:${held.port}/ws` };
+  return { adapter, store, identity, url: `ws://127.0.0.1:${held.port}/ws` };
 }
 
 browserTest('App opens a fresh hostname form while another host retains pending approval', async () => {
@@ -85,3 +86,28 @@ for (const action of ['deleteIdentity', 'replaceIdentity'] as const) {
     } finally { await context.close(); await daemon.adapter.stop(); }
   }, 15000);
 }
+
+
+browserTest('manager rejects a real daemon key claiming a different pinned key fingerprint', async () => {
+  const pinned = await unlockIdentity(await createIdentity());
+  const daemon = await realDaemon(pinned.fingerprint);
+  expect(daemon.identity.publicKeyRaw).not.toBe(pinned.publicKeyRaw);
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(origin);
+    const client = await page.evaluate(async ({ url, fingerprint, publicKey }) => {
+      const identityPath = '/src/lib/identity-client.ts';
+      (await import(identityPath)).trustHost(url, fingerprint, publicKey);
+      const path = '/tests/browser/approval-harness.tsx';
+      return (await import(path)).start();
+    }, { url: daemon.url, fingerprint: pinned.fingerprint, publicKey: pinned.publicKeyRaw });
+    await daemon.store.addAuthorizedKey(client.publicKey, 'isolated-browser');
+    await page.getByTestId('manager-state').waitFor();
+    await page.evaluate(async (url) => { const path = '/tests/browser/approval-harness.tsx'; const harness = await import(path); harness.release(); harness.connectTo(url); }, daemon.url);
+    await page.waitForTimeout(200);
+    const known = await page.evaluate((url) => JSON.parse(localStorage.getItem('remi-known-hosts') ?? '{}')[url], daemon.url);
+    expect(known.publicKey).toBe(pinned.publicKeyRaw);
+    expect(await page.getByTestId('manager-state').textContent()).not.toContain('"status":"connected"');
+  } finally { await context.close(); await daemon.adapter.stop(); }
+}, 15000);
