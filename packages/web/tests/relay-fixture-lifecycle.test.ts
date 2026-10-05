@@ -110,3 +110,48 @@ test('owned fixture cleanup stops API-created daemons, PTY children and real Wor
     for (const pid of pids) await gone(pid);
   }
 }, 20000);
+
+test('owned relay teardown runs in each importing test file', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'remi1199-lifecycle-files-'));
+  const helper = join(import.meta.dir, 'helpers/relay-hub.ts');
+  for (const name of ['first', 'second'])
+    writeFileSync(
+      join(dir, `${name}.test.ts`),
+      `
+    import { test, afterAll } from 'bun:test';
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { ownedRelayHub, cleanupOwnedRelayFixtures } from ${JSON.stringify(helper)};
+    let fixture;
+    test(${JSON.stringify(name)}, async () => { fixture = await ownedRelayHub(); });
+    afterAll(async () => {
+      writeFileSync(${JSON.stringify(join(dir, `${name}.json`))}, JSON.stringify({ homeRemoved: !existsSync(fixture.dir) }));
+      await cleanupOwnedRelayFixtures();
+    });
+  `,
+    );
+  const runner = Bun.spawn(
+    [process.execPath, 'test', join(dir, 'first.test.ts'), join(dir, 'second.test.ts')],
+    {
+      cwd: join(import.meta.dir, '../../..'),
+      env: { ...process.env, HOME: dir, E2E_BUNDLER: 'esbuild' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  const output = Promise.all([
+    new Response(runner.stdout).text(),
+    new Response(runner.stderr).text(),
+  ]);
+  const timer = setTimeout(() => runner.kill('SIGTERM'), 15000);
+  try {
+    expect(await runner.exited).toBe(0);
+    await output;
+    for (const name of ['first', 'second'])
+      expect(JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8')).homeRemoved).toBe(true);
+  } finally {
+    clearTimeout(timer);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20000);
