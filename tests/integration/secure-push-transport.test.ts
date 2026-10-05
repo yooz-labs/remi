@@ -793,3 +793,21 @@ test('secure transport corrupt current subscription refuses with fixed local STO
   });
   expect(received.bodies).toHaveLength(0);
 });
+
+test('owned-loopback test factory refuses HTTPS and localhost aliases while production accepts canonical HTTPS', async () => {
+  const f = await fixture();
+  const Transport = await transportClass();
+  expect(
+    () => new Transport({ store: f.store, signer: f.signer, audience: 'https://example.com' }),
+  ).not.toThrow();
+  for (const audience of ['https://example.com', 'http://localhost:1234']) {
+    expect(() =>
+      Transport.forOwnedLoopbackTest({
+        store: f.store,
+        signer: f.signer,
+        audience,
+        ownedOrigin: audience,
+      }),
+    ).toThrow('SECURE_PUSH_AUDIENCE');
+  }
+});
