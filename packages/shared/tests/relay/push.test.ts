@@ -363,3 +363,148 @@ test('actual outer machine proof binds every submission field and distinguishes 
   ).toBe('MALFORMED');
   expect(codeOfSync(() => decode(' '.repeat(8193)))).toBe('OVERSIZE');
 });
+
+test('push content and submit TTLs and future clock skew enforce exact finite boundaries', async () => {
+  const { machine, recipient, content } = await context();
+  const dismiss: r.SecurePushPayload = { type: 'dismiss', actionable: false };
+  const info: r.SecurePushPayload = {
+    type: 'informational',
+    actionable: false,
+    sessionId: null,
+    title: 'owned',
+    body: 'owned',
+  };
+  for (const [kind, p, max] of [
+    ['question', payload, 3600],
+    ['dismiss', dismiss, 3600],
+    ['turn_complete', info, 300],
+  ] as const) {
+    const c = { ...content, kind, expiresAt: content.issuedAt + max };
+    expect(
+      (
+        await required<typeof r.buildPushContentSigningInput>('buildPushContentSigningInput')(
+          c,
+          p === payload ? text(JSON.stringify(p)) : r.buildPushPayload(p),
+        )
+      ).length,
+    ).toBeGreaterThan(32);
+    expect(
+      await codeOf(
+        r.buildPushContentSigningInput(
+          { ...c, expiresAt: c.expiresAt + 1 },
+          p === payload ? text(JSON.stringify(p)) : r.buildPushPayload(p),
+        ),
+      ),
+    ).toBe('MALFORMED');
+  }
+  const now = 1000;
+  const authority = {
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
+    pushPublicKey: content.pushPublicKey,
+    keyVersion: 1,
+  };
+  for (const skew of [60, 61]) {
+    const c = {
+      ...content,
+      kind: 'dismiss' as const,
+      issuedAt: now + skew,
+      expiresAt: now + skew + 100,
+    };
+    const sealed = await r.sealPushContent(machine, c, dismiss, r.systemRandom);
+    const carrier = {
+      v: 2 as const,
+      rid: c.rid,
+      collapseId: c.collapseId,
+      keyVersion: 1,
+      kind: c.kind,
+      sealed: r.b64u(sealed),
+    };
+    if (skew === 60)
+      expect((await r.openPushContent(recipient, carrier, authority, now)).payload).toEqual(
+        dismiss,
+      );
+    else
+      expect(await codeOf(r.openPushContent(recipient, carrier, authority, now))).toBe('EXPIRED');
+  }
+  const { unsigned } = await signedSubmission();
+  expect(
+    (await r.buildPushSubmitSigningInput({ ...unsigned, expiresAt: unsigned.issuedAt + 60 }))
+      .length,
+  ).toBeGreaterThan(32);
+  expect(
+    await codeOf(r.buildPushSubmitSigningInput({ ...unsigned, expiresAt: unsigned.issuedAt + 61 })),
+  ).toBe('MALFORMED');
+  for (const skew of [60, 61]) {
+    const actual = await signedSubmission();
+    const matching = { ...actual.unsigned, issuedAt: now + skew, expiresAt: now + skew + 60 };
+    const proof = {
+      ...matching,
+      signature: r.b64u(await actual.machine.sign(await r.buildPushSubmitSigningInput(matching))),
+    };
+    if (skew === 60)
+      expect(
+        (await r.verifyPushSubmit(proof, { rid: proof.rid, audience: proof.audience }, now))
+          .requestDigest,
+      ).toMatch(/^[a-f0-9]{64}$/);
+    else
+      expect(
+        await codeOf(r.verifyPushSubmit(proof, { rid: proof.rid, audience: proof.audience }, now)),
+      ).toBe('EXPIRED');
+  }
+});
+
+test('whole signed inner measures multibyte UTF8 exactly at2048 and refuses2049 without truncation', async () => {
+  const { machine, recipient, content } = await context();
+  const value = {
+    ...payload,
+    title: '界',
+    options: payload.options.map((o) => ({ ...o, description: null })),
+  } as r.SecurePushPayload;
+  if (value.type !== 'question') throw new Error('question fixture');
+  const base = r.buildPushPayload(value);
+  const overhead =
+    r.encodeSignedPushContent(content, base, new Uint8Array(64)).length - base.length;
+  const slack = 2048 - overhead - base.length;
+  const desc = '界'.repeat(Math.floor((slack + 2) / 3)) + 'a'.repeat((slack + 2) % 3);
+  // Replacing JSON null (4 bytes) with a quoted string (2) gains two bytes of room.
+  const options = value.options.map((o, i) => (i === 0 ? { ...o, description: desc } : o));
+  const exact = r.buildPushPayload({ ...value, options });
+  const sig = await machine.sign(await r.buildPushContentSigningInput(content, exact));
+  const inner = r.encodeSignedPushContent(content, exact, sig);
+  expect(inner.length).toBe(2048);
+  const sealed = await r.seal(
+    recipient.publicKey,
+    r.pushAad(Buffer.from(content.rid, 'hex'), content.collapseId),
+    inner,
+    r.systemRandom,
+  );
+  expect(
+    (
+      await r.openPushContent(
+        recipient,
+        {
+          v: 2,
+          rid: content.rid,
+          collapseId: content.collapseId,
+          keyVersion: 1,
+          kind: content.kind,
+          sealed: r.b64u(sealed),
+        },
+        {
+          machinePublicKey: content.machinePublicKey,
+          devicePublicKey: content.devicePublicKey,
+          pushPublicKey: content.pushPublicKey,
+          keyVersion: 1,
+        },
+        1001,
+      )
+    ).payload,
+  ).toEqual({ ...value, options });
+  const larger = r.buildPushPayload({
+    ...value,
+    options: options.map((o, i) => (i === 0 ? { ...o, description: `${desc}a` } : o)),
+  });
+  expect(larger.length).toBe(exact.length + 1);
+  expect(codeOfSync(() => r.encodeSignedPushContent(content, larger, sig))).toBe('OVERSIZE');
+});
