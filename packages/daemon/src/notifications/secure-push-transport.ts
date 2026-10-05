@@ -137,7 +137,19 @@ export class SecurePushTransport {
   }
   /** Exact owned HTTP127 listener only; production constructor never enables HTTP. */
   static forOwnedLoopbackTest(options: OwnedLoopbackPushTestOptions): SecurePushTransport {
-    if (options.ownedOrigin !== options.audience) throw new Error('SECURE_PUSH_AUDIENCE');
+    let owned: URL;
+    try {
+      owned = new URL(options.ownedOrigin);
+    } catch {
+      throw new Error('SECURE_PUSH_AUDIENCE');
+    }
+    if (
+      owned.protocol !== 'http:' ||
+      owned.hostname !== '127.0.0.1' ||
+      owned.origin !== options.ownedOrigin ||
+      options.ownedOrigin !== options.audience
+    )
+      throw new Error('SECURE_PUSH_AUDIENCE');
     const copy: SecurePushTransportOptions = { ...options };
     ownedTests.set(copy, options.ownedOrigin);
     try {
