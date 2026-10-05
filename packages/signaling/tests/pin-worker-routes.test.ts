@@ -51,7 +51,7 @@ describe('unchanged routes', () => {
 describe('legacy /push authentication', () => {
   const body = JSON.stringify({ token: 'device-token', title: 'T', body: 'B' });
   const post = (headers: Record<string, string>, env: object) =>
-    call('/push', { method: 'POST', headers, body }, env);
+    call('/push', { method: 'POST', headers, body }, { ...env, LEGACY_PUSH_ENABLED: 'true' });
 
   test('with PUSH_SECRET set, a request with no Authorization header is refused', async () => {
     const res = await post({ 'CF-Connecting-IP': '203.0.113.50' }, { ...ENV, PUSH_SECRET: 's1' });
@@ -78,9 +78,18 @@ describe('legacy /push authentication', () => {
     expect(((await res.json()) as { error: string }).error).toBe('APNS_NOT_CONFIGURED');
   });
 
-  test('with no PUSH_SECRET, authentication is skipped (the unauthenticated fallback)', async () => {
+  test('explicit legacy opt-in without PUSH_SECRET is refused', async () => {
     const res = await post({ 'CF-Connecting-IP': '203.0.113.53' }, ENV);
-    expect(res.status).toBe(500);
-    expect(((await res.json()) as { error: string }).error).toBe('APNS_NOT_CONFIGURED');
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe('UNAUTHORIZED');
+  });
+  test('legacy bearer alone cannot opt in to the plaintext route', async () => {
+    const res = await call(
+      '/push',
+      { method: 'POST', headers: { Authorization: 'Bearer owned' }, body },
+      { ...ENV, PUSH_SECRET: 'owned' },
+    );
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { error: string }).toEqual({ error: 'LEGACY_PUSH_DISABLED' });
   });
 });

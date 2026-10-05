@@ -95,6 +95,7 @@ function bundle(): Promise<string> {
 export async function startWorker(
   vars: Record<string, string> = {},
   pinPushAudience = false,
+  ownedPersistence?: { path: string; port?: number },
 ): Promise<TestWorker> {
   const cfg = Bun.TOML.parse(await Bun.file(`${PKG}/wrangler.toml`).text()) as WranglerConfig;
   const sqlite = new Set(cfg.migrations.flatMap((m) => m.new_sqlite_classes ?? []));
@@ -109,7 +110,8 @@ export async function startWorker(
         { className: b.class_name, useSQLite: sqlite.has(b.class_name) },
       ]),
     ),
-    port: 0,
+    port: ownedPersistence?.port ?? 0,
+    ...(ownedPersistence ? { durableObjectsPersist: ownedPersistence.path } : {}),
   };
   const mf = new Miniflare(options);
   const url = String((await mf.ready) as URL).replace(/\/$/, '');
