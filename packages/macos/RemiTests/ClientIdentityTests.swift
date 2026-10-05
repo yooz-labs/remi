@@ -317,9 +317,7 @@ final class ClientIdentityTests: XCTestCase {
     func testNativePairingQRHasGuardedBundledIngress() async throws {
         let (token, fixtureImage) = try generatedPairingQRImage()
         var image = fixtureImage
-        print("QR phase: direct decode begins")
         XCTAssertEqual(try NativePairingQRDecoder.decode(image), token, "Actual Vision must decode the actual shared token bytes")
-        print("QR phase: direct decode completed")
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes + 1)))
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(image + Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes)), "Even a valid QR with oversized trailing bytes must refuse before decode")
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(Data("not an image".utf8)))
@@ -327,7 +325,6 @@ final class ClientIdentityTests: XCTestCase {
         let hugeCG = try XCTUnwrap(CIContext().createCGImage(huge, from: huge.extent))
         let hugeData = try XCTUnwrap(NSBitmapImageRep(cgImage: hugeCG).representation(using: .png, properties: [:]))
         XCTAssertThrowsError(try NativePairingQRDecoder.decode(hugeData), "Dimensions must be bounded before Vision")
-        print("QR phase: image bounds checked")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-qr-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -349,27 +346,21 @@ final class ClientIdentityTests: XCTestCase {
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
-        print("QR phase: bundled document loaded; native scan begins")
         let decoded = try await web.callAsyncJavaScript(
             "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'qr-owned'})",
             arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual((decoded as? [String: String])?["token"], token, "Bundled main-frame must return exact locally decoded token")
-        print("QR phase: first native scan completed")
         let bundlePath = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"])
-        print("QR phase: provider bundle evaluation begins")
-        _ = try await web.evaluateJavaScript("void function(){" + String(contentsOfFile: bundlePath, encoding: .utf8) + "}()")
-        print("QR phase: provider bundle evaluation completed; fresh token begins")
+        let bundleLoaded = try await web.evaluateJavaScript("(function(){" + String(contentsOfFile: bundlePath, encoding: .utf8) + "})(); true")
+        XCTAssertEqual(bundleLoaded as? Bool, true, "Actual provider bundle evaluation must complete before use")
         let freshReply = try await web.callAsyncJavaScript(
             "return await window.nativeProviderTest.freshQRToken()", arguments: [:], in: nil, contentWorld: .page)
         let freshToken = try XCTUnwrap(freshReply as? String)
-        print("QR phase: fresh token created")
         image = try generatedPairingQRImage(text: freshToken).1
-        print("QR phase: fresh QR image generated; provider scan begins")
         let providerToken = try await web.callAsyncJavaScript(
             "return await window.nativeProviderTest.readNativePairingQR(new AbortController().signal)",
             arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(providerToken as? String, freshToken, "Actual native ingress and shared WebCrypto token decoder must preserve the selected token")
-        print("QR phase: provider scan completed")
         let iframe = try await web.callAsyncJavaScript("""
             return await new Promise(resolve => {
               const frame = document.createElement('iframe');
@@ -380,7 +371,6 @@ final class ClientIdentityTests: XCTestCase {
             """, arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(iframe as? Bool, false, "A real iframe must not start native image selection")
         XCTAssertEqual(selectionCount, 2)
-        print("QR phase: iframe refused")
         hold = true
         let late = Task { @MainActor in
             try await web.callAsyncJavaScript(
@@ -393,7 +383,6 @@ final class ClientIdentityTests: XCTestCase {
         heldSelection?.resume(returning: image); heldSelection = nil
         let lateResult = try await late.value
         XCTAssertEqual(lateResult as? Bool, false, "Inactivity must suppress a selected-image continuation")
-        print("QR phase: inactive continuation refused")
         let canceled = Task { @MainActor in
             try await web.callAsyncJavaScript("""
                 window.qrAbort = new AbortController();
@@ -403,12 +392,10 @@ final class ClientIdentityTests: XCTestCase {
         }
         for _ in 0..<250 where heldSelection == nil { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertNotNil(heldSelection)
-        print("QR phase: abort evaluation begins")
-        _ = try await web.evaluateJavaScript("window.qrAbort.abort()")
-        print("QR phase: abort evaluation completed")
+        let aborted = try await web.evaluateJavaScript("window.qrAbort.abort(); true")
+        XCTAssertEqual(aborted as? Bool, true, "Actual AbortController evaluation must complete before awaiting cancellation")
         let canceledResult = try await canceled.value
         XCTAssertEqual(canceledResult as? Bool, false, "Actual TS cancellation must end the native QR request")
-        print("QR phase: cancellation completed")
         heldSelection?.resume(returning: image); heldSelection = nil
         web.loadFileURL(document, allowingReadAccessTo: root)
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
@@ -417,7 +404,6 @@ final class ClientIdentityTests: XCTestCase {
             arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(external as? Bool, false, "An external main document must not start native image selection")
         XCTAssertEqual(selectionCount, 4)
-        print("QR phase: external document refused; test completed")
     }
 
     @MainActor
