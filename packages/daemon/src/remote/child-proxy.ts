@@ -16,7 +16,13 @@ import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 export class ChildProxy {
   private readonly children = new Map<
     string,
-    { ws: WebSocket; port: number; ready: Promise<void>; hello: HelloAckMessage | undefined }
+    {
+      ws: WebSocket;
+      port: number;
+      generation: string;
+      ready: Promise<void>;
+      hello: HelloAckMessage | undefined;
+    }
   >();
   private closed = false;
   private readonly lists = new Map<
@@ -93,8 +99,13 @@ export class ChildProxy {
       live.wsPort > 65535
     )
       throw new Error('SESSION_NOT_FOUND');
+    const generation = JSON.stringify([live.pid, live.wsPort, live.startedAt]);
+    const matches = () => {
+      const entry = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
+      return entry && JSON.stringify([entry.pid, entry.wsPort, entry.startedAt]) === generation;
+    };
     let child = this.children.get(sessionId);
-    if (child && child.port !== live.wsPort) {
+    if (child && child.generation !== generation) {
       child.ws.close();
       this.children.delete(sessionId);
       child = undefined;
@@ -138,8 +149,7 @@ export class ChildProxy {
               ws.close();
               return;
             }
-            const current = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
-            if (this.closed || current?.wsPort !== live.wsPort) {
+            if (this.closed || !matches()) {
               reject(new Error('CHILD_UNVERIFIED'));
               ws.close();
               return;
@@ -191,12 +201,11 @@ export class ChildProxy {
           if (!this.closed) this.failed(sessionId);
         };
       });
-      child = { ws, port: live.wsPort, ready, hello: undefined };
+      child = { ws, port: live.wsPort, generation, ready, hello: undefined };
       this.children.set(sessionId, child);
     }
     await child.ready;
-    const current = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
-    if (this.closed || current?.wsPort !== child.port || child.ws.readyState !== WebSocket.OPEN)
+    if (this.closed || !matches() || child.ws.readyState !== WebSocket.OPEN)
       throw new Error('CHILD_UNAVAILABLE');
     if (message.type === 'hello') {
       if (child.hello) this.receive(child.hello);
