@@ -508,6 +508,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           }),
         );
       },
+      () => this.current(peer),
     );
     peer.connection = new Connection(
       {

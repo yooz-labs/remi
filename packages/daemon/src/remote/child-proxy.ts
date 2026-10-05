@@ -29,6 +29,7 @@ export class ChildProxy {
     string,
     {
       sessionId: string;
+      ws?: WebSocket;
       resolve: (response: SessionListResponseMessage) => void;
       reject: (error: Error) => void;
     }
@@ -53,7 +54,12 @@ export class ChildProxy {
 
   private readonly answers = new Map<
     string,
-    { sessionId: string; questionId: string; resolve: (outcome: AnswerResultOutcome) => void }
+    {
+      sessionId: string;
+      questionId: string;
+      ws?: WebSocket;
+      resolve: (outcome: AnswerResultOutcome) => void;
+    }
   >();
   async answer(message: AnswerMessage): Promise<AnswerResultOutcome> {
     if (this.answers.size >= 32) return 'busy';
@@ -78,9 +84,10 @@ export class ChildProxy {
       this.answers.delete(message.id);
     }
   }
-  private refuseAnswers(sessionId?: string): void {
+  private refuseAnswers(sessionId?: string, ws?: WebSocket): void {
     for (const entry of this.answers.values())
-      if (!sessionId || entry.sessionId === sessionId) entry.resolve('uncertain');
+      if ((!sessionId || entry.sessionId === sessionId) && (!ws || entry.ws === ws))
+        entry.resolve('uncertain');
   }
 
   constructor(
@@ -88,11 +95,13 @@ export class ChildProxy {
     private readonly deviceId: string,
     private readonly receive: (message: ProtocolMessage) => void,
     private readonly failed: (sessionId: string) => void,
+    private readonly authorized: () => boolean,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
     if (
       this.closed ||
+      !this.authorized() ||
       !live ||
       !Number.isInteger(live.wsPort) ||
       live.wsPort < 1 ||
@@ -122,7 +131,7 @@ export class ChildProxy {
           ws.close();
         }, 10000);
         ws.onopen = () => {
-          if (this.closed) {
+          if (this.closed || !this.authorized() || !matches()) {
             ws.close();
             return;
           }
@@ -136,6 +145,16 @@ export class ChildProxy {
           );
         };
         ws.onmessage = (event) => {
+          if (
+            this.closed ||
+            !this.authorized() ||
+            !matches() ||
+            this.children.get(sessionId)?.ws !== ws
+          ) {
+            reject(new Error('CHILD_UNAVAILABLE'));
+            ws.close();
+            return;
+          }
           const incoming = typeof event.data === 'string' ? deserialize(event.data) : null;
           if (!incoming || incoming.type === 'auth_challenge' || incoming.type === 'auth_result') {
             reject(new Error('CHILD_UNVERIFIED'));
@@ -149,7 +168,7 @@ export class ChildProxy {
               ws.close();
               return;
             }
-            if (this.closed || !matches()) {
+            if (this.closed || !this.authorized() || !matches()) {
               reject(new Error('CHILD_UNVERIFIED'));
               ws.close();
               return;
@@ -163,13 +182,14 @@ export class ChildProxy {
           if (incoming.type === 'hello_ack') return;
           if (incoming.type === 'session_list_response') {
             const list = this.lists.get(incoming.requestId);
-            if (list?.sessionId === sessionId) list.resolve(incoming);
+            if (list?.sessionId === sessionId && list.ws === ws) list.resolve(incoming);
             return;
           }
           if (incoming.type === 'answer_result') {
             const answer = this.answers.get(incoming.requestId);
             if (
               answer?.sessionId === incoming.sessionId &&
+              answer.ws === ws &&
               answer.questionId === incoming.questionId &&
               [
                 'delivered',
@@ -194,19 +214,31 @@ export class ChildProxy {
         ws.onclose = () => {
           clearTimeout(timer);
           reject(new Error('CHILD_UNAVAILABLE'));
-          if (this.children.get(sessionId)?.ws === ws) this.children.delete(sessionId);
-          this.refuseAnswers(sessionId);
+          const current = this.children.get(sessionId)?.ws === ws;
+          if (current) this.children.delete(sessionId);
+          this.refuseAnswers(sessionId, ws);
           for (const list of this.lists.values())
-            if (list.sessionId === sessionId) list.reject(new Error('CHILD_UNAVAILABLE'));
-          if (!this.closed) this.failed(sessionId);
+            if (list.sessionId === sessionId && list.ws === ws)
+              list.reject(new Error('CHILD_UNAVAILABLE'));
+          if (!this.closed && current) this.failed(sessionId);
         };
       });
       child = { ws, port: live.wsPort, generation, ready, hello: undefined };
       this.children.set(sessionId, child);
     }
     await child.ready;
-    if (this.closed || !matches() || child.ws.readyState !== WebSocket.OPEN)
+    if (
+      this.closed ||
+      !this.authorized() ||
+      !matches() ||
+      this.children.get(sessionId)?.ws !== child.ws ||
+      child.ws.readyState !== WebSocket.OPEN
+    )
       throw new Error('CHILD_UNAVAILABLE');
+    const pendingAnswer = this.answers.get(message.id);
+    if (pendingAnswer) pendingAnswer.ws = child.ws;
+    const pendingList = this.lists.get(message.id);
+    if (pendingList) pendingList.ws = child.ws;
     if (message.type === 'hello') {
       if (child.hello) this.receive(child.hello);
     } else child.ws.send(serialize(message));
