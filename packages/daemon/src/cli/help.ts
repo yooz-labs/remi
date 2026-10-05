@@ -49,6 +49,14 @@ import type { Subcommand } from './arg-parser.ts';
 const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
+  pair: [
+    'Usage: remi pair',
+    'Start an authenticated hub with --relay, then compare fingerprints in this interactive terminal.',
+  ],
+  devices: [
+    'Usage: remi devices [revoke <exact fingerprint>]',
+    'List relay devices or revoke authorization and request acknowledged Worker removal.',
+  ],
   ls: [
     'List running sessions from a Remi daemon.',
     '',

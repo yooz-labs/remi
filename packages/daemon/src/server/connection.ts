@@ -49,11 +49,17 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
+export interface ConnectionTransport {
+  readonly readyState: number;
+  send(data: string): unknown;
+  close(): void;
+}
 
 /**
  * Events emitted by a connection. The per-message portion (`onUserInput`,
@@ -135,7 +141,7 @@ export class Connection {
    *  disabled, or this peer was loopback-exempted). */
   private authenticatedFingerprint: string | null = null;
 
-  private readonly ws: WebSocket;
+  private readonly ws: ConnectionTransport;
   // `Omit` before re-adding `authenticator` so the property isn't inherited
   // from `Required<ConnectionConfig>` and then intersected with the explicit
   // override below: under `exactOptionalPropertyTypes: false`, `Required<>`
@@ -152,6 +158,7 @@ export class Connection {
   };
   private readonly events: Partial<ConnectionEvents>;
   private readonly messageTracker: MessageIdTracker;
+  private readonly answerResults = new AnswerResults();
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -159,7 +166,7 @@ export class Connection {
   private missedPongs = 0;
 
   constructor(
-    ws: WebSocket,
+    ws: ConnectionTransport,
     events: Partial<ConnectionEvents> = {},
     config: Partial<ConnectionConfig> = {},
     id?: UUID,
@@ -267,6 +274,10 @@ export class Connection {
 
     // Check for duplicate
     if (this.messageTracker.checkAndMark(message.id)) {
+      if (message.type === 'answer') {
+        void this.handleAnswer(message, true);
+        return;
+      }
       // Duplicate - still acknowledge but don't process
       this.sendAck(message.id, 'delivered');
       return;
@@ -300,6 +311,10 @@ export class Connection {
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
         hello: (m) => this.handleHello(m),
+        relay_devices_request: () =>
+          this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
+        relay_device_revoke_request: () =>
+          this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
         user_input: (m) => this.handleUserInput(m),
         answer: (m) => this.handleAnswer(m),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
@@ -499,14 +514,11 @@ export class Connection {
     );
   }
 
-  private handleAnswer(message: AnswerMessage): void {
+  private async handleAnswer(message: AnswerMessage, recognizedDuplicate = false): Promise<void> {
     if (this.state !== 'connected') {
       this.sendError('NOT_CONNECTED', 'Connection not established');
       return;
     }
-
-    // Acknowledge receipt
-    this.sendAck(message.id, 'delivered');
 
     // Notify. Forward the structured AskUserQuestion parts (#627) when present so
     // the daemon can answer the held hook (selections, #1127) or cancel it, and a
@@ -517,13 +529,17 @@ export class Connection {
       message.message !== undefined
         ? { selections: message.selections, cancel: message.cancel, message: message.message }
         : undefined;
-    this.events.onAnswer?.(
-      message.sessionId,
-      message.questionId,
-      message.answer,
-      message.claudeSessionId,
-      extra,
-    );
+    const result = await this.answerResults.run(message, recognizedDuplicate, async () => {
+      const outcome = await this.events.onAnswer?.(
+        message.sessionId,
+        message.questionId,
+        message.answer,
+        message.claudeSessionId,
+        extra,
+      );
+      return outcome ?? 'uncertain';
+    });
+    if (this.state === 'connected') this.send(result);
   }
 
   private handleBulletExpandRequest(message: BulletExpandRequestMessage): void {

@@ -603,6 +603,12 @@ export class RelayAdapter implements ConnectionAdapter {
       // Hello is handled at connection level (the relay's `peer-connected`
       // event), not message level -- a client never needs to send one here.
       hello: 'ignore',
+      relay_devices_request: () => {
+        this.sendRaw(connectionId, createError('UNSUPPORTED', 'Device management requires v2'));
+      },
+      relay_device_revoke_request: () => {
+        this.sendRaw(connectionId, createError('UNSUPPORTED', 'Device management requires v2'));
+      },
       user_input: (m) => {
         this.events.onUserInput?.(
           connectionId,

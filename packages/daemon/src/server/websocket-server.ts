@@ -15,9 +15,15 @@ import {
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
+export interface RelayLocalControl {
+  open(id: string, send: (text: string) => void): void;
+  message(id: string, text: string): void;
+  close(id: string): void;
+}
 
 /** Server configuration */
 export interface ServerConfig {
+  readonly relayControl?: RelayLocalControl;
   /** Port to listen on */
   readonly port: number;
 
@@ -106,6 +112,7 @@ const MAX_REFUSED_ORIGINS_TRACKED = 64;
 
 /** WebSocket data attached to each connection */
 interface WSData {
+  relayControl?: boolean;
   connectionId: UUID;
   /** Peer IP captured at upgrade time (used to skip auth for loopback). */
   peerAddress: string | null;
@@ -133,10 +140,12 @@ interface WSData {
  * ```
  */
 export class WebSocketServer {
-  private readonly config: Required<ServerConfig>;
+  private readonly config: Required<Omit<ServerConfig, 'relayControl'>> &
+    Pick<ServerConfig, 'relayControl'>;
   private readonly events: Partial<ServerEvents>;
   private readonly connections: Map<UUID, Connection> = new Map();
 
+  private readonly controls = new Map<string, { close(code?: number, reason?: string): void }>();
   private server: ReturnType<typeof Bun.serve> | null = null;
   private isRunning = false;
 
@@ -158,6 +167,7 @@ export class WebSocketServer {
       allowedOrigins: config.allowedOrigins ?? [],
       logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
       capabilityToken: config.capabilityToken ?? '',
+      ...(config.relayControl && { relayControl: config.relayControl }),
     };
     this.events = events;
   }
@@ -233,6 +243,32 @@ export class WebSocketServer {
         // client sends none and passes.
         if (!self.originAllowed(origin)) {
           return new Response('Forbidden origin', { status: 403 });
+        }
+
+        if (url.pathname === '/relay-control') {
+          const peer = server.requestIP(req)?.address;
+          const hasCapability = capabilityTokenMatches(
+            req.headers.get(CAPABILITY_HEADER),
+            self.config.capabilityToken,
+          );
+          if (
+            self.controls.size >= 16 ||
+            !self.config.relayControl ||
+            !shouldSkipAuthForPeer(true, peer, { hasCapability })
+          )
+            return new Response('Forbidden', { status: 403 });
+          if (
+            server.upgrade(req, {
+              data: {
+                connectionId: generateId(),
+                peerAddress: peer ?? null,
+                hasCapability,
+                relayControl: true,
+              },
+            })
+          )
+            return;
+          return new Response('Upgrade required', { status: 426 });
         }
 
         // Only handle WebSocket upgrade on the configured path
@@ -350,14 +386,34 @@ export class WebSocketServer {
         idleTimeout: WS_IDLE_TIMEOUT_SECONDS,
 
         open(ws) {
+          if (ws.data.relayControl) {
+            self.controls.set(ws.data.connectionId, ws);
+            self.config.relayControl?.open(ws.data.connectionId, (text) => {
+              ws.send(text);
+            });
+            return;
+          }
           self.handleOpen(ws);
         },
 
         message(ws, message) {
+          if (ws.data.relayControl) {
+            if (typeof message !== 'string' || new TextEncoder().encode(message).length > 4096) {
+              ws.close(4400, 'closed');
+              return;
+            }
+            self.config.relayControl?.message(ws.data.connectionId, message);
+            return;
+          }
           self.handleMessage(ws, message);
         },
 
         close(ws) {
+          if (ws.data.relayControl) {
+            self.controls.delete(ws.data.connectionId);
+            self.config.relayControl?.close(ws.data.connectionId);
+            return;
+          }
           self.handleClose(ws);
         },
 
@@ -378,6 +434,11 @@ export class WebSocketServer {
       return;
     }
 
+    for (const [id, socket] of this.controls) {
+      this.config.relayControl?.close(id);
+      socket.close(1000);
+    }
+    this.controls.clear();
     // Close all connections
     for (const connection of this.connections.values()) {
       connection.close('Server shutting down');

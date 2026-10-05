@@ -11,6 +11,9 @@ import {
   MAX_WORKER_TEXT,
   decodeAdmit,
   decodeHostCommand,
+  decodeNotice,
+  encodeAdmit,
+  encodeHostCommand,
   encodeNotice,
   parseWorkerPath,
 } from '../../src/relay/worker-wire.ts';
@@ -188,5 +191,30 @@ describe('host commands', () => {
     for (const [name, input, code] of cases) {
       expect([name, codeOfSync(() => decodeHostCommand(input))]).toEqual([name, code]);
     }
+  });
+});
+
+describe('endpoint codecs used by the daemon and client', () => {
+  test('canonical literal endpoint frames match the real Worker decoders', () => {
+    expect(encodeAdmit({ key: bytes(32, 7), signature: bytes(64, 9), ticket: bytes(32, 5) })).toBe(
+      `{"t":"admit","k":"${K}","s":"${S}","a":"${A}"}`,
+    );
+    expect(encodeHostCommand({ t: 'enroll', key: bytes(32, 7) })).toBe(`{"t":"enroll","k":"${K}"}`);
+    expect(decodeNotice('{"t":"ack","r":"revoke","ok":true}')).toEqual({
+      t: 'ack',
+      op: 'revoke',
+      ok: true,
+    });
+    expect(decodeNotice('{"t":"admitted","up":false}')).toEqual({ t: 'admitted', hostUp: false });
+  });
+  test('endpoint notices refuse duplicates, extras, noncanonical booleans and order', () => {
+    for (const input of [
+      '{"t":"open","t":"open"}',
+      '{"t":"open","x":1}',
+      '{"t":"admitted","up":0}',
+      '{"up":true,"t":"admitted"}',
+      'pong',
+    ])
+      expect(() => decodeNotice(input)).toThrow();
   });
 });
