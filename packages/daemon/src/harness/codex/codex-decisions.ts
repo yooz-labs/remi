@@ -55,7 +55,7 @@ import { escapeUnsafeText, generateId } from '@remi/shared';
 import type { Question, UUID } from '@remi/shared';
 
 import type { SessionRegistry } from '../../session/session-registry.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from '../decision.ts';
+import type { AnswerValidity, HeldAnswer, HeldAnswerOutcome } from '../decision.ts';
 import type { DecisionChannel } from '../types.ts';
 import type { AppServerClient } from './app-server-client.ts';
 import type { RequestId } from './app-server-protocol.ts';
@@ -97,7 +97,7 @@ export interface CodexDecisionsDeps {
   /** The session's working directory, as `realpath` resolves it: a command that runs elsewhere says where on its card. */
   sessionDirectory: string;
   client: Pick<AppServerClient, 'respond'>;
-  sessionRegistry: Pick<SessionRegistry, 'removeQuestion'>;
+  sessionRegistry: Pick<SessionRegistry, 'removeQuestion' | 'getQuestion'>;
   /** Show a card: `messageApi.handleQuestion(q, { held: true })`, which stamps `held`. */
   present: (q: Question) => void;
   onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
@@ -159,6 +159,24 @@ export class CodexDecisions implements DecisionChannel {
   private disposed = false;
 
   constructor(private readonly deps: CodexDecisionsDeps) {}
+
+  /** Codex owns the pending request, with no remi hold timer to invent (#1200). */
+  answerValidity(questionId: UUID): AnswerValidity {
+    const entry = this.byId.get(questionId);
+    const question = this.deps.sessionRegistry.getQuestion(this.deps.sessionId, questionId);
+    if (
+      this.disposed ||
+      !entry ||
+      entry.state !== 'live' ||
+      !entry.spec.actionable ||
+      this.deps.threadRole(entry.spec.threadId) !== 'main' ||
+      !question ||
+      question.isAnswered ||
+      question.terminalOnly
+    )
+      return { kind: 'closed' };
+    return { kind: 'current-prompt' };
+  }
 
   /** A server request arrived: a card if it is a request this session may show, else nothing, and never an answer. */
   handleServerRequest(req: { id: RequestId; method: string; params: unknown }): void {

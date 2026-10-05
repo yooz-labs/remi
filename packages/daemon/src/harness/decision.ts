@@ -14,6 +14,17 @@
 import type { AnswerSelection, QuestionOption } from '@remi/shared';
 
 /**
+ * Whether this harness can still accept an answer to the current card (#1200).
+ * A held hook supplies its captured absolute deadline; a harness that owns an
+ * untimed current request supplies `current-prompt`. Delivery never extends a
+ * hold, and `closed` must never fall back to a different answer path.
+ */
+export type AnswerValidity =
+  | { readonly kind: 'deadline'; readonly expiresAtMs: number }
+  | { readonly kind: 'current-prompt' }
+  | { readonly kind: 'closed' };
+
+/**
  * A phone answer to a held prompt (#1126), as the answer path received it.
  * `option` is one of the card's own options; `message` is the optional text
  * a "No" (or "Keep planning") carries, which Claude receives as the denied

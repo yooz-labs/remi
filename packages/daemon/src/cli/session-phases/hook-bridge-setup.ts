@@ -98,6 +98,7 @@ import type {
   SubagentAlertSink,
   TerminalReleaseCause,
 } from '../../auto-approve/index.ts';
+import type { AnswerValidity } from '../../harness/decision.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -291,6 +292,8 @@ export interface HookBridgeArgs {
  * `remi unstick` reach the RIGHT session's gate.
  */
 export interface SessionGateHandle {
+  /** Held-hook validity; null only when this gate never held the id (#1200). */
+  answerValidity: (questionId: UUID) => AnswerValidity | null;
   /** Another path already removed and dismissed `questionId` (a user answer,
    *  a superseded render): stop tracking its signature so a later matching
    *  tool event does not resolve (and dismiss) it again. Forwards to
@@ -1300,6 +1303,7 @@ export function setupHookBridge(
       autoApproveGate.cancelStale('session_closed');
     },
     gate: {
+      answerValidity: (questionId) => autoApproveGate.answerValidity(questionId),
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
       answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
       hasMainHold: () => autoApproveGate.hasMainHold(),
