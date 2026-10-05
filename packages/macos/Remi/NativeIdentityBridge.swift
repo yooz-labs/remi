@@ -1,10 +1,13 @@
 import Foundation
 import WebKit
 import LocalAuthentication
+import Vision
+import ImageIO
 #if os(macOS)
 import AppKit
 #else
 import UIKit
+import PhotosUI
 #endif
 
 /// Dedicated WebKit ingress retains actual frame provenance. Capacitor's generic
@@ -17,33 +20,42 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let service: String
     private let account: String
     private let unlockLifetime = NativeUnlockLifetime()
-    private let foreground: () -> Bool
-    private let authorization: () async -> Bool
+    private let foreground: @MainActor () -> Bool
+    private let authorization: @MainActor () async -> Bool
     private weak var webView: WKWebView?
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
     private var replacedObserver: NSObjectProtocol?
+    private let qrPicker = NativeQRImagePicker()
+    private let selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)?
+    private var qrGeneration: UInt64 = 0
+    private var qrRequestId: String?
+    private var qrTask: Task<Void, Never>?
+    private var documentObserver: NSKeyValueObservation?
 
     init(scheme: String, service: String, account: String,
-         foreground: @escaping () -> Bool = NativeForegroundUnlock.isActive,
-         authorization: @escaping () async -> Bool = NativeForegroundUnlock.authenticate) {
+         foreground: @escaping @MainActor () -> Bool = NativeForegroundUnlock.isActive,
+         authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
+         selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
         self.scheme = scheme
         self.service = service
         self.account = account
         self.foreground = foreground
         self.authorization = authorization
+        self.selectedQRImage = selectedQRImage
         super.init()
         inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
             object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.unlockedRevision = nil
+                    self?.cancelQR()
                     // Public-only lifecycle notice lets the web owner discard derived relay keys.
                     self?.webView?.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-identity-locked'))")
                 }
             }
         replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
             object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.unlockedRevision = nil }
+                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.cancelQR() }
             }
     }
 
@@ -70,7 +82,52 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
               Self.isBundledDocument(frame.request.url, scheme: scheme),
               Self.isBundledDocument(message.webView?.url, scheme: scheme)
         else { replyHandler(nil, "Native identity request refused"); return }
-        webView = message.webView
+        if webView !== message.webView {
+            cancelQR()
+            webView = message.webView
+            documentObserver = message.webView?.observe(\.isLoading, options: [.new]) { [weak self] web, _ in
+                if web.isLoading { MainActor.assumeIsolated { self?.cancelQR() } }
+            }
+        }
+        if let request = message.body as? [String: Any],
+           ["scanQR", "cancelQR"].contains(request["op"] as? String ?? "") {
+            guard Set(request.keys) == ["op", "id"], let id = request["id"] as? String,
+                  !id.isEmpty, id.utf8.count <= 64,
+                  id.utf8.allSatisfy({ $0 >= 33 && $0 <= 126 }) else {
+                replyHandler(nil, "QR selection refused"); return
+            }
+            if request["op"] as? String == "cancelQR" {
+                if qrRequestId == id { cancelQR() }
+                replyHandler(["cancelled": true], nil); return
+            }
+            guard foreground(), qrRequestId == nil, let web = message.webView else {
+                replyHandler(nil, "QR selection unavailable"); return
+            }
+            qrRequestId = id
+            let generation = qrGeneration
+            qrTask = Task { @MainActor in
+                defer { if qrGeneration == generation { qrRequestId = nil; qrTask = nil } }
+                do {
+                    let data: Data?
+                    if let selectedQRImage { data = try await selectedQRImage(web) }
+                    else { data = try await qrPicker.select(in: web) }
+                    guard !Task.isCancelled, qrGeneration == generation, foreground(),
+                          !web.isLoading, Self.isBundledDocument(web.url, scheme: scheme) else {
+                        throw NativeIdentityError.changed
+                    }
+                    guard let data else { replyHandler(["cancelled": true], nil); return }
+                    let token = try await Task.detached(priority: .userInitiated) {
+                        try NativePairingQRDecoder.decode(data)
+                    }.value
+                    guard !Task.isCancelled, qrGeneration == generation, foreground(),
+                          !web.isLoading, Self.isBundledDocument(web.url, scheme: scheme) else {
+                        throw NativeIdentityError.changed
+                    }
+                    replyHandler(["token": token], nil)
+                } catch { replyHandler(nil, "QR selection or decoding refused. Paste the pairing token.") }
+            }
+            return
+        }
         if let request = message.body as? [String: Any], request["op"] as? String == "unlock" {
             Task { @MainActor in
                 do {
@@ -94,6 +151,12 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         do { replyHandler(try handle(message.body), nil) }
         catch { replyHandler(nil, "Native identity request refused"); }
+    }
+
+    private func cancelQR() {
+        qrGeneration &+= 1
+        qrTask?.cancel(); qrTask = nil; qrRequestId = nil
+        qrPicker.cancel()
     }
 
     private func bytes(_ value: Any?, count: ClosedRange<Int>) throws -> Data {
@@ -228,11 +291,106 @@ final class NativeUnlockLifetime {
     }
     deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
     func authenticate(revision: String, currentRevision: () -> String?,
-                      authorization: () async -> Bool = NativeForegroundUnlock.authenticate,
-                      foreground: () -> Bool = NativeForegroundUnlock.isActive) async -> Bool {
+                      authorization: @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
+                      foreground: @MainActor () -> Bool = NativeForegroundUnlock.isActive) async -> Bool {
         guard foreground() else { return false }
         let attempt = generation
         let authorized = await authorization()
         return authorized && foreground() && generation == attempt && currentRevision() == revision
     }
 }
+
+/// Local QR image decoding. Header dimensions are checked before decompression/Vision.
+/// The actual shared token decoder still validates canonical bytes, expiry and machine key.
+enum NativePairingQRDecoder {
+    static let maximumImageBytes = 8 * 1024 * 1024
+    static let maximumPixels = 8 * 1024 * 1024
+    static func readSelectedFile(_ url: URL) throws -> Data {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0, size <= maximumImageBytes else { throw NativeIdentityError.malformed }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= maximumImageBytes else { throw NativeIdentityError.malformed }
+        return data
+    }
+    static func decode(_ data: Data) throws -> String {
+        guard !data.isEmpty, data.count <= maximumImageBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 4096, height <= 4096,
+              width <= maximumPixels / height,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        else { throw NativeIdentityError.malformed }
+        let request = VNDetectBarcodesRequest()
+        request.symbologies = [.qr]
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let tokens = (request.results ?? []).compactMap { $0.payloadStringValue }.filter {
+            $0.hasPrefix("remi-pair2:") && $0.utf8.count <= 4096 &&
+            $0.utf8.allSatisfy { $0 >= 33 && $0 <= 126 }
+        }
+        guard tokens.count == 1, let token = tokens.first else { throw NativeIdentityError.malformed }
+        return token
+    }
+}
+
+/// User-driven platform picker. No image bytes enter from JavaScript and no upload exists.
+@MainActor
+final class NativeQRImagePicker: NSObject {
+    #if os(macOS)
+    private var panel: NSOpenPanel?
+    func select(in web: WKWebView) async throws -> Data? {
+        guard let window = web.window else { throw NativeIdentityError.changed }
+        let panel = NSOpenPanel(); self.panel = panel
+        panel.allowedContentTypes = [.png, .jpeg, .heic]
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.message = "Choose a QR image from remi pair. The image stays on this device."
+        let response = await panel.beginSheetModal(for: window)
+        self.panel = nil
+        guard response == .OK, let url = panel.url else { return nil }
+        return try NativePairingQRDecoder.readSelectedFile(url)
+    }
+    func cancel() { panel?.cancel(nil); panel = nil }
+    #else
+    private var picker: PHPickerViewController?
+    private var continuation: CheckedContinuation<Data?, Error>?
+    func select(in web: WKWebView) async throws -> Data? {
+        var responder: UIResponder? = web
+        while responder != nil && !(responder is UIViewController) { responder = responder?.next }
+        guard let controller = responder as? UIViewController, controller.presentedViewController == nil else {
+            throw NativeIdentityError.changed
+        }
+        var configuration = PHPickerConfiguration(); configuration.filter = .images; configuration.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: configuration); picker.delegate = self
+        self.picker = picker
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            controller.present(picker, animated: true)
+        }
+    }
+    func cancel() {
+        picker?.dismiss(animated: true); picker = nil
+        continuation?.resume(returning: nil); continuation = nil
+    }
+    fileprivate func selected(_ results: [PHPickerResult]) {
+        picker?.dismiss(animated: true); picker = nil
+        guard let result = results.first else { cancel(); return }
+        let continuation = self.continuation; self.continuation = nil
+        result.itemProvider.loadFileRepresentation(forTypeIdentifier: "public.image") { url, error in
+            do {
+                if let error { throw error }
+                guard let url else { throw NativeIdentityError.malformed }
+                continuation?.resume(returning: try NativePairingQRDecoder.readSelectedFile(url))
+            } catch { continuation?.resume(throwing: error) }
+        }
+    }
+    #endif
+}
+#if os(iOS)
+extension NativeQRImagePicker: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        selected(results)
+    }
+}
+#endif

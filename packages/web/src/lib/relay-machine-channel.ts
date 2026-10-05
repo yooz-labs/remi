@@ -72,6 +72,7 @@ export class RelayMachineChannel {
     identityCurrent: () => boolean,
     events: RelayMachineEvents = {},
   ): Promise<RelayMachineChannel> {
+    if (text.length > 4096) throw new Error('Pairing token exceeds limit.');
     const token = await relayV2.decodePairingToken(text, Math.floor(Date.now() / 1000));
     if (!identityCurrent() || relayV2.isSmallOrderPublicKey(token.machinePublicKey)) {
       token.secret.fill(0);

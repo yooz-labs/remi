@@ -116,6 +116,9 @@ test('real child resolution does not settle this answer until exact correlated d
         tool_input: { command: 'PRIVATE_NEVER_RUN_TOOL' },
       }),
     });
+    // Attach a rejection consumer immediately so failed assertions retain their own
+    // diagnostic when finally aborts this real held HTTP request.
+    void hook.catch(() => undefined);
     const question = await nextType(messages, 'question');
     if (question.type !== 'question') throw new Error('held question missing');
     const no = question.question.options.find((option) => option.isNo);
@@ -311,12 +314,12 @@ test('enrolled client receives actual other-device durable/edge ACK while self c
 test('identity replacement during actual encryption cannot emit an already queued device revoke', async () => {
   const local = await ownedRelayOffer();
   const messages = new Mailbox<ProtocolMessage>();
-  const closed = new Mailbox<boolean>();
+  const closedHistory: boolean[] = [];
   let current = true;
   const first = await pair(
     local,
     (message) => messages.push(message),
-    () => closed.push(true),
+    () => closedHistory.push(true),
     () => current,
   );
   let other: Awaited<ReturnType<typeof pair>> | undefined;
@@ -369,7 +372,10 @@ test('identity replacement during actual encryption cannot emit an already queue
     expect(await reached.next()).toBe(true);
     current = false;
     release();
-    expect(await closed.next()).toBe(true);
+    // Let the real ordered encryption/emission continuation settle. This assertion
+    // records actual close callbacks, so removing the emit guard fails explicitly.
+    await Bun.sleep(100);
+    expect(closedHistory).toEqual([true]);
     // The second actual enrolled client remains able to list both durable records.
     const requestId = generateId();
     expect(

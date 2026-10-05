@@ -17,6 +17,8 @@
 //
 
 import CryptoKit
+import CoreImage
+import AppKit
 import Security
 import WebKit
 import XCTest
@@ -271,24 +273,111 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(external as? Bool, false, "An external main document must not reach the native signer")
     }
 
+    private func generatedPairingQRImage(text: String? = nil) throws -> (String, Data) {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("shared/tests/fixtures/relay-v2/vectors.json")
+        let vectors = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let pairing = try XCTUnwrap(vectors["pairingToken"] as? [String: Any])
+        let item = try XCTUnwrap(pairing["noSealKey"] as? [String: Any])
+        let token = try text ?? XCTUnwrap(item["text"] as? String)
+        let generator = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))
+        generator.setValue(Data(token.utf8), forKey: "inputMessage")
+        generator.setValue("M", forKey: "inputCorrectionLevel")
+        let image = try XCTUnwrap(generator.outputImage).transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let cgImage = try XCTUnwrap(CIContext().createCGImage(image, from: image.extent))
+        let data = try XCTUnwrap(NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]))
+        return (token, data)
+    }
+
     @MainActor
     func testNativePairingQRHasGuardedBundledIngress() async throws {
+        let (token, fixtureImage) = try generatedPairingQRImage()
+        var image = fixtureImage
+        XCTAssertEqual(try NativePairingQRDecoder.decode(image), token, "Actual Vision must decode the actual shared token bytes")
+        XCTAssertThrowsError(try NativePairingQRDecoder.decode(Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes + 1)))
+        XCTAssertThrowsError(try NativePairingQRDecoder.decode(image + Data(repeating: 0, count: NativePairingQRDecoder.maximumImageBytes)), "Even a valid QR with oversized trailing bytes must refuse before decode")
+        XCTAssertThrowsError(try NativePairingQRDecoder.decode(Data("not an image".utf8)))
+        let huge = CIImage(color: CIColor.white).cropped(to: CGRect(x: 0, y: 0, width: 5000, height: 2))
+        let hugeCG = try XCTUnwrap(CIContext().createCGImage(huge, from: huge.extent))
+        let hugeData = try XCTUnwrap(NSBitmapImageRep(cgImage: hugeCG).representation(using: .png, properties: [:]))
+        XCTAssertThrowsError(try NativePairingQRDecoder.decode(hugeData), "Dimensions must be bounded before Vision")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-qr-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try "<html><body>QR selection boundary</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let document = root.appendingPathComponent("index.html")
+        try "<html><body>QR selection boundary</body></html>".write(to: document, atomically: true, encoding: .utf8)
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
-        config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+        var selectionCount = 0
+        var heldSelection: CheckedContinuation<Data?, Never>?
+        var hold = false
+        let bridge = NativeIdentityBridge(scheme: "remi-app", service: service, account: account,
+            foreground: { true }, selectedQRImage: { _ in
+                selectionCount += 1
+                if hold { return await withCheckedContinuation { heldSelection = $0 } }
+                return image
+            })
+        config.userContentController.addScriptMessageHandler(bridge,
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
-        let supported = try await web.callAsyncJavaScript(
-            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'qr-owned'}); return true } catch { return false }",
+        let decoded = try await web.callAsyncJavaScript(
+            "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'qr-owned'})",
             arguments: [:], in: nil, contentWorld: .page)
-        XCTAssertEqual(supported as? Bool, true, "Bundled main-frame pairing must provide a native QR selection route")
+        XCTAssertEqual((decoded as? [String: String])?["token"], token, "Bundled main-frame must return exact locally decoded token")
+        let bundlePath = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"])
+        _ = try await web.evaluateJavaScript("void function(){" + String(contentsOfFile: bundlePath, encoding: .utf8) + "}()")
+        let freshReply = try await web.callAsyncJavaScript(
+            "return await window.nativeProviderTest.freshQRToken()", arguments: [:], in: nil, contentWorld: .page)
+        let freshToken = try XCTUnwrap(freshReply as? String)
+        image = try generatedPairingQRImage(text: freshToken).1
+        let providerToken = try await web.callAsyncJavaScript(
+            "return await window.nativeProviderTest.readNativePairingQR(new AbortController().signal)",
+            arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(providerToken as? String, freshToken, "Actual native ingress and shared WebCrypto token decoder must preserve the selected token")
+        let iframe = try await web.callAsyncJavaScript("""
+            return await new Promise(resolve => {
+              const frame = document.createElement('iframe');
+              window.addEventListener('message', event => { if (event.source === frame.contentWindow) resolve(event.data) });
+              frame.srcdoc = `<script>window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'iframe'}).then(() => parent.postMessage(true,'*'), () => parent.postMessage(false,'*'))</script>`;
+              document.body.appendChild(frame);
+            });
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(iframe as? Bool, false, "A real iframe must not start native image selection")
+        XCTAssertEqual(selectionCount, 2)
+        hold = true
+        let late = Task { @MainActor in
+            try await web.callAsyncJavaScript(
+                "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'late'}); return true } catch { return false }",
+                arguments: [:], in: nil, contentWorld: .page)
+        }
+        for _ in 0..<250 where heldSelection == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertNotNil(heldSelection)
+        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        heldSelection?.resume(returning: image); heldSelection = nil
+        let lateResult = try await late.value
+        XCTAssertEqual(lateResult as? Bool, false, "Inactivity must suppress a selected-image continuation")
+        let canceled = Task { @MainActor in
+            try await web.callAsyncJavaScript("""
+                window.qrAbort = new AbortController();
+                try { await window.nativeProviderTest.readNativePairingQR(window.qrAbort.signal); return true }
+                catch { return false }
+                """, arguments: [:], in: nil, contentWorld: .page)
+        }
+        for _ in 0..<250 where heldSelection == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertNotNil(heldSelection)
+        _ = try await web.evaluateJavaScript("window.qrAbort.abort()")
+        let canceledResult = try await canceled.value
+        XCTAssertEqual(canceledResult as? Bool, false, "Actual TS cancellation must end the native QR request")
+        heldSelection?.resume(returning: image); heldSelection = nil
+        web.loadFileURL(document, allowingReadAccessTo: root)
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let external = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'external'}); return true } catch { return false }",
+            arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(external as? Bool, false, "An external main document must not start native image selection")
+        XCTAssertEqual(selectionCount, 4)
     }
 
     @MainActor

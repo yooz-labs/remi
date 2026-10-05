@@ -1,3 +1,5 @@
+import { usesNativeIdentity } from '@/lib/native-identity';
+import { readNativePairingQR } from '@/lib/native-pairing-qr';
 import type { ConnectionState } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -29,9 +31,13 @@ export function RelayPairingForm({
   const video = useRef<HTMLVideoElement>(null);
   const controller = useRef<AbortController | null>(null);
   const stream = useRef<MediaStream | null>(null);
+  const qrController = useRef<AbortController | null>(null);
+  const [selectingQR, setSelectingQR] = useState(false);
   const scanGeneration = useRef(0);
   const stopCamera = useCallback(() => {
     ++scanGeneration.current;
+    qrController.current?.abort();
+    qrController.current = null;
     for (const track of stream.current?.getTracks() ?? []) track.stop();
     stream.current = null;
     if (video.current) video.current.srcObject = null;
@@ -48,6 +54,26 @@ export function RelayPairingForm({
     stopCamera();
     setError(null);
     const generation = scanGeneration.current;
+    if (usesNativeIdentity()) {
+      const attempt = new AbortController();
+      qrController.current = attempt;
+      setSelectingQR(true);
+      try {
+        const selected = await readNativePairingQR(attempt.signal);
+        if (selected && generation === scanGeneration.current) setToken(selected);
+      } catch (cause) {
+        if (!attempt.signal.aborted && generation === scanGeneration.current)
+          setError(
+            cause instanceof Error ? cause.message : 'QR image unavailable. Paste the token.',
+          );
+      } finally {
+        if (generation === scanGeneration.current) {
+          qrController.current = null;
+          setSelectingQR(false);
+        }
+      }
+      return;
+    }
     const Detector = (window as Window & { BarcodeDetector?: QRConstructor }).BarcodeDetector;
     if (!Detector || !navigator.mediaDevices?.getUserMedia) {
       setError('QR scanning is unavailable here. Paste the pairing token from the daemon.');
@@ -140,6 +166,7 @@ export function RelayPairingForm({
               autoCapitalize="off"
               spellCheck={false}
               rows={3}
+              maxLength={4096}
               placeholder="remi-pair2:…"
               className="mt-1 w-full rounded-lg bg-[var(--color-surface-light)] p-3 font-mono text-xs break-all"
             />
@@ -169,10 +196,10 @@ export function RelayPairingForm({
           <button
             type="button"
             onClick={() => void scan()}
-            disabled={busy}
+            disabled={busy || selectingQR}
             className="rounded-lg bg-[var(--color-surface-light)] px-4 py-2 text-sm"
           >
-            Scan QR
+            {usesNativeIdentity() ? 'Choose QR image' : 'Scan QR'}
           </button>
           <button
             type="button"
@@ -183,6 +210,17 @@ export function RelayPairingForm({
             {busy ? 'Pairing…' : 'Start pairing'}
           </button>
         </>
+      )}
+      {selectingQR && (
+        <button
+          type="button"
+          onClick={() => {
+            stopCamera();
+            setSelectingQR(false);
+          }}
+        >
+          Cancel QR selection
+        </button>
       )}
       {scanning && (
         <div>
