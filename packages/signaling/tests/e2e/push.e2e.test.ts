@@ -60,7 +60,16 @@ async function setup(vars: Record<string, string> = {}, persist?: string) {
       res.destroy();
       return;
     }
-    if (stall) return;
+    if (stall) {
+      // Finite owned network stall: a removed deadline receives success after4s,
+      // producing an outcome assertion failure rather than a test/setup timeout.
+      const timer = setTimeout(() => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(responseBody);
+      }, 4000);
+      res.once('close', () => clearTimeout(timer));
+      return;
+    }
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(responseBody);
   });
