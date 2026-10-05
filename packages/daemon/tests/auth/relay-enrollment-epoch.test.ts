@@ -72,6 +72,7 @@ test('secure enrollment: actual capture lazily migrates only a present authorize
     captured,
   );
   const stranger = await createIdentity();
+  await trust.addAuthorizedKey(stranger.publicKey, 'synthetic authorized without enrollment');
   const bytes = fs.readFileSync(path.join(directory, 'relay_devices.json'));
   expect(devices.captureEnrollmentEpoch(stranger.publicKey)).toBeNull();
   expect(fs.readFileSync(path.join(directory, 'relay_devices.json'))).toEqual(bytes);
