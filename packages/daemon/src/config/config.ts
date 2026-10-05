@@ -201,7 +201,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // A config.toml that already holds `relay = true` (from `remi config init`
     // before this change) keeps the setting and gets that notice at boot.
     relay: false,
-    signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
+    signaling_url: 'wss://remi-signaling.yooz.workers.dev',
   },
   auth: {
     enabled: 'auto',

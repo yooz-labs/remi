@@ -1,5 +1,13 @@
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { relayV2 } from '@remi/shared';
 import { DEFAULT_CONFIG } from '../../packages/daemon/src/config/config.ts';
@@ -82,6 +90,7 @@ test.each(['/connect', '/connect/'])(
         'Set [network] signaling_url = "wss://remi-signaling.yooz.workers.dev"',
       );
       expect(readFileSync(join(dir, 'state/config.toml'), 'utf8')).toBe(original);
+      expect(existsSync(join(dir, 'model-called'))).toBe(false);
       const health = await fetch(`http://127.0.0.1:${port}/health`).catch(() => null);
       expect(health).toBeNull();
     } finally {

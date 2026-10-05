@@ -33,6 +33,7 @@ import type { RelayLocalControl } from '../server/websocket-server.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { ChildProxy } from './child-proxy.ts';
 import { RelayDeviceStore } from './relay-device-store.ts';
+import { legacyRelayUrlNotice, relayWorkerUrl } from './relay-url.ts';
 import { WorkerControl } from './worker-control.ts';
 
 type Offer = {
@@ -107,6 +108,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     private readonly cfg: HubRelayConfig,
     private readonly events: Partial<AdapterEvents> = {},
   ) {
+    const legacyNotice = legacyRelayUrlNotice(cfg.relayUrl);
+    if (legacyNotice) throw new Error(legacyNotice);
     if (
       (cfg.random ?? relayV2.systemRandom) !== relayV2.systemRandom ||
       cfg.ephemeral !== undefined
@@ -135,9 +138,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     void this.connect();
   }
   private url(role: 'host' | 'pipe', cid?: string): string {
-    const base = this.cfg.relayUrl.replace(/\/$/, '');
-    const rid = Array.from(this.rid, (b) => b.toString(16).padStart(2, '0')).join('');
-    return `${base}/v2/${role}/${rid}${cid ? `/${cid}` : ''}`;
+    return relayWorkerUrl(this.cfg.relayUrl, role, this.rid, cid);
   }
   private async connect(): Promise<void> {
     if (!this.running || !this.machine) return;
