@@ -80,7 +80,8 @@ A `kill -9` of remi also ends your Codex window (Codex gets a hangup when remi's
 Starting Codex on another machine: `remi codex --host <ip>` (or `remi new --host <ip> --harness codex`) asks that machine's remi to start it, and only if that remi lists `codex` among the harnesses it can start (an older remi does not, and then nothing is started).
 The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-s read-only` and `resume <thread id>`, and refuses the request otherwise.
 A remote request may only tighten the host's settings, never loosen them, so `-s workspace-write` is refused there (widening needs a person at the terminal, where `remi codex` allows it), and so is `-a` with any value: Codex 0.160.0 accepts only `on-request` and `never`, and neither can be shown to tighten an approval policy the host's own configuration may already have set stricter, so set that on the host.
-A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI says so when it starts one, and attaches you to the new session, which is where you answer such a prompt (not yet checked against a real Codex).
+A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI says so when it starts one, and attaches you to the new session, which is where you answer such a prompt (NOT RUN against a real Codex: no modal appeared in the live run, so that advice is unverified).
+The live run (2026-10-04, Codex 0.160.0) started a Codex session through a hub from a raw `create_session_request` and reached its prompt headless; no live run used the CLI sender (`remi codex --host`, `remi new --host --harness codex`) against a real Codex, so that path is covered by the fake-agent tests only.
 The notice the hub sends has a second line for a client that does not attach: it names `remi attach <host>:<port>/<id>` for exactly that session, since a bare `remi attach` takes the newest one (the web app does not show the notice yet).
 
 **Checked live** (against the real Codex 0.160.0, on 2026-10-04, by a spike agent):
@@ -97,6 +98,7 @@ the handshake of remi's own client works against the real server (`initialize` a
 The first live run found that Codex answers every WebSocket ping with two pongs, which dropped remi's link about every 70 seconds; that is fixed and tested.
 
 **Not yet seen:**
+NOT RUN in the live run of a hub-created Codex session: an approval card on that session (the host's posture never asked), `remi codex --host` from a second machine, the web label, and the Update and Trust modals through `remi attach`;
 (h) whether a subagent's request is addressed to a connection that resumed only the main thread, and replayed;
 (f) what Codex does with "Yes, and don't ask again for this command this session": none of 7 real command approvals on 0.160.0 listed `acceptForSession` (they offered accept, one amendment object and cancel), so the option does not appear in practice;
 `remi codex -- exec x` and `-- login`, and a `/resume` in the terminal of a thread the daemon has not loaded.
