@@ -359,6 +359,29 @@ describe('terminal config (#513)', () => {
 });
 
 describe('notifications config (#914)', () => {
+  test('plaintext legacy push is disabled for missing and generated configs (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+    expect(generateDefaultConfig()).toContain('legacy_push_enabled = false');
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain(
+      'legacy_push_enabled = false',
+    );
+  });
+
+  test('plaintext legacy push requires an explicit true TOML setting (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = true\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(true);
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = false\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+  });
+
+  test('plaintext legacy push refuses malformed compatibility settings (#1200)', () => {
+    for (const invalid of ['"true"', '1', '[]']) {
+      fs.writeFileSync(TEST_CONFIG, `[notifications]\nlegacy_push_enabled = ${invalid}\n`);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.legacy_push_enabled/);
+    }
+  });
+
   test('defaults: on_turn_complete true, 60s threshold', () => {
     expect(DEFAULT_CONFIG.notifications.on_turn_complete).toBe(true);
     expect(DEFAULT_CONFIG.notifications.turn_complete_min_seconds).toBe(60);
