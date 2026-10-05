@@ -32,6 +32,8 @@ const BUILDERS: [string, string, Uint8Array][] = [
   ['host admission', r.LABEL.admitHost, r.admissionInput('host', RID, NONCE)],
   ['client admission', r.LABEL.admitClient, r.admissionInput('client', RID, NONCE)],
   ['signer self-check', r.LABEL.signerCheck, r.SIGNER_CHECK],
+  ['push content', r.LABEL.pushContent, r.lps(r.LABEL.pushContent, H)],
+  ['push submit', r.LABEL.pushSubmit, r.lps(r.LABEL.pushSubmit, H)],
 ];
 
 const startsWith = (bytes: Uint8Array, prefix: Uint8Array): boolean =>
@@ -105,7 +107,8 @@ describe('v2 signing inputs are disjoint from every other signed message', () =>
     }
     expect(calls.length).toBeGreaterThanOrEqual(4);
     for (const call of calls) {
-      const allowed = /(hostSigningInput|clientSigningInput|admissionInput)\(|SIGNER_CHECK/;
+      const allowed =
+        /(hostSigningInput|clientSigningInput|admissionInput|buildPushContentSigningInput|buildPushSubmitSigningInput)\(|SIGNER_CHECK/;
       expect([call, allowed.test(call)]).toEqual([call, true]);
     }
     // And the raw primitive is only reached through `signerFromKey`'s `sign`.

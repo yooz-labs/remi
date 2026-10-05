@@ -3,7 +3,7 @@
  *
  * The list below is the whole of what a daemon, a Worker or a client can call.
  * A helper that builds a transcript, derives a key, frames bytes, builds a
- * signing input or constructs a channel from raw keys is not on it, because a
+ * handshake signing input or constructs a channel from raw keys is not on it, because a
  * later phase could call such a helper and skip the step machine. Adding a name
  * to the public surface means adding it here on purpose.
  */
@@ -19,6 +19,9 @@ const PUBLIC_FUNCTIONS = [
   'admitTagMatches',
   'asRelayError',
   'b64u',
+  'buildPushContentSigningInput',
+  'buildPushPayload',
+  'buildPushSubmitSigningInput',
   'clientStart',
   'createPairingOffer',
   'ctEqual',
@@ -26,10 +29,16 @@ const PUBLIC_FUNCTIONS = [
   'decodeHostCommand',
   'decodeNotice',
   'decodePairingToken',
+  'decodePushSubmit',
+  'decodePushSubmitResult',
+  'decodeSignedPushContent',
   'encodeAdmit',
   'encodeHostCommand',
   'encodeNotice',
   'encodePairingToken',
+  'encodePushSubmit',
+  'encodePushSubmitResult',
+  'encodeSignedPushContent',
   'fingerprintOf',
   'fromB64u',
   'generateEcPair',
@@ -38,15 +47,19 @@ const PUBLIC_FUNCTIONS = [
   'isLiveOffer',
   'isSmallOrderPublicKey',
   'liveOffers',
+  'openPushContent',
   'openSeal',
+  'parsePushPayload',
   'parseWorkerPath',
   'pushAad',
   'ridOf',
   'seal',
+  'sealPushContent',
   'signAdmission',
   'signerFromKey',
   'systemRandom',
   'verifyAdmission',
+  'verifyPushSubmit',
   'verifySignature',
 ];
 
