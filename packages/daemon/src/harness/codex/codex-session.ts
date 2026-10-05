@@ -15,6 +15,11 @@
  * Escape button, `/interrupt`), which the client marks `raw` and the daemon cannot
  * tell from a script.
  *
+ * When a headless Codex dies at startup (a flag error, exit 2) the first and last 1 KB of what it
+ * printed go to the log once, redacted and escaped (`startup-output.ts`, the log's one exception
+ * to "no cwd, no full thread id"). A wrapper session's terminal already shows the error, so it
+ * captures nothing.
+ *
  * Order of the state-changing steps (`createCodexSession`):
  * 1. `validateCodexArgs`: a refusal exits 2. (The working directory must also exist
  *    and be searchable, after the gate: exit 1.)
@@ -42,7 +47,7 @@
  * clients, the web client today, do not show.
  */
 
-import { escapeUnsafeText, generateId, now } from '@remi/shared';
+import { generateId, now } from '@remi/shared';
 import type { AgentStatus, Message, UUID } from '@remi/shared';
 
 import {
@@ -67,6 +72,7 @@ import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
+import { STARTUP_PIECE_CHARS, StartupOutput } from './startup-output.ts';
 import { TERMINAL, type TerminalWords, attachWords } from './terminal-words.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
@@ -254,8 +260,7 @@ const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
 /** A link counts as up, and the watchdog is canceled, once it has stayed up this long (the client's own `stableMs`). */
 const DEFAULT_LINK_STABLE_MS = 5_000;
-/** What Codex printed before the session named a thread: kept up to this many characters, and logged only if it exits within the window. */
-const STARTUP_OUTPUT_CHARS = 2048;
+/** How soon after the spawn an exit still counts as a startup failure (`startup-output.ts`). */
 const DEFAULT_STARTUP_FAILURE_WINDOW_MS = 10_000;
 
 /** The session's status from its thread and its descendants: waiting beats thinking beats idle. */
@@ -322,28 +327,30 @@ export function createCodexSession(
 
   // The tracked thread's id, as far as this session knows it (a resume names it up front).
   let trackedId: string | null = checked.resumeThreadId;
-  // What Codex printed before this session bound a thread, kept (bounded) for the one log line a
-  // startup failure gets: LV-4 saw Codex exit 2 on a flag error, and its message went nowhere. It
-  // is dropped when a thread is bound, logged only to the daemon log (escaped, on one line), and
-  // never sent to a client.
-  let startupOutput = '';
+  // What a headless Codex printed before this session bound a thread, for the one log line a
+  // startup failure gets (`startup-output.ts`: bounded, redacted, escaped, the log's only exception
+  // to "no cwd, no full thread id"). A wrapper session's PTY is the person's own terminal, where
+  // the error is already on screen, so only a headless one captures.
+  const startupOutput = new StartupOutput();
   let identified = false;
-  let spawnedAtMs: number | null = null;
+  let spawnedAt: number | null = null;
   const startupSink: PtyOutputSink = {
     process: (text) => {
-      if (identified || startupOutput.length >= STARTUP_OUTPUT_CHARS) return;
-      startupOutput += text.slice(0, STARTUP_OUTPUT_CHARS - startupOutput.length);
+      if (!ctx.passThrough && !identified) startupOutput.push(text);
     },
-    // Runs when the PTY exits. A named thread has already emptied the buffer and stopped the capture.
+    // Runs when the PTY exits. A stop remi asked for (the registry no longer holds the session) or a
+    // dispose that came first is not Codex dying, and a named thread has already emptied the buffer.
     flush: () => {
-      const output = startupOutput;
-      startupOutput = '';
-      if (output === '' || spawnedAtMs === null) return;
-      const elapsedMs = Date.now() - spawnedAtMs;
-      if (elapsedMs > (deps.startupFailureWindowMs ?? DEFAULT_STARTUP_FAILURE_WINDOW_MS)) return;
-      log(
-        `exited with code ${pty.processExitCode} ${elapsedMs} ms after it started, before it named a thread; its first output (escaped, at most ${STARTUP_OUTPUT_CHARS} characters): ${escapeUnsafeText(output).replaceAll('\n', '\\n')}`,
-      );
+      const elapsedMs = performance.now() - (spawnedAt ?? Number.NEGATIVE_INFINITY);
+      const ours = !disposed && deps.sessionRegistry.getSession(sessionId) !== undefined;
+      const inWindow =
+        elapsedMs <= (deps.startupFailureWindowMs ?? DEFAULT_STARTUP_FAILURE_WINDOW_MS);
+      if (ours && inWindow && !startupOutput.isEmpty()) {
+        log(
+          `exited with code ${pty.processExitCode} ${Math.round(elapsedMs)} ms after it started, before it named a thread; its first output (the first and last ${STARTUP_PIECE_CHARS} characters, redacted and escaped): ${startupOutput.line([workingDirectory, cwd.directory])}`,
+        );
+      }
+      startupOutput.clear();
     },
   };
   /** Forget what the subagents were doing: the link that told us is gone, or the thread is. */
@@ -520,7 +527,7 @@ export function createCodexSession(
       const rotating = trackedId !== null;
       trackedId = threadId;
       identified = true;
-      startupOutput = '';
+      startupOutput.clear();
       statuses.clear();
       if (rotating) {
         // The old thread's cards are not this session's any more, and must not be answered.
@@ -567,7 +574,7 @@ export function createCodexSession(
     decisions,
     acceptsTypedChat: false,
     start: async () => {
-      spawnedAtMs = Date.now();
+      spawnedAt = performance.now();
       await pty.start();
       client.start();
       armWatchdog();
