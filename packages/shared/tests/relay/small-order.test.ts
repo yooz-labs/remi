@@ -3,8 +3,8 @@
  *
  * The oracle does not read the list under test. It decompresses Ed25519 points
  * with BigInt arithmetic, finds the eight points of the torsion subgroup as the
- * images of arbitrary curve points under multiplication by the prime group
- * order L, and builds every encoding a decoder might accept for them. The
+ * multiples of the image of an arbitrary curve point under multiplication by the
+ * prime group order L, and builds every encoding a decoder might accept for them. The
  * function must say yes to exactly those encodings, over a candidate space
  * that includes every y near the ends of the field and every sign bit.
  */
@@ -75,18 +75,33 @@ function encode(y: bigint, sign: bigint): string {
   return Buffer.from(bytes).toString('hex');
 }
 
-/** The eight torsion points: [L] of arbitrary curve points, until all eight have appeared. */
+let torsionPoints: Point[] | undefined;
+
+/**
+ * The eight torsion points. [L] of a curve point lands in the torsion subgroup, and when that
+ * image has order exactly eight (checked: four times it is not the identity) its multiples are
+ * all eight points. Computed once: scalar multiplication in BigInt is the slow part.
+ */
 function torsion(): Point[] {
-  const found = new Map<string, Point>();
-  for (let y = 2n; found.size < 8 && y < 500n; y++) {
+  if (torsionPoints) return torsionPoints;
+  for (let y = 2n; y < 500n; y++) {
     for (const sign of [0n, 1n]) {
       const point = decompress(y, sign);
       if (!point) continue;
-      const t = multiply(L, point);
-      found.set(`${t[0]},${t[1]}`, t);
+      const generator = multiply(L, point);
+      const four = multiply(4n, generator);
+      if (four[0] === 0n && four[1] === 1n) continue;
+      const points: Point[] = [];
+      let accumulated: Point = [0n, 1n];
+      for (let k = 0; k < 8; k++) {
+        points.push(accumulated);
+        accumulated = add(accumulated, generator);
+      }
+      torsionPoints = points;
+      return points;
     }
   }
-  return [...found.values()];
+  throw new Error('no point of order eight found');
 }
 
 /** Every encoding a decoder might accept for a torsion point. */
