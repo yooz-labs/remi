@@ -230,11 +230,14 @@ async function paired() {
       }
     });
   });
+  await channel.send(new TextEncoder().encode(serialize(createHello('owned-device', '2.0.0'))));
+  const hello = await nextType(inbox, 'hello_ack');
+  expect(hello?.type).toBe('hello_ack');
   const id = generateId();
   await channel.send(
     new TextEncoder().encode(serialize({ type: 'relay_devices_request', id, timestamp: now() })),
   );
-  const response = await inbox.next();
+  const response = await nextType(inbox, 'relay_devices_response');
   expect(response?.type).toBe('relay_devices_response');
   if (response?.type !== 'relay_devices_response')
     throw new Error('expected correlated devices response');
@@ -263,11 +266,12 @@ test('authenticated peer BYE receives authenticated host BYE and orderly close',
 async function nextType(
   inbox: Mailbox<ReturnType<typeof deserialize>>,
   type: ProtocolMessage['type'],
+  predicate: (message: ProtocolMessage) => boolean = () => true,
 ) {
   for (let i = 0; i < 64; i++) {
     const message = await inbox.next();
     if (message?.type === 'raw_pty_output') throw new Error('RAW_PTY_REACHED_RELAY');
-    if (message?.type === type) return message;
+    if (message?.type === type && predicate(message)) return message;
   }
   throw new Error('semantic response not found');
 }
@@ -305,7 +309,11 @@ test('actual child hook decision yields delivered result while stale answer refu
   }
   const list = createSessionListRequest();
   await channel.send(new TextEncoder().encode(serialize(list)));
-  const discovery = await nextType(inbox, 'session_list_response');
+  const discovery = await nextType(
+    inbox,
+    'session_list_response',
+    (message) => message.type === 'session_list_response' && message.requestId === list.id,
+  );
   expect(discovery.type === 'session_list_response' && discovery.requestId).toBe(list.id);
   expect(
     discovery.type === 'session_list_response' &&
