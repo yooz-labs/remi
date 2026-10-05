@@ -11,12 +11,19 @@ import { withLegacyPushEligibility } from '../../src/storage/secure-push-activat
 let directory: string;
 let trust: IdentityStore;
 let devices: RelayDeviceStore;
+const children: ReturnType<typeof Bun.spawn>[] = [];
 beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-push-enrollment-'));
   trust = new IdentityStore(directory);
   devices = new RelayDeviceStore(directory, trust);
 });
-afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
+afterEach(async () => {
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+  }
+  fs.rmSync(directory, { recursive: true, force: true });
+});
 function rows(): Array<Record<string, unknown>> {
   return JSON.parse(fs.readFileSync(path.join(directory, 'relay_devices.json'), 'utf8'));
 }
@@ -58,6 +65,7 @@ test('secure enrollment: actual capture lazily migrates only a present authorize
   fs.writeFileSync(path.join(directory, 'relay_devices.json'), JSON.stringify(old));
   const captured = devices.captureEnrollmentEpoch(identity.publicKey);
   expect(captured).toBeString();
+  if (typeof captured !== 'string') throw new Error('missing captured enrollment generation');
   expect(epoch()).toBe(captured);
   expect(new RelayDeviceStore(directory, trust).captureEnrollmentEpoch(identity.publicKey)).toBe(
     captured,
@@ -135,3 +143,58 @@ test('secure activation: corrupt activation or raw enrollment refuses without ch
     fs.rmSync(file);
   }
 });
+
+test('secure activation: removing an older raw enrollment persists retirement before losing its evidence', async () => {
+  const identity = await createIdentity();
+  await trust.addAuthorizedKey(identity.publicKey, 'synthetic removed old enrollment');
+  await devices.add(identity.publicKey, 'synthetic removed old enrollment');
+  fs.rmSync(path.join(directory, 'secure_push_activation.json'));
+  devices.remove(identity.fingerprint);
+  expect(rows()).toHaveLength(0);
+  expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(true);
+  let effects = 0;
+  expect(withLegacyPushEligibility(directory, () => ++effects)).toEqual({ allowed: false });
+  expect(effects).toBe(0);
+});
+
+test('secure activation: actual pairing in another process cannot interleave with the guarded invocation', async () => {
+  const identity = await createIdentity();
+  await trust.addAuthorizedKey(identity.publicKey, 'synthetic concurrent pairing');
+  const attempted = path.join(directory, 'pair-attempted');
+  const finished = path.join(directory, 'pair-finished');
+  const identityModule = new URL('../../src/auth/identity-store.ts', import.meta.url).href;
+  const deviceModule = new URL('../../src/remote/relay-device-store.ts', import.meta.url).href;
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  const actual = withLegacyPushEligibility(directory, () => {
+    const script = `import { writeFileSync } from 'node:fs';
+      import { IdentityStore } from ${JSON.stringify(identityModule)};
+      import { RelayDeviceStore } from ${JSON.stringify(deviceModule)};
+      const trust = new IdentityStore(${JSON.stringify(directory)});
+      writeFileSync(${JSON.stringify(attempted)}, 'attempted');
+      await new RelayDeviceStore(${JSON.stringify(directory)}, trust).add(${JSON.stringify(identity.publicKey)}, 'synthetic concurrent pairing');
+      writeFileSync(${JSON.stringify(finished)}, 'finished');`;
+    child = Bun.spawn([process.execPath, '-e', script], {
+      cwd: directory,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    children.push(child);
+    const sleep = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 1000;
+    while (!fs.existsSync(attempted)) {
+      if (Date.now() >= deadline) throw new Error('owned pairing process did not start');
+      Atomics.wait(sleep, 0, 0, 5);
+    }
+    Atomics.wait(sleep, 0, 0, 100);
+    expect(fs.existsSync(finished)).toBe(false);
+    expect(fs.existsSync(path.join(directory, 'relay_devices.json'))).toBe(false);
+    return 'invoked-before-pairing';
+  });
+  expect(actual).toEqual({ allowed: true, result: 'invoked-before-pairing' });
+  if (!child || !(child.stderr instanceof ReadableStream))
+    throw new Error('missing owned pairing process');
+  expect(await child.exited).toBe(0);
+  expect(await new Response(child.stderr).text()).toBe('');
+  expect(fs.existsSync(finished)).toBe(true);
+  expect(withLegacyPushEligibility(directory, () => 'late')).toEqual({ allowed: false });
+}, 10000);
