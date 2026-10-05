@@ -20,9 +20,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { createIdentity, generateId, relayV2, unlockIdentity } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
+import { IdentityStore } from '../../src/auth/identity-store.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { createMessageApiForSession } from '../../src/cli/session-phases/message-api-setup.ts';
@@ -38,7 +39,10 @@ import type { HarnessSession } from '../../src/harness/index.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
+import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
+import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { parseQuestion } from '../../src/parser/question-parser.ts';
+import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -281,6 +285,137 @@ describe('ClaudeHarness.createSession', () => {
     expect(sessionRegistry.getQuestion(launched.sessionId, question.id)).not.toBeNull();
     return { ...launched, tracker, question };
   }
+
+  async function pushRecipient() {
+    const dir = path.join(tmpDir, generateId());
+    const trust = new IdentityStore(dir);
+    await trust.generate();
+    const device = await unlockIdentity(await createIdentity());
+    await trust.addAuthorizedKey(device.publicKeyRaw, 'owned context recipient');
+    await new RelayDeviceStore(dir, trust).add(device.publicKeyRaw, 'owned context recipient');
+    const pair = await relayV2.generateEcPair();
+    const store = new SecurePushStore(dir, trust);
+    const authority = store.captureAuthority(device.publicKeyRaw);
+    if (!authority) throw new Error('context recipient authority missing');
+    const result = await store.register(authority, {
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey: relayV2.b64u(pair.publicKey),
+      keyVersion: 1,
+    });
+    if (!result.success) throw new Error('context recipient registration missing');
+    const snapshot = store.listCurrent()[0];
+    if (!snapshot) throw new Error('context recipient snapshot missing');
+    return snapshot;
+  }
+
+  test('secure push context floors the actual held deadline, keeps identical event authority and never settles its hook', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const snapshot = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const context = contexts.capture(runtime, snapshot, event);
+    expect(context).not.toBeNull();
+    if (!context) return;
+    const validity = decisions.answerValidity(card.id);
+    expect(validity.kind).toBe('deadline');
+    if (validity.kind !== 'deadline') return;
+    expect(context.content.expiresAt).toBe(Math.floor(validity.expiresAtMs / 1000));
+    expect(context.payload.actionable).toBe(true);
+    expect(context.content.collapseId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(context.content.collapseId).not.toContain(card.id);
+    expect(contexts.capture(runtime, snapshot, event)).toBe(context);
+    expect(contexts.isCurrent(context)).toBe(true);
+    expect(contexts.bindDigest(context, 'ab'.repeat(32))).toBe(true);
+    expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toEqual({
+      context,
+      contentDigest: 'ab'.repeat(32),
+    });
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+    expect(contexts.isCurrent(context)).toBe(false);
+  });
+
+  test('secure push context cannot retain action after actual option meaning changes, registry removal or launch replacement', async () => {
+    const { session, sessionId, question } = visiblePrompt();
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const snapshot = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const first = contexts.capture(runtime, snapshot, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(true);
+    const changed = {
+      ...question,
+      options: question.options.map((o, i) =>
+        i === 0 ? { ...o, description: 'changed meaning' } : o,
+      ),
+    };
+    sessionRegistry.addQuestion(sessionId, changed);
+    expect(contexts.isCurrent(first)).toBe(false);
+    expect(contexts.latestAction(runtime, question.id, snapshot.publicKey)).toBeNull();
+    const next = contexts.capture(runtime, snapshot, { ...event, question: changed });
+    expect(next).not.toBeNull();
+    if (!next) return;
+    expect(next.content.collapseId).toBe(first.content.collapseId);
+    expect(next.content.revision).toBe(first.content.revision + 1);
+    sessionRegistry.removeQuestion(sessionId, question.id);
+    expect(contexts.isCurrent(next)).toBe(false);
+    const replacement = contexts.begin(sessionId);
+    expect(replacement.instance).not.toBe(runtime.instance);
+    expect(relayV2.fromB64u(replacement.instance)).toHaveLength(32);
+    expect(contexts.capture(runtime, snapshot, event)).toBeNull();
+  });
+
+  test('secure push context capacity refuses another current recipient without evicting the first', async () => {
+    const { session, sessionId, question } = visiblePrompt();
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      },
+      1,
+      1,
+    );
+    const runtime = contexts.begin(sessionId);
+    const firstRecipient = await pushRecipient();
+    const secondRecipient = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const first = contexts.capture(runtime, firstRecipient, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    expect(contexts.capture(runtime, secondRecipient, event)).toBeNull();
+    expect(contexts.isCurrent(first)).toBe(true);
+    contexts.finish(runtime);
+    expect(contexts.isCurrent(first)).toBe(false);
+  });
 
   test('push validity: an actual held hook keeps its captured deadline after configuration changes and closes on answer', async () => {
     const { decisions, card, response } = await holdPrompt(false);
