@@ -1296,12 +1296,13 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
   test('a finished turn becomes a push through the daemon’s sink: long ones push, short ones do not, a failure says Codex stopped, and an interrupted turn clears it', async () => {
     const a = await attachedDaemon({ pushSecret: 'e2e-push-secret' });
     try {
-      // A short turn first (the real frame's 5.5 seconds is under the 60-second default), then a
-      // long one: frames reach the daemon in order, so the one push proves the short one was seen.
+      // A short turn first (the real frame's 5.5 seconds is under the 60-second default), then one
+      // just over it (61 s, so a minimum scaled by two or a boundary off by one fails): frames reach
+      // the daemon in order, so the one push proves the short one was seen.
       a.r.server.emit(turnCompletedFrameWithId(a.tuiId), { threadId: a.tuiId });
       a.r.server.emit(
         turnCompletedFrameWithId(a.tuiId, {
-          durationMs: 120_000,
+          durationMs: 61_000,
           items: [agentMessageItem('m-long', 'E2E-ANSWER-TEXT', 'final_answer')],
         }),
         { threadId: a.tuiId },
@@ -1366,7 +1367,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     let refuse = true;
     const a = await attachedDaemon({ failPushes: () => refuse });
     try {
-      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 120_000 }), {
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 61_000 }), {
         threadId: a.tuiId,
       });
       await pollUntil(
@@ -1376,7 +1377,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       );
 
       refuse = false;
-      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 121_000 }), {
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 62_000 }), {
         threadId: a.tuiId,
       });
       await pollUntil(() => a.pushes.length >= 2, 10000, 'the next push');
@@ -1389,10 +1390,10 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
   test('another window’s turn and a subagent’s are not this session’s: no push', async () => {
     const a = await attachedDaemon();
     try {
-      a.r.server.emit(turnCompletedFrameWithId(crypto.randomUUID(), { durationMs: 120_000 }), {
+      a.r.server.emit(turnCompletedFrameWithId(crypto.randomUUID(), { durationMs: 61_000 }), {
         broadcast: true,
       });
-      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 121_000 }), {
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 62_000 }), {
         threadId: a.tuiId,
       });
       await pollUntil(() => a.pushes.length >= 1, 10000, 'the push of the session’s own turn');

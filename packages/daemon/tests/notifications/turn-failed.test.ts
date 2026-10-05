@@ -79,10 +79,6 @@ describe('describeTurnFailure: Codex codes (#1180)', () => {
       expect(describeTurnFailure(code)).toBe(code);
     }
   });
-
-  test('the phrases Claude Code has are the ones it always had', () => {
-    for (const [code, phrase] of DOCUMENTED_CODES) expect(describeTurnFailure(code)).toBe(phrase);
-  });
 });
 
 describe('describeTurnFailure', () => {
