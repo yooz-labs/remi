@@ -40,7 +40,7 @@ async function controlFailure(mode: 'timeout' | 'malformed' | 'unexpected'): Pro
             entered();
             if (mode === 'malformed') ws.send('{invalid');
             if (mode === 'unexpected')
-              ws.send(JSON.stringify({ t: 'ack', op: 'revoke', ok: true }));
+              ws.send(relayV2.encodeNotice({ t: 'ack', op: 'revoke', ok: true }));
           } else ws.send(text);
         };
         up.onclose = () => ws.close();

@@ -2184,7 +2184,7 @@ describe('setupHookBridge', () => {
         card.id,
         'no, do not create the file',
       );
-      expect(outcome).toBeUndefined();
+      expect(outcome).toBe('stale');
       expect(ptySubmits).toEqual([]);
       expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
         'STALE_ANSWER',
@@ -3096,7 +3096,7 @@ describe('setupHookBridge', () => {
 
       expect(ptySubmits).toEqual([]);
       // Refused by the screen check, not by the presence guard before it.
-      expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
+      expect(logs.some((m) => m.includes('option-not-on-screen; 1 characters'))).toBe(true);
       const errors = sent.filter((m) => m.type === 'error');
       expect(errors).toHaveLength(1);
       expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
@@ -3211,7 +3211,7 @@ describe('setupHookBridge', () => {
             card.id,
             'Yes, auto-accept edits',
           ),
-        ).toBeUndefined();
+        ).toBe('stale');
         expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
           'STALE_ANSWER',
         );
