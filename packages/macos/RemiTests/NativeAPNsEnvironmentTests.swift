@@ -98,4 +98,94 @@ final class NativeAPNsEnvironmentTests: XCTestCase {
         XCTAssertLessThan(elapsed, 3, "Both queries share one two-second deadline, rather than serial two-second waits")
         XCTAssertEqual(cancellations, 2, "Timeout must dispose both owned OS attempts")
     }
+
+    @MainActor
+    func testUnsignedProductionOSQueryIsUnavailable() async {
+        // The unhosted unsigned test process has no aps-environment entitlement.
+        // This invokes the real public SecTask self-query; it reads no Keychain.
+        let result = await NativeAPNsEnvironment().resolve(stillCurrent: { true })
+        XCTAssertEqual(result, .unavailable)
+    }
+
+    @MainActor
+    func testTaskCancellationDisposesQueries() async throws {
+        var queries = 0
+        var cancellations = 0
+        let environment = NativeAPNsEnvironment(query: { _, _ in
+            queries += 1
+            return { cancellations += 1 }
+        })
+        let task = Task { await environment.resolve(stillCurrent: { true }) }
+        try await awaitQueries { queries == 2 }
+        XCTAssertEqual(queries, 2)
+        task.cancel()
+        let result = await task.value
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(cancellations, 2, "Task cancellation must dispose both native queries")
+    }
+
+    @MainActor
+    func testReplacedAttemptIgnoresOldCallbacksAndOldTaskCancellation() async throws {
+        var completions: [(Bool, (NativeAPNsEnvironment.Match) -> Void)] = []
+        var cancellations = 0
+        let environment = NativeAPNsEnvironment(query: { production, completion in
+            completions.append((production, completion))
+            return { cancellations += 1 }
+        })
+        let old = Task { await environment.resolve(stillCurrent: { true }) }
+        try await awaitQueries { completions.count == 2 }
+        XCTAssertEqual(completions.count, 2)
+        let fresh = Task { await environment.resolve(stillCurrent: { true }) }
+        try await awaitQueries { completions.count == 4 }
+        XCTAssertEqual(completions.count, 4)
+        let replaced = await old.value
+        XCTAssertEqual(replaced, .unavailable)
+        old.cancel()
+        for (production, complete) in completions.prefix(2) { complete(production ? .match : .mismatch) }
+        for (production, complete) in completions.suffix(2) { complete(production ? .mismatch : .match) }
+        let result = await fresh.value
+        XCTAssertEqual(result, .sandbox, "Old production replies cannot replace the new sandbox result")
+        XCTAssertEqual(cancellations, 4)
+    }
+
+    @MainActor
+    func testDuplicateOSReplyFailsClosed() async {
+        let environment = NativeAPNsEnvironment(query: { production, completion in
+            completion(production ? .match : .mismatch)
+            if production { completion(.match) }
+            return {}
+        })
+        let result = await environment.resolve(stillCurrent: { true })
+        XCTAssertEqual(result, .unavailable, "An ambiguous duplicate callback is not a runtime entitlement proof")
+    }
+
+
+    func testActualAnonymousSelfPeerRejectsAbsentEntitlementExactlyOnce() async {
+        let complete = expectation(description: "Actual self-peer mismatch")
+        complete.expectedFulfillmentCount = 1
+        complete.assertForOverFulfill = true
+        let cancel = RemiQueryAPNsSelfPeerForTesting("live.yooz.remi.tests.absent", true) { result in
+            XCTAssertEqual(result, 0, "The public self-peer requirement must explicitly refuse an absent entitlement")
+            complete.fulfill()
+        }
+        await fulfillment(of: [complete], timeout: 3)
+        cancel()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    func testActualAnonymousSelfPeerCancellationCompletesOnlyOnce() async {
+        let complete = expectation(description: "Actual canceled self-peer completion")
+        complete.expectedFulfillmentCount = 1
+        complete.assertForOverFulfill = true
+        let cancel = RemiQueryAPNsSelfPeerForTesting("live.yooz.remi.tests.absent", false) { result in
+            // The explicit mismatch can win the real OS race; neither result
+            // grants environment authority. Cancellation cannot publish match.
+            XCTAssertTrue(result == -1 || result == 0)
+            complete.fulfill()
+        }
+        cancel(); cancel()
+        await fulfillment(of: [complete], timeout: 3)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
 }
