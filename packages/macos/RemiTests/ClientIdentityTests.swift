@@ -413,6 +413,60 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(selectionCount, 4)
     }
 
+    // This boundary schedules OS foreground loss only after the actual production
+    // file lock is acquired. It forwards all durable authority operations unchanged.
+    private final class MutationForegroundBoundary: NativeIdentityAuthorityBarrier {
+        let state: NativePushState
+        var active = true
+        init(_ state: NativePushState) { self.state = state }
+        func acquireIdentityMutation() throws -> NativeIdentityMutationLease {
+            let lease = try state.acquireIdentityMutation()
+            active = false
+            return lease
+        }
+        func reconcileObservedIdentity(publicKey: Data?, revision: String?, requiresAppUnlock: Bool?) throws {
+            try state.reconcileObservedIdentity(publicKey: publicKey, revision: revision, requiresAppUnlock: requiresAppUnlock)
+        }
+    }
+
+    @MainActor
+    func testActualBundledBridgeRefusesForegroundLossAfterWriterLock() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1200-mutation-wk-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html><body>Identity mutation</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let boundary = MutationForegroundBoundary(authority)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(authority: boundary, accessGroup: nil, scheme: "remi-app", service: service, account: account,
+                foreground: { boundary.active }), contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let incoming = ClientIdentity(privateKey: .init())
+        let imported = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'import',pkcs8:pkcs8,publicKey:publicKey,revision:null,requiresAppUnlock:false}); return true } catch { return false }",
+            arguments: ["pkcs8": Ed25519PKCS8.encode(incoming.privateKey).base64EncodedString(), "publicKey": incoming.publicKeyRaw.base64EncodedString()],
+            in: nil, contentWorld: .page)
+        XCTAssertEqual(imported as? Bool, false, "Actual bundled import must recheck foreground AFTER acquiring the writer lock")
+        XCTAssertNil(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account),
+                     "Cancelled import cannot leave a private key or public authority behind")
+        XCTAssertNil(try authority.currentAuthority())
+        guard imported as? Bool == false else { return }
+        let prior = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        boundary.active = true
+        let protected = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'protect',revision:revision,publicKey:publicKey}); return true } catch { return false }",
+            arguments: ["revision": prior.revision, "publicKey": prior.publicKeyRaw.base64EncodedString()], in: nil, contentWorld: .page)
+        XCTAssertEqual(protected as? Bool, false, "Protection mutation must recheck foreground AFTER acquiring the writer lock")
+        let unchanged = try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account))
+        XCTAssertEqual(unchanged.revision, prior.revision)
+        XCTAssertFalse(unchanged.requiresAppUnlock)
+        XCTAssertEqual(try authority.currentAuthority()?.revision, prior.revision)
+    }
+
     @MainActor
     func testProtectedImportArrivingAfterInactiveCannotUnlockBridge() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-protected-wk-\(UUID().uuidString)")
