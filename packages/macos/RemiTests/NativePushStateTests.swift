@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
 import XCTest
@@ -128,6 +129,54 @@ final class NativePushStateTests: XCTestCase {
         let lease = try upgraded.acquireIdentityMutation()
         defer { lease.release() }
         XCTAssertGreaterThan(try lease.invalidateIdentityAuthority(), 2)
+    }
+
+    private func ownedProcess(_ executable: URL, _ arguments: [String], timeout: TimeInterval = 20) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        if process.isRunning {
+            process.terminate()
+            let cleanupDeadline = ProcessInfo.processInfo.systemUptime + 2
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < cleanupDeadline { Thread.sleep(forTimeInterval: 0.01) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            throw NativePushStateError.unavailable
+        }
+        process.waitUntilExit()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        guard bytes.count <= 65536, process.terminationStatus == 0,
+              let text = String(data: bytes, encoding: .utf8) else { throw NativePushStateError.unavailable }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func testActualDifferentProcessObservesWriterLockAndDurableInvalidation() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let macos = source.deletingLastPathComponent()
+        let helper = directory.appendingPathComponent("owned-state-helper")
+        _ = try ownedProcess(URL(fileURLWithPath: "/usr/bin/xcrun"), ["swiftc",
+            macos.appendingPathComponent("Remi/NativePush/NativePushState.swift").path,
+            macos.appendingPathComponent("Remi/NativePush/NativeEd25519PublicKey.swift").path,
+            source.appendingPathComponent("Fixtures/NativePushStateProcess/main.swift").path,
+            "-o", helper.path])
+        let file = directory.appendingPathComponent("process.sqlite")
+        let state = try NativePushState(file: file)
+        let revision = UUID().uuidString
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: revision)
+        let held = try state.acquireIdentityMutation()
+        XCTAssertEqual(try ownedProcess(helper, [file.path, "probe", "unused"]), "busy",
+                       "A different actual production-store process must refuse the owned writer lock")
+        held.release()
+        XCTAssertEqual(try ownedProcess(helper, [file.path, "probe", "unused"]), "acquired")
+        XCTAssertEqual(try ownedProcess(helper, [file.path, "observe", revision]), "current")
+        XCTAssertEqual(try ownedProcess(helper, [file.path, "invalidate", "unused"]), "closed")
+        XCTAssertNil(try state.currentAuthority(), "Actual child-process invalidation must close the original SQLite connection")
     }
 
 }
