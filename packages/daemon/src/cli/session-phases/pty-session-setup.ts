@@ -9,7 +9,7 @@
  *     the terminal hasn't detached) plus the actively attached CLI client
  *   - onData:    the output sink (Claude: the OutputProcessor, which parses
  *     tool-output errors and, when hooks are unavailable, status and question
- *     detection; Codex's is a startup-output capture, `codex-session.ts`)
+ *     detection; Codex's keeps what a headless child printed at startup, `startup-output.ts`)
  *   - onExit:    flush the sink, unregister the session, persist the
  *     exit code, and (pass-through only) trigger process-level cleanup
  *   - onError:   log only; PTYs rarely fail in ways the caller can recover
@@ -44,13 +44,6 @@ export interface PtyOutputSink {
   process(text: string): void;
   flush(): void;
 }
-
-/**
- * A sink that does nothing, for a caller that wants none. Codex parses no PTY
- * output (its state comes from the app-server, never from the screen) but
- * passes its own sink, which keeps the first 2 KB for a startup failure.
- */
-export const NOOP_OUTPUT_SINK: PtyOutputSink = { process: () => {}, flush: () => {} };
 
 export interface PtySessionSetupDeps {
   sessionRegistry: SessionRegistry;
