@@ -130,6 +130,7 @@ import {
   type ProtocolMessage,
   createAnswer,
   createHello,
+  createSessionListRequest,
   deserialize,
   generateId,
   now,
@@ -302,6 +303,14 @@ test('actual child hook decision yields delivered result while stale answer refu
     if (Date.now() > deadline) throw new Error('controlled child registration deadline');
     if (!entry) await Bun.sleep(10);
   }
+  const list = createSessionListRequest();
+  await channel.send(new TextEncoder().encode(serialize(list)));
+  const discovery = await nextType(inbox, 'session_list_response');
+  expect(discovery.type === 'session_list_response' && discovery.requestId).toBe(list.id);
+  expect(
+    discovery.type === 'session_list_response' &&
+      discovery.sessions.some((session) => session.sessionId === entry.sessionId),
+  ).toBe(true);
   await channel.send(
     new TextEncoder().encode(
       serialize(createHello('test', '2.0.0', { resumeSessionId: entry.sessionId })),
