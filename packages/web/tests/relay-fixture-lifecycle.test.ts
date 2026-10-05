@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { createCreateSessionRequest, createHello } from '@remi/shared';
 import { CAPABILITY_HEADER } from '../../daemon/src/auth/capability-token';
 import { Mailbox } from '../../signaling/tests/e2e/endpoints';
-import { cleanupOwnedRelayFixtures, ownedRelayChild, ownedRelayHub } from './helpers/relay-hub';
+import {
+  cleanupOwnedRelayFixtures,
+  ownedRelayChild,
+  ownedRelayHub,
+  registerOwnedRelayFixtureCleanup,
+} from './helpers/relay-hub';
+registerOwnedRelayFixtureCleanup();
 
 function alive(pid: number): boolean {
   try {
@@ -122,7 +128,8 @@ test('owned relay teardown runs in each importing test file', async () => {
       `
     import { test, afterAll } from 'bun:test';
     import { existsSync, writeFileSync } from 'node:fs';
-    import { ownedRelayHub, cleanupOwnedRelayFixtures } from ${JSON.stringify(helper)};
+    import { ownedRelayHub, cleanupOwnedRelayFixtures, registerOwnedRelayFixtureCleanup } from ${JSON.stringify(helper)};
+    registerOwnedRelayFixtureCleanup();
     let fixture;
     test(${JSON.stringify(name)}, async () => { fixture = await ownedRelayHub(); });
     afterAll(async () => {
@@ -135,7 +142,7 @@ test('owned relay teardown runs in each importing test file', async () => {
     [process.execPath, 'test', join(dir, 'first.test.ts'), join(dir, 'second.test.ts')],
     {
       cwd: join(import.meta.dir, '../../..'),
-      env: { ...process.env, HOME: dir, E2E_BUNDLER: 'esbuild' },
+      env: { HOME: dir, PATH: '/usr/bin:/bin', E2E_BUNDLER: 'esbuild' },
       stdout: 'pipe',
       stderr: 'pipe',
     },
@@ -155,3 +162,117 @@ test('owned relay teardown runs in each importing test file', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 }, 20000);
+
+test('cleanup invalidates an actual hub setup awaiting Worker readiness', async () => {
+  const pending = ownedRelayHub().then(
+    () => 'unexpected setup success',
+    (error) => String(error.message),
+  );
+  try {
+    await cleanupOwnedRelayFixtures();
+    expect(await pending).toBe('Owned relay fixture lifetime ended');
+  } finally {
+    await cleanupOwnedRelayFixtures();
+  }
+}, 15000);
+
+test('real Bun assertion and timeout failures still dispose their owned fixture', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'remi1199-lifecycle-failures-'));
+  const helper = join(import.meta.dir, 'helpers/relay-hub.ts');
+  try {
+    for (const kind of ['assertion', 'timeout']) {
+      const receipt = join(dir, `${kind}.json`);
+      const file = join(dir, `${kind}.test.ts`);
+      writeFileSync(
+        file,
+        `
+        import { test, afterAll, expect } from 'bun:test';
+        import { existsSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+        import { join } from 'node:path';
+        import { ownedRelayHub, ownedRelayChild, cleanupOwnedRelayFixtures, registerOwnedRelayFixtureCleanup } from ${JSON.stringify(helper)};
+        registerOwnedRelayFixtureCleanup();
+        let fixture; let pids = [];
+        test('owned ${kind}', async () => {
+          fixture = await ownedRelayHub();
+          const child = await ownedRelayChild(fixture);
+          const live = join(fixture.dir, 'state/live-sessions');
+          const entry = JSON.parse(readFileSync(join(live, readdirSync(live)[0]), 'utf8'));
+          pids = [fixture.proc.pid, child.child.pid, entry.claudeChildPid];
+          ${kind === 'timeout' ? 'await new Promise(() => {});' : 'expect(false).toBe(true);'}
+        }, 1500);
+        afterAll(async () => {
+          let workerClosed = false;
+          try { await fetch(fixture.worker.url, { signal: AbortSignal.timeout(200) }); }
+          catch { workerClosed = true; }
+          const gone = pids.every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
+          writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ homeRemoved: !existsSync(fixture.dir), workerClosed, gone }));
+          await cleanupOwnedRelayFixtures();
+        });
+      `,
+      );
+      const runner = Bun.spawn([process.execPath, 'test', file], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { HOME: dir, PATH: '/usr/bin:/bin', E2E_BUNDLER: 'esbuild' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const output = Promise.all([
+        new Response(runner.stdout).text(),
+        new Response(runner.stderr).text(),
+      ]);
+      const timer = setTimeout(() => runner.kill('SIGTERM'), 10000);
+      try {
+        expect(await runner.exited).toBe(1);
+        await output;
+        expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual({
+          homeRemoved: true,
+          workerClosed: true,
+          gone: true,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 25000);
+
+(process.getuid?.() === 0 ? test.skip : test)(
+  'daemon teardown error still disposes Worker and retains ownership for retry',
+  async () => {
+    const { chmodSync } = await import('node:fs');
+    const running = await ownedRelayHub();
+    const child = await ownedRelayChild(running);
+    const registry = join(running.dir, 'state/live-sessions');
+    const entries = readdirSync(registry).map((name) =>
+      JSON.parse(readFileSync(join(registry, name), 'utf8')),
+    );
+    const pids = [running.proc.pid, child.child.pid, entries[0].claudeChildPid];
+    try {
+      chmodSync(registry, 0);
+      await expect(cleanupOwnedRelayFixtures()).rejects.toThrow(
+        'Owned relay fixture cleanup failed',
+      );
+      let workerClosed = false;
+      try {
+        await fetch(running.worker.url, { signal: AbortSignal.timeout(200) });
+      } catch {
+        workerClosed = true;
+      }
+      expect(workerClosed).toBe(true);
+      chmodSync(registry, 0o700);
+      await cleanupOwnedRelayFixtures();
+      for (const pid of pids) expect(await gone(pid)).toBe(true);
+      expect(existsSync(running.dir)).toBe(false);
+    } finally {
+      if (existsSync(registry)) chmodSync(registry, 0o700);
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGTERM');
+      await cleanupOwnedRelayFixtures();
+      for (const pid of pids) await gone(pid);
+    }
+  },
+  15000,
+);

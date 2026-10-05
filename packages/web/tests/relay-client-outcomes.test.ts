@@ -19,7 +19,12 @@ import {
 import { mapQuestionToUIQuestion } from '../src/lib/question-mapping';
 import { RelayMachineChannel } from '../src/lib/relay-machine-channel';
 import { type RelayAnswerStatus, RelayRequests } from '../src/lib/relay-requests';
-import { ownedRelayChild, ownedRelayOffer } from './helpers/relay-hub';
+import {
+  ownedRelayChild,
+  ownedRelayOffer,
+  registerOwnedRelayFixtureCleanup,
+} from './helpers/relay-hub';
+registerOwnedRelayFixtureCleanup();
 
 async function nextType(inbox: Mailbox<ProtocolMessage>, type: ProtocolMessage['type']) {
   for (let i = 0; i < 128; i++) {

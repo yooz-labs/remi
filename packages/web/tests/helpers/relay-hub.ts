@@ -7,11 +7,13 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { CAPABILITY_HEADER } from '../../../daemon/src/auth/capability-token';
 import { reserveRange } from '../../../daemon/tests/session/port-test-helpers';
 import { Mailbox } from '../../../signaling/tests/e2e/endpoints';
@@ -21,16 +23,132 @@ const processes: ReturnType<typeof Bun.spawn>[] = [];
 const workers: TestWorker[] = [];
 const sockets: WebSocket[] = [];
 const CLI = resolve(import.meta.dir, '../../../daemon/src/cli.ts');
-export async function cleanupOwnedRelayFixtures() {
-  for (const socket of sockets.splice(0)) socket.close();
-  for (const proc of processes.splice(0)) {
-    if (proc.exitCode === null) proc.kill('SIGTERM');
-    await proc.exited;
+let fixtureRevision = 0;
+const processHomes = new Map<ReturnType<typeof Bun.spawn>, string>();
+
+/** Only PIDs proven to use this still-present private home may be signaled. */
+function ownsProcess(pid: number, dir: string): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  try {
+    const command = Bun.spawnSync(['/bin/ps', '-o', 'comm=', '-p', String(pid)]);
+    if (command.exitCode !== 0) return false;
+    const name = basename(command.stdout.toString().trim());
+    if (name !== basename(process.execPath) && name !== 'cat') return false;
+    const cwd =
+      process.platform === 'linux'
+        ? readlinkSync(`/proc/${pid}/cwd`)
+        : Bun.spawnSync(['/usr/sbin/lsof', '-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
+            .stdout.toString()
+            .split('\n')
+            .find((line) => line.startsWith('n'))
+            ?.slice(1);
+    return cwd !== undefined && realpathSync(cwd) === realpathSync(dir);
+  } catch {
+    return false;
   }
-  for (const worker of workers.splice(0)) await worker.stop();
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 }
-afterEach(cleanupOwnedRelayFixtures);
+
+function ownedPids(dir: string, roots: readonly number[]): Set<number> {
+  const candidates = new Set(roots);
+  const registry = join(dir, 'state/live-sessions');
+  if (existsSync(registry))
+    for (const name of readdirSync(registry)) {
+      if (!name.endsWith('.json')) continue;
+      try {
+        const entry = JSON.parse(readFileSync(join(registry, name), 'utf8'));
+        if (entry.projectPath !== dir && entry.projectPath !== realpathSync(dir)) continue;
+        for (const pid of [entry.pid, entry.claudeChildPid])
+          if (Number.isSafeInteger(pid)) candidates.add(pid);
+      } catch {
+        /* an in-flight registry write is covered by descendants */
+      }
+    }
+  // Snapshot descendants BEFORE parents exit, including children not registered yet.
+  const rows = Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid='])
+    .stdout.toString()
+    .trim()
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/).map(Number));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, parent] of rows)
+      if (pid && parent && candidates.has(parent) && !candidates.has(pid)) {
+        candidates.add(pid);
+        changed = true;
+      }
+  }
+  return new Set([...candidates].filter((pid) => ownsProcess(pid, dir)));
+}
+
+async function stopOwnedHome(dir: string, roots: readonly number[]): Promise<void> {
+  const pids = ownedPids(dir, roots);
+  const signal = (pid: number, value: NodeJS.Signals) => {
+    if (!ownsProcess(pid, dir)) return;
+    try {
+      process.kill(pid, value);
+    } catch {
+      /* already exited */
+    }
+  };
+  for (const pid of pids) signal(pid, 'SIGTERM');
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    // Capture any last accepted create request's detached child before removing state.
+    for (const pid of ownedPids(dir, roots))
+      if (!pids.has(pid)) {
+        pids.add(pid);
+        signal(pid, 'SIGTERM');
+      }
+    if (![...pids].some((pid) => ownsProcess(pid, dir))) return;
+    await Bun.sleep(20);
+  }
+  for (const pid of pids) signal(pid, 'SIGKILL');
+  for (let i = 0; i < 20; i++) {
+    if (![...pids].some((pid) => ownsProcess(pid, dir))) return;
+    await Bun.sleep(20);
+  }
+  throw new Error('Owned relay fixture process failed to exit; private state retained.');
+}
+
+export async function cleanupOwnedRelayFixtures() {
+  ++fixtureRevision;
+  for (const socket of sockets.splice(0)) socket.close();
+  const ownedHomes = homes.splice(0);
+  const ownedProcesses = processes.splice(0);
+  const ownedWorkers = workers.splice(0);
+  // Dispose Workers even if a daemon exit fails, rather than waiting behind it.
+  const results = await Promise.allSettled([
+    ...ownedHomes.map((dir) =>
+      stopOwnedHome(
+        dir,
+        ownedProcesses.filter((proc) => processHomes.get(proc) === dir).map((proc) => proc.pid),
+      ),
+    ),
+    ...ownedWorkers.map((worker) => worker.stop()),
+  ]);
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failures.length) {
+    // Keep exact ownership records for a retry; never orphan them by dropping
+    // the manifest merely because another teardown operation failed.
+    homes.unshift(...ownedHomes);
+    processes.unshift(...ownedProcesses);
+    ownedWorkers.forEach((worker, index) => {
+      if (results[ownedHomes.length + index]?.status === 'rejected') workers.push(worker);
+    });
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      'Owned relay fixture cleanup failed',
+    );
+  }
+  for (const proc of ownedProcesses) processHomes.delete(proc);
+  for (const dir of ownedHomes) rmSync(dir, { recursive: true, force: true });
+}
+export function registerOwnedRelayFixtureCleanup() {
+  afterEach(cleanupOwnedRelayFixtures);
+}
 function home() {
   const dir = mkdtempSync(join(tmpdir(), 'remi-r3-'));
   chmodSync(dir, 0o700);
@@ -53,13 +171,20 @@ function spawn(dir: string, args: string[]) {
     stderr: 'pipe',
   });
   processes.push(proc);
+  processHomes.set(proc, dir);
   return proc;
 }
 export async function ownedRelayHub() {
+  const revision = fixtureRevision;
   const dir = home();
   const worker = await startWorker();
+  if (revision !== fixtureRevision) {
+    await worker.stop();
+    throw new Error('Owned relay fixture lifetime ended');
+  }
   workers.push(worker);
   const port = await reserveRange(1, 50, '127.0.0.1');
+  if (revision !== fixtureRevision) throw new Error('Owned relay fixture lifetime ended');
   const proc = spawn(dir, [
     'serve',
     '--relay',
@@ -111,8 +236,11 @@ export async function ownedRelayOffer() {
 
 /** Controlled /bin/cat child: no Claude/Codex model turns or user config. */
 export async function ownedRelayChild(running: Awaited<ReturnType<typeof ownedRelayHub>>) {
+  const revision = fixtureRevision;
   writeFileSync(join(running.dir, 'bin/claude'), '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
   const port = await reserveRange(1, 50, '127.0.0.1');
+  if (revision !== fixtureRevision || !homes.includes(running.dir))
+    throw new Error('Owned relay fixture lifetime ended');
   const child = spawn(running.dir, [
     '--daemon',
     '--port',

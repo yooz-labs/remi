@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { type Browser, chromium } from '@playwright/test';
 import { type ViteDevServer, createServer } from 'vite';
-import { ownedRelayChild, ownedRelayOffer } from '../helpers/relay-hub';
+import {
+  ownedRelayChild,
+  ownedRelayOffer,
+  registerOwnedRelayFixtureCleanup,
+} from '../helpers/relay-hub';
+registerOwnedRelayFixtureCleanup();
 const enabled = process.env['REMI_BROWSER_TESTS'] === '1';
 const browserTest = enabled ? test : test.skip;
 let browser: Browser;

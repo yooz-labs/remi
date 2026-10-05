@@ -10,7 +10,8 @@ import {
 } from '@remi/shared';
 import { Mailbox } from '../../signaling/tests/e2e/endpoints';
 import { RelayMachineChannel } from '../src/lib/relay-machine-channel';
-import { ownedRelayOffer } from './helpers/relay-hub';
+import { ownedRelayOffer, registerOwnedRelayFixtureCleanup } from './helpers/relay-hub';
+registerOwnedRelayFixtureCleanup();
 
 async function nextType(inbox: Mailbox<ProtocolMessage>, type: ProtocolMessage['type']) {
   for (let i = 0; i < 64; i++) {
