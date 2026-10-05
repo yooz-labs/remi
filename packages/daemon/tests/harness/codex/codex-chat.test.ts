@@ -1559,6 +1559,28 @@ describe('createCodexChat', () => {
       expect(idsOf()).toEqual([]);
     });
 
+    test('an oversized page is left to an explicit read even when its cursor ends: all 101 raw entries count', async () => {
+      for (const oversized of [
+        Array.from({ length: 101 }, (_, i) => ({ item: userMessageItem(`u${i}`, `m${i}`) })),
+        [{ item: userMessageItem('only-chat-item', 'PRIVATE-PROMPT') }, ...Array(100).fill(null)],
+      ]) {
+        live = [];
+        logs = [];
+        servePages({ '': { data: oversized, nextCursor: null } });
+        const chat = make();
+        await chat.catchUp();
+        expect(idsOf()).toEqual([]);
+        expect(catchUpLines()).toHaveLength(1);
+        expect(catchUpLines()[0]).toContain('100 items');
+        expect(logs.join('\n')).not.toContain('PRIVATE-PROMPT');
+
+        const read: TranscriptContentMessage[] = [];
+        const count = await chat.readHistory((message) => read.push(message));
+        expect(count).toBe(oversized[1] === null ? 1 : 101);
+        expect(read).toHaveLength(count);
+      }
+    });
+
     test('a cursor that repeats is an unfinished read: nothing is sent', async () => {
       servePages({
         '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'stuck'),

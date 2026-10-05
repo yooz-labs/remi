@@ -44,7 +44,7 @@
  * `readHistory`, and sends the items not yet delivered.
  *
  * - The history is delivered only when the whole thread fits in ONE page (100 items): a longer
- *   thread is skipped with a line in the log and left to an explicit read. A catch-up of many
+ *   thread or oversized returned page is skipped with a line in the log and left to an explicit read. A catch-up of many
  *   pages is hundreds of replayed messages, and the replay buffer (1000 messages, of which a
  *   late client replays the last 200) would lose its earlier records, the rotation and link
  *   notices among them.
@@ -65,7 +65,8 @@
  *   order, then it, the history is NOT sent after them (it would be out of order) and one line
  *   says so; an explicit read has the history. A read takes one page at 3 s a request, so a
  *   server that never answers holds live chat for 3 s, and one that answers slowly for as long
- *   as the read (and its follow-ups) lasts: seconds, not unbounded, because there is one page.
+ *   as the read and its follow-ups last. Each page times out at 3 s, but repeated attaches can
+ *   keep the hold across further reads; the 256-item overflow still ends it.
  * - If the tracked thread changed while the read ran (a rotation), the history of the old
  *   thread is skipped with a line, and the follow-up read gives the new thread its own.
  * - A failure is logged without content and never breaks the attach; a reconnect sends nothing
@@ -367,7 +368,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
    */
   async function readPages(
     threadId: string,
-    limits: { maxPages: number; timeoutMs?: number; deadlineMs?: number },
+    limits: { maxPages: number; maxItems?: number; timeoutMs?: number; deadlineMs?: number },
     onEntry: (entry: Entry, completedAtMs: number | null) => void,
   ): Promise<PagesEnd> {
     const asked = new Set<string>();
@@ -400,6 +401,16 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         }
         throw historyError(error);
       }
+
+      // Catch-up bounds every raw entry, including non-chat and malformed ones, before parsing:
+      // a server may exceed the requested page size, but it must not exceed the replay budget.
+      if (
+        limits.maxItems !== undefined &&
+        isRecord(result) &&
+        Array.isArray(result['data']) &&
+        result['data'].length > limits.maxItems
+      )
+        return 'capped';
 
       const page = parsePage(result);
       if (page === null)
@@ -530,6 +541,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         threadId,
         {
           maxPages: CATCH_UP_MAX_PAGES,
+          maxItems: HISTORY_PAGE_SIZE,
           timeoutMs: deps.catchUpRequestTimeoutMs ?? CATCH_UP_REQUEST_TIMEOUT_MS,
         },
         (entry, completedAtMs) => collected.push({ entry, completedAtMs }),
