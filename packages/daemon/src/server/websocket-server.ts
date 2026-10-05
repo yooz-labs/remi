@@ -432,12 +432,11 @@ export class WebSocketServer {
   /**
    * Handle a POST /answer relay request (#575, P4a).
    *
-   * Auth reuses the WebSocket trust model: loopback peers are exempt (same
-   * `shouldSkipAuthForPeer` bypass as the WS upgrade); networked peers must
-   * sign the canonical request string `sessionId|questionId|answer` with a key
-   * already in the daemon's authorized-keys store (the exact gate the WS
-   * handshake applies). The answer is then routed through the SAME core as the
-   * WebSocket `onAnswer`, so its handling is identical.
+   * Auth reuses the WebSocket trust model (#873): only genuine TCP loopback
+   * with a valid local capability bypasses Ed25519 verification. Every other
+   * peer must sign `sessionId|questionId|answer` with an authorized key.
+   * The answer then uses the same handleAnswer routing core as WebSocket
+   * onAnswer; this HTTP path has no connection to receive error frames.
    */
   private async handleAnswerRelay(
     req: Request,
