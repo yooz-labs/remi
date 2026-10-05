@@ -1,7 +1,61 @@
-/** Per-launch, bounded push authority. Capture stays closed until its real caller pins land (#1200). */
+/** Per-launch, bounded push authority; no delivery extends a prompt's real hold (#1200). */
 import { type Question, type UUID, relayV2 } from '@remi/shared';
 import type { AnswerValidity } from '../harness/decision.ts';
+import { pushCategoryFor } from './notification-dispatcher.ts';
 import type { SecurePushSnapshot } from './secure-push-store.ts';
+
+type Entry = {
+  context: SecurePushContext;
+  meaning: string;
+  questionId: UUID | undefined;
+  questionMeaning: string | undefined;
+  retainUntil: number;
+  dismissed: boolean;
+  digest?: string;
+};
+const seconds = (): number => Math.floor(Date.now() / 1000);
+function boundedText(text: string, max: number): string {
+  let result = '';
+  let size = 0;
+  for (const character of text) {
+    const bytes = new TextEncoder().encode(character).length;
+    if (size + bytes > max) break;
+    result += character;
+    size += bytes;
+  }
+  return result;
+}
+function questionMeaning(question: Question): string {
+  const meaning = JSON.stringify({
+    text: question.text,
+    detail: question.detail ?? null,
+    kind: question.kind ?? null,
+    terminalOnly: question.terminalOnly === true,
+    held: question.held === true,
+    allowsFreeText: question.allowsFreeText,
+    isAnswered: question.isAnswered,
+    questions: question.questions ?? null,
+    options: question.options.map((option) => ({
+      value: option.value,
+      label: option.label,
+      isYes: option.isYes === true,
+      isNo: option.isNo === true,
+      description: option.description ?? null,
+      standingGrant: option.standingGrant ?? null,
+      sessionGrant: option.sessionGrant ?? null,
+    })),
+  });
+  if (new TextEncoder().encode(meaning).length > 65536) throw new Error('CONTEXT_OVERSIZE');
+  return meaning;
+}
+function freezePayload(payload: relayV2.SecurePushPayload): relayV2.SecurePushPayload {
+  if (payload.type === 'question')
+    return Object.freeze({
+      ...payload,
+      options: Object.freeze(payload.options.map((o) => Object.freeze({ ...o }))),
+    });
+  return Object.freeze({ ...payload });
+}
 
 export interface SecurePushRuntime {
   readonly sessionId: UUID;
@@ -27,6 +81,7 @@ export interface SecurePushContextDeps {
 }
 export class SecurePushContexts {
   private readonly runtimes = new Map<UUID, SecurePushRuntime>();
+  private readonly entries = new Map<string, Entry>();
   constructor(
     private readonly deps: SecurePushContextDeps,
     private readonly capacity = 2048,
@@ -43,31 +98,222 @@ export class SecurePushContexts {
       throw new Error('SECURE_PUSH_CONTEXT_CAPACITY');
   }
   begin(sessionId: UUID): SecurePushRuntime {
+    const previous = this.runtimes.get(sessionId);
+    if (previous) this.finish(previous);
+    if (this.runtimes.size >= 64) throw new Error('SECURE_PUSH_RUNTIME_CAPACITY');
     const runtime = Object.freeze({ sessionId, instance: relayV2.b64u(relayV2.systemRandom(32)) });
     this.runtimes.set(sessionId, runtime);
     return runtime;
   }
   finish(runtime: SecurePushRuntime): void {
     if (this.runtimes.get(runtime.sessionId) === runtime) this.runtimes.delete(runtime.sessionId);
+    for (const [key, entry] of this.entries) {
+      if (entry.context.runtime === runtime) this.entries.delete(key);
+    }
   }
   capture(
-    _runtime: SecurePushRuntime,
-    _snapshot: SecurePushSnapshot,
-    _event: SecurePushEvent,
+    runtime: SecurePushRuntime,
+    snapshot: SecurePushSnapshot,
+    event: SecurePushEvent,
   ): SecurePushContext | null {
-    return null;
+    try {
+      if (
+        this.runtimes.get(runtime.sessionId) !== runtime ||
+        new TextEncoder().encode(event.logicalId).length > 256 ||
+        !event.logicalId
+      )
+        return null;
+      this.prune();
+      const key = this.key(runtime, event.logicalId, snapshot.publicKey);
+      const previous = this.entries.get(key);
+      if (previous?.dismissed)
+        return event.kind === 'dismiss' && this.isCurrent(previous.context)
+          ? previous.context
+          : null;
+      if (event.kind === 'dismiss' && !previous) return null;
+      const now = seconds();
+      const title = boundedText(event.title ?? 'Remi', 128);
+      const body = boundedText(event.body ?? '', 512);
+      let payload: relayV2.SecurePushPayload =
+        event.kind === 'dismiss'
+          ? { type: 'dismiss', actionable: false }
+          : { type: 'informational', actionable: false, sessionId: runtime.sessionId, title, body };
+      let expiresAt = now + (event.kind === 'dismiss' ? 3600 : 300);
+      let qid: UUID | undefined;
+      let qMeaning: string | undefined;
+      if (event.question) {
+        if (event.kind !== 'question' || event.logicalId !== event.question.id) return null;
+        const current = this.deps.questionFor(runtime.sessionId, event.question.id);
+        if (!current || current.isAnswered) return null;
+        qid = current.id;
+        qMeaning = questionMeaning(current);
+        if (qMeaning !== questionMeaning(event.question)) return null;
+        const validity = this.deps.validityFor(runtime.sessionId, current.id);
+        const category = pushCategoryFor(current);
+        if (
+          validity.kind !== 'closed' &&
+          category &&
+          !current.questions &&
+          !current.options.some(
+            (o) => o.sessionGrant || o.standingGrant === 'setMode' || o.standingGrant === 'session',
+          ) &&
+          title === (event.title ?? 'Remi') &&
+          body === (event.body ?? '') &&
+          new TextEncoder().encode(current.text).length <= 512
+        ) {
+          const candidate: relayV2.SecurePushPayload = {
+            type: 'question',
+            actionable: true,
+            sessionId: runtime.sessionId,
+            runtimeInstance: runtime.instance,
+            questionId: current.id,
+            title,
+            body,
+            category: category as 'REMI_YN' | 'REMI_YNA' | 'REMI_MULTI',
+            options: current.options.map((o) => ({
+              value: o.value,
+              label: o.label,
+              isYes: o.isYes === true,
+              isNo: o.isNo === true,
+              description: o.description ?? null,
+              standingGrant: o.standingGrant ?? null,
+            })),
+          };
+          try {
+            // The frozen content tuple plus signature occupies 324 bytes for a
+            // 22-byte opaque collapse id. Preserve every option; never cut an action.
+            if (relayV2.buildPushPayload(candidate).length <= relayV2.MAX_PUSH_PLAINTEXT - 324) {
+              const deadline =
+                validity.kind === 'deadline' ? Math.floor(validity.expiresAtMs / 1000) : now + 3600;
+              if (Number.isSafeInteger(deadline) && deadline > now) {
+                payload = candidate;
+                expiresAt = Math.min(now + 3600, deadline);
+              }
+            }
+          } catch {
+            /* Oversize/unsupported actions open the app through information only. */
+          }
+        }
+      }
+      const normalized = relayV2.parsePushPayload(relayV2.buildPushPayload(payload));
+      const captured = Object.freeze({
+        ...snapshot,
+        pushPrefs: Object.freeze({ ...snapshot.pushPrefs }),
+      });
+      const meaning = JSON.stringify({
+        kind: event.kind,
+        payload: normalized,
+        questionMeaning: qMeaning ?? null,
+        subscription: captured,
+      });
+      if (previous?.meaning === meaning)
+        return this.isCurrent(previous.context) ? previous.context : null;
+      if (!previous) {
+        if (this.entries.size >= this.capacity) return null;
+        const logicalSlots = new Set(
+          [...this.entries.values()]
+            .filter((e) => e.context.runtime === runtime)
+            .map((e) => e.context.logicalId),
+        );
+        if (!logicalSlots.has(event.logicalId) && logicalSlots.size >= this.perSessionCapacity)
+          return null;
+      }
+      const revision = (previous?.context.content.revision ?? 0) + 1;
+      if (!Number.isSafeInteger(revision)) return null;
+      const context: SecurePushContext = Object.freeze({
+        runtime,
+        snapshot: captured,
+        logicalId: event.logicalId,
+        content: Object.freeze({
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+          collapseId:
+            previous?.context.content.collapseId ?? relayV2.b64u(relayV2.systemRandom(16)),
+          revision,
+          kind: event.kind,
+          nonce: relayV2.b64u(relayV2.systemRandom(32)),
+          issuedAt: now,
+          expiresAt,
+        }),
+        payload: freezePayload(normalized),
+      });
+      this.entries.set(key, {
+        context,
+        meaning,
+        questionId: qid,
+        questionMeaning: qMeaning,
+        retainUntil: Math.max(previous?.retainUntil ?? 0, now + 3600 + 120),
+        dismissed: event.kind === 'dismiss',
+      });
+      return context;
+    } catch {
+      return null;
+    }
   }
-  isCurrent(_context: SecurePushContext): boolean {
-    return false;
+  isCurrent(context: SecurePushContext): boolean {
+    try {
+      if (
+        this.runtimes.get(context.runtime.sessionId) !== context.runtime ||
+        context.content.expiresAt <= seconds()
+      )
+        return false;
+      const entry = this.entries.get(
+        this.key(context.runtime, context.logicalId, context.snapshot.publicKey),
+      );
+      if (!entry || entry.context !== context) return false;
+      if (entry.questionId) {
+        const question = this.deps.questionFor(context.runtime.sessionId, entry.questionId);
+        if (!question || question.isAnswered || questionMeaning(question) !== entry.questionMeaning)
+          return false;
+        if (context.payload.actionable) {
+          const validity = this.deps.validityFor(context.runtime.sessionId, entry.questionId);
+          if (
+            validity.kind === 'closed' ||
+            (validity.kind === 'deadline' &&
+              Math.floor(validity.expiresAtMs / 1000) < context.content.expiresAt)
+          )
+            return false;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
-  bindDigest(_context: SecurePushContext, _digest: string): boolean {
-    return false;
+  bindDigest(context: SecurePushContext, digest: string): boolean {
+    if (!/^[0-9a-f]{64}$/.test(digest) || !this.isCurrent(context)) return false;
+    const entry = this.entries.get(
+      this.key(context.runtime, context.logicalId, context.snapshot.publicKey),
+    );
+    if (!entry || (entry.digest && entry.digest !== digest)) return false;
+    entry.digest = digest;
+    return true;
   }
   latestAction(
-    _runtime: SecurePushRuntime,
-    _questionId: UUID,
-    _devicePublicKey: string,
+    runtime: SecurePushRuntime,
+    questionId: UUID,
+    devicePublicKey: string,
   ): { readonly context: SecurePushContext; readonly contentDigest: string } | null {
-    return null;
+    const entry = this.entries.get(this.key(runtime, questionId, devicePublicKey));
+    return entry?.digest && entry.context.payload.actionable && this.isCurrent(entry.context)
+      ? Object.freeze({ context: entry.context, contentDigest: entry.digest })
+      : null;
+  }
+  private key(runtime: SecurePushRuntime, logicalId: string, devicePublicKey: string): string {
+    return JSON.stringify([runtime.instance, logicalId, devicePublicKey]);
+  }
+  private prune(): void {
+    const now = seconds();
+    for (const [key, entry] of this.entries) {
+      // A still-registered question retains its original ceiling; redraw cannot
+      // create a fresh action lifetime after that ceiling expires.
+      if (
+        entry.retainUntil <= now &&
+        (!entry.questionId ||
+          !this.deps.questionFor(entry.context.runtime.sessionId, entry.questionId))
+      )
+        this.entries.delete(key);
+    }
   }
 }
