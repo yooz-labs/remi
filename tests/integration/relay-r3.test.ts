@@ -131,6 +131,7 @@ import {
   createAnswer,
   createHello,
   createSessionListRequest,
+  createUserInput,
   deserialize,
   generateId,
   now,
@@ -348,6 +349,15 @@ test('actual child hook decision yields delivered result while stale answer refu
   try {
     const question = await nextType(inbox, 'question');
     if (question.type !== 'question') throw new Error('expected question');
+    await channel.send(
+      new TextEncoder().encode(
+        serialize(
+          createUserInput(entry.sessionId, 'PRIVATE_REFUSED_CHAT_SENTINEL', false, binding),
+        ),
+      ),
+    );
+    const inputRefusal = await nextType(inbox, 'error');
+    expect(inputRefusal.type === 'error' && inputRefusal.code).toBe('PROMPT_WAITING');
     const no = question.question.options.find((option) => option.isNo);
     if (!no) throw new Error('expected held deny option');
     const answer = createAnswer(
@@ -369,6 +379,34 @@ test('actual child hook decision yields delivered result while stale answer refu
     const refused = await nextType(inbox, 'answer_result');
     expect(refused.type === 'answer_result' && refused.requestId).toBe(stale.id);
     expect(refused.type === 'answer_result' && refused.outcome).toBe('stale');
+    await channel.send(
+      new TextEncoder().encode(
+        serialize(createUserInput(entry.sessionId, 'PRIVATE_CHAT_SENTINEL', false, binding)),
+      ),
+    );
+    await channel.send(
+      new TextEncoder().encode(
+        serialize(createUserInput(entry.sessionId, 'PRIVATE_RAW_INPUT_SENTINEL', true, binding)),
+      ),
+    );
+    // Drain one subsequent correlated semantic request before collecting local diagnostics.
+    const after = createSessionListRequest();
+    await channel.send(new TextEncoder().encode(serialize(after)));
+    await nextType(
+      inbox,
+      'session_list_response',
+      (message) => message.type === 'session_list_response' && message.requestId === after.id,
+    );
+    child.kill('SIGTERM');
+    await child.exited;
+    const diagnostic = (await childOut) + (await childErr);
+    for (const sentinel of [
+      'PRIVATE_DENIAL_SENTINEL',
+      'PRIVATE_REFUSED_CHAT_SENTINEL',
+      'PRIVATE_CHAT_SENTINEL',
+      'PRIVATE_RAW_INPUT_SENTINEL',
+    ])
+      expect(diagnostic).not.toContain(sentinel);
   } finally {
     controller.abort();
     await hook.catch(() => {});
