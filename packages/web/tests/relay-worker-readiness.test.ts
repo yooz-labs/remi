@@ -8,6 +8,8 @@ test('real Worker readiness failure disposes Miniflare listeners before rejectin
   const dir = mkdtempSync(join(tmpdir(), 'remi1199-worker-readiness-'));
   const receipt = join(dir, 'receipt.json');
   const source = join(dir, 'probe.ts');
+  const failingRuntime = join(dir, 'failing-runtime');
+  writeFileSync(failingRuntime, '#!/bin/sh\n/bin/cat > /dev/null\nexit 1\n', { mode: 0o700 });
   const harness = join(import.meta.dir, '../../signaling/tests/e2e/harness.ts');
   writeFileSync(
     source,
@@ -25,14 +27,14 @@ test('real Worker readiness failure disposes Miniflare listeners before rejectin
     process.exit(0);
   `,
   );
-  // /bin/false creates a real failing OS child; no Worker business logic is replaced.
+  // The real OS child consumes startup config then fails before emitting readiness.
   const runner = Bun.spawn([process.execPath, source], {
     cwd: join(import.meta.dir, '../../..'),
     env: {
       HOME: dir,
       PATH: '/usr/bin:/bin',
       E2E_BUNDLER: 'esbuild',
-      MINIFLARE_WORKERD_PATH: '/bin/false',
+      MINIFLARE_WORKERD_PATH: failingRuntime,
     },
     stdout: 'pipe',
     stderr: 'pipe',
