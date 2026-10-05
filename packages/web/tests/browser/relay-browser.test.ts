@@ -47,6 +47,7 @@ afterAll(async () => {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     await browser?.close();
+    closeOwnedHTTPConnections();
     closing = vite?.close();
     const released = await Promise.race([
       closing?.then(() => true) ?? Promise.resolve(true),
