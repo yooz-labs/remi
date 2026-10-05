@@ -29,8 +29,8 @@ enum NativePushConfiguration {
 }
 
 private struct ConfiguredNativePushAuthority: NativeIdentityAuthorityBarrier {
-    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws {
-        try NativePushConfiguration.sharedState().reconcileObservedIdentity(publicKey: publicKey, revision: revision)
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?, requiresAppUnlock: Bool?) throws {
+        try NativePushConfiguration.sharedState().reconcileObservedIdentity(publicKey: publicKey, revision: revision, requiresAppUnlock: requiresAppUnlock)
     }
     func acquireIdentityMutation() throws -> NativeIdentityMutationLease {
         try NativePushConfiguration.sharedState().acquireIdentityMutation()

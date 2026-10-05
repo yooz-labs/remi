@@ -163,12 +163,12 @@ enum ClientIdentityStore {
         let data: Data
         do {
             guard let stored = try read(accessGroup: accessGroup, service: service, account: account, operations: operations) else {
-                try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+                try authority.reconcileObservedIdentity(publicKey: nil, revision: nil, requiresAppUnlock: nil)
                 return nil
             }
             data = stored
         } catch {
-            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil, requiresAppUnlock: nil)
             throw error
         }
         if data.count == 32 {
@@ -180,10 +180,10 @@ enum ClientIdentityStore {
         let identity: ClientIdentity
         do { identity = try JSONDecoder().decode(Record.self, from: data).identity() }
         catch {
-            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil)
+            try authority.reconcileObservedIdentity(publicKey: nil, revision: nil, requiresAppUnlock: nil)
             throw error
         }
-        try authority.reconcileObservedIdentity(publicKey: identity.publicKeyRaw, revision: identity.revision)
+        try authority.reconcileObservedIdentity(publicKey: identity.publicKeyRaw, revision: identity.revision, requiresAppUnlock: identity.requiresAppUnlock)
         return identity
     }
 
@@ -283,7 +283,7 @@ enum ClientIdentityStore {
         }
         _ = try JSONDecoder().decode(Record.self, from: verified).identity()
         try lease.installIdentityAuthority(publicKey: identity.publicKeyRaw, revision: identity.revision,
-                                           generation: generation)
+                                           requiresAppUnlock: identity.requiresAppUnlock, generation: generation)
     }
 }
 

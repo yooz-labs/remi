@@ -26,7 +26,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         let lease = try state.acquireIdentityMutation()
         defer { lease.release() }
         let generation = try lease.invalidateIdentityAuthority()
-        try lease.installIdentityAuthority(publicKey: identity.publicKeyRaw, revision: identity.revision, generation: generation)
+        try lease.installIdentityAuthority(publicKey: identity.publicKeyRaw, revision: identity.revision, requiresAppUnlock: false, generation: generation)
         return identity
     }
     private func assertAuthorityClosed(_ message: String) {
@@ -48,7 +48,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
             return SecItemUpdate(query, value)
         }
         let replaced = try replacement(prior, operations: operations)
-        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: replaced.publicKeyRaw, revision: replaced.revision))
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: replaced.publicKeyRaw, revision: replaced.revision, requiresAppUnlock: false))
     }
 
     func testBusyInvalidationBlocksKeychainReplacementAndPreservesOriginal() throws {
@@ -61,7 +61,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         XCTAssertThrowsError(try replacement(prior, operations: operations), "Busy authority must refuse BEFORE writing an identity")
         XCTAssertEqual(writes, 0)
         XCTAssertEqual(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account)?.revision, prior.revision)
-        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: prior.publicKeyRaw, revision: prior.revision))
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: prior.publicKeyRaw, revision: prior.revision, requiresAppUnlock: false))
     }
 
     func testKeychainFailurePreservesOldKeyAndLeavesAuthorityInvalidated() throws {
@@ -84,7 +84,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
             revision: prior.revision, publicKey: prior.publicKeyRaw, service: service, account: account, operations: operations)
         XCTAssertTrue(protected.requiresAppUnlock)
         XCTAssertNotEqual(protected.revision, prior.revision)
-        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: protected.publicKeyRaw, revision: protected.revision))
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: protected.publicKeyRaw, revision: protected.revision, requiresAppUnlock: true))
     }
 
     func testActualNativeSeedMigrationInvalidatesBeforeAtomicUpdate() throws {
@@ -95,7 +95,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         XCTAssertEqual(SecItemAdd(query as CFDictionary, nil), errSecSuccess)
         let lease = try state.acquireIdentityMutation()
         let token = try lease.invalidateIdentityAuthority()
-        try lease.installIdentityAuthority(publicKey: legacy.publicKey.rawRepresentation, revision: UUID().uuidString, generation: token)
+        try lease.installIdentityAuthority(publicKey: legacy.publicKey.rawRepresentation, revision: UUID().uuidString, requiresAppUnlock: false, generation: token)
         lease.release()
         var operations = NativeKeychainOperations.system
         operations.update = { query, value in
@@ -104,7 +104,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         }
         let migrated = try XCTUnwrap(ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account, operations: operations))
         XCTAssertEqual(migrated.publicKeyRaw, legacy.publicKey.rawRepresentation)
-        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: migrated.publicKeyRaw, revision: migrated.revision))
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: migrated.publicKeyRaw, revision: migrated.revision, requiresAppUnlock: false))
     }
 
     func testActualDirectPreferencesImportUsesBarrierAndPreservesSignedWire() throws {
@@ -122,7 +122,7 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         let signature = try XCTUnwrap(Data(base64Encoded: auth.signature))
         XCTAssertTrue(legacy.publicKey.isValidSignature(signature, for: Data(message.utf8)))
         let imported = try XCTUnwrap(ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account))
-        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: imported.publicKeyRaw, revision: imported.revision),
+        XCTAssertEqual(try state.currentAuthority(), .init(publicKey: imported.publicKeyRaw, revision: imported.revision, requiresAppUnlock: false),
                        "The actual direct legacy signer must publish only its durably verified identity")
     }
 
@@ -178,6 +178,17 @@ final class NativeIdentityAuthorityTests: XCTestCase {
         XCTAssertNil(try state.currentAuthority(), "An unavailable private record cannot retain public push authority")
         XCTAssertEqual(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account)?.revision, prior.revision)
         XCTAssertNil(try state.currentAuthority(), "A successful later read cannot reopen authority implicitly")
+    }
+
+
+    func testObservedProtectionChangeAtSameRevisionClosesAuthority() throws {
+        let prior = try original()
+        let protected = ClientIdentity(privateKey: prior.privateKey, revision: prior.revision, requiresAppUnlock: true)
+        let record = try externalRecord(protected)
+        XCTAssertEqual(SecItemUpdate(itemQuery as CFDictionary, [kSecValueData as String: record] as CFDictionary), errSecSuccess)
+        let observed = try XCTUnwrap(ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: account))
+        XCTAssertTrue(observed.requiresAppUnlock)
+        XCTAssertNil(try state.currentAuthority(), "Observed protection policy is part of the public authority context")
     }
 
 }

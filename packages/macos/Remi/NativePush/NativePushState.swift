@@ -8,7 +8,7 @@ import SQLite3
 /// authority invalidated; SQLite and Keychain are not a distributed transaction.
 protocol NativeIdentityAuthorityBarrier {
     func acquireIdentityMutation() throws -> NativeIdentityMutationLease
-    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?, requiresAppUnlock: Bool?) throws
 }
 
 enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity, changed, busy }
@@ -18,7 +18,7 @@ enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity,
 /// latest committed authority. Caller-owned advisory leases serialize writers;
 /// no SQLite transaction remains open during Keychain or authentication calls.
 final class NativePushState: NativeIdentityAuthorityBarrier {
-    struct Authority: Equatable { let publicKey: Data; let revision: String }
+    struct Authority: Equatable { let publicKey: Data; let revision: String; let requiresAppUnlock: Bool }
     private var database: OpaquePointer?
     private let mutationLock: URL
     private let connectionLock = NSRecursiveLock()
@@ -79,7 +79,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             let revision = String(cString: text)
             try Self.validate(key, revision)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
-            return Authority(publicKey: key, revision: revision)
+            return Authority(publicKey: key, revision: revision, requiresAppUnlock: false)
         }
     }
 
@@ -87,7 +87,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     /// closes prior authority. A successful later read never installs it again.
     /// External Keychain changes remain unobservable until an app reader runs;
     /// the NSE has only this public ledger and never reads the Dpk private item.
-    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws {
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?, requiresAppUnlock: Bool?) throws {
         guard let installed = try currentAuthority(),
               installed.publicKey != publicKey || installed.revision != revision else { return }
         let lease = try acquireIdentityMutation()
@@ -119,7 +119,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             return generation + 1
         }
     }
-    fileprivate func install(publicKey: Data, revision: String, generation: Int64) throws {
+    fileprivate func install(publicKey: Data, revision: String, requiresAppUnlock: Bool, generation: Int64) throws {
         try Self.validate(publicKey, revision)
         try transaction {
             guard generation > 0,
@@ -184,9 +184,9 @@ final class NativeIdentityMutationLease {
         generation = token
         return token
     }
-    func installIdentityAuthority(publicKey: Data, revision: String, generation: Int64) throws {
+    func installIdentityAuthority(publicKey: Data, revision: String, requiresAppUnlock: Bool, generation: Int64) throws {
         guard descriptor >= 0, self.generation == generation else { throw NativePushStateError.changed }
-        try state.install(publicKey: publicKey, revision: revision, generation: generation)
+        try state.install(publicKey: publicKey, revision: revision, requiresAppUnlock: requiresAppUnlock, generation: generation)
     }
     func release() {
         guard descriptor >= 0 else { return }
