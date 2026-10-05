@@ -25,6 +25,7 @@ import type { MessageAPIEvents } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
 import { NotificationDispatcher } from '../../notifications/notification-dispatcher.ts';
 import type { PushConfig } from '../../notifications/notification-dispatcher.ts';
+import type { SecureSessionPush } from '../../notifications/secure-push-service.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { DeviceTokenEntry } from '../handlers/trivial-events.ts';
@@ -34,6 +35,7 @@ import { getPrimarySessionId } from '../session-state.ts';
 export type { PushConfig };
 
 export interface MessageApiSetupDeps {
+  securePush?: SecureSessionPush;
   sessionRegistry: SessionRegistry;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   deviceTokens: Map<string, DeviceTokenEntry>;
@@ -116,6 +118,7 @@ export function createMessageApiForSession(
       deviceTokens,
       pushConfig,
       getPrimarySessionId,
+      ...(deps.securePush ? { securePush: deps.securePush } : {}),
       ...(pruneToken ? { pruneToken } : {}),
       ...(refreshDeviceTokens ? { refreshDeviceTokens } : {}),
     },

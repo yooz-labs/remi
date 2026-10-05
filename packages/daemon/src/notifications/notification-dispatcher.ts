@@ -18,13 +18,14 @@ import type { Question, QuestionOption, UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
+import { type LegacyPushPolicy, legacyPushFields } from './legacy-push-policy.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
 import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
 
-export interface PushConfig {
+export interface PushConfig extends LegacyPushPolicy {
   /**
    * Signaling server base URL. Always provided by the caller; `sendPushTrigger`'s
    * `string | undefined` first parameter is wider (it has its own fallback), but
@@ -525,7 +526,7 @@ export class NotificationDispatcher {
     const opts = {
       title,
       body,
-      ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+      ...legacyPushFields(cfg),
       sessionId: pushSessionId,
       questionId: question.id,
       ...(pushCategory !== undefined ? { category: pushCategory } : {}),
@@ -576,9 +577,7 @@ export class NotificationDispatcher {
       } catch (err) {
         if (isRetriablePushError(err) && attempt < MAX_PUSH_RETRIES) {
           const delay = PUSH_RETRY_BASE_MS * 2 ** attempt;
-          log(
-            `Push transient failure (retry ${attempt + 1}/${MAX_PUSH_RETRIES} in ${delay}ms): ${err}`,
-          );
+          log(`Legacy push retry ${attempt + 1}/${MAX_PUSH_RETRIES}`);
           await sleep(delay);
           continue;
         }
@@ -586,7 +585,7 @@ export class NotificationDispatcher {
         // error, or exhausted retries). This is the root cause behind a card
         // that never reached the phone, so it must be visible at error level,
         // not buried.
-        logError(`${logCtx.failed}: ${err}`);
+        logError(logCtx.failed);
         // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
         // unregistered / wrong-app) is pruned so it is never retried again. A
         // network error or exhausted-transient failure is NOT a token problem,
@@ -637,7 +636,8 @@ export class NotificationDispatcher {
     const { deviceTokens, pushConfig } = this.deps;
     this.deps.refreshDeviceTokens?.();
     const wanting = tokensWanting(deviceTokens.values(), 'question');
-    if (wanting.length === 0) return;
+    const secure = this.deps.securePush;
+    if (wanting.length === 0 && !secure?.hasRecipients('question')) return;
     const session = this.deps.sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
     const ask = normalizeNotificationText(question.text) || 'a permission request';
@@ -660,6 +660,8 @@ export class NotificationDispatcher {
     ).slice(0, BODY_MAX);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    if (secure)
+      void secure.send({ kind: 'question', logicalId: terminalNoticeId(question.id), title, body });
     for (const dt of wanting) {
       void this.pushOnceWithRetry(
         cfg.signalingUrl,
@@ -667,7 +669,7 @@ export class NotificationDispatcher {
         {
           title,
           body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId: terminalNoticeId(question.id),
           kind: 'question' as const,
@@ -711,7 +713,8 @@ export class NotificationDispatcher {
     // read, as every other push does.
     this.deps.refreshDeviceTokens?.();
     const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
-    if (wanting.length === 0) {
+    const secure = this.deps.securePush;
+    if (wanting.length === 0 && !secure?.hasRecipients('turn_failed')) {
       log(
         deviceTokens.size === 0
           ? `Turn-failed push skipped: no device tokens for session ${this.sessionId}`
@@ -731,7 +734,7 @@ export class NotificationDispatcher {
         {
           title,
           body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId: turnFailedCollapseId(this.sessionId),
           kind: 'turn_failed' as const,
@@ -742,6 +745,17 @@ export class NotificationDispatcher {
         },
       ),
     );
+    if (secure)
+      perToken.push(
+        secure
+          .send({
+            kind: 'turn_failed',
+            logicalId: turnFailedCollapseId(this.sessionId),
+            title,
+            body,
+          })
+          .then((outcome) => outcome === 'pushed'),
+      );
     return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
   }
 
@@ -786,6 +800,8 @@ export class NotificationDispatcher {
    */
   dismiss(questionSessionId: UUID, questionId: UUID): void {
     const { deviceTokens, pushConfig } = this.deps;
+    if (this.deps.securePush)
+      void this.deps.securePush.send({ kind: 'dismiss', logicalId: questionId });
     if (deviceTokens.size === 0) return;
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
@@ -800,7 +816,7 @@ export class NotificationDispatcher {
         {
           // No title/body: a dismissal is a silent content-available push, and
           // the relay skips the title/body requirement for it (#585, P7).
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId,
           dismiss: true,
