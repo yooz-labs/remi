@@ -211,8 +211,9 @@ Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
 answers return correlated actual child outcomes, and child discovery is aggregated
 by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
 The old `RelayAdapter`, signaling code client and permanent code store are removed;
-`remi code` and `--permanent-code` refuse with migration guidance. Direct signed
-challenge fields retain `kexSigningInput`; detached direct `/answer` remains.
+`remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
+its legacy Authenticator methods have no current production callers. Direct
+Connection auth uses `createChallenge`/`verifyResponse`; detached direct `/answer` remains.
 R4 web/native client integration, R5/R6 push privacy, deployed Worker and signed
 hardware acceptance remain pending. Existing plaintext `/push` is not protected by
 this channel.

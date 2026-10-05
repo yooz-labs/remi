@@ -69,8 +69,10 @@ handler outcome: `delivered`, `session-not-found`, `stale-binding`, `stale`,
 ten-second result deadline; no result means uncertain, never a guessed decision.
 Exact concurrent duplicates apply once. Content identity is a constant-size SHA256
 hash of the exact tuple including child generation, not retained plaintext.
-There are at most 32 in-flight and 256 completed results per device; completed
-records expire after ten minutes. Eviction does not justify replaying an answer.
+There are at most 32 in-flight and 256 completed results per peer connection;
+completed records expire after ten minutes. This in-memory cache resets on
+reconnect and is not durable per-device deduplication. Eviction or reconnect does
+not justify replaying an answer.
 
 Actual answer/user-input handlers log metadata and lengths, not choices, free
 text, labels or answer messages. Semantic payloads larger than `MAX_PLAINTEXT`
@@ -89,9 +91,10 @@ only for pending peers; ready disconnect closes the pipe, which owns its drain.
 ## Retirement and verification
 
 V1 `RelayAdapter`, signaling client, code store and `remi code` implementation are
-removed. Permanent-code requests refuse with migration guidance. The direct
-signed-challenge `kexSigningInput` helper and its cross-purpose signature fixtures
-remain because `Authenticator` calls them. Detached signed direct `/answer`
+removed. Permanent-code requests refuse with migration guidance. The `kexSigningInput` compatibility encoding, export and cross-purpose signature
+fixtures remain unchanged. Its legacy `createChallengeWithRelayKex` and
+`verifyRelayKex` methods have no current production callers; direct Connection
+auth uses `createChallenge` and `verifyResponse`. Detached signed direct `/answer`
 remains authorized-only; this phase does not implement encrypted offline answers.
 
 Focused tests live in `tests/integration/relay-r3*.test.ts` and
