@@ -271,7 +271,7 @@ Identity is persisted with `SessionBindingStore.updateHarnessIdentity`; for a re
 `thread/resume {threadId, excludeTurns: true}` and nothing else, ever (the spike showed an override persists on the thread).
 It is retried on any error, `-32600` being the one expected, at once when the tracked thread turns `active`, otherwise every second and every five seconds after ten failures, and once more after every reconnect; a `-32601` (the server has no `thread/resume`) stops the retries for that connection.
 The result's thread status is applied.
-Only the first failure and every thirtieth are logged, and no thread frame of another thread, no cwd and no thread id beyond its last eight characters is ever logged (a UUIDv7 starts with a timestamp that two threads created within about 65 s share, so the last eight tell them apart).
+Only the first failure and every thirtieth are logged, and no thread frame of another thread, no cwd and no thread id beyond its last eight characters is ever logged (a UUIDv7 starts with a timestamp that two threads created within about 65 s share, so the last eight tell them apart; the startup line of a headless Codex, added after LV-4, is the one exception, redacted, see "LV-4 results").
 4. **Status.**
 The session's status is the aggregate of the tracked thread and its descendants: `waiting` if any is `active` with a flag (an unknown flag counts), else `thinking` if any is `active`, else `idle`; it is reported through `messageApi.handleStatusChange` only when it changes.
 Other threads never change it.
@@ -438,7 +438,7 @@ A rotation, `remi unstick`, and the session ending (`dispose`) dismiss every car
 Verified live (2026-10-04, R1, LV-3 (d) and (i)): a dropped subscriber, a probe or real remi killed with -9 and even remi and the TUI together, does not cancel or decline a pending request: the prompt stays up and the same request id is replayed to the next `thread/resume`. An Esc in the TUI, `turn/interrupt` and an RPC `cancel` each produce `serverRequest/resolved` (LV-3 (g)), so no status-based dismissal is needed.
 The live run also found that Codex answers EVERY WebSocket ping with TWO identical pongs, which dropped the link every 70 s or so with the old keepalive: `onPong` now ignores a pong with no ping outstanding and `armPing` never leaves two timers (item 15).
 8. **Logs and what persists.**
-No command, cwd, prompt or full thread id: a thread id is shown as its last eight characters (UUIDv7 prefixes collide: a live log read `rotated from 01a106f2 to 01a106f2`), a decision is logged as an id and a thread, never a command. A string request id and a method name, which the server chooses, are cut and escaped in a log line (T9).
+No command, cwd, prompt or full thread id: a thread id is shown as its last eight characters (UUIDv7 prefixes collide: a live log read `rotated from 01a106f2 to 01a106f2`), a decision is logged as an id and a thread, never a command. A string request id and a method name, which the server chooses, are cut and escaped in a log line (T9). The one exception, added after LV-4, is the startup line of a headless Codex that exits within 10 seconds of its spawn before it names a thread: the first and last 1 KB of its output, redacted (every UUID to its last eight characters, the session's directories and the home directory to `<cwd>` and `~`) and escaped, which can still hold anything else Codex printed (`startup-output.ts`; "LV-4 results").
 Two neutral log lines printed the start of a card's text, which for Codex is a command: the question-detected line (`message-api-setup.ts`) and the registry's cap-eviction warning (`question-store.ts`).
 Both now log a length when the daemon hosts Codex (`redactQuestionLogs`, from `cli.ts`), and are unchanged for Claude (deviation D8).
 The text itself also reached the live-sessions registry file as a "label" (the first 140 characters of `Allow Codex to run: <command>`, read by the hub census and the macOS menu-bar notifications): a card now carries a fixed `pendingLabel` ("Permission: Codex command", or "Codex asks for approval" for every other kind), which `buildPendingQuestionLabel` returns as it is (S2).
@@ -611,7 +611,12 @@ Status per item of item 13 (the letters are that list's):
   Through the hub, `-m` and `-s read-only` were accepted and the child came up; `-a on-request` and `-s workspace-write` were refused by the hub (H3), as designed.
   The fix: the remote allowlist carries no `-a` at all (H3, changed after LV-4).
   The startup failure was also opaque: the child's PTY output went to `NOOP_OUTPUT_SINK`, so only `exited with code 2` reached a log.
-  Fixed here: the session keeps the first 2 KB of the child's output until it has named a thread, and logs it once, escaped, when the PTY exits within about 10 seconds of the spawn.
+  Fixed here: a headless session keeps the first and last 1 KB of the child's output until it has named a thread, and logs them once when the PTY exits within about 10 seconds of the spawn (`startup-output.ts`).
+  This line is the one exception to the log rule above (no cwd, no prompt, no full thread id), so it is redacted: every UUID-shaped token is cut to its last eight characters, and the session's directories and the home directory become `<cwd>` and `~`.
+  It is escaped, on one line, capped at 4096 characters after escaping, and cut nowhere inside a surrogate pair.
+  After redaction it can still hold anything else Codex printed (a config excerpt, a URL, a prompt it echoed), and a path or id cut by the 1 KB limit can show as a fragment.
+  A wrapper session captures nothing (its terminal already shows the error), and a stop or shutdown that remi asked for, or a session that has named its thread, logs nothing.
+  The captured copy is only logged: an attached client reads the same bytes as raw PTY frames, by design, and a test pins that it receives them once and that no other message carries them.
   `resume <uuid>` through a hub request: PASS (item 13 (c), second half).
   It was refused with the H2/P4 text while a live remi session held the thread; after that session stopped, the same request resumed headless, with the same thread and the earlier turns replayed and no model turn.
 - **(d) The daemon cold start (R2) from a hub child with no terminal: PASS.**
