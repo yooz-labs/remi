@@ -10,9 +10,13 @@ import {
   now,
   relayV2,
 } from '@remi/shared';
-import { questionKey, resolveQuestionCard, pruneQuestionsNotLive } from '../src/lib/question-collection';
-import { mapQuestionToUIQuestion } from '../src/lib/question-mapping';
 import { Mailbox } from '../../signaling/tests/e2e/endpoints';
+import {
+  pruneQuestionsNotLive,
+  questionKey,
+  resolveQuestionCard,
+} from '../src/lib/question-collection';
+import { mapQuestionToUIQuestion } from '../src/lib/question-mapping';
 import { RelayMachineChannel } from '../src/lib/relay-machine-channel';
 import { type RelayAnswerStatus, RelayRequests } from '../src/lib/relay-requests';
 import { ownedRelayChild, ownedRelayOffer } from './helpers/relay-hub';
@@ -132,7 +136,12 @@ test('real child resolution does not settle this answer until exact correlated d
       attached.claudeSessionId,
     );
     const ui = mapQuestionToUIQuestion(question.question, question.sessionId, question.timestamp);
-    const view = new Map([[questionKey(ui.sessionId, ui.agentId), { ...ui, submitting: true, awaitingRelayOutcome: true }]]);
+    const view = new Map([
+      [
+        questionKey(ui.sessionId, ui.agentId),
+        { ...ui, submitting: true, awaitingRelayOutcome: true },
+      ],
+    ]);
     expect(requests.answer(answer)).toBe(true);
     expect(requests.answer(answer)).toBe(false);
     expect(requests.answer({ ...answer, id: generateId() })).toBe(false);
@@ -141,11 +150,21 @@ test('real child resolution does not settle this answer until exact correlated d
     expect(resolved.type === 'question_resolved' && resolved.questionId).toBe(answer.questionId);
     expect(history).toHaveLength(0);
     if (resolved.type !== 'question_resolved') throw new Error('missing resolution');
-    const afterResolution = resolveQuestionCard(view, resolved.sessionId, resolved.questionId, resolved.reason);
+    const afterResolution = resolveQuestionCard(
+      view,
+      resolved.sessionId,
+      resolved.questionId,
+      resolved.reason,
+    );
     expect(afterResolution.questions.size).toBe(1);
     expect(afterResolution.fade).toBe(false);
-    const uncertain = new Map([...afterResolution.questions].map(([key, q]) => [key, { ...q, submitting: false, deliveryOutcome: 'uncertain' as const }]));
-    expect(pruneQuestionsNotLive(uncertain, child.entry.sessionId, new Set()).size).toBe(1);
+    const uncertain = new Map(
+      [...afterResolution.questions].map(([key, q]) => [
+        key,
+        { ...q, submitting: false, deliveryOutcome: 'uncertain' as const },
+      ]),
+    );
+    expect(pruneQuestionsNotLive(uncertain, child.entry.sessionId, []).size).toBe(1);
     const result = await pendingResults.next();
     expect(requests.receive({ ...result, requestId: generateId() })).toBe(false);
     expect(requests.receive({ ...result, sessionId: generateId() })).toBe(false);

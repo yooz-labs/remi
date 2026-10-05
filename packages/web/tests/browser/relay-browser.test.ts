@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { type Browser, chromium } from '@playwright/test';
 import { type ViteDevServer, createServer } from 'vite';
-import { ownedRelayOffer } from '../helpers/relay-hub';
+import { ownedRelayChild, ownedRelayOffer } from '../helpers/relay-hub';
 const enabled = process.env['REMI_BROWSER_TESTS'] === '1';
 const browserTest = enabled ? test : test.skip;
 let browser: Browser;
@@ -188,16 +188,18 @@ browserTest(
       expect(await page.getByRole('button', { name: /^Revoke device / }).count()).toBe(1);
       await page.getByRole('button', { name: 'Close', exact: true }).click();
       await page.evaluate(async () => {
-        const identity = await import('/src/lib/identity-client.ts');
-        window.ownedIdentity = identity.loadIdentity();
+        const moduleURL = '/src/lib/identity-client.ts';
+        const identity = await import(moduleURL);
+        (window as unknown as Record<string, unknown>)['ownedIdentity'] = identity.loadIdentity();
         identity.removeIdentity();
       });
       await page.waitForTimeout(200);
       expect(await page.getByText('Relay machine connected', { exact: true }).count()).toBe(0);
       await page.evaluate(async () => {
-        const identity = await import('/src/lib/identity-client.ts');
-        identity.saveIdentity(window.ownedIdentity);
-        delete window.ownedIdentity;
+        const moduleURL = '/src/lib/identity-client.ts';
+        const identity = await import(moduleURL);
+        identity.saveIdentity((window as unknown as Record<string, unknown>)['ownedIdentity']);
+        delete (window as unknown as Record<string, unknown>)['ownedIdentity'];
       });
       await page.getByText('Relay machine connected', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Machine devices', exact: true }).click();
@@ -210,28 +212,199 @@ browserTest(
   20000,
 );
 
-browserTest('actual browser refuses a 65th distinct pin while preserving all 64 existing public pins', async () => {
-  const context = await browser.newContext(); const page = await context.newPage();
-  try {
-    await page.goto(origin);
-    const counts = await page.evaluate(async () => {
-      const { rememberRelayPin, loadRelayPins } = await import('/src/lib/relay-pins.ts');
-      const pins = [];
-      for (let i = 0; i < 65; i++) {
-        const key = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
-        const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
-        const machinePublicKey = btoa(String.fromCharCode(...raw)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-        pins.push({ relayUrl: 'wss://owned.example', machinePublicKey });
+browserTest(
+  'actual browser refuses a 65th distinct pin while preserving all 64 existing public pins',
+  async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await page.goto(origin);
+      const counts = await page.evaluate(async () => {
+        const moduleURL = '/src/lib/relay-pins.ts';
+        const { rememberRelayPin, loadRelayPins } = await import(moduleURL);
+        const pins = [];
+        for (let i = 0; i < 65; i++) {
+          const key = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
+            'sign',
+            'verify',
+          ]);
+          const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+          const machinePublicKey = btoa(String.fromCharCode(...raw))
+            .replace(/=/g, '')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_');
+          pins.push({ relayUrl: 'wss://owned.example', machinePublicKey });
+        }
+        for (const pin of pins.slice(0, 64)) rememberRelayPin(pin);
+        const before = localStorage.getItem('remi-relay-machines-v2');
+        let refused = false;
+        try {
+          rememberRelayPin(pins[64]);
+        } catch {
+          refused = true;
+        }
+        const preserved = localStorage.getItem('remi-relay-machines-v2') === before;
+        const loaded = loadRelayPins().length;
+        rememberRelayPin(pins[0]);
+        return { refused, preserved, loaded, afterNextWrite: loadRelayPins().length };
+      });
+      expect(counts).toEqual({ refused: true, preserved: true, loaded: 64, afterNextWrite: 64 });
+    } finally {
+      await context.close();
+    }
+  },
+  10000,
+);
+
+browserTest(
+  'actual App keeps relay deny and cancel receipts through resolution, then retains uncertain receipt after identity close',
+  async () => {
+    const local = await ownedRelayOffer();
+    const child = await ownedRelayChild(local.running);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let abort: AbortController | undefined;
+    try {
+      await page.addInitScript(() => {
+        const observed = window as unknown as {
+          ownedBinding: {
+            sessionId: string;
+            claudeSessionId: string;
+            transcriptPath: string;
+          } | null;
+          ownedResultReached: boolean;
+          ownedResultRelease: (() => void) | null;
+        };
+        observed.ownedBinding = null;
+        observed.ownedResultReached = false;
+        observed.ownedResultRelease = null;
+        const original = crypto.subtle.decrypt.bind(crypto.subtle);
+        crypto.subtle.decrypt = async (...args: Parameters<SubtleCrypto['decrypt']>) => {
+          const plaintext = await original(...args);
+          let message: Record<string, unknown> | null = null;
+          try {
+            message = JSON.parse(new TextDecoder().decode(plaintext));
+          } catch {
+            /* encrypted handshake control is not application JSON */
+          }
+          if (message?.['type'] === 'hello_ack' && typeof message['sessionId'] === 'string')
+            observed.ownedBinding = {
+              sessionId: message['sessionId'],
+              claudeSessionId: String(message['claudeSessionId']),
+              transcriptPath: String(message['transcriptPath']),
+            };
+          if (message?.['type'] === 'answer_result') {
+            observed.ownedResultReached = true;
+            await new Promise<void>((resolve) => {
+              observed.ownedResultRelease = resolve;
+            });
+          }
+          return plaintext;
+        };
+      });
+      await page.goto(origin);
+      await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+      await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+      await page.getByLabel('Pairing token').fill(String(local.offer['token']));
+      await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+      const compare = await local.inbox.next();
+      local.ws.send(
+        JSON.stringify({
+          t: 'confirm',
+          id: 'owned-r4',
+          offerId: local.offer['offerId'],
+          connectionId: compare['connectionId'],
+          fingerprint: compare['fingerprint'],
+          accept: true,
+        }),
+      );
+      await page.getByText('Relay machine connected', { exact: true }).waitFor();
+      const project = local.running.dir.split('/').pop() ?? 'missing-owned-project';
+      await page.getByRole('button').filter({ hasText: project }).first().click();
+      await page.waitForFunction(
+        (sid) =>
+          (window as unknown as { ownedBinding?: { sessionId: string } }).ownedBinding
+            ?.sessionId === sid,
+        child.entry.sessionId,
+      );
+      const binding = await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              ownedBinding: { claudeSessionId: string; transcriptPath: string };
+            }
+          ).ownedBinding,
+      );
+      for (const action of ['deny', 'cancel', 'close'] as const) {
+        await page.evaluate(() => {
+          (window as unknown as { ownedResultReached: boolean }).ownedResultReached = false;
+        });
+        abort = new AbortController();
+        const hook = fetch(`http://127.0.0.1:${child.entry.hookPort}/hooks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: abort.signal,
+          body: JSON.stringify({
+            hook_event_name: 'PermissionRequest',
+            session_id: binding.claudeSessionId,
+            transcript_path: binding.transcriptPath,
+            cwd: local.running.dir,
+            permission_mode: 'default',
+            tool_name: 'Bash',
+            tool_input: { command: `R4_UI_PRIVATE_NEVER_RUN_${action}` },
+          }),
+        });
+        void hook.catch(() => undefined);
+        if (action === 'cancel')
+          await page.getByRole('button', { name: 'Cancel (Esc)', exact: true }).click();
+        else await page.getByRole('button', { name: /No.*Cancel/ }).click();
+        await page.waitForFunction(
+          () => (window as unknown as { ownedResultReached: boolean }).ownedResultReached,
+        );
+        expect(
+          await page.getByText('Waiting for delivery confirmation…', { exact: true }).count(),
+        ).toBe(1);
+        expect((await (await hook).json()).hookSpecificOutput.decision.behavior).toBe('deny');
+        if (action === 'close') {
+          await page.evaluate(async () => {
+            const moduleURL = '/src/lib/identity-client.ts';
+            (await import(moduleURL)).removeIdentity();
+          });
+          await page
+            .getByText(
+              'Delivery unverified. Check the daemon or terminal before answering again.',
+              { exact: true },
+            )
+            .waitFor();
+        }
+        await page.evaluate(() =>
+          (window as unknown as { ownedResultRelease: () => void }).ownedResultRelease(),
+        );
+        if (action === 'close') {
+          await page.waitForTimeout(200);
+          expect(
+            await page
+              .getByText(
+                'Delivery unverified. Check the daemon or terminal before answering again.',
+                { exact: true },
+              )
+              .count(),
+          ).toBe(1);
+        } else {
+          await page.getByText(action === 'cancel' ? 'Cancelled' : 'No', { exact: true }).waitFor();
+          expect(await page.getByText('Answered:', { exact: false }).count()).toBe(1);
+          await page.waitForTimeout(1700);
+        }
       }
-      for (const pin of pins.slice(0, 64)) rememberRelayPin(pin);
-      const before = localStorage.getItem('remi-relay-machines-v2');
-      let refused = false;
-      try { rememberRelayPin(pins[64]); } catch { refused = true; }
-      const preserved = localStorage.getItem('remi-relay-machines-v2') === before;
-      const loaded = loadRelayPins().length;
-      rememberRelayPin(pins[0]);
-      return { refused, preserved, loaded, afterNextWrite: loadRelayPins().length };
-    });
-    expect(counts).toEqual({ refused: true, preserved: true, loaded: 64, afterNextWrite: 64 });
-  } finally { await context.close(); }
-}, 10000);
+    } finally {
+      abort?.abort();
+      await page
+        .evaluate(() =>
+          (window as unknown as { ownedResultRelease?: () => void }).ownedResultRelease?.(),
+        )
+        .catch(() => undefined);
+      await context.close();
+    }
+  },
+  25000,
+);
