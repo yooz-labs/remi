@@ -207,6 +207,7 @@ async function paired() {
     }),
   );
   const ready = await socket.text();
+  expect(existsSync(join(running.dir, 'state/authorized_keys.json'))).toBe(true);
   const grants = JSON.parse(readFileSync(join(running.dir, 'state/authorized_keys.json'), 'utf8'));
   expect(
     grants.keys.some(

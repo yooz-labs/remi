@@ -24,6 +24,10 @@ test('correlated actual answer outcome is shared once; changed content conflicts
   expect(a.outcome).toBe('stale-binding');
   expect(b.outcome).toBe('stale-binding');
   expect(a.requestId).toBe(message.id);
+  expect(a.sessionId).toBe(message.sessionId);
+  expect(a.questionId).toBe(message.questionId);
+  const changedGeneration = await results.run(message, true, apply, 'new-child-generation');
+  expect(changedGeneration.outcome).toBe('conflict');
   const entries = (results as unknown as { entries: Map<string, { content: string }> }).entries;
   expect(entries.get(message.id)?.content).toMatch(/^[a-f0-9]{64}$/);
   expect(JSON.stringify([...entries])).not.toContain('PRIVATE_CHOICE_SENTINEL');

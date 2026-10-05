@@ -78,7 +78,10 @@ test('onAuth offer index resolves immutable ordered hello snapshot after another
     socket = started.socket;
     running.relay.close('first');
     socket.sendText(started.auth.auth);
-    const compare = await second.inbox.next();
+    const compared = await second.inbox.next(1000).catch(() => null);
+    expect(compared).not.toBeNull();
+    if (!compared) throw new Error('MISSING_IMMUTABLE_COMPARE');
+    const compare = compared;
     expect(compare['t']).toBe('compare');
     expect(compare['fingerprint']).toBe(started.auth.fingerprint);
     running.relay.message(
