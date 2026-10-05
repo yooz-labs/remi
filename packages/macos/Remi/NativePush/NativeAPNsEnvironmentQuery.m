@@ -69,6 +69,9 @@ static RemiAPNsQueryCancel QuerySelfPeer(const char *entitlement, BOOL productio
         dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
         finish = ^(NSInteger result) {
             if (done) return;
+            // Disposal clears the last owner of this block. Retain the callback
+            // locally before clearing finish so completion cannot use freed captures.
+            void (^notify)(NSInteger) = [completion copy];
             done = YES;
             dispatch_source_set_event_handler(timer, ^{}); dispatch_source_cancel(timer);
             xpc_connection_set_event_handler(client, ^(xpc_object_t event) { (void)event; });
@@ -76,7 +79,7 @@ static RemiAPNsQueryCancel QuerySelfPeer(const char *entitlement, BOOL productio
             if (accepted) xpc_connection_cancel(accepted);
             xpc_connection_cancel(client); xpc_connection_cancel(listener);
             finish = nil;
-            completion(result);
+            notify(result);
         };
         dispatch_source_set_event_handler(timer, ^{ if (finish) finish(-1); });
         dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
