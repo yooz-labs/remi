@@ -199,7 +199,7 @@ browserTest(
         const moduleURL = '/src/lib/identity-client.ts';
         const identity = await import(moduleURL);
         identity.saveIdentity((window as unknown as Record<string, unknown>)['ownedIdentity']);
-        delete (window as unknown as Record<string, unknown>)['ownedIdentity'];
+        Reflect.deleteProperty(window, 'ownedIdentity');
       });
       await page.getByText('Relay machine connected', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Machine devices', exact: true }).click();

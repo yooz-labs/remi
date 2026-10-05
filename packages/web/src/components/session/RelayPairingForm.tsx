@@ -126,6 +126,7 @@ export function RelayPairingForm({
     setError(null);
     stopCamera();
     setScanning(false);
+    setSelectingQR(false);
     try {
       if (needsUnlock) {
         if (onUnlockNative) await onUnlockNative();
