@@ -105,6 +105,7 @@ export function runListKeys(dir?: string): void {
     const fp = key.fingerprint.padEnd(18);
     const label = key.label.slice(0, 16).padEnd(17);
     console.log(`${fp}${label}${added.padEnd(14)}${lastUsed}`);
+    console.log(`  Public key: ${key.publicKey}`);
   }
   const pending = store.listPendingKeys();
   console.log(`\n${pending.length} pending key(s) awaiting local approval:`);
