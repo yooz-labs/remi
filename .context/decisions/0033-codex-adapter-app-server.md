@@ -619,7 +619,7 @@ Status per item of item 13 (the letters are that list's):
   The startup failure was also opaque: the child's PTY output went to `NOOP_OUTPUT_SINK`, so only `exited with code 2` reached a log.
   Fixed here: a headless session keeps the first and last 1 KB of the child's output until it has named a thread, and logs them once when the PTY exits within about 10 seconds of the spawn (`startup-output.ts`).
   This line is the one exception to the log rule above (no cwd, no prompt, no full thread id), so it is redacted: every UUID-shaped token is cut to its last eight characters, and the session's directories and the home directory become `<cwd>` and `~`.
-  It is escaped, on one line, capped at 4096 characters after escaping, and cut nowhere inside a surrogate pair.
+  It is escaped, on one line, capped at 4096 characters after escaping plus a `[cut]` marker when truncated, and cut nowhere inside a surrogate pair.
   After redaction it can still hold anything else Codex printed (a config excerpt, a URL, a prompt it echoed), and a path or id cut by the 1 KB limit can show as a fragment.
   A wrapper session captures nothing (its terminal already shows the error), and a stop or shutdown that remi asked for, or a session that has named its thread, logs nothing.
   The captured copy is only logged: an attached client reads the same bytes as raw PTY frames, by design, and a test pins that it receives them once and that no other message carries them.

@@ -12,7 +12,8 @@
  *   `~`;
  * - the text goes through `escapeUnsafeText` (a terminal sequence or a bidi override in it cannot
  *   act on the reader's screen), line ends are written out so it stays one log line, and the
- *   result is capped at 4096 characters (escaping can make control characters six times longer);
+ *   result is capped at 4096 characters plus a `[cut]` marker when truncated (escaping can make
+ *   control characters six times longer);
  * - no cut falls inside a surrogate pair.
  *
  * What it may still hold: anything else Codex printed, such as a config excerpt, a URL or a
