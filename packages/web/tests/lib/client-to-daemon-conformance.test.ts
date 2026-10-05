@@ -2,11 +2,9 @@
  * Two-sided conformance test for the C6 daemon inbound-dispatch unification
  * (#899): the DIRECT WEBSOCKET transport.
  *
- * Companion to `relay-client-to-daemon-conformance.test.ts`
- * (packages/daemon/tests), which covers the same client-to-daemon fixture
- * set over the relay transport via `RelayAdapter`'s `createTransport` seam
- * -- documented there as NOT end-to-end (the relay has no real client
- * implementation to drive the other side of the handshake, #881).
+ * Relay v2 admission, child routing and actual answer outcomes are covered
+ * by the real Worker/HubRelay harnesses in tests/integration/relay-r3*.test.ts.
+ * This file continues to pin direct WebSocket client/daemon dispatch.
  *
  * This file drives the REAL daemon `WebSocketAdapter` and the REAL web
  * `WebSocketClient` over one real Bun-native socket -- no synthetic
@@ -23,7 +21,7 @@
  * NOT `d2c` -- packages/shared/src/protocol.ts), this sends the checked-in
  * golden fixture from the real client and asserts the daemon's real
  * `AdapterEvents` callback fires with the right connection id. `hello`,
- * `auth_response`, `ping`, `pong`, and `ack` have no app-level event (by
+ * `auth_response`, `ping`, `pong`, `ack`, and relay device requests have no app-level event (by
  * design -- see `connection.ts`'s handler map) and get dedicated tests
  * instead of a generic "some event fired" assertion.
  */
@@ -79,7 +77,7 @@ const C2D_TYPES = (Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[
 /** Types with no app-level `AdapterEvents` callback by design (connection
  *  setup, liveness, or acknowledgment) -- covered by dedicated tests below
  *  instead of the generic per-type loop. */
-const NO_EVENT_TYPES = new Set(['hello', 'auth_response', 'ping', 'pong', 'ack']);
+const NO_EVENT_TYPES = new Set(['hello', 'auth_response', 'ping', 'pong', 'ack', 'relay_devices_request', 'relay_device_revoke_request']);
 
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
  *  name `connection.ts`'s (and the unified router's) handler map invokes. */
@@ -163,7 +161,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 18 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 20 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -171,7 +169,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(18);
+    expect(C2D_TYPES.length).toBe(20);
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
@@ -249,7 +247,22 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     }
   });
 
-  // --- Dedicated tests for the 5 no-app-event types ---
+  // --- Dedicated tests for the 7 no-app-event types ---
+
+  test.each(['relay_devices_request', 'relay_device_revoke_request'] as const)('%s from the real direct client is explicitly unsupported and invokes no application event', async (type) => {
+    // Static relay fixtures share an id; a new request needs a fresh dedupe identity.
+    const fixture = { ...loadFixture(type), id: generateId() };
+    const beforeReceived = received.length;
+    const beforeCalls = eventCalls.length;
+    client.send(fixture);
+    await waitFor(() => received.slice(beforeReceived).some((message) => message.type === 'error'));
+    const error = received.slice(beforeReceived).find((message) => message.type === 'error');
+    expect(error?.type).toBe('error');
+    if (error?.type !== 'error') throw new Error('MISSING_DIRECT_REFUSAL');
+    expect(error.code).toBe('UNSUPPORTED');
+    expect(error.message).toBe('Device management requires an enrolled relay channel');
+    expect(eventCalls.slice(beforeCalls)).toEqual([]);
+  });
 
   test('ping is routed to handlePing: the real client receives a real pong back', async () => {
     const fixture = loadFixture('ping');

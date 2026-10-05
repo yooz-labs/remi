@@ -56,7 +56,7 @@ export interface CreateSessionExtra {
 /**
  * The `extra` argument of `onCreateSessionRequest`, built from the wire message: undefined for a
  * plain request, so an older caller's request reads exactly as before. Both transports call it
- * (`connection.ts`, `relay-adapter.ts`), so they cannot drift on which fields they forward.
+ * (direct and HubRelay virtual `Connection`), so they cannot drift on which fields they forward.
  */
 export function createSessionExtra(
   message: Pick<CreateSessionRequestMessage, 'harness' | 'args'>,
@@ -193,11 +193,19 @@ void _allKeysCovered;
  *  handlers are async and which a caller may await: the Telegram
  *  `/interrupt` waits for the daemon's verdict on its Escape (#1140), and a
  *  Telegram answer button for the verdict on its answer (#1127 review S2),
- *  so their result is `void | Promise<void>`. */
+ *  so answers expose their actual verdict while input remains `void | Promise<void>`. */
 export type ClientMessageEvents = {
   [K in keyof ClientMessageEventArgs]: (
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
+  ) => K extends 'onAnswer'
+    ?
+        | void
+        | import('@remi/shared').AnswerOutcome
+        | Promise<void>
+        | Promise<import('@remi/shared').AnswerOutcome>
+    : K extends 'onUserInput'
+      ? void | Promise<void>
+      : void;
 };
 
 /** `ClientMessageEvents` with `connectionId` prepended -- what a fan-out
@@ -207,7 +215,15 @@ export type ClientMessageEventsWithConnectionId = {
   [K in keyof ClientMessageEventArgs]: (
     connectionId: UUID,
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
+  ) => K extends 'onAnswer'
+    ?
+        | void
+        | import('@remi/shared').AnswerOutcome
+        | Promise<void>
+        | Promise<import('@remi/shared').AnswerOutcome>
+    : K extends 'onUserInput'
+      ? void | Promise<void>
+      : void;
 };
 
 /**

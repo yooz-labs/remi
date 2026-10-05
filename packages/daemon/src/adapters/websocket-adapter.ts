@@ -23,6 +23,7 @@ import type {
 
 /** WebSocket adapter configuration */
 export interface WebSocketAdapterConfig extends AdapterConfig {
+  readonly relayControl?: ServerConfig['relayControl'];
   /** Port to listen on */
   readonly port: number;
 
@@ -70,6 +71,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.authenticator && { authenticator: config.authenticator }),
       ...(config.allowedOrigins && { allowedOrigins: config.allowedOrigins }),
       ...(config.capabilityToken && { capabilityToken: config.capabilityToken }),
+      ...(config.relayControl && { relayControl: config.relayControl }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -150,6 +152,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       }),
       ...(this.config.allowedOrigins && { allowedOrigins: this.config.allowedOrigins }),
       ...(this.config.capabilityToken && { capabilityToken: this.config.capabilityToken }),
+      ...(this.config.relayControl && { relayControl: this.config.relayControl }),
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,

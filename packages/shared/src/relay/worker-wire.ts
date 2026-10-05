@@ -6,10 +6,9 @@
  * host or a client before a pipe exists, and never again afterwards. Once a
  * pipe is open the Worker forwards bytes and sends nothing of its own.
  *
- * Only what the Worker itself uses is here: it decodes what an endpoint sends
- * and encodes what it answers. The endpoint-side encoders belong to the phase
- * that has a caller for them (the daemon in R3, the client in R4); until then
- * the tests pin the bytes with literal strings, so the two sides cannot drift.
+ * Both sides share strict codecs: the Worker decodes admission/host commands
+ * and encodes notices; the daemon and client encode their requests and decode
+ * those notices. Literal wire tests independently pin the canonical bytes.
  *
  * Every decoder is strict and fails with `MALFORMED` (or `OVERSIZE`): an
  * unknown key, a wrong length or a non-canonical base64url value is a refusal,
@@ -171,4 +170,63 @@ export function decodeHostCommand(text: unknown): HostCommand {
     default:
       throw new RelayError('TYPE');
   }
+}
+
+/** Endpoint codecs used by the hub control and pipe transports. Round-trip validation is strict. */
+export function encodeAdmit(value: Admit): string {
+  const text = JSON.stringify({
+    t: 'admit',
+    k: b64u(value.key),
+    s: b64u(value.signature),
+    ...(value.ticket ? { a: b64u(value.ticket) } : {}),
+  });
+  decodeAdmit(text);
+  return text;
+}
+export function encodeHostCommand(value: HostCommand): string {
+  const text =
+    value.t === 'pairing'
+      ? JSON.stringify({ t: value.t, h: b64u(value.ticketHash), ttl: value.ttlSeconds })
+      : JSON.stringify({ t: value.t, k: b64u(value.key) });
+  decodeHostCommand(text);
+  return text;
+}
+export function decodeNotice(text: unknown): Notice {
+  const value = parseObject(text, ['t', 'n', 'up', 'c', 'r', 'ok']);
+  let notice: Notice;
+  switch (value['t']) {
+    case 'nonce':
+      notice = { t: 'nonce', nonce: field(value, 'n', 32) };
+      break;
+    case 'admitted':
+      if ('up' in value && typeof value['up'] !== 'boolean') throw new RelayError('MALFORMED');
+      notice = { t: 'admitted', ...('up' in value ? { hostUp: value['up'] as boolean } : {}) };
+      break;
+    case 'host':
+      if (typeof value['up'] !== 'boolean') throw new RelayError('MALFORMED');
+      notice = { t: 'host', up: value['up'] };
+      break;
+    case 'open':
+      notice = { t: 'open' };
+      break;
+    case 'connected':
+    case 'gone':
+      if (typeof value['c'] !== 'string' || !/^[0-9a-f]{32}$/.test(value['c']))
+        throw new RelayError('MALFORMED');
+      notice = { t: value['t'], cid: value['c'] };
+      break;
+    case 'ack':
+      if (
+        !['enroll', 'revoke', 'pairing'].includes(String(value['r'])) ||
+        typeof value['ok'] !== 'boolean'
+      )
+        throw new RelayError('MALFORMED');
+      notice = { t: 'ack', op: value['r'] as HostOp, ok: value['ok'] };
+      break;
+    default:
+      throw new RelayError('TYPE');
+  }
+  // Canonical comparison rejects unrelated fields, alternate order and duplicate keys.
+  if (encodeNotice(notice) !== text) throw new RelayError('MALFORMED');
+  return notice;
 }

@@ -61,6 +61,8 @@ jobs:
       # entirely. Given #543/#881's history here, an undetected type error
       # in this package is the more serious half of #946's gap.
       - run: bun run typecheck:signaling
+      # Root integration harnesses are outside the package tsconfig includes.
+      - run: node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json
 
   test:
     name: Test

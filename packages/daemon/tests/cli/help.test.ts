@@ -91,9 +91,11 @@ describe('formatCommandHelp', () => {
     expect(output).toContain('--host');
   });
 
-  test('code help includes refresh', () => {
+  test('code help replaces refresh with current local pairing guidance', () => {
     const output = formatCommandHelp('code');
-    expect(output).toContain('--refresh');
+    expect(output).toContain('Permanent relay codes are retired');
+    expect(output).toContain('remi pair');
+    expect(output).not.toContain('--refresh');
   });
 
   test('start help includes port and bind', () => {
@@ -288,7 +290,7 @@ describe('the codex help (#1177)', () => {
 
 // #1193: the help said the relay was something to "disable" and that the
 // connection code is for the web and mobile app. The relay is off unless
-// enabled, and no shipped client connects through it.
+// enabled. R3 adds hub-only pairing and retires permanent codes.
 describe('relay wording', () => {
   const originalNoColor = process.env['NO_COLOR'];
 
@@ -300,7 +302,7 @@ describe('relay wording', () => {
     }
   });
 
-  test('--no-relay says the relay is off unless enabled, in every place it appears', () => {
+  test('relay help names hub opt-in, no-relay precedence and default off everywhere', () => {
     process.env['NO_COLOR'] = '1';
     for (const text of [
       formatHelp('0.0.0'),
@@ -308,24 +310,30 @@ describe('relay wording', () => {
       formatCommandHelp('serve'),
     ]) {
       expect(text).toContain('--no-relay');
-      expect(text).toContain('off unless network.relay = true');
+      expect(text).toContain('--relay / --no-relay');
+      expect(text).toContain('Opt the hub into relay');
+      expect(text).toContain('--no-relay wins (default off)');
     }
   });
 
-  test('--permanent-code says it needs auth, turns the relay on, and beats relay = false', () => {
+  test('--permanent-code is retired with current local pairing guidance', () => {
     process.env['NO_COLOR'] = '1';
     const help = formatHelp('0.0.0');
-    expect(help).toContain('needs auth on; turns the relay on');
-    expect(help).toContain('even if network.relay = false');
+    expect(help).toContain('Retired: use remi serve --relay and remi pair');
+    expect(help).not.toContain('even if network.relay = false');
   });
 
-  test('`remi code` is described as the permanent relay code, in the help and in its own help', () => {
+  test('main help offers pairing and devices while code help explains retirement', () => {
     process.env['NO_COLOR'] = '1';
     const main = formatHelp('0.0.0');
-    expect(main).toContain('Show the permanent relay code');
-    expect(main).toContain('Generate a new permanent relay code');
+    expect(main).toContain('remi pair');
+    expect(main).toContain('remi devices');
+    expect(main).not.toContain('Show the permanent relay code');
+    expect(main).not.toContain('Generate a new permanent relay code');
     const code = formatCommandHelp('code');
-    expect(code).toContain('Show or refresh the permanent relay code');
+    expect(code).toContain('Permanent relay codes are retired (#1198)');
+    expect(code).toContain('remi serve --relay');
+    expect(code).toContain('remi pair');
     expect(code).not.toContain('remote access connection code');
     expect(code).not.toContain('Show current connection code');
   });
@@ -335,6 +343,6 @@ describe('relay wording', () => {
     expect(formatHelp('0.0.0')).not.toContain('phone/browser');
     const code = formatCommandHelp('code');
     expect(code).not.toContain('web/mobile app');
-    expect(code).toContain('No shipped client connects through the relay yet');
+    expect(code).toContain('Pair with exact local fingerprint confirmation');
   });
 });

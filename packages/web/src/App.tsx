@@ -1690,6 +1690,8 @@ function App() {
       // omitted -- if a future/older daemon ever echoes one, it is silently
       // dropped instead of console.debug-spamming, and the #897 exhaustiveness
       // sweep records that this was decided, not forgotten.
+      case 'relay_devices_request':
+      case 'relay_device_revoke_request':
       case 'hello':
       case 'user_input':
       case 'answer':
@@ -1715,6 +1717,13 @@ function App() {
       // against ProtocolMessageMap.
       case 'auth_challenge':
       case 'auth_result':
+        break;
+
+      // Relay outcomes and device responses are explicitly ignored until the
+      // R4 connection coordinator is installed (#1199).
+      case 'answer_result':
+      case 'relay_devices_response':
+      case 'relay_device_revoke_response':
         break;
 
       // Keep-alive, both directions. lib/websocket-client.ts's own

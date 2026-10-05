@@ -212,6 +212,43 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * `MessageHandlers` totality property from #896).
  */
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  answer_result: () => ({
+    type: 'answer_result',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    sessionId: SESSION_ID,
+    questionId: QUESTION_ID,
+    outcome: 'stale',
+  }),
+  relay_devices_request: () => ({
+    type: 'relay_devices_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+  }),
+  relay_devices_response: () => ({
+    type: 'relay_devices_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    devices: [],
+  }),
+  relay_device_revoke_request: () => ({
+    type: 'relay_device_revoke_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    fingerprint: '0123456789abcdef',
+  }),
+  relay_device_revoke_response: () => ({
+    type: 'relay_device_revoke_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    fingerprint: '0123456789abcdef',
+    success: true,
+    edgeAcknowledged: false,
+    error: 'EDGE_UNVERIFIED',
+  }),
   hello: () =>
     createHello(CLIENT_ID, '1.0.0', {
       directory: '/Users/fixture/project',

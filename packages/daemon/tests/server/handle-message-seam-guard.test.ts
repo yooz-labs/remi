@@ -26,9 +26,8 @@
  *    the pre-handshake window was exactly as unguarded as before this PR.
  *    Fixed by hoisting one try/catch around the whole dispatch region
  *    (authenticating branch + routing) instead of adding a second targeted
- *    one, matching the shape `relay-adapter.ts`'s `handleRelayMessage`
- *    already uses (its single outer try covers its whole body, so new
- *    branches are covered automatically).
+ *    one. The replacement HubRelay uses this same Connection dispatch boundary
+ *    after authenticated channel decryption (#1198).
  * 2. The catch block's own reporting (`events.onError?.(error)` and
  *    `sendError(...)`) was itself unguarded. `events.onError` is a
  *    caller-supplied callback and `ws.send` can race a closing socket, so in
