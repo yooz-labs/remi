@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { type Browser, chromium } from '@playwright/test';
 import { type ViteDevServer, createServer } from 'vite';
+import { occupyEphemeral } from '../../../daemon/tests/session/port-test-helpers';
 import {
   ownedRelayChild,
   ownedRelayOffer,
@@ -21,10 +22,14 @@ let privateDir: string;
 beforeAll(async () => {
   if (!enabled) return;
   privateDir = await mkdtemp(join(tmpdir(), 'remi1199-browser-'));
+  const reservation = await occupyEphemeral('127.0.0.1');
+  await new Promise<void>((resolve, reject) =>
+    reservation.server.close((error) => (error ? reject(error) : resolve())),
+  );
   vite = await createServer({
     root: resolve(import.meta.dir, '../..'),
     configFile: resolve(import.meta.dir, '../../vite.config.ts'),
-    server: { host: '127.0.0.1', port: 0 },
+    server: { host: '127.0.0.1', port: reservation.port, strictPort: true },
   });
   await vite.listen();
   const address = vite.httpServer?.address();
