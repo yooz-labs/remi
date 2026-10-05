@@ -272,6 +272,26 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     @MainActor
+    func testNativePairingQRHasGuardedBundledIngress() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-qr-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html><body>QR selection boundary</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let supported = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'scanQR',id:'qr-owned'}); return true } catch { return false }",
+            arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(supported as? Bool, true, "Bundled main-frame pairing must provide a native QR selection route")
+    }
+
+    @MainActor
     func testProtectedImportArrivingAfterInactiveCannotUnlockBridge() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-protected-wk-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
