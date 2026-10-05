@@ -10,7 +10,8 @@
 import {
   checkKnownHost,
   ensureIdentity,
-  isIdentityEncrypted,
+  getIdentityRevision,
+  loadIdentity,
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
@@ -29,7 +30,7 @@ import {
 } from './connection-manager-helpers';
 import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
-import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
+import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, sign, toBase64, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -104,8 +105,6 @@ interface ManagedConnection {
 
 /** Hook options */
 export interface UseConnectionManagerOptions {
-  /** Browser integration scheduling seam after real key imports; public data only. */
-  identitySetupCheckpoint?: (publicKey: string) => Promise<void>;
   /** Message handler: receives connectionId and the protocol message */
   onMessage?: (connectionId: ConnectionId, message: ProtocolMessage) => void;
   /** Pre-unlocked identity (shared across all connections) */
@@ -239,7 +238,6 @@ export function useConnectionManager(
 ): UseConnectionManagerReturn {
   const {
     onMessage,
-    identitySetupCheckpoint,
     unlockedIdentity,
     clientId = 'remi-web',
     clientVersion = '0.0.1',
@@ -289,9 +287,7 @@ export function useConnectionManager(
   }, [unlockedIdentity, syncState]);
 
   useEffect(() => {
-    const changed = (event: Event) => {
-      const publicKey = (event as CustomEvent<string | null>).detail;
-      if (identityRef.current?.publicKeyRaw === publicKey) return;
+    const changed = () => {
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
         mc.approval.reset();
@@ -348,16 +344,30 @@ export function useConnectionManager(
       };
       mc.authAttempt = null;
       mc.pendingChallenge = pending;
-      mc.serverFingerprint = srvFingerprint;
-
-      // Trust On First Use (TOFU): check known hosts
-      const tofuResult = checkKnownHost(mc.url, srvFingerprint);
-      if (tofuResult === 'mismatch') {
+      const currentChallenge = () =>
+        connectionsMapRef.current.get(mc.connectionId) === mc && mc.pendingChallenge === pending;
+      const challengeRevision = getIdentityRevision();
+      let derivedFingerprint: string;
+      try {
+        const raw = fromBase64(srvPublicKey);
+        if (raw.byteLength !== 32 || toBase64(raw) !== srvPublicKey ||
+            isSmallOrderPublicKey(new Uint8Array(raw))) {
+          throw new Error('Server public key is invalid');
+        }
+        derivedFingerprint = await fingerprint(raw);
+        if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
+        if (derivedFingerprint !== srvFingerprint) {
+          throw new Error('Server public key fingerprint does not match its claim');
+        }
+        const tofuResult = checkKnownHost(mc.url, derivedFingerprint, srvPublicKey);
+        if (tofuResult === 'mismatch') {
+          throw new Error(`Server identity changed for ${mc.url}. Connection rejected.`);
+        }
+        mc.serverFingerprint = derivedFingerprint;
+      } catch (err) {
+        if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
         mc.approval.reset();
-        mc.error = new Error(
-          `Server fingerprint changed for ${mc.url}. ` +
-            'This could indicate a MITM attack. Connection rejected.',
-        );
+        mc.error = new Error(errorToString(err));
         mc.client.disconnect();
         syncState();
         return;
@@ -365,11 +375,19 @@ export function useConnectionManager(
 
       let identity = identityRef.current;
       if (!identity) {
+        const revision = getIdentityRevision();
+        const storedBefore = loadIdentity();
+        // First-use creation legitimately emits ONE save event. All other
+        // identity revisions cancel setup, including removal/re-import of the same key.
+        const expectedRevision = revision + (storedBefore ? 0 : 1);
+        const currentSetup = (publicKey: string) => currentChallenge() &&
+          getIdentityRevision() === expectedRevision && loadIdentity()?.publicKey === publicKey;
         try {
-          await ensureIdentity();
-          if (!isIdentityEncrypted()) {
+          const stored = await ensureIdentity();
+          if (!currentSetup(stored.publicKey)) return;
+          if (!isEncrypted(stored)) {
             identity = await unlockStoredIdentity();
-            await identitySetupCheckpoint?.(identity.publicKeyRaw);
+            if (!currentSetup(stored.publicKey) || identity.publicKeyRaw !== stored.publicKey) return;
             identityRef.current = identity;
           } else {
             mc.needsPassphrase = true;
@@ -377,9 +395,11 @@ export function useConnectionManager(
             return;
           }
         } catch (err) {
-          mc.error = new Error(
-            `Identity setup failed: ${errorToString(err)}`,
-          );
+          // An unrelated identity change must not let an obsolete rejection
+          // tear down a replacement attempt, or restore its old signer (#873).
+          if (!currentChallenge() || (getIdentityRevision() !== revision &&
+              getIdentityRevision() !== expectedRevision)) return;
+          mc.error = new Error(`Identity setup failed: ${errorToString(err)}`);
           mc.client.disconnect();
           syncState();
           return;
@@ -401,7 +421,7 @@ export function useConnectionManager(
         syncState();
       }
     },
-    [identitySetupCheckpoint, syncState],
+    [syncState],
   );
 
   /** Handle auth_result for a specific connection */
