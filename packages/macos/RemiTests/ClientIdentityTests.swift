@@ -270,6 +270,34 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     @MainActor
+    func testProtectedImportArrivingAfterInactiveCannotUnlockBridge() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-protected-wk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html><body>Protected import</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let legacy = ClientIdentity(privateKey: .init())
+        XCTAssertFalse(NativeForegroundUnlock.isActive(), "Unhosted test process must not activate the user app")
+        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        let imported = try await web.callAsyncJavaScript(
+            "try { return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'import',pkcs8:pkcs8,publicKey:publicKey,revision:null,requiresAppUnlock:true}) } catch { return {refused:true} }",
+            arguments: ["pkcs8":Ed25519PKCS8.encode(legacy.privateKey).base64EncodedString(),"publicKey":legacy.publicKeyRaw.base64EncodedString()],
+            in:nil, contentWorld:.page)
+        let reply = try XCTUnwrap(imported as? [String:Any])
+        XCTAssertNil(reply["refused"], "Explicit import may persist the protected native record")
+        XCTAssertEqual(reply["locked"] as? Bool, true, "A decrypted legacy import arriving after resign-active cannot restore foreground signing")
+        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(service:service,account:account)).requiresAppUnlock)
+    }
+
+    @MainActor
     func testProtectedLegacyImportSignsForegroundThroughRealBridgeOnly() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-protected-wk-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
