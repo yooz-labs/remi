@@ -1,6 +1,7 @@
-/** Direct-auth compatibility signing input; not a relay transport (#1198).
- * Authenticator still binds optional signed ephemeral claims using the established
- * v1 domain and length-prefix encoding. Relay v2 uses relay/signing-inputs.ts.
+/** Retained v1 compatibility signing encoding/export; not a current transport (#1198).
+ * Authenticator's legacy createChallengeWithRelayKex/verifyRelayKex methods reference
+ * this helper but have no production callers. Direct Connection auth uses
+ * createChallenge/verifyResponse. Relay v2 uses separate handshake/admission builders.
  */
 const KEX_CONTEXT = 'remi-relay-kex-v1';
 

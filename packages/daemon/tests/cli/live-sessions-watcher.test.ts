@@ -217,14 +217,11 @@ describe('startLiveSessionsWatcher (#542)', () => {
         // (#903): an unrelated watcher error can otherwise satisfy the wait,
         // which is how this test used to pass without its subject ever running.
         //
-        // Re-touch the directory while waiting. On Linux `register()`'s
-        // `.json.tmp` write+rename can make the watcher emit ENOENT; its
-        // handler closes and re-arms (`live-sessions-watcher.ts`), but the
-        // event that would have triggered the flush is already gone by the time
-        // the new watcher is listening. Without a fresh event `collect` is
-        // never called and the wait hangs to timeout -- observed in CI, never
-        // locally. The re-arm and the re-touch are both required; neither alone
-        // is sufficient.
+        // Historical CI workaround: before rearm reconciliation, a watcher
+        // error could lose the registration event, requiring another touch.
+        // Keep this collect-error case's existing event stimulus; the separate
+        // recovery tests now pin queued/closed-window registrations without
+        // any rescue write against the actual OS watcher.
         const deadline = Date.now() + TEST_TIMEOUT_MS - 2000;
         let touch = 0;
         while (Date.now() < deadline && !errors.some((e) => e.includes('collect exploded'))) {
