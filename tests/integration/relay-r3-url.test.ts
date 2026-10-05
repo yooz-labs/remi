@@ -3,12 +3,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { join, resolve } from 'node:path';
 import { relayV2 } from '@remi/shared';
 import { DEFAULT_CONFIG } from '../../packages/daemon/src/config/config.ts';
-import { relayWorkerUrl } from '../../packages/daemon/src/remote/relay-url.ts';
 import { reserveRange } from '../../packages/daemon/tests/session/port-test-helpers.ts';
 import { Socket } from '../../packages/signaling/tests/e2e/endpoints.ts';
 import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 
 test('actual default relay endpoint construction reaches the real R2 nonce route, preserving custom prefixes', async () => {
+  expect(new URL(DEFAULT_CONFIG.network.signaling_url).pathname).toBe('/');
+  const { relayWorkerUrl } = await import('../../packages/daemon/src/remote/relay-url.ts');
   const worker = await startWorker();
   let socket: Socket | undefined;
   try {
