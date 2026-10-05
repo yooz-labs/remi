@@ -873,17 +873,32 @@ describe('createCodexTurns: a turn/completed delivered twice (#1180 review)', ()
     expect(events.map((e) => e.kind)).toEqual(['completed', 'succeeded']);
   });
 
-  test('the memory is bounded: a turn long forgotten is announced again, a recent one is not', () => {
+  test('the memory is the last 64 turns: the oldest of them is still remembered, the one pushed out is not', () => {
     const turns = make();
-    for (let i = 0; i < 100; i++) turns.handleNotification('turn/completed', turnWithId(`t${i}`));
-    const before = events.length;
+    for (let i = 0; i < 64; i++) turns.handleNotification('turn/completed', turnWithId(`t${i}`));
+    expect(events).toHaveLength(128);
 
-    turns.handleNotification('turn/completed', turnWithId('t0'));
-    turns.handleNotification('turn/completed', turnWithId('t99'));
+    turns.handleNotification('turn/completed', turnWithId('t0')); // the 64th most recent: remembered
+    expect(events).toHaveLength(128);
 
-    expect(before).toBe(200);
-    // t0 is announced again (completed and succeeded); t99 is not.
-    expect(events.length).toBe(202);
+    turns.handleNotification('turn/completed', turnWithId('t64')); // pushes t0 out
+    turns.handleNotification('turn/completed', turnWithId('t0')); // forgotten: announced again
+    expect(events).toHaveLength(132);
+    turns.handleNotification('turn/completed', turnWithId('t64')); // the newest is remembered
+    expect(events).toHaveLength(132);
+  });
+
+  test('an id of 200 characters is an id, and a longer one is none: that turn is announced each time and never remembered', () => {
+    const turns = make();
+    const fits = 'i'.repeat(200);
+    turns.handleNotification('turn/completed', turnWithId(fits));
+    turns.handleNotification('turn/completed', turnWithId(fits));
+    expect(events.filter((e) => e.kind === 'completed')).toHaveLength(1);
+
+    const tooLong = 'i'.repeat(201);
+    turns.handleNotification('turn/completed', turnWithId(tooLong));
+    turns.handleNotification('turn/completed', turnWithId(tooLong));
+    expect(events.filter((e) => e.kind === 'completed')).toHaveLength(3);
   });
 });
 
@@ -931,6 +946,46 @@ describe('createCodexTurns: a completed turn with nothing to show (#1180 review)
 
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('no final_answer');
+  });
+
+  test.each([
+    ['only zero-width joiners', '\u200d\u200d\u200d'],
+    ['only characters that are removed', '\u202e\u0007\u001b\u200b'],
+    ['joiners among removed characters', '\u200d\u202e\u200d'],
+    ['only whitespace', ' \n\t '],
+  ])(
+    'a final answer of %s has nothing to show once made safe: no message, and one line without content says so',
+    (_name, answer) => {
+      make().handleNotification(
+        'turn/completed',
+        params(
+          turnCompletedFrame(MAIN, {
+            durationMs: 120_000,
+            items: [agentMessageItem('m1', answer, 'final_answer')],
+          }),
+        ),
+      );
+
+      expect(events.map((e) => e.kind)).toEqual(['completed', 'succeeded']);
+      expect((events[0] as { lastAssistantMessage?: string }).lastAssistantMessage).toBeUndefined();
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain('no visible text');
+      expect(logs[0]).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u200b-\u200f\u202a-\u202e]/);
+    },
+  );
+
+  test('a final answer with one visible character among the invisible ones is still the message', () => {
+    make().handleNotification(
+      'turn/completed',
+      params(
+        turnCompletedFrame(MAIN, {
+          items: [agentMessageItem('m1', '\u200d\u202eok\u200d', 'final_answer')],
+        }),
+      ),
+    );
+
+    expect((events[0] as { lastAssistantMessage?: string }).lastAssistantMessage).toBe('\u200dok\u200d');
+    expect(logs).toEqual([]);
   });
 
   test('an items view that is not one of Codex’s three is not repeated', () => {

@@ -44,6 +44,8 @@ describe('createCodexChat', () => {
   let client: AppServerClient;
   let logs: string[];
   let tracked: string | null;
+  /** What the tracker says each thread is; a test changes it to model a rotation. */
+  let roles: Record<string, 'main' | 'subagent'>;
   /** What the daemon sent every client, through `sendAndRecord`. */
   let live: ProtocolMessage[];
   /** What the session's own MessageAPI structured, as it would send `structured_agent_output`. */
@@ -57,6 +59,7 @@ describe('createCodexChat', () => {
     structured = [];
     listCalls = [];
     tracked = MAIN;
+    roles = { ...ROLES };
     let ready = false;
     client = new AppServerClient(
       {
@@ -83,7 +86,7 @@ describe('createCodexChat', () => {
       sessionId: SID,
       client,
       threadId: () => tracked,
-      threadRole: (threadId) => ROLES[threadId] ?? null,
+      threadRole: (threadId) => roles[threadId] ?? null,
       messageApi: new MessageAPI(
         { sessionId: SID },
         { onStructuredMessage: (message) => structured.push(message) },
@@ -323,6 +326,26 @@ describe('createCodexChat', () => {
       const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
       expect(JSON.parse(use?.toolInput ?? '').command).toHaveLength(500);
       expect(result?.toolOutput).toHaveLength(500);
+    });
+
+    test('the cut falls between code points: a pair that straddles the 500th unit is kept whole, never left as a lone surrogate', async () => {
+      const command = `${'a'.repeat(499)}\u{1F600}TAIL`;
+      const output = `${'b'.repeat(499)}\u{1F600}TAIL`;
+      servePages({
+        '': itemsListPage(
+          [{ item: realItem('commandExecution', { command, aggregatedOutput: output }) }],
+          null,
+        ),
+      });
+
+      const m = (await history()).messages[0] as TranscriptContentMessage;
+
+      const use = m.contentBlocks?.find((b) => b.type === 'tool_use');
+      const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
+      // 500 CODE POINTS: 499 letters and the whole emoji.
+      expect(JSON.parse(use?.toolInput ?? '').command).toBe(`${'a'.repeat(499)}\u{1F600}`);
+      expect(result?.toolOutput).toBe(`${'b'.repeat(499)}\u{1F600}`);
+      expect((result?.toolOutput ?? '').isWellFormed()).toBe(true);
     });
 
     test('a command and its output are written out safely: control, invisible and bidi characters become visible text, after the 500-character cut', async () => {
@@ -621,6 +644,33 @@ describe('createCodexChat', () => {
         expect(second).toEqual([1, 1]);
       });
 
+      test('a request that waited on a read that FAILED runs on its own: it does not inherit that read’s error', async () => {
+        let call = 0;
+        const releases: Array<() => void> = [];
+        server.onRequest('thread/items/list', () => {
+          listCalls.push({});
+          const n = call++;
+          return new Promise((resolve, reject) => {
+            releases.push(() =>
+              n === 0
+                ? reject({ code: -32603, message: 'the first read fails' })
+                : resolve(itemsListPage([{ item: userMessageItem('u1', 'ok') }], null)),
+            );
+          });
+        });
+        const chat = make();
+
+        const a = rejection(chat.readHistory(() => {}));
+        await server.waitFor(() => releases.length === 1, 'the first read to ask');
+        const b = chat.readHistory(() => {});
+        releases[0]?.();
+        expect(((await a) as Error).message).toContain('code -32603');
+        await server.waitFor(() => releases.length === 2, 'the waiting read to ask');
+        releases[1]?.();
+
+        expect(await b).toBe(1);
+      });
+
       test('a read that fails does not hold the next one', async () => {
         server.onRequest('thread/items/list', () => {
           throw { code: -32603, message: 'boom' };
@@ -630,6 +680,41 @@ describe('createCodexChat', () => {
 
         servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
         expect(await chat.readHistory(() => {})).toBe(1);
+      });
+
+      test('a read is cut at its overall deadline (60 s), after the page that passes it, and says so', async () => {
+        let clock = 0;
+        let n = 0;
+        server.onRequest('thread/items/list', () => {
+          n += 1;
+          clock += 20_000; // each answer takes 20 s of the (fake) clock
+          return itemsListPage([{ item: userMessageItem(`u${n}`, `m${n}`) }], `c${n}`);
+        });
+        const chat = make({ clockMs: () => clock });
+
+        const { count } = await history(chat);
+
+        // 20 s and 40 s are inside the deadline; the third answer reaches 60 s and ends the read.
+        expect(n).toBe(3);
+        expect(count).toBe(3);
+        expect(logs.join('\n')).toMatch(/60 seconds/);
+      });
+
+      test('the deadline of a read is counted from its own start, not the session’s: a later read gets the full time', async () => {
+        let clock = 1_000_000;
+        let n = 0;
+        server.onRequest('thread/items/list', () => {
+          n += 1;
+          clock += 30_000;
+          return itemsListPage(
+            [{ item: userMessageItem(`u${n}`, 'x') }],
+            n % 2 === 1 ? `c${n}` : null,
+          );
+        });
+        const chat = make({ clockMs: () => clock });
+
+        expect(await chat.readHistory(() => {})).toBe(2);
+        expect(await chat.readHistory(() => {})).toBe(2);
       });
 
       test('after a refusal the slot is free again once the running read ends', async () => {
@@ -1023,22 +1108,25 @@ describe('createCodexChat', () => {
       expect(structured).toHaveLength(1);
     });
 
-    test('the memory of delivered items is bounded: the oldest is forgotten, the newest is not', () => {
+    test('the memory of delivered items is the last 1024: the oldest of them is still remembered, the one pushed out is not', () => {
       const chat = make();
       const deliver = (id: string) =>
         chat.handleNotification(
           'item/completed',
           itemCompletedFrame(MAIN, userMessageItem(id, id))['params'],
         );
-      for (let i = 0; i < 1100; i++) deliver(`u${i}`);
-      const before = transcripts().length;
+      for (let i = 0; i < 1024; i++) deliver(`u${i}`);
+      expect(transcripts()).toHaveLength(1024);
 
-      deliver('u0'); // pushed out long ago: sent again (a client keeps the first copy it saw)
-      deliver('u1099'); // still remembered: not sent again
+      deliver('u0'); // the 1024th most recent: still remembered, not sent again
+      expect(transcripts()).toHaveLength(1024);
 
-      expect(before).toBe(1100);
-      expect(transcripts()).toHaveLength(1101);
+      deliver('u1024'); // the 1025th distinct item pushes the oldest out
+      deliver('u0'); // forgotten: sent again (a client keeps the first copy it saw)
+      expect(transcripts()).toHaveLength(1026);
       expect(transcripts().at(-1)?.entryUuid).toBe('u0');
+      deliver('u1024'); // the newest is remembered
+      expect(transcripts()).toHaveLength(1026);
     });
 
     test('only item/completed is chat: other methods and frames that are not an item are ignored', () => {
@@ -1089,9 +1177,49 @@ describe('createCodexChat', () => {
       expect(logs.join('\n')).not.toContain('PRIVATE');
       expect(transcripts()).toHaveLength(1);
     });
+
+    test('the retry of a failed send reuses the message it built: the structured output went out once, and the message keeps its id', () => {
+      let fail = true;
+      const chat = make({
+        sendAndRecord: (message) => {
+          if (fail) throw new TypeError('the send failed');
+          live.push(message);
+        },
+      });
+      const frame = itemCompletedFrame(MAIN, userMessageItem('u1', 'once'))['params'];
+
+      chat.handleNotification('item/completed', frame);
+      fail = false;
+      chat.handleNotification('item/completed', frame);
+      chat.handleNotification('item/completed', frame);
+
+      // The MessageAPI sent its structured output when the message was built; a rebuild would send another.
+      expect(structured).toHaveLength(1);
+      expect(transcripts()).toHaveLength(1);
+      expect(transcripts()[0]?.message.id).toBe(structured[0]?.id as string);
+    });
   });
   describe('catch-up at attach (#1180 review)', () => {
     const idsOf = () => transcripts().map((m) => m.entryUuid);
+    const catchUpLines = () => logs.filter((l) => /catch/i.test(l));
+    const liveFrame = (i: number) =>
+      itemCompletedFrame(MAIN, userMessageItem(`live-${i}`, `m${i}`))['params'];
+
+    /** A list that answers only when the test lets it; each call is one gate, answered with the pages given. */
+    function gates(answer: (n: number) => Json = () => itemsListPage([], null)) {
+      const open: Array<() => void> = [];
+      server.onRequest('thread/items/list', (params) => {
+        listCalls.push(params as Json);
+        const n = open.length;
+        return new Promise((resolve) => {
+          open.push(() => resolve(answer(n)));
+        });
+      });
+      return {
+        asked: () => open.length,
+        release: (n: number) => open[n]?.(),
+      };
+    }
 
     test('delivers what completed before the attach, the first prompt of a new thread included, oldest first', async () => {
       servePages({
@@ -1114,13 +1242,17 @@ describe('createCodexChat', () => {
       expect(listCalls).toEqual([{ threadId: MAIN, sortDirection: 'asc', limit: 100 }]);
     });
 
-    test('goes out through the session’s own message stream, structured by its own MessageAPI, as a live item does', async () => {
+    test('goes out as transcript_content only: no structured output to every connection, and each message still carries its structure', async () => {
       servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'hello') }], null) });
 
       await make().catchUp();
 
-      expect(structured).toHaveLength(1);
-      expect(transcripts()[0]?.message.id).toBe(structured[0]?.id as string);
+      // The web client draws an entry from its transcript_content; a structured_agent_output as
+      // well would double the replay buffer and, in a bound chat, be one more message per entry.
+      expect(structured).toEqual([]);
+      expect(live.map((m) => m.type)).toEqual(['transcript_content']);
+      expect(transcripts()[0]?.message.content).toBe('hello');
+      expect(transcripts()[0]?.message.bullets.length).toBeGreaterThan(0);
     });
 
     test('an item already delivered live is not sent again, and the rest still is', async () => {
@@ -1166,26 +1298,19 @@ describe('createCodexChat', () => {
     });
 
     test('live items that arrive while the history is being read are held and sent after it, in order', async () => {
-      let release: () => void = () => {};
-      server.onRequest('thread/items/list', () => {
-        listCalls.push({});
-        return new Promise((resolve) => {
-          release = () =>
-            resolve(
-              itemsListPage(
-                [
-                  { item: userMessageItem('u1', 'first prompt') },
-                  { item: agentMessageItem('a1', 'also live', 'final_answer') },
-                ],
-                null,
-              ),
-            );
-        });
-      });
+      const list = gates(() =>
+        itemsListPage(
+          [
+            { item: userMessageItem('u1', 'first prompt') },
+            { item: agentMessageItem('a1', 'also live', 'final_answer') },
+          ],
+          null,
+        ),
+      );
       const chat = make();
 
       const caughtUp = chat.catchUp();
-      await server.waitFor(() => listCalls.length === 1, 'the catch-up read to ask');
+      await server.waitFor(() => list.asked() === 1, 'the catch-up read to ask');
       chat.handleNotification(
         'item/completed',
         itemCompletedFrame(MAIN, agentMessageItem('a1', 'also live', 'final_answer'))['params'],
@@ -1197,37 +1322,143 @@ describe('createCodexChat', () => {
       // Held: nothing has gone out yet, so the prompt cannot arrive after what it caused.
       expect(idsOf()).toEqual([]);
 
-      release();
+      list.release(0);
       await caughtUp;
 
       expect(idsOf()).toEqual(['u1', 'a1', 'a2']);
     });
 
-    test('more live items than the hold takes are sent at once, and none is lost', async () => {
-      let release: () => void = () => {};
-      server.onRequest('thread/items/list', () => {
-        listCalls.push({});
-        return new Promise((resolve) => {
-          release = () => resolve(itemsListPage([{ item: userMessageItem('u1', 'prompt') }], null));
-        });
-      });
-      const chat = make();
-      const caughtUp = chat.catchUp();
-      await server.waitFor(() => listCalls.length === 1, 'the catch-up read to ask');
+    describe('the hold starts when the attach request is sent, not when it succeeds', () => {
+      test('an item that arrives between attaching() and the catch-up is held, and goes out after the history it belongs after', async () => {
+        const list = gates(() =>
+          itemsListPage(
+            [
+              { item: userMessageItem('prompt', 'the prompt') },
+              { item: agentMessageItem('answer', 'what it caused', 'final_answer') },
+            ],
+            null,
+          ),
+        );
+        const chat = make();
 
-      for (let i = 0; i < 300; i++) {
+        chat.attaching();
+        // The app-server wrote the answer right behind the response of `thread/resume`, in one chunk:
+        // it arrives before the callback that starts the catch-up.
         chat.handleNotification(
           'item/completed',
-          itemCompletedFrame(MAIN, userMessageItem(`live-${i}`, `m${i}`))['params'],
+          itemCompletedFrame(MAIN, agentMessageItem('answer', 'what it caused', 'final_answer'))[
+            'params'
+          ],
         );
-      }
-      // 256 are held; the rest went out when they arrived.
-      expect(idsOf()).toHaveLength(44);
+        expect(idsOf()).toEqual([]);
+        const caughtUp = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the catch-up read to ask');
+        list.release(0);
+        await caughtUp;
 
-      release();
+        expect(idsOf()).toEqual(['prompt', 'answer']);
+      });
+
+      test('attachFailed() releases what was held, in arrival order, at once; later items are not held', () => {
+        const chat = make();
+
+        chat.attaching();
+        for (const i of [0, 1, 2]) chat.handleNotification('item/completed', liveFrame(i));
+        expect(idsOf()).toEqual([]);
+        chat.attachFailed();
+        expect(idsOf()).toEqual(['live-0', 'live-1', 'live-2']);
+
+        chat.handleNotification('item/completed', liveFrame(3));
+        expect(idsOf()).toEqual(['live-0', 'live-1', 'live-2', 'live-3']);
+      });
+
+      test('attachFailed() while a catch-up is reading leaves the hold to that read, which sends the history first', async () => {
+        const list = gates(() => itemsListPage([{ item: userMessageItem('u1', 'history') }], null));
+        const chat = make();
+        const caughtUp = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the read to ask');
+        chat.handleNotification('item/completed', liveFrame(0));
+
+        chat.attachFailed();
+        expect(idsOf()).toEqual([]);
+        list.release(0);
+        await caughtUp;
+
+        expect(idsOf()).toEqual(['u1', 'live-0']);
+      });
+
+      test('an announced attach keeps the hold after a read that ends before it succeeds, until its own catch-up has run', async () => {
+        const list = gates(() => itemsListPage([{ item: userMessageItem('u1', 'history') }], null));
+        const chat = make();
+        chat.attaching();
+        const first = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the first read to ask');
+        chat.attaching(); // a reconnect: the next request is out while the first read still runs
+        chat.handleNotification('item/completed', liveFrame(0));
+        list.release(0);
+        await first;
+
+        // The read ended, but the new attach has not: its history is still to come.
+        expect(idsOf()).toEqual(['u1']);
+        chat.handleNotification('item/completed', liveFrame(1));
+        expect(idsOf()).toEqual(['u1']);
+
+        const second = chat.catchUp();
+        await server.waitFor(() => list.asked() === 2, 'the second read to ask');
+        list.release(1);
+        await second;
+
+        expect(idsOf()).toEqual(['u1', 'live-0', 'live-1']);
+      });
+
+      test('the same item twice, once in the hold and once in the history, is sent once, at its place in the history', async () => {
+        const list = gates(() =>
+          itemsListPage(
+            [
+              { item: userMessageItem('u1', 'first') },
+              { item: userMessageItem('u2', 'second') },
+              { item: userMessageItem('u3', 'third') },
+            ],
+            null,
+          ),
+        );
+        const chat = make();
+        chat.attaching();
+        const caughtUp = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the read to ask');
+        for (const id of ['u3', 'u3', 'live-only']) {
+          chat.handleNotification(
+            'item/completed',
+            itemCompletedFrame(MAIN, userMessageItem(id, id))['params'],
+          );
+        }
+        list.release(0);
+        await caughtUp;
+
+        expect(idsOf()).toEqual(['u1', 'u2', 'u3', 'live-only']);
+      });
+    });
+
+    test('more live items than the hold takes keep their arrival order: the held ones go first, the history is left to an explicit read, and it says so once', async () => {
+      const list = gates(() => itemsListPage([{ item: userMessageItem('u1', 'prompt') }], null));
+      const chat = make();
+      const caughtUp = chat.catchUp();
+      await server.waitFor(() => list.asked() === 1, 'the catch-up read to ask');
+
+      for (let i = 0; i < 256; i++) chat.handleNotification('item/completed', liveFrame(i));
+      // 256 fit the hold: nothing is out yet.
+      expect(idsOf()).toEqual([]);
+      for (let i = 256; i < 300; i++) chat.handleNotification('item/completed', liveFrame(i));
+      // The 257th found it full: the held ones went out first, in the order they came, then it.
+      expect(idsOf()).toEqual(Array.from({ length: 300 }, (_, i) => `live-${i}`));
+
+      list.release(0);
       await caughtUp;
-      expect(idsOf()).toHaveLength(301);
-      expect(new Set(idsOf()).size).toBe(301);
+
+      // The history is not sent after them (it would be out of order): an explicit read has it.
+      expect(idsOf()).toEqual(Array.from({ length: 300 }, (_, i) => `live-${i}`));
+      expect(catchUpLines()).toHaveLength(1);
+      expect(catchUpLines()[0]).not.toMatch(/live-|prompt|m\d/);
     });
 
     test('a failing list is logged without content, delivers nothing, never throws, and the held items still go out', async () => {
@@ -1272,7 +1503,24 @@ describe('createCodexChat', () => {
       expect(logs.some((l) => /catch/i.test(l))).toBe(true);
     });
 
-    test('a thread longer than the catch-up bound is left to an explicit history read: nothing is sent, and it says so', async () => {
+    test('the request timeout of a catch-up is 3 seconds unless the seam says otherwise', async () => {
+      const timeouts: Array<number | undefined> = [];
+      const chat = make({
+        client: {
+          request: (method, params, timeoutMs) => {
+            timeouts.push(timeoutMs);
+            return client.request(method, params, timeoutMs);
+          },
+        },
+      });
+      servePages({ '': itemsListPage([], null) });
+
+      await chat.catchUp();
+
+      expect(timeouts).toEqual([3000]);
+    });
+
+    test('a thread longer than one page is left to an explicit history read: only that page is asked for, nothing is sent, and it says so', async () => {
       let n = 0;
       server.onRequest('thread/items/list', () => {
         n += 1;
@@ -1281,25 +1529,26 @@ describe('createCodexChat', () => {
 
       await make().catchUp();
 
-      // Five pages are read, the thread goes on, and the oldest 500 are not a catch-up: not sent.
-      expect(n).toBe(5);
+      // One page of 100 is the bound: a thread that goes on is not a catch-up, and its prompt is not
+      // sent without what came after it. (A catch-up of many pages is hundreds of replayed messages.)
+      expect(n).toBe(1);
       expect(idsOf()).toEqual([]);
-      expect(logs.filter((l) => /catch/i.test(l))).toHaveLength(1);
+      expect(catchUpLines()).toHaveLength(1);
+      expect(catchUpLines()[0]).toMatch(/one page/);
     });
 
-    test('a thread that fits in the bound exactly is caught up whole', async () => {
-      const pages: Record<string, Json> = {};
-      let cursor = '';
-      for (let page = 1; page <= 5; page++) {
-        const next = page === 5 ? null : `c${page}`;
-        pages[cursor] = itemsListPage([{ item: userMessageItem(`u${page}`, `m${page}`) }], next);
-        cursor = next ?? '';
-      }
-      servePages(pages);
-
+    test('a thread of exactly one full page (100 items, no cursor on) is caught up whole; one with a cursor on is not', async () => {
+      const hundred = Array.from({ length: 100 }, (_, i) => ({
+        item: userMessageItem(`u${i}`, `m${i}`),
+      }));
+      servePages({ '': itemsListPage(hundred, null) });
       await make().catchUp();
+      expect(idsOf()).toEqual(hundred.map((_, i) => `u${i}`));
 
-      expect(idsOf()).toEqual(['u1', 'u2', 'u3', 'u4', 'u5']);
+      live = [];
+      servePages({ '': itemsListPage(hundred, 'more') });
+      await make().catchUp();
+      expect(idsOf()).toEqual([]);
     });
 
     test('a cursor that repeats is an unfinished read: nothing is sent', async () => {
@@ -1329,33 +1578,25 @@ describe('createCodexChat', () => {
     });
 
     test('an attach while a catch-up is running is not lost: one more read follows it', async () => {
-      const gates: Array<() => void> = [];
-      server.onRequest('thread/items/list', () => {
-        listCalls.push({});
-        return new Promise((resolve) => {
-          gates.push(() =>
-            resolve(
-              itemsListPage(
-                gates.length > 1
-                  ? [
-                      { item: userMessageItem('u1', 'one') },
-                      { item: userMessageItem('u2', 'after reconnect') },
-                    ]
-                  : [{ item: userMessageItem('u1', 'one') }],
-                null,
-              ),
-            ),
-          );
-        });
-      });
+      const list = gates((n) =>
+        itemsListPage(
+          n > 0
+            ? [
+                { item: userMessageItem('u1', 'one') },
+                { item: userMessageItem('u2', 'after reconnect') },
+              ]
+            : [{ item: userMessageItem('u1', 'one') }],
+          null,
+        ),
+      );
       const chat = make();
 
       const first = chat.catchUp();
-      await server.waitFor(() => gates.length === 1, 'the first read to ask');
+      await server.waitFor(() => list.asked() === 1, 'the first read to ask');
       const second = chat.catchUp();
-      gates[0]?.();
-      await server.waitFor(() => gates.length === 2, 'the follow-up read to ask');
-      gates[1]?.();
+      list.release(0);
+      await server.waitFor(() => list.asked() === 2, 'the follow-up read to ask');
+      list.release(1);
       await Promise.all([first, second]);
 
       expect(listCalls).toHaveLength(2);
@@ -1363,32 +1604,110 @@ describe('createCodexChat', () => {
     });
 
     test('three attaches in a row are one running read and one follow-up, not three', async () => {
-      const gates: Array<() => void> = [];
-      server.onRequest('thread/items/list', () => {
-        listCalls.push({});
-        return new Promise((resolve) => {
-          gates.push(() => resolve(itemsListPage([], null)));
-        });
-      });
+      const list = gates();
       const chat = make();
 
       const all = [chat.catchUp(), chat.catchUp(), chat.catchUp()];
-      await server.waitFor(() => gates.length === 1, 'the first read to ask');
-      gates[0]?.();
-      await server.waitFor(() => gates.length === 2, 'the follow-up to ask');
-      gates[1]?.();
+      await server.waitFor(() => list.asked() === 1, 'the first read to ask');
+      list.release(0);
+      await server.waitFor(() => list.asked() === 2, 'the follow-up to ask');
+      list.release(1);
       await Promise.all(all);
 
       expect(listCalls).toHaveLength(2);
     });
 
-    test('a catch-up never delivers prose of another thread: it reads the thread tracked now', async () => {
-      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
-      tracked = OTHER;
+    describe('a rotation while a catch-up is running', () => {
+      const rotate = () => {
+        tracked = OTHER;
+        roles = { [OTHER]: 'main' };
+      };
 
-      await make().catchUp();
+      test('the history of the thread that was tracked is skipped, with a line saying so, and the follow-up read gives the new thread its own', async () => {
+        const list = gates((n) =>
+          itemsListPage(
+            [{ item: userMessageItem(n === 0 ? 'old-history' : 'new-history', 'x') }],
+            null,
+          ),
+        );
+        const chat = make();
+        const first = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the read of the old thread to ask');
 
-      expect(listCalls.map((c) => c['threadId'])).toEqual([OTHER]);
+        rotate();
+        const second = chat.catchUp(); // the attach to the new thread
+        list.release(0);
+        await server.waitFor(() => list.asked() === 2, 'the follow-up read to ask');
+        // Nothing of the old thread has gone out.
+        expect(idsOf()).toEqual([]);
+        list.release(1);
+        await Promise.all([first, second]);
+
+        expect(listCalls.map((c) => c['threadId'])).toEqual([MAIN, OTHER]);
+        expect(idsOf()).toEqual(['new-history']);
+        expect(catchUpLines().filter((l) => /changed|rotat/i.test(l))).toHaveLength(1);
+      });
+
+      test('an item held for the old thread is dropped by its role when the hold ends; one for the new thread goes out', async () => {
+        const list = gates((n) =>
+          itemsListPage(n === 0 ? [] : [{ item: userMessageItem('new-history', 'x') }], null),
+        );
+        const chat = make();
+        const first = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the read to ask');
+        chat.handleNotification(
+          'item/completed',
+          itemCompletedFrame(MAIN, userMessageItem('old-live', 'old'))['params'],
+        );
+
+        rotate();
+        chat.handleNotification(
+          'item/completed',
+          itemCompletedFrame(OTHER, userMessageItem('new-live', 'new'))['params'],
+        );
+        const second = chat.catchUp();
+        list.release(0);
+        await server.waitFor(() => list.asked() === 2, 'the follow-up read to ask');
+        list.release(1);
+        await Promise.all([first, second]);
+
+        expect(idsOf()).toEqual(['new-history', 'new-live']);
+      });
+
+      test('a read that ends before the attach to the new thread has finished keeps the new thread’s items held for its own history', async () => {
+        const list = gates((n) => itemsListPage([{ item: userMessageItem(`h${n}`, 'x') }], null));
+        const chat = make();
+        chat.attaching();
+        const first = chat.catchUp();
+        await server.waitFor(() => list.asked() === 1, 'the read of the old thread to ask');
+
+        rotate();
+        chat.attaching(); // the new thread's `thread/resume` is out
+        chat.handleNotification(
+          'item/completed',
+          itemCompletedFrame(OTHER, userMessageItem('new-live', 'new'))['params'],
+        );
+        list.release(0);
+        await first;
+        // The old read has ended, and nothing of either thread has gone out: the new one's history comes first.
+        expect(idsOf()).toEqual([]);
+
+        const second = chat.catchUp();
+        await server.waitFor(() => list.asked() === 2, 'the read of the new thread to ask');
+        list.release(1);
+        await second;
+
+        expect(idsOf()).toEqual(['h1', 'new-live']);
+      });
+
+      test('a catch-up reads the thread tracked now, never another', async () => {
+        servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+        tracked = OTHER;
+
+        await make().catchUp();
+
+        expect(listCalls.map((c) => c['threadId'])).toEqual([OTHER]);
+      });
     });
 
     test('a failing send is logged by name and does not stop the rest of the catch-up', async () => {
@@ -1412,6 +1731,67 @@ describe('createCodexChat', () => {
       expect(idsOf()).toEqual(['u2']);
       expect(logs.join('\n')).toContain('TypeError');
       expect(logs.join('\n')).not.toContain('PRIVATE');
+    });
+  });
+
+  describe('dispose (#1180 review)', () => {
+    const idsOf = () => transcripts().map((m) => m.entryUuid);
+
+    test('a held item of a disposed chat sends nothing: not a transcript_content, and not a structured output either', () => {
+      const chat = make();
+      chat.attaching();
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, userMessageItem('held', 'x'))['params'],
+      );
+
+      chat.dispose();
+      chat.attachFailed();
+
+      expect(live).toEqual([]);
+      expect(structured).toEqual([]);
+    });
+
+    test('a catch-up whose read finishes after dispose sends neither the history nor what it held', async () => {
+      let release: () => void = () => {};
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((resolve) => {
+          release = () =>
+            resolve(itemsListPage([{ item: userMessageItem('u1', 'history') }], null));
+        });
+      });
+      const chat = make();
+      const caughtUp = chat.catchUp();
+      await server.waitFor(() => listCalls.length === 1, 'the read to ask');
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, userMessageItem('held', 'x'))['params'],
+      );
+
+      chat.dispose();
+      release();
+      await caughtUp;
+
+      expect(live).toEqual([]);
+      expect(structured).toEqual([]);
+    });
+
+    test('after dispose a live item is dropped, a catch-up asks nothing, and disposing twice is harmless', async () => {
+      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+      const chat = make();
+
+      chat.dispose();
+      chat.dispose();
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, userMessageItem('late', 'x'))['params'],
+      );
+      await chat.catchUp();
+
+      expect(listCalls).toEqual([]);
+      expect(idsOf()).toEqual([]);
+      expect(structured).toEqual([]);
     });
   });
 });

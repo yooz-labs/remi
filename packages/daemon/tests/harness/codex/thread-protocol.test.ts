@@ -192,6 +192,18 @@ describe('parseTurnCompleted (#1180)', () => {
     for (const bad of ['', 7, null, undefined, {}]) expect(idOf(bad), String(bad)).toBeNull();
   });
 
+  test('an id of up to 200 characters is kept and a longer one is no id at all: it would fill the set that remembers ids', () => {
+    const idOf = (id: string) => {
+      const frame = turnCompletedFrame('t') as { params: { turn: Json } };
+      frame.params.turn['id'] = id;
+      return parseTurnCompleted(frame.params)?.turnId;
+    };
+
+    expect(idOf('t'.repeat(200))).toBe('t'.repeat(200));
+    expect(idOf('t'.repeat(201))).toBeNull();
+    expect(idOf('t'.repeat(1_000_000))).toBeNull();
+  });
+
   test('the items view is one of Codex’s three, and anything else is unknown (it may be logged, so it is never free text)', () => {
     const viewOf = (view: unknown) => {
       const frame = turnCompletedFrame('t') as { params: { turn: Json } };
@@ -346,6 +358,16 @@ describe('parseThreadItem (#1180)', () => {
     ]) {
       expect(parseThreadItem(bad), JSON.stringify(bad)).toBeNull();
     }
+  });
+
+  test('an id of up to 200 characters is kept and an item with a longer one is not chat: the id is copied into every message and remembered', () => {
+    expect(parseThreadItem(userMessageItem('i'.repeat(200), 'x'))).toMatchObject({
+      id: 'i'.repeat(200),
+    });
+    for (const make of [userMessageItem, agentMessageItem]) {
+      expect(parseThreadItem(make('i'.repeat(201), 'x'))).toBeNull();
+    }
+    expect(parseThreadItem(realItem('commandExecution', { id: 'i'.repeat(201) }))).toBeNull();
   });
 
   test('a command keeps its status, output and a finite exit code; a code that is not a number is unknown', () => {

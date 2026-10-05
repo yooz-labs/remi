@@ -14,7 +14,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, TranscriptContentMessage, UUID } from '@remi/shared';
+import {
+  type ProtocolMessage,
+  type TranscriptContentMessage,
+  type UUID,
+  createStructuredAgentOutput,
+} from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
@@ -146,6 +151,8 @@ describe('a Codex session: turn events and chat', () => {
       noThread?: boolean;
       /** Answers `thread/items/list`, registered BEFORE the attach so the catch-up at the attach reads it. */
       list?: (params: unknown) => unknown;
+      /** Frames the app-server writes in the SAME chunk as the response to the attach (`thread/resume`). */
+      alongResume?: (threadId: string) => Json[];
     } = {},
   ): Promise<Rig> {
     const server = FakeAppServer.start();
@@ -156,7 +163,15 @@ describe('a Codex session: turn events and chat', () => {
     const sent: ProtocolMessage[] = [];
     const logs: string[] = [];
     const turns: Recorded[] = [];
-    const messageApi = new MessageAPI({ sessionId });
+    // As the daemon wires it (`message-api-setup.ts`): the MessageAPI sends its structured output
+    // through the same `sendAndRecord`, and that path knows nothing of this session being disposed.
+    const messageApi = new MessageAPI(
+      { sessionId },
+      {
+        onStructuredMessage: (structured) =>
+          sent.push(createStructuredAgentOutput(structured, false)),
+      },
+    );
     const sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     const liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
     fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
@@ -203,6 +218,7 @@ describe('a Codex session: turn events and chat', () => {
         broadcast: true,
       });
     }
+    if (opts.alongResume !== undefined) server.withNextResume(tuiId, opts.alongResume(tuiId));
     server.createRollout(tuiId);
     await until(() => logs.some((l) => l.includes('attached to thread')), 'the attach');
     return { server, session, turns, sent, logs, tuiId, sessionId };
@@ -210,6 +226,8 @@ describe('a Codex session: turn events and chat', () => {
 
   const transcripts = (r: Rig): TranscriptContentMessage[] =>
     r.sent.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
+  const structuredOutputs = (r: Rig): ProtocolMessage[] =>
+    r.sent.filter((m) => m.type === 'structured_agent_output');
 
   describe('turn events', () => {
     test('a turn that completes on the tracked thread reaches the sink as completed, then succeeded', async () => {
@@ -476,10 +494,15 @@ describe('a Codex session: turn events and chat', () => {
       expect(idsOf(r)).toEqual(['first-prompt']);
     });
 
-    test('a live item held by a catch-up that ends after the session was disposed is not sent', async () => {
+    test('a live item held by a catch-up that ends after the session was disposed sends nothing: no transcript_content and no structured output', async () => {
+      let release: () => void = () => {};
       const r = await launch({
-        // Never answers: the catch-up is still reading when the session is disposed.
-        list: () => new Promise(() => {}),
+        // Answers only when the test lets it: the catch-up is still reading when the session is disposed.
+        list: () =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve(itemsListPage([{ item: userMessageItem('u1', 'history') }], null));
+          }),
       });
       await until(() => listCalls(r) === 1, 'the catch-up to ask');
       r.server.emit(
@@ -492,9 +515,39 @@ describe('a Codex session: turn events and chat', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       r.session.dispose();
+      release();
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      expect(idsOf(r)).toEqual([]);
+      // The MessageAPI the daemon builds sends structured output through its own `sendAndRecord`,
+      // which a flag in the session cannot stop: nothing may be built after dispose.
+      expect(transcripts(r)).toEqual([]);
+      expect(structuredOutputs(r)).toEqual([]);
+      expect(r.sent).toEqual([]);
+    });
+
+    test('an item written in the same chunk as the response to the attach is held, and goes out after the history that comes before it', async () => {
+      const r = await launch({
+        list: () =>
+          itemsListPage(
+            [
+              { item: userMessageItem('prompt', 'the prompt that started the turn') },
+              { item: agentMessageItem('answer', 'what the prompt caused', 'final_answer') },
+            ],
+            null,
+          ),
+        // The app-server wrote the answer right behind the response of `thread/resume`: the client
+        // hands both over before the callback of the response (which starts the catch-up) runs.
+        alongResume: (threadId) => [
+          itemCompletedFrame(
+            threadId,
+            agentMessageItem('answer', 'what the prompt caused', 'final_answer'),
+          ),
+        ],
+      });
+
+      await until(() => idsOf(r).length === 2, 'the catch-up');
+
+      expect(idsOf(r)).toEqual(['prompt', 'answer']);
     });
 
     test('a session with no thread asks nothing at all', async () => {
@@ -541,7 +594,7 @@ describe('a Codex session: turn events and chat', () => {
         chatFor: () => r.session.chat,
         send: (connectionId, message) => {
           sendCalls.push({ connectionId, type: message.type });
-          // The connection goes away after the first message.
+          // The connection is gone: this first send is refused (`false`).
           return sendCalls.length < 1;
         },
       });
