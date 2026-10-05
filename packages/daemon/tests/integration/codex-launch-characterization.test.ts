@@ -1263,6 +1263,13 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       10000,
       'the attach',
     );
+    // The catch-up read goes out at the attach; a test that answers `thread/items/list` itself
+    // registers its handler only after that request, so it never counts as the test's own.
+    await pollUntil(
+      () => r.server.received.some((f) => f.frame['method'] === 'thread/items/list'),
+      10000,
+      'the catch-up read',
+    );
     const { ws, received } = await connectAndHello(r.port);
     const sessionId = (
       received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage

@@ -347,18 +347,22 @@ describe('a Codex session: turn events and chat', () => {
     });
 
     test('the history is read from the thread the session is attached to', async () => {
-      const r = await launch();
       const calls: unknown[] = [];
-      r.server.onRequest('thread/items/list', (p) => {
-        calls.push(p);
-        return itemsListPage(
-          [
-            { item: userMessageItem('u1', 'Run it') },
-            { item: agentMessageItem('a1', 'Ran.', 'final_answer') },
-          ],
-          null,
-        );
+      const r = await launch({
+        // Registered before the attach, so the catch-up's own read is counted and not mistaken for the test's.
+        list: (p) => {
+          calls.push(p);
+          return itemsListPage(
+            [
+              { item: userMessageItem('u1', 'Run it') },
+              { item: agentMessageItem('a1', 'Ran.', 'final_answer') },
+            ],
+            null,
+          );
+        },
       });
+      await until(() => calls.length === 1, 'the catch-up read');
+      calls.length = 0;
       const emitted: string[] = [];
 
       const count = await (r.session.chat as NonNullable<HarnessSession['chat']>).readHistory((m) =>
@@ -372,12 +376,16 @@ describe('a Codex session: turn events and chat', () => {
 
     test('a session that resumed a thread reads that thread’s history at once', async () => {
       const resumeId = crypto.randomUUID();
-      const r = await launch({ resumeId });
       const calls: Array<{ threadId?: string }> = [];
-      r.server.onRequest('thread/items/list', (p) => {
-        calls.push(p as { threadId?: string });
-        return itemsListPage([], null);
+      const r = await launch({
+        resumeId,
+        list: (p) => {
+          calls.push(p as { threadId?: string });
+          return itemsListPage([], null);
+        },
       });
+      await until(() => calls.length === 1, 'the catch-up read');
+      calls.length = 0;
 
       await (r.session.chat as NonNullable<HarnessSession['chat']>).readHistory(() => {});
 
