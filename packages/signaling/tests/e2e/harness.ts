@@ -92,10 +92,13 @@ function bundle(): Promise<string> {
  * variables and the Durable Object bindings come from wrangler.toml so they
  * cannot drift from what is deployed.
  */
-export async function startWorker(vars: Record<string, string> = {}): Promise<TestWorker> {
+export async function startWorker(
+  vars: Record<string, string> = {},
+  pinPushAudience = false,
+): Promise<TestWorker> {
   const cfg = Bun.TOML.parse(await Bun.file(`${PKG}/wrangler.toml`).text()) as WranglerConfig;
   const sqlite = new Set(cfg.migrations.flatMap((m) => m.new_sqlite_classes ?? []));
-  const mf = new Miniflare({
+  const options = {
     modules: true,
     script: await bundle(),
     compatibilityDate: cfg.compatibility_date,
@@ -107,8 +110,18 @@ export async function startWorker(vars: Record<string, string> = {}): Promise<Te
       ]),
     ),
     port: 0,
-  });
+  };
+  const mf = new Miniflare(options);
   const url = String((await mf.ready) as URL).replace(/\/$/, '');
+  if (pinPushAudience) {
+    // Explicit owned test origin, set BEFORE any test request, never inferred by production.
+    await mf.setOptions({
+      ...options,
+      port: Number(new URL(url).port),
+      bindings: { ...options.bindings, PUSH_AUDIENCE: url },
+    });
+    await mf.ready;
+  }
   return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
 }
 

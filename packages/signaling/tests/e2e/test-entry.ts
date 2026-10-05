@@ -22,6 +22,7 @@
  * to the room named `<rid>`.
  */
 
+import type { ApnsRequest } from '../../src/apns.ts';
 import type { RoomEnv, RoomSocket, RoomState } from '../../src/connection-room.ts';
 import worker, { ConnectionRoom as RealRoom } from '../../src/index.ts';
 
@@ -83,6 +84,17 @@ export class ConnectionRoom extends RealRoom {
     });
     super(wrapped, env);
     this.readBarrier = barrier;
+  }
+
+  /** ONLY network destination differs: actual request/JWT/proof/storage logic stays real. */
+  protected override sendPushRequest(request: ApnsRequest): Promise<Response> {
+    const endpoint = (this.env as unknown as Record<string, string>)['TEST_APNS_ENDPOINT'];
+    if (!endpoint) return super.sendPushRequest(request);
+    return fetch(`${endpoint}${new URL(request.url).pathname}`, {
+      method: 'POST',
+      headers: { ...request.headers, 'x-owned-apns-url': request.url },
+      body: request.body,
+    });
   }
 
   protected override now(): number {
