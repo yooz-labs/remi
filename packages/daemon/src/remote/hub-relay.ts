@@ -34,6 +34,7 @@ import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { normalizeSecureRegistration } from '../storage/secure-push-subscriptions.ts';
 import { ChildProxy } from './child-proxy.ts';
 import { RelayDeviceStore } from './relay-device-store.ts';
 import { legacyRelayUrlNotice, relayWorkerUrl } from './relay-url.ts';
@@ -75,6 +76,7 @@ type Peer = {
   proxy?: ChildProxy;
   key?: string;
   pushAuthority?: SecurePushAuthority;
+  pushMutation?: number;
   revision?: number;
   timer: ReturnType<typeof setTimeout>;
   offers: readonly Offer[];
@@ -639,6 +641,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       );
     this.sendRaw(peer.cid, createSessionListResponse([...sessions.values()], request.id), true);
   }
+  private nextPushMutation(peer: Peer): number {
+    const current = peer.pushMutation ?? 0;
+    if (current >= Number.MAX_SAFE_INTEGER) throw new Error('RELAY_REQUEST_CAPACITY');
+    peer.pushMutation = current + 1;
+    return peer.pushMutation;
+  }
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
@@ -655,23 +663,38 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         'keyVersion',
         'pushPrefs',
       ];
-      const result = Object.keys(message).some((key) => !allowed.includes(key))
-        ? { success: false as const, error: 'INVALID_SUBSCRIPTION' as const }
-        : await this.subscriptions.register(
-            authority,
-            {
-              token: message.token,
-              environment: message.environment,
-              pushPublicKey: message.pushPublicKey,
-              keyVersion: message.keyVersion,
-              ...(message.pushPrefs === undefined ? {} : { pushPrefs: message.pushPrefs }),
-            },
-            () =>
-              this.active(peer) &&
-              !peer.transportClosing &&
-              peer.stage === 'ready' &&
-              peer.pushAuthority === authority,
-          );
+      let registration: ReturnType<typeof normalizeSecureRegistration>;
+      try {
+        if (Object.keys(message).some((key) => !allowed.includes(key)))
+          throw new Error('INVALID_SUBSCRIPTION');
+        registration = normalizeSecureRegistration({
+          token: message.token,
+          environment: message.environment,
+          pushPublicKey: message.pushPublicKey,
+          keyVersion: message.keyVersion,
+          ...(message.pushPrefs === undefined ? {} : { pushPrefs: message.pushPrefs }),
+        });
+      } catch {
+        this.sendRaw(
+          peer.cid,
+          createSecurePushRegisterResponse(message.id, {
+            success: false,
+            error: 'INVALID_SUBSCRIPTION',
+          }),
+        );
+        return;
+      }
+      const mutation = this.nextPushMutation(peer);
+      const result = await this.subscriptions.register(
+        authority,
+        registration,
+        () =>
+          this.active(peer) &&
+          !peer.transportClosing &&
+          peer.stage === 'ready' &&
+          peer.pushMutation === mutation &&
+          peer.pushAuthority === authority,
+      );
       // register's commit callback is inside the authorization lock: use only
       // in-memory lifecycle state there, never current()'s nested disk lock.
       this.sendRaw(peer.cid, createSecurePushRegisterResponse(message.id, result));
@@ -682,11 +705,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       if (!authority) throw new Error('RELAY_REVOKED');
       let result: Parameters<typeof createSecurePushUnregisterResponse>[1];
       try {
-        result = Object.keys(message).some((key) => !['type', 'id', 'timestamp'].includes(key))
-          ? { success: false, error: 'INVALID_SUBSCRIPTION' }
-          : this.subscriptions.unregister(authority)
+        if (Object.keys(message).some((key) => !['type', 'id', 'timestamp'].includes(key))) {
+          result = { success: false, error: 'INVALID_SUBSCRIPTION' };
+        } else {
+          // Cancel older asynchronous preparation before this synchronous removal.
+          this.nextPushMutation(peer);
+          result = this.subscriptions.unregister(authority)
             ? { success: true }
             : { success: false, error: 'NOT_AUTHORIZED' };
+        }
       } catch {
         result = { success: false, error: 'STORE_ERROR' };
       }
