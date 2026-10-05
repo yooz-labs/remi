@@ -10,7 +10,6 @@ export {
   initConfigFile,
   loadConfig,
   loadConfigWithNotices,
-  relayRequested,
 } from './config.ts';
 
 export type {

@@ -3,15 +3,10 @@
  *
  * ## Why this is not the relay's encryption
  *
- * `relay-crypto.ts` hangs a signed ephemeral exchange off the auth handshake,
- * which works because both peers are live and talking. The lock-screen path has
- * no handshake and often no connection at all: that is its entire purpose
- * (#575 P4a). A phone answers from a push notification while the app is
- * suspended, over a single HTTP POST, and the Worker forwards it.
- *
- * Today that POST carries `sessionId`, `questionId` and the answer text as
- * plain JSON, so the Worker reads every answer given from a lock screen. This
- * seals it.
+ * Relay v2 uses a live authenticated encrypted channel. This separate helper
+ * seals a detached answer for the daemon's direct HTTP /answer endpoint.
+ * Relay v2's Worker has no HTTP answer forwarding path; relay lock-screen
+ * forwarding is a later phase (#1201), not a caller of this helper today.
  *
  * ## The shape
  *

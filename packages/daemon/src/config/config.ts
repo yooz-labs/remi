@@ -327,19 +327,6 @@ export interface LoadedConfig {
 }
 
 /**
- * Whether this process registers with the signaling relay (#1193): off unless
- * `network.relay = true` or `--permanent-code` asks for it, and `--no-relay`
- * beats both. `--permanent-code` counts because a fixed relay code means
- * nothing without a relay, and it is what the authenticated mode is started by.
- */
-export function relayRequested(
-  configRelay: boolean,
-  cli: { readonly noRelay: boolean; readonly permanentCode: boolean },
-): boolean {
-  return !cli.noRelay && (configRelay || cli.permanentCode);
-}
-
-/**
  * Load config from ~/.remi/config.toml, merged with defaults.
  * Returns DEFAULT_CONFIG if no config file exists.
  * Throws if the file exists but cannot be read or has invalid TOML.

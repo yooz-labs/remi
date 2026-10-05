@@ -56,7 +56,7 @@ export interface CreateSessionExtra {
 /**
  * The `extra` argument of `onCreateSessionRequest`, built from the wire message: undefined for a
  * plain request, so an older caller's request reads exactly as before. Both transports call it
- * (`connection.ts`, `relay-adapter.ts`), so they cannot drift on which fields they forward.
+ * (direct and HubRelay virtual `Connection`), so they cannot drift on which fields they forward.
  */
 export function createSessionExtra(
   message: Pick<CreateSessionRequestMessage, 'harness' | 'args'>,

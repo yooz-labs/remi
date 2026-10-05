@@ -114,6 +114,7 @@ describe('public relayV2 surface', () => {
     for (const name of ['clientStart', 'hostOnHello', 'seal', 'openSeal', 'RelayError', 'V']) {
       expect([name, name in shared]).toEqual([name, false]);
     }
-    expect(typeof shared.encryptRelayPayload).toBe('function');
+    expect('encryptRelayPayload' in shared).toBe(false);
+    expect(typeof shared.kexSigningInput).toBe('function');
   });
 });
