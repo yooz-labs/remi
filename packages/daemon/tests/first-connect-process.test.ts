@@ -384,3 +384,82 @@ test('CLI unknown-key helper displays its own derived public fingerprint and mac
     identity?.fingerprint,
   );
 }, 20000);
+
+for (const bind of ['127.0.0.1', '0.0.0.0']) {
+  test(`malformed auth config fails before opening listener on ${bind}`, async () => {
+    for (const value of [
+      '0',
+      '1',
+      '0.0',
+      '""',
+      '"false"',
+      '[]',
+      '["auto"]',
+      '{ invalid = false }',
+    ]) {
+      const dir = directory();
+      fs.mkdirSync(path.join(dir, '.remi'));
+      fs.writeFileSync(
+        path.join(dir, '.remi', 'config.toml'),
+        `[daemon]\nbind = "${bind}"\n[auth]\nenabled = ${value}\n`,
+      );
+      const port = await reserveRange(1, 50, bind);
+      const proc = spawn(dir, [
+        'serve',
+        '--port',
+        String(port),
+        '--no-mdns',
+        '--no-relay',
+        '--no-telegram',
+      ]);
+      const output = new Response(proc.stderr).text();
+      await wait(
+        () =>
+          proc.exitCode !== null || fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')),
+        'invalid-config exit',
+      );
+      expect(proc.exitCode).toBe(1);
+      expect(await output).toContain('auth.enabled');
+      expect(fs.existsSync(path.join(dir, '.remi', 'daemon-status.json'))).toBe(false);
+    }
+  }, 20000);
+}
+
+for (const corrupt of ['authorized_keys.json', 'pending_keys.json']) {
+  test(`private storage detail stays local when ${corrupt} is malformed`, async () => {
+    const dir = directory();
+    const port = await reserveRange(1);
+    const proc = spawn(dir, [
+      'serve',
+      '--port',
+      String(port),
+      '--no-mdns',
+      '--no-relay',
+      '--no-telegram',
+    ]);
+    const stderr = new Response(proc.stderr).text();
+    await wait(
+      () => fs.existsSync(path.join(dir, '.remi', 'daemon-status.json')) || proc.exitCode !== null,
+      'hub',
+    );
+    expect(proc.exitCode).toBeNull();
+    const file = path.join(dir, '.remi', corrupt);
+    fs.writeFileSync(file, '{PRIVATE_LABEL_SENTINEL');
+    const client = await connection(port, await unlockIdentity(await createIdentity()));
+    await wait(
+      () => client.messages.some((message) => message.type === 'auth_result'),
+      'store refusal',
+    );
+    const result = client.messages.find((message) => message.type === 'auth_result');
+    expect(result).toMatchObject({ success: false, error: 'AUTH_STORE_ERROR' });
+    expect(JSON.stringify(client.messages)).not.toContain('PRIVATE_LABEL_SENTINEL');
+    expect(JSON.stringify(client.messages)).not.toContain(dir);
+    proc.kill('SIGTERM');
+    await proc.exited;
+    const local = await stderr;
+    expect(local).toContain(file);
+    expect(local).toContain('invalid JSON');
+    expect(local).not.toContain('PRIVATE_LABEL_SENTINEL');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{PRIVATE_LABEL_SENTINEL');
+  }, 20000);
+}
