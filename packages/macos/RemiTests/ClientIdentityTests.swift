@@ -289,6 +289,26 @@ final class ClientIdentityTests: XCTestCase {
         return (token, data)
     }
 
+    func testGeneratedPairingQRHasFourModuleQuietZone() throws {
+        let (_, image) = try generatedPairingQRImage()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: image))
+        // The fixture uses eight pixels per module. Check the actual PNG, not
+        // generator settings: QR requires four clear white modules on every side.
+        let quietZone = 4 * 8
+        XCTAssertGreaterThan(bitmap.pixelsWide, quietZone * 2)
+        XCTAssertGreaterThan(bitmap.pixelsHigh, quietZone * 2)
+        var opaqueWhiteBorder = true
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide where x < quietZone || y < quietZone ||
+                x >= bitmap.pixelsWide - quietZone || y >= bitmap.pixelsHigh - quietZone {
+                let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                opaqueWhiteBorder = opaqueWhiteBorder && pixel.alphaComponent == 1 &&
+                    pixel.redComponent == 1 && pixel.greenComponent == 1 && pixel.blueComponent == 1
+            }
+        }
+        XCTAssertTrue(opaqueWhiteBorder, "QR fixture must have four opaque white modules on every side")
+    }
+
     @MainActor
     func testNativePairingQRHasGuardedBundledIngress() async throws {
         let (token, fixtureImage) = try generatedPairingQRImage()
