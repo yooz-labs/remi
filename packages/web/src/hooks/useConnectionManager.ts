@@ -902,6 +902,14 @@ export function useConnectionManager(
   // a populated identity ref before the daemon's challenge arrives.
   const provideIdentity = useCallback(
     (connectionId: ConnectionId, identity: UnlockedIdentity) => {
+      // Invalidate synchronously: the prop effect runs after this setter and
+      // otherwise sees the replacement as already current (#873).
+      if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
+        for (const mc of connectionsMapRef.current.values()) {
+          mc.approval.reset();
+          mc.authAttempt = null;
+        }
+      }
       identityRef.current = identity;
 
       const pending = collectPendingChallengeConnections(connectionsMapRef.current.values());
