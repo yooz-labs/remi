@@ -1,17 +1,17 @@
 /**
- * Ed25519 small-order public keys (ADR 0034 sections 17.2 and 19).
+ * Ed25519 small-order public keys.
  *
- * No engine rejects a small-order public key: RFC 8032's verification equation
- * does not forbid one, so a signature under such a key can verify for any
- * message. The relay refuses them as defense in depth where a key is first
- * accepted (the Worker at admission and enrollment, the daemon at enrollment).
+ * Bun 1.4.2 and 1.3.11 accepted the identity-point key/signature probe.
+ * RFC 8032's verification equation does not itself forbid these encodings.
+ * Callers must reject them before accepting a public key; direct authentication
+ * uses this check before verification, pending registration, or new authorization.
  *
  * The list is every encoding of a point of order dividing 8: the eight points
  * of the torsion subgroup in canonical form, the same encoding with the sign
  * bit flipped where that is meaningful to a decoder (x = 0, which RFC 8032
  * calls invalid but some decoders accept), and the non-canonical aliases `y + p`
  * for the two coordinates below 19 (y = 0 and y = 1). Fourteen encodings.
- * `small-order.test.ts` recomputes the torsion subgroup with independent
+ * `ed25519-public-key.test.ts` recomputes the torsion subgroup with independent
  * arithmetic and requires this list to be exactly its encodings.
  */
 
