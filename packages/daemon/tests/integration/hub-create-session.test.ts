@@ -732,6 +732,9 @@ describe('the CLI creating a session on a hub (#1179)', () => {
     sleepers.push(proc);
     const output = { text: '' };
     collect(proc.stdout, output);
+    // The children's log is where the hub's detached children write: put a line in it.
+    fs.mkdirSync(path.join(r.hub.home, '.remi'), { recursive: true });
+    fs.writeFileSync(path.join(r.hub.home, '.remi', 'daemon.log'), 'earlier\nchild said hello\n');
     await proc.exited;
     await pollUntil(() => output.text.includes('refused by the hub'), 5000, 'the CLI output');
     const started = Date.now();
@@ -743,6 +746,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
     expect(message).toContain('refused by the hub');
     expect(message).toContain('hub log tail');
     expect(message).toContain('child log tail');
+    expect(message).toContain('child said hello');
     // Not the 20 s the wait takes when nothing says the CLI is gone.
     expect(Date.now() - started).toBeLessThan(5000);
     // And the message of a response assertion carries the response and both log tails.
@@ -750,6 +754,7 @@ describe('the CLI creating a session on a hub (#1179)', () => {
     expect(explained).toContain('"error":"no way"');
     expect(explained).toContain('hub log tail');
     expect(explained).toContain('child log tail');
+    expect(explained).toContain('child said hello');
   }, 60000);
 
   test('remi codex --host starts a Codex session there with the arguments after --', async () => {
