@@ -64,7 +64,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         if let replacedObserver { NotificationCenter.default.removeObserver(replacedObserver) }
     }
 
-    static func isBundledDocument(_ url: URL?, scheme: String) -> Bool {
+    nonisolated static func isBundledDocument(_ url: URL?, scheme: String) -> Bool {
         guard let url, url.scheme == scheme, url.host == "localhost", url.port == nil,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil
         else { return false }
