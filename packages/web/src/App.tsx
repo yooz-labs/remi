@@ -1733,6 +1733,13 @@ function App() {
       case 'auth_result':
         break;
 
+      // R5 secure subscriptions await the native registration consumer (#1200).
+      case 'secure_push_register_request':
+      case 'secure_push_register_response':
+      case 'secure_push_unregister_request':
+      case 'secure_push_unregister_response':
+        break;
+
       // R4 encrypted outcomes are routed through the connection coordinator.
       // Its handlers are installed together with the relay channel below.
       case 'answer_result':

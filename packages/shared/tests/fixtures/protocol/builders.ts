@@ -71,6 +71,12 @@ import type {
   SessionViewMeta,
   TranscriptContentBlock,
 } from '../../../src/protocol.ts';
+import {
+  createSecurePushRegisterRequest,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterRequest,
+  createSecurePushUnregisterResponse,
+} from '../../../src/secure-push-messages.ts';
 import type {
   Acknowledgment,
   Bullet,
@@ -212,6 +218,20 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * `MessageHandlers` totality property from #896).
  */
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  secure_push_register_request: () =>
+    createSecurePushRegisterRequest({
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey:
+        'BI5TO2-gv3tGJbswZnwB-2B--fi4qsDCdnpguoDXWXsjc-sdgUMxZGXmpOplO6BcUwjUEIEVV3tDyhqEwxthALQ',
+      keyVersion: 3,
+      pushPrefs: { questions: true },
+    }),
+  secure_push_register_response: () =>
+    createSecurePushRegisterResponse(REQUEST_ID, { success: true, keyVersion: 3 }),
+  secure_push_unregister_request: () => createSecurePushUnregisterRequest(),
+  secure_push_unregister_response: () =>
+    createSecurePushUnregisterResponse(REQUEST_ID, { success: true }),
   answer_result: () => ({
     type: 'answer_result',
     id: MESSAGE_ID,
