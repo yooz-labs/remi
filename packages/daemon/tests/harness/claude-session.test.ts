@@ -427,7 +427,13 @@ describe('ClaudeHarness.createSession', () => {
     expect(contexts.isCurrent(first)).toBe(false);
   });
 
-  for (const deliveryPath of ['service', 'dispatcher'] as const) {
+  for (const deliveryPath of [
+    'service',
+    'dispatcher',
+    'terminal-notice',
+    'turn-failed',
+    'dismiss',
+  ] as const) {
     test(`secure-only ${deliveryPath} sends one authenticated sealed held question through the real Worker and owned APNs`, async () => {
       const { decisions, card, sessionId, response } = await holdPrompt(false);
       const { snapshot, store, trust, pair } = await pushRecipient();
@@ -514,17 +520,33 @@ describe('ClaudeHarness.createSession', () => {
             sessionId,
           );
           const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
-          const deliver = () =>
-            deliveryPath === 'service'
-              ? secure.send({ kind: 'question', logicalId: card.id, question: card, ...text })
-              : dispatcher.maybePush(sessionId, card, { held: true });
+          const expectedCount = deliveryPath === 'dismiss' ? 2 : 1;
+          if (deliveryPath === 'dismiss')
+            await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe(
+              'pushed',
+            );
+          const deliver = async () => {
+            if (deliveryPath === 'service')
+              return secure.send({ kind: 'question', logicalId: card.id, question: card, ...text });
+            if (deliveryPath === 'dispatcher')
+              return dispatcher.maybePush(sessionId, card, { held: true });
+            if (deliveryPath === 'turn-failed')
+              return dispatcher.pushTurnFailed({ error: 'rate_limit' });
+            if (deliveryPath === 'terminal-notice')
+              dispatcher.pushTerminalNotice(sessionId, card, 'released_no_terminal');
+            else dispatcher.dismiss(sessionId, card.id);
+            const deadline = Date.now() + 3000;
+            while (bodies.length < expectedCount && Date.now() < deadline) await Bun.sleep(10);
+            return bodies.length === expectedCount ? 'pushed' : 'failed';
+          };
           await expect(deliver()).resolves.toBe('pushed');
-          expect(bodies).toHaveLength(1);
-          const outer = JSON.parse(bodies[0] ?? '');
-          expect(outer.aps.category).toBe('');
-          expect(bodies[0]).not.toContain(card.text);
-          expect(bodies[0]).not.toContain(sessionId);
-          expect(bodies[0]).not.toContain(card.id);
+          expect(bodies).toHaveLength(expectedCount);
+          const raw = bodies[expectedCount - 1];
+          const outer = JSON.parse(raw ?? '');
+          expect(outer.aps.category ?? '').toBe('');
+          expect(raw).not.toContain(card.text);
+          expect(raw).not.toContain(sessionId);
+          expect(raw).not.toContain(card.id);
           const opened = await relayV2.openPushContent(
             pair,
             outer.remiPush,
@@ -536,18 +558,25 @@ describe('ClaudeHarness.createSession', () => {
             },
             Math.floor(Date.now() / 1000),
           );
-          expect(opened.payload).toMatchObject({
-            type: 'question',
-            actionable: true,
-            sessionId,
-            questionId: card.id,
-            runtimeInstance: runtime.instance,
-          });
-          expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
-            opened.contentDigest,
-          );
+          if (deliveryPath === 'service' || deliveryPath === 'dispatcher') {
+            expect(opened.payload).toMatchObject({
+              type: 'question',
+              actionable: true,
+              sessionId,
+              questionId: card.id,
+              runtimeInstance: runtime.instance,
+            });
+            expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
+              opened.contentDigest,
+            );
+          } else {
+            expect(opened.payload).toMatchObject({
+              type: deliveryPath === 'dismiss' ? 'dismiss' : 'informational',
+              actionable: false,
+            });
+          }
           await deliver();
-          expect(bodies).toHaveLength(1);
+          expect(bodies).toHaveLength(expectedCount);
         } finally {
           host.control.close();
           await host.control.closed;
