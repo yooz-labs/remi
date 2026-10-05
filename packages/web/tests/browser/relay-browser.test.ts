@@ -408,3 +408,85 @@ browserTest(
   },
   25000,
 );
+
+browserTest(
+  'actual App pin capacity failure is terminal and preserves existing public pins',
+  async () => {
+    const local = await ownedRelayOffer();
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await page.addInitScript(() => {
+        const RealWebSocket = window.WebSocket;
+        (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections = 0;
+        window.WebSocket = class extends RealWebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            if (String(url).includes('/v2/client/'))
+              (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections++;
+          }
+        };
+      });
+      await page.goto(origin);
+      await page.evaluate(async () => {
+        const url = '/src/lib/identity-client.ts';
+        await (await import(url)).ensureIdentity();
+      });
+      // Let the actual App restore the existing identity with an empty pin store.
+      await page.waitForTimeout(600);
+      const before = await page.evaluate(async () => {
+        const url = '/src/lib/relay-pins.ts';
+        const { rememberRelayPin } = await import(url);
+        for (let i = 0; i < 64; i++) {
+          const key = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
+            'sign',
+            'verify',
+          ]);
+          const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+          const machinePublicKey = btoa(String.fromCharCode(...raw))
+            .replace(/=/g, '')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_');
+          rememberRelayPin({ relayUrl: 'ws://127.0.0.1:1', machinePublicKey });
+        }
+        return localStorage.getItem('remi-relay-machines-v2');
+      });
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections,
+        ),
+      ).toBe(0);
+      await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+      await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+      await page.getByLabel('Pairing token').fill(String(local.offer['token']));
+      await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+      const compare = await local.inbox.next();
+      expect(compare['t']).toBe('compare');
+      local.ws.send(
+        JSON.stringify({
+          t: 'confirm',
+          id: 'owned-r4',
+          offerId: local.offer['offerId'],
+          connectionId: compare['connectionId'],
+          fingerprint: compare['fingerprint'],
+          accept: true,
+        }),
+      );
+      expect((await local.inbox.next())['t']).toBe('paired');
+      await page.waitForTimeout(3500);
+      const observation = await page.evaluate(() => ({
+        connections: (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections,
+        pins: localStorage.getItem('remi-relay-machines-v2'),
+        body: document.body.innerText,
+      }));
+      expect(observation.pins).toBe(before);
+      expect(JSON.parse(observation.pins ?? '[]')).toHaveLength(64);
+      expect(observation.pins).not.toContain('remi-pair2:');
+      expect(observation.connections).toBe(1);
+      expect(observation.body).toContain('Saved machine limit reached');
+    } finally {
+      await context.close();
+    }
+  },
+  20000,
+);
