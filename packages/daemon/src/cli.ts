@@ -2320,7 +2320,7 @@ if (relayWanted && !cliPermanentCode) {
   // Permanent code mode: persist code to disk, require Ed25519 auth over relay
   if (!authenticator) {
     console.error(
-      'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
+      'Permanent connection codes require authentication. Remove --no-auth/auth.enabled = false or pass --auth (#873).',
     );
     process.exit(1);
   }

@@ -167,8 +167,8 @@ export class Authenticator {
    * Order: verify signature and derived fingerprint, then check authorization,
    * then persist an untrusted pending candidate if the key is unknown.
    *
-   * `response.clientFingerprint` is NEVER used for authorization or identity
-   * binding (#671): it is a client-supplied wire field, and Ed25519
+   * `response.clientFingerprint` is never an identity authority (#671/#873):
+   * mismatched display claims are rejected, and Ed25519
    * signature verification only proves possession of `clientPublicKey`, not
    * that the claimed fingerprint actually hashes from that key. Every
    * identity-bearing check here (authorized-keys lookup, pending registration, lastUsedAt,
