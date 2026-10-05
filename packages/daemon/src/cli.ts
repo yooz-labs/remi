@@ -117,7 +117,6 @@ import {
 } from '@remi/shared';
 import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
-import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -190,7 +189,6 @@ import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
   loadConfigWithNotices,
-  relayRequested,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
 import {
@@ -229,7 +227,7 @@ import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
-import { RELAY_NOT_STARTED_NOTICE } from './remote/relay-notices.ts';
+import { HubRelay } from './remote/hub-relay.ts';
 import {
   AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
@@ -396,7 +394,6 @@ const cliSubcommandArg = parsedArgs.subcommandArg;
 // dispatch below, so it falls through to the shared daemon/wrapper boot path.
 const serveMode = cliSubcommand === 'serve';
 const cliDaemonMode = parsedArgs.daemonMode || serveMode;
-const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
 const cliStopAll = parsedArgs.stopAll;
@@ -625,11 +622,14 @@ if (cliInstall || cliUninstall) {
   }
 }
 
-// Handle 'code' subcommand: show or refresh the persistent connection code
-if (cliSubcommand === 'code') {
-  const { CodeStore } = await import('./remote/code-store.ts');
-  const { runCodeCommand } = await import('./cli/cmd-code.ts');
-  process.exit(runCodeCommand(new CodeStore(), { refresh: cliCodeRefresh }));
+// Retire the v1 trust-on-first-use code path before any daemon or harness startup.
+if (cliSubcommand === 'code' || cliPermanentCode) {
+  console.error('Connection codes are retired. Start the hub with --relay, then use remi pair.');
+  process.exit(1);
+}
+if (cliSubcommand === 'pair' || cliSubcommand === 'devices') {
+  const { runRelayCommand } = await import('./cli/cmd-relay.ts');
+  process.exit(await runRelayCommand(cliSubcommand, parsedArgs.subcommandArgs, cliPort));
 }
 
 // Handle daemon lifecycle commands: start, stop, status, logs
@@ -648,6 +648,7 @@ if (
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
+      relay: parsedArgs.relay,
       noTelegram: cliNoTelegram,
       permanentCode: cliPermanentCode,
       ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
@@ -2156,8 +2157,20 @@ const configAuth = remiConfig.auth.enabled;
 const authEnabled = cliAuth ?? configAuth !== false;
 
 let authenticator: Authenticator | undefined;
-/** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
-let daemonAnswerKey: AnswerKeyPair | undefined;
+/** Stable machine identity for the hub-owned v2 room. */
+let relayIdentity: UnlockedIdentity | undefined;
+const relayTrust = new IdentityStore();
+let hubRelay: HubRelay | undefined;
+const localRelayControl = serveMode
+  ? {
+      open: (id: string, send: (text: string) => void) => {
+        if (hubRelay) hubRelay.open(id, send);
+        else send(JSON.stringify({ t: 'error', error: 'RELAY_NOT_READY' }));
+      },
+      message: (id: string, text: string) => hubRelay?.message(id, text),
+      close: (id: string) => hubRelay?.close(id),
+    }
+  : undefined;
 let serverFingerprint: string | undefined;
 
 if (authEnabled) {
@@ -2217,6 +2230,7 @@ if (authEnabled) {
   }
 
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
+  relayIdentity = unlockedIdentity;
   // Published in every auth challenge so phones can pin it and seal
   // lock-screen answers to this daemon (#875). Non-fatal: without it the
   // daemon simply cannot open sealed answers and says so when one arrives,
@@ -2224,7 +2238,6 @@ if (authEnabled) {
   try {
     const answerKey = await loadOrCreateAnswerKey(undefined, logError);
     authenticator.setAnswerEncryptionKey(answerKey.publicKeyBase64);
-    daemonAnswerKey = answerKey;
   } catch (err) {
     logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
   }
@@ -2282,6 +2295,7 @@ const wsAdapter = new WebSocketAdapter(
     authenticator,
     allowedOrigins: remiConfig.daemon.allowed_origins,
     capabilityToken: localCapabilityToken,
+    ...(localRelayControl && { relayControl: localRelayControl }),
   },
   sharedEvents,
 );
@@ -2304,37 +2318,10 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-// Off unless enabled (#1193); `--permanent-code` is itself the opt-in. Without
-// it nothing can authenticate a relay peer, so no adapter is created at all and
-// the daemon holds no connection to the Worker.
-const relayWanted = relayRequested(remiConfig.network.relay, {
-  noRelay: cliNoRelay,
-  permanentCode: cliPermanentCode,
-});
-if (relayWanted && !cliPermanentCode) {
-  console.error(RELAY_NOT_STARTED_NOTICE);
-} else if (relayWanted) {
-  const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-
-  // Permanent code mode: persist code to disk, require Ed25519 auth over relay
-  if (!authenticator) {
-    console.error(
-      'Permanent connection codes require authentication. Remove --no-auth/auth.enabled = false or pass --auth (#873).',
-    );
-    process.exit(1);
-  }
-  const { CodeStore } = await import('./remote/code-store.ts');
-  const codeStore = new CodeStore();
-  const code = codeStore.load() ?? codeStore.refresh();
-  const relayAdapter = new RelayAdapter(
-    { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
-    sharedEvents,
-  );
-
-  if (daemonAnswerKey) relayAdapter.setAnswerKey(daemonAnswerKey);
-  registry.register(relayAdapter);
-}
+// Session children and wrappers never own a room. The hub starts it only after PID ownership.
+const relayWanted = !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay);
+if (serveMode && relayWanted && !authenticator)
+  console.error('Relay startup refused: enable authentication before using --relay.');
 
 // ---------------------------------------------------------------------------
 // Cleanup helper
@@ -2490,6 +2477,7 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
+          ...(localRelayControl && { relayControl: localRelayControl }),
         },
         sharedEvents,
       );
@@ -2605,6 +2593,21 @@ if (cliDaemonMode) {
     }
 
     updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+    if (relayWanted && relayIdentity) {
+      hubRelay = new HubRelay(
+        {
+          relayUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+          identity: relayIdentity,
+          trust: relayTrust,
+          dir: REMI_DIR,
+          registry: liveSessionsRegistry,
+          log: console.error,
+        },
+        sharedEvents,
+      );
+      registry.register(hubRelay);
+      await registry.startAdapter('relay');
+    }
 
     console.log('');
     console.log('Remi hub ready!');
@@ -2826,6 +2829,7 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
+          ...(localRelayControl && { relayControl: localRelayControl }),
         },
         sharedEvents,
       );

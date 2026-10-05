@@ -524,23 +524,6 @@ function structuredSelections(
   return Array.isArray(selections) && selections.length > 0 ? selections : undefined;
 }
 
-/** A phone answer to a held card as one log fragment, without the user's
- *  text (only its length). */
-function describeHeldAnswer(held: HeldAnswer): string {
-  switch (held.kind) {
-    case 'option':
-      return `"${held.option.label}"`;
-    case 'text':
-      return `free text (${held.text.length} chars)`;
-    case 'selections':
-      return `an answer to ${held.selections.length} question(s)`;
-    case 'cancel':
-      return 'Cancel';
-    case 'ambiguous':
-      return 'an answer naming one option by value and another by label';
-  }
-}
-
 /** The Escape key, written exactly (no Enter) by a Cancel on a card no held
  *  hook stands behind. */
 const ESC = '\x1b';
@@ -605,7 +588,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     extra?: AnswerExtras,
   ): Promise<AnswerOutcome> {
     log(
-      `Answer ${viaRelay ? '(relay) ' : ''}from ${connectionId} for session ${sessionId}: ${extra?.cancel ? '[cancel]' : extra?.selections ? `[selections×${extra.selections.length}]` : answer}`,
+      `Answer from ${connectionId} for session ${sessionId}: ${answer.length} characters, ${extra?.selections?.length ?? 0} selections`,
     );
 
     // Prefer lookup by sessionId (from push-action answers) so reconnected clients
@@ -865,7 +848,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     log(
       closed
         ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : `[Answer] refusing ${questionId.slice(0, 8)}: ${describeHeldAnswer(held)} is not an answer this held card offers; card and hold kept`,
+        : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
     );
     traceQuestionEvent({
       action: 'stale_answer',
@@ -979,14 +962,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       input: string,
       screenOptions: readonly QuestionOption[] | null,
     ): 'stale' => {
-      const screenValues = (screenOptions ?? []).map((o) => o.value);
-      const typedText =
-        refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
-        refusal === SCREEN_REFUSALS.freeTextOnHeldCard ||
-        refusal === SCREEN_REFUSALS.terminalOnly ||
-        refusal === SCREEN_REFUSALS.selectionsNotHeld;
       log(
-        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
+        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.reason}; ${input.length} characters`,
       );
       traceQuestionEvent({
         action: 'stale_answer',
@@ -998,10 +975,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         detail: {
           reason: refusal.reason,
           source: active.source,
-          // An option value is a digit; free text may be anything the user
-          // typed, so only its length is recorded.
-          ...(typedText ? { textLength: input.length } : { value: input }),
-          screenValues,
+          textLength: input.length,
+          screenOptionCount: screenOptions?.length ?? 0,
         },
       });
       removalReason = refusal.removalReason;
@@ -1060,10 +1035,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const answeredOption = resolveOption(active.options, answer);
       const ptyInput = answeredOption?.value ?? answer;
       if (ptyInput !== answer) {
-        log(`[Answer] resolved "${answer}" -> "${ptyInput}" for q ${questionId.slice(0, 8)}`);
+        log(`[Answer] resolved option for q ${questionId.slice(0, 8)}`);
       } else if (active.options.length > 0 && answeredOption === undefined) {
         log(
-          `[Answer] "${answer}" matched no option (${active.options.length}); treating it as free text`,
+          `[Answer] ${answer.length} characters matched no option (${active.options.length}); treating it as free text`,
         );
       }
 
@@ -1329,7 +1304,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       if (up !== null) {
         const screenValues = (observedPromptOptions?.(session.sessionId) ?? []).map((o) => o.value);
         log(
-          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${PROMPT_UP_LOG[up]}${screenValues.length > 0 ? ` [${screenValues.join(', ')}]` : ''}`,
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${PROMPT_UP_LOG[up]} (screen options: ${screenValues.length})`,
         );
         traceQuestionEvent({
           action: 'input_refused',
@@ -1340,7 +1315,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           detail: {
             reason: PROMPT_UP_TRACE_REASON[up],
             textLength: content.length,
-            screenValues,
+            screenOptionCount: screenValues.length,
           },
         });
         send(
@@ -1365,8 +1340,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       answer: string,
       claudeSessionId?: UUID,
       extra?: AnswerExtras,
-    ): Promise<void> => {
-      await handleAnswer(
+    ): Promise<AnswerOutcome> => {
+      return handleAnswer(
         connectionId,
         sessionId,
         questionId,

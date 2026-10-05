@@ -6,10 +6,9 @@
  * host or a client before a pipe exists, and never again afterwards. Once a
  * pipe is open the Worker forwards bytes and sends nothing of its own.
  *
- * Only what the Worker itself uses is here: it decodes what an endpoint sends
- * and encodes what it answers. The endpoint-side encoders belong to the phase
- * that has a caller for them (the daemon in R3, the client in R4); until then
- * the tests pin the bytes with literal strings, so the two sides cannot drift.
+ * Both sides share strict codecs: the Worker decodes admission/host commands
+ * and encodes notices; the daemon and client encode their requests and decode
+ * those notices. Literal wire tests independently pin the canonical bytes.
  *
  * Every decoder is strict and fails with `MALFORMED` (or `OVERSIZE`): an
  * unknown key, a wrong length or a non-canonical base64url value is a refusal,
