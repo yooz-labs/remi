@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
+import type { SecureSessionPush } from './secure-push-service.ts';
 import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
 
 export interface PushConfig {
@@ -367,6 +368,8 @@ export function isTokenInvalidError(err: unknown): boolean {
 }
 
 export interface NotificationDispatcherDeps {
+  /** Verified relay subscriptions; never inferred from legacy device tokens. */
+  securePush?: SecureSessionPush;
   sessionRegistry: SessionRegistry;
   deviceTokens: Map<string, DeviceTokenEntry>;
   /**

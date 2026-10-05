@@ -39,8 +39,14 @@ import type { HarnessSession } from '../../src/harness/index.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
+import {
+  NotificationDispatcher as ActualNotificationDispatcher,
+  buildPushText,
+} from '../../src/notifications/notification-dispatcher.ts';
 import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
+import { SecurePushService } from '../../src/notifications/secure-push-service.ts';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
+import { SecurePushTransport } from '../../src/notifications/secure-push-transport.ts';
 import { parseQuestion } from '../../src/parser/question-parser.ts';
 import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
@@ -306,7 +312,7 @@ describe('ClaudeHarness.createSession', () => {
     if (!result.success) throw new Error('context recipient registration missing');
     const snapshot = store.listCurrent()[0];
     if (!snapshot) throw new Error('context recipient snapshot missing');
-    return snapshot;
+    return { snapshot, store, trust, pair };
   }
 
   test('secure push context floors the actual held deadline, keeps identical event authority and never settles its hook', async () => {
@@ -316,7 +322,7 @@ describe('ClaudeHarness.createSession', () => {
       validityFor: (_sid, qid) => decisions.answerValidity(qid),
     });
     const runtime = contexts.begin(sessionId);
-    const snapshot = await pushRecipient();
+    const { snapshot } = await pushRecipient();
     const event = {
       kind: 'question' as const,
       logicalId: card.id,
@@ -354,7 +360,7 @@ describe('ClaudeHarness.createSession', () => {
       validityFor: (_sid, qid) => decisions.answerValidity(qid),
     });
     const runtime = contexts.begin(sessionId);
-    const snapshot = await pushRecipient();
+    const { snapshot } = await pushRecipient();
     const event = {
       kind: 'question' as const,
       logicalId: question.id,
@@ -403,8 +409,8 @@ describe('ClaudeHarness.createSession', () => {
       1,
     );
     const runtime = contexts.begin(sessionId);
-    const firstRecipient = await pushRecipient();
-    const secondRecipient = await pushRecipient();
+    const { snapshot: firstRecipient } = await pushRecipient();
+    const { snapshot: secondRecipient } = await pushRecipient();
     const event = {
       kind: 'question' as const,
       logicalId: question.id,
@@ -420,6 +426,141 @@ describe('ClaudeHarness.createSession', () => {
     contexts.finish(runtime);
     expect(contexts.isCurrent(first)).toBe(false);
   });
+
+  for (const deliveryPath of ['service', 'dispatcher'] as const) {
+    test(`secure-only ${deliveryPath} sends one authenticated sealed held question through the real Worker and owned APNs`, async () => {
+      const { decisions, card, sessionId, response } = await holdPrompt(false);
+      const { snapshot, store, trust, pair } = await pushRecipient();
+      const { createServer } = await import('node:http');
+      const { startWorker } = await import('../../../signaling/tests/e2e/harness.ts');
+      const bodies: string[] = [];
+      const apns = createServer(async (request, reply) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        bodies.push(Buffer.concat(chunks).toString('utf8'));
+        reply.writeHead(200);
+        reply.end();
+      });
+      await new Promise<void>((resolve) => apns.listen(0, '127.0.0.1', resolve));
+      const address = apns.address();
+      if (!address || typeof address === 'string') throw new Error('owned APNs listener missing');
+      const signing = await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify'],
+      );
+      const der = Buffer.from(await crypto.subtle.exportKey('pkcs8', signing.privateKey));
+      const pem = `-----BEGIN PRIVATE KEY-----\n${der
+        .toString('base64')
+        .match(/.{1,64}/g)
+        ?.join('\n')}\n-----END PRIVATE KEY-----`;
+      let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
+      try {
+        worker = await startWorker(
+          {
+            APNS_KEY_ID: 'OWNEDTEST1',
+            APNS_TEAM_ID: 'OWNEDTEAM1',
+            APNS_PRIVATE_KEY: pem,
+            APNS_BUNDLE_ID: 'owned.synthetic.topic',
+            TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+          },
+          true,
+        );
+        const machine = await trust.unlock();
+        const signer = await relayV2.signerFromKey(
+          machine.privateKey,
+          new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+        );
+        const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+        const { FakeHost } = await import('../../../signaling/tests/e2e/endpoints.ts');
+        const host = await FakeHost.start(worker, {
+          signer,
+          publicKey: signer.publicKey,
+          rid: await relayV2.ridOf(signer.publicKey),
+          ridHex: rid,
+        });
+        try {
+          expect(
+            (await host.enroll(new Uint8Array(Buffer.from(snapshot.publicKey, 'base64'))))['ok'],
+          ).toBe(true);
+          const signalingUrl = worker.url;
+          const contexts = new SecurePushContexts({
+            questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+            validityFor: (_sid, qid) => decisions.answerValidity(qid),
+          });
+          const runtime = contexts.begin(sessionId);
+          const service = new SecurePushService({
+            store,
+            contexts,
+            transport: SecurePushTransport.forOwnedLoopbackTest({
+              store,
+              signer,
+              audience: worker.url,
+              ownedOrigin: worker.url,
+            }),
+            machinePublicKey: relayV2.b64u(signer.publicKey),
+            rid,
+            log: () => {},
+          });
+          const secure = service.forRuntime(runtime);
+          const dispatcher = new ActualNotificationDispatcher(
+            {
+              sessionRegistry,
+              deviceTokens: new Map(),
+              pushConfig: () => ({ signalingUrl }),
+              getPrimarySessionId: () => sessionId,
+              securePush: secure,
+            },
+            sessionId,
+          );
+          const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
+          const deliver = () =>
+            deliveryPath === 'service'
+              ? secure.send({ kind: 'question', logicalId: card.id, question: card, ...text })
+              : dispatcher.maybePush(sessionId, card, { held: true });
+          await expect(deliver()).resolves.toBe('pushed');
+          expect(bodies).toHaveLength(1);
+          const outer = JSON.parse(bodies[0] ?? '');
+          expect(outer.aps.category).toBe('');
+          expect(bodies[0]).not.toContain(card.text);
+          expect(bodies[0]).not.toContain(sessionId);
+          expect(bodies[0]).not.toContain(card.id);
+          const opened = await relayV2.openPushContent(
+            pair,
+            outer.remiPush,
+            {
+              machinePublicKey: relayV2.b64u(signer.publicKey),
+              devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+              pushPublicKey: snapshot.pushPublicKey,
+              keyVersion: snapshot.keyVersion,
+            },
+            Math.floor(Date.now() / 1000),
+          );
+          expect(opened.payload).toMatchObject({
+            type: 'question',
+            actionable: true,
+            sessionId,
+            questionId: card.id,
+            runtimeInstance: runtime.instance,
+          });
+          expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
+            opened.contentDigest,
+          );
+          await deliver();
+          expect(bodies).toHaveLength(1);
+        } finally {
+          host.control.close();
+          await host.control.closed;
+        }
+        expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+        await response;
+      } finally {
+        await worker?.stop();
+        apns.closeAllConnections();
+        await new Promise<void>((resolve) => apns.close(() => resolve()));
+      }
+    }, 15000);
+  }
 
   test('push validity: an actual held hook keeps its captured deadline after configuration changes and closes on answer', async () => {
     const { decisions, card, response } = await holdPrompt(false);
