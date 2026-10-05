@@ -193,11 +193,19 @@ test.skipIf(selected !== 'offers')(
   async () => {
     const hub = await sourceHub();
     try {
-      const started = Date.now();
-      for (let i = 0; i < 8; i++) expect((await hub.offer(`offer-${i}`))['t']).toBe('offer');
+      let expiresAtMs = 0;
+      for (let i = 0; i < 8; i++) {
+        const value = await hub.offer(`offer-${i}`);
+        expect(value['t']).toBe('offer');
+        const token = await relayV2.decodePairingToken(
+          String(value['token']),
+          Math.floor(Date.now() / 1000),
+        );
+        expiresAtMs = Math.max(expiresAtMs, token.expiresAtSec * 1000);
+      }
       expect((await hub.offer('before-expiry'))['error']).toBe('PAIRING_CAPACITY');
-      // Owned wait, unchanged production timers; command remains an actual local capability request.
-      await Bun.sleep(Math.max(0, started + 602000 - Date.now()));
+      // Wait beyond all actual token deadlines and their sub-second timer rounding.
+      await Bun.sleep(Math.max(0, expiresAtMs + 2000 - Date.now()));
       const next = await hub.offer('after-expiry');
       expect(next['t']).toBe('offer');
       const token = await relayV2.decodePairingToken(
@@ -211,5 +219,5 @@ test.skipIf(selected !== 'offers')(
       await hub.cleanup();
     }
   },
-  615000,
+  635000,
 );
