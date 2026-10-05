@@ -168,11 +168,17 @@ enum ClientIdentityStore {
         }
     }
 
+    private enum ExpectedRecord {
+        case absent
+        case nativeSeed(Data)
+        case identity(ClientIdentity)
+    }
+
     static func loadOrCreate(authority: NativeIdentityAuthorityBarrier, accessGroup: String?, service: String = defaultService, account: String = defaultAccount,
                              operations: NativeKeychainOperations = .system) throws -> ClientIdentity {
         if let identity = try load(authority: authority, accessGroup: accessGroup, service: service, account: account, operations: operations) { return identity }
         let fresh = ClientIdentity(privateKey: .init())
-        do { try persist(fresh, service: service, account: account, updating: false, accessGroup: accessGroup, operations: operations, authority: authority) }
+        do { try persist(fresh, expected: .absent, service: service, account: account, updating: false, accessGroup: accessGroup, operations: operations, authority: authority) }
         catch NativeIdentityError.keychain(errSecDuplicateItem) {
             // A concurrent first creation won. Use its durable identity, never overwrite it.
             guard let winner = try load(authority: authority, accessGroup: accessGroup, service: service, account: account, operations: operations) else { throw NativeIdentityError.changed }
@@ -187,7 +193,7 @@ enum ClientIdentityStore {
         if data.count == 32 {
             // One-time inward migration of the existing native seed, with no deletion.
             let identity = ClientIdentity(privateKey: try .init(rawRepresentation: data))
-            try persist(identity, service: service, account: account, updating: true, accessGroup: accessGroup, operations: operations, authority: authority)
+            try persist(identity, expected: .nativeSeed(data), service: service, account: account, updating: true, accessGroup: accessGroup, operations: operations, authority: authority)
             return identity
         }
         let record: Record
@@ -211,7 +217,7 @@ enum ClientIdentityStore {
         // Imports may tighten the policy, never silently remove it.
         let imported = ClientIdentity(privateKey: key,
                                       requiresAppUnlock: requiresAppUnlock || existing?.requiresAppUnlock == true)
-        try persist(imported, service: service, account: account, updating: existing != nil, accessGroup: accessGroup, operations: operations, authority: authority)
+        try persist(imported, expected: existing.map(ExpectedRecord.identity) ?? .absent, service: service, account: account, updating: existing != nil, accessGroup: accessGroup, operations: operations, authority: authority)
         return imported
     }
 
@@ -222,7 +228,7 @@ enum ClientIdentityStore {
               existing.revision == revision, existing.publicKeyRaw == publicKey else { throw NativeIdentityError.changed }
         if existing.requiresAppUnlock { return existing }
         let protected = ClientIdentity(privateKey: existing.privateKey, requiresAppUnlock: true)
-        try persist(protected, service: service, account: account, updating: true, accessGroup: accessGroup, operations: operations, authority: authority)
+        try persist(protected, expected: .identity(existing), service: service, account: account, updating: true, accessGroup: accessGroup, operations: operations, authority: authority)
         return protected
     }
 
@@ -249,8 +255,33 @@ enum ClientIdentityStore {
         guard let data = result as? Data else { throw NativeIdentityError.malformed }
         return data
     }
-    private static func persist(_ identity: ClientIdentity, service: String, account: String, updating: Bool, accessGroup: String?, operations: NativeKeychainOperations, authority: NativeIdentityAuthorityBarrier) throws {
+    private static func persist(_ identity: ClientIdentity, expected: ExpectedRecord, service: String, account: String, updating: Bool, accessGroup: String?, operations: NativeKeychainOperations, authority: NativeIdentityAuthorityBarrier) throws {
         let data = try JSONEncoder().encode(Record(identity))
+        let lease = try authority.acquireIdentityMutation()
+        defer { lease.release() }
+        // The policy decision was prepared before acquiring the nonblocking
+        // writer lock. Recheck the actual Keychain context before mutation.
+        let current = try read(accessGroup: accessGroup, service: service, account: account, operations: operations)
+        switch expected {
+        case .absent:
+            guard current == nil else { throw NativeIdentityError.keychain(errSecDuplicateItem) }
+        case .nativeSeed(let seed):
+            guard current == seed else {
+                _ = try lease.invalidateIdentityAuthority()
+                throw NativeIdentityError.changed
+            }
+        case .identity(let expected):
+            guard let current, let record = try? JSONDecoder().decode(Record.self, from: current),
+                  let actual = try? record.identity(), actual.revision == expected.revision,
+                  actual.publicKeyRaw == expected.publicKeyRaw,
+                  actual.requiresAppUnlock == expected.requiresAppUnlock else {
+                _ = try lease.invalidateIdentityAuthority()
+                throw NativeIdentityError.changed
+            }
+        }
+        // This commit closes public trust before any private-record write.
+        // A Keychain failure never restores the older authority.
+        let generation = try lease.invalidateIdentityAuthority()
         let q = query(accessGroup: accessGroup, service: service, account: account)
         let status: OSStatus
         if updating {
@@ -266,6 +297,8 @@ enum ClientIdentityStore {
             throw NativeIdentityError.changed
         }
         _ = try JSONDecoder().decode(Record.self, from: verified).identity()
+        try lease.installIdentityAuthority(publicKey: identity.publicKeyRaw, revision: identity.revision,
+                                           generation: generation)
     }
 }
 
