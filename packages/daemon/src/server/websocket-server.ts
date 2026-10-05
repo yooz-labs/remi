@@ -327,9 +327,9 @@ export class WebSocketServer {
         }
 
         // Auth-info endpoint: lets clients probe whether this daemon will
-        // require an Ed25519 challenge before opening the WebSocket. Loopback
-        // peers are always exempt regardless of authenticator config, so the
-        // probe answers from the same vantage point the WebSocket would.
+        // require an Ed25519 challenge before opening the WebSocket. Only actual
+        // TCP loopback with a valid daemon capability bypasses configured auth
+        // (#873); the probe uses the same boundary as WebSocket admission.
         // See ConnectModal in packages/web for the consumer (#257).
         if (url.pathname === '/auth-info') {
           const peer = server.requestIP(req);
@@ -636,10 +636,8 @@ export class WebSocketServer {
       ...bindConnectionId(ws.data.connectionId, this.events),
     };
 
-    // Localhost-no-auth (#257): even when an authenticator is configured,
-    // peers connecting from the loopback interface are trusted by virtue of
-    // being on the same machine. Drop the authenticator from this peer's
-    // connection so it never receives an auth_challenge.
+    // #873: only a valid capability on actual TCP loopback bypasses identity
+    // authentication. Bare loopback remains challenged, including a proxy peer.
     let perConnectionConfig = this.config.connection;
     if (
       shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress, {

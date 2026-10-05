@@ -79,7 +79,11 @@ export class RelayDeviceStore {
       }
     });
   }
-  async add(publicKey: string, label: string): Promise<RelayDevice> {
+  async add(
+    publicKey: string,
+    label: string,
+    mayCommit: () => boolean = () => true,
+  ): Promise<RelayDevice> {
     const fingerprint = await validatePublicKey(publicKey);
     const device: RelayDevice = {
       publicKey,
@@ -88,10 +92,10 @@ export class RelayDeviceStore {
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
     };
-    this.change((values) => [
-      ...values.filter((value) => value.fingerprint !== fingerprint),
-      device,
-    ]);
+    this.change((values) => {
+      if (!mayCommit()) throw new Error('RELAY_CANCELLED');
+      return [...values.filter((value) => value.fingerprint !== fingerprint), device];
+    });
     return device;
   }
   remove(fingerprint: string): void {

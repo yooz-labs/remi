@@ -1,11 +1,11 @@
 /**
  * Thin WebCrypto wrappers for relay v2 (ADR 0034 section 1).
  *
- * Written fresh rather than reusing `relay-crypto.ts`: that module fixes random
- * nonces, takes base64 strings, derives its keys without the transcript or the
- * pairing secret, and is deleted by R3, so sharing code with it would couple
- * v2 to what it replaces. Only `crypto.subtle` primitives the ADR names appear
- * here, and `systemRandom` is the only place the library touches the platform
+ * Uses the ADR's transcript and pairing-secret derivation, with directional
+ * counters for nonces. The retired v1 payload encryption is not reused;
+ * relay-crypto.ts retains only direct-auth compatibility signing input (#1198).
+ * Only `crypto.subtle` primitives the ADR names appear here, and
+ * `systemRandom` is the only place the library touches the platform
  * random source: every state machine takes a `Rng` instead.
  *
  * Production keys come from the engine's own `generateKey`, and a persisted key

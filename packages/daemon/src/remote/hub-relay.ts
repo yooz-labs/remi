@@ -33,6 +33,7 @@ import type { RelayLocalControl } from '../server/websocket-server.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { ChildProxy } from './child-proxy.ts';
 import { RelayDeviceStore } from './relay-device-store.ts';
+import { legacyRelayUrlNotice, relayWorkerUrl } from './relay-url.ts';
 import { WorkerControl } from './worker-control.ts';
 
 type Offer = {
@@ -51,8 +52,15 @@ type Peer = {
   answerIds: MessageIdTracker;
   revisions: ReadonlyMap<string, number>;
   orderlyClosing: boolean;
+  transportClosing: boolean;
+  ending?: Promise<void>;
   closing?: Promise<void>;
   pendingFrames: number;
+  pendingApplications: number;
+  pendingSends: number;
+  sendNotice: 'PAYLOAD_TOO_LARGE' | 'SEND_QUEUE_FULL' | undefined;
+  historyOverflow: boolean;
+  listing: boolean;
   cid: string;
   ws: WebSocket;
   cancelled: boolean;
@@ -100,6 +108,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     private readonly cfg: HubRelayConfig,
     private readonly events: Partial<AdapterEvents> = {},
   ) {
+    const legacyNotice = legacyRelayUrlNotice(cfg.relayUrl);
+    if (legacyNotice) throw new Error(legacyNotice);
     if (
       (cfg.random ?? relayV2.systemRandom) !== relayV2.systemRandom ||
       cfg.ephemeral !== undefined
@@ -108,7 +118,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     this.devices = new RelayDeviceStore(cfg.dir, cfg.trust);
   }
   get connectionCount(): number {
-    return [...this.peers.values()].filter((peer) => peer.stage === 'ready' && !peer.cancelled)
+    return [...this.peers.values()].filter((peer) => peer.stage === 'ready' && this.current(peer))
       .length;
   }
   get isRunning(): boolean {
@@ -128,9 +138,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     void this.connect();
   }
   private url(role: 'host' | 'pipe', cid?: string): string {
-    const base = this.cfg.relayUrl.replace(/\/$/, '');
-    const rid = Array.from(this.rid, (b) => b.toString(16).padStart(2, '0')).join('');
-    return `${base}/v2/${role}/${rid}${cid ? `/${cid}` : ''}`;
+    return relayWorkerUrl(this.cfg.relayUrl, role, this.rid, cid);
   }
   private async connect(): Promise<void> {
     if (!this.running || !this.machine) return;
@@ -143,7 +151,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       },
       (cid) => {
         const peer = this.peers.get(cid);
-        if (peer) void this.closePeer(peer);
+        if (peer) void this.transportEnd(peer);
       },
       () => {
         if (this.control === control) this.lostControl();
@@ -221,6 +229,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private current(peer: Peer): boolean {
     return (
       this.active(peer) &&
+      !peer.transportClosing &&
       !!peer.key &&
       peer.revision === (this.revisions.get(peer.key) ?? 0) &&
       (peer.stage !== 'ready' || this.enrolled(peer))
@@ -241,8 +250,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       answers: new AnswerResults(),
       answerIds: new MessageIdTracker(),
       orderlyClosing: false,
+      transportClosing: false,
       revisions: new Map(this.revisions),
       pendingFrames: 0,
+      pendingApplications: 0,
+      pendingSends: 0,
+      sendNotice: undefined,
+      historyOverflow: false,
+      listing: false,
       stage: 'admit',
       timer: setTimeout(() => {
         void this.closePeer(peer);
@@ -373,12 +388,22 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               if (!this.current(peer)) throw new Error('RELAY_CANCELLED');
               if (offer) {
                 try {
-                  await this.cfg.trust.addAuthorizedKey(peer.key as string, step.deviceName);
+                  await this.cfg.trust.addAuthorizedKey(peer.key as string, step.deviceName, () =>
+                    this.current(peer),
+                  );
                 } catch (e) {
                   if (!(e instanceof DuplicateKeyError)) throw e;
                 }
                 if (!this.current(peer)) throw new Error('RELAY_CANCELLED');
-                await this.devices.add(peer.key as string, step.deviceName);
+                await this.devices.add(
+                  peer.key as string,
+                  step.deviceName,
+                  () =>
+                    this.current(peer) &&
+                    this.cfg.trust
+                      .loadAuthorizedKeys()
+                      .keys.some((key) => key.publicKey === peer.key),
+                );
                 if (
                   !this.current(peer) ||
                   !(await this.control?.command({ t: 'enroll', key: step.devicePublicKey }))
@@ -430,7 +455,24 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             const message = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
             if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
               throw new Error('RELAY_INVALID_MESSAGE');
-            await this.route(peer, message);
+            if (peer.pendingApplications >= 32) {
+              this.sendRaw(
+                peer.cid,
+                createError('BUSY', 'Relay application request capacity reached', {
+                  requestId: message.id,
+                }),
+              );
+              return;
+            }
+            peer.pendingApplications++;
+            // Decrypt in order; read-only queries/child waits cannot hold up decisions.
+            void this.route(peer, message)
+              .catch(() => {
+                void this.closePeer(peer);
+              })
+              .finally(() => {
+                peer.pendingApplications--;
+              });
           } else throw new Error('RELAY_PIPE_ORDER');
         })
         .catch(() => {
@@ -443,12 +485,24 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     ws.onerror = () => {
       void this.closePeer(peer);
     };
-    ws.onclose = async () => {
+    ws.onclose = () => {
+      void this.transportEnd(peer);
+    };
+  }
+  private transportEnd(peer: Peer): Promise<void> {
+    if (peer.ending) return peer.ending;
+    // A ready pipe may have BYE in the wrapper queue, outside Channel.recvTail.
+    // Stop application effects immediately, then consume that authenticated tail.
+    peer.transportClosing = true;
+    if (peer.stage !== 'ready') void this.closePeer(peer);
+    peer.ending = (async () => {
+      await peer.receiveTail;
       const verdict = await peer.channel?.transportClosed();
       if (verdict === 'unclean' || verdict === 'failed')
         this.log(`Relay delivery uncertain: ${verdict}`);
       await this.closePeer(peer);
-    };
+    })();
+    return peer.ending;
   }
   private install(peer: Peer): void {
     peer.proxy = new ChildProxy(
@@ -465,6 +519,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           }),
         );
       },
+      () => this.current(peer),
     );
     peer.connection = new Connection(
       {
@@ -494,10 +549,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     );
   }
   private async sessionList(peer: Peer, request: SessionListRequestMessage): Promise<void> {
+    const deadline = Date.now() + 5000;
+    let localTimedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const local = new Promise<SessionListResponseMessage>((resolve) => {
       peer.hubLists.set(request.id, resolve);
-      timer = setTimeout(() => resolve(createSessionListResponse([], request.id)), 5000);
+      timer = setTimeout(() => {
+        localTimedOut = true;
+        resolve(createSessionListResponse([], request.id));
+      }, 5000);
     });
     this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
     const localResponse = await local;
@@ -507,15 +567,27 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     const all = this.cfg.registry.listLive();
     const live = all.slice(0, 32);
     const sessions = new Map(localResponse.sessions.map((session) => [session.sessionId, session]));
-    let failed = all.length > live.length;
+    let failed = localTimedOut || all.length > live.length;
     // Eight private child handshakes at once, finite five-second list waits.
     for (let offset = 0; offset < live.length; offset += 8) {
-      const responses = await Promise.allSettled(
+      const batch = Promise.allSettled(
         live.slice(offset, offset + 8).map(async (entry) => ({
           entry,
           response: await peer.proxy?.list(entry.sessionId, request.includeExternal ?? false),
         })),
       );
+      let batchTimer: ReturnType<typeof setTimeout> | undefined;
+      const responses = await Promise.race([
+        batch,
+        new Promise<null>((resolve) => {
+          batchTimer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+      if (batchTimer) clearTimeout(batchTimer);
+      if (responses === null) {
+        failed = true;
+        break;
+      }
       if (!this.current(peer)) return;
       for (const result of responses) {
         if (result.status !== 'fulfilled' || !result.value.response) {
@@ -554,7 +626,19 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
     if (message.type === 'session_list_request') {
-      await this.sessionList(peer, message);
+      if (peer.listing) {
+        this.sendRaw(
+          peer.cid,
+          createError('BUSY', 'Session list query already active', { requestId: message.id }),
+        );
+        return;
+      }
+      peer.listing = true;
+      try {
+        await this.sessionList(peer, message);
+      } finally {
+        peer.listing = false;
+      }
       return;
     }
     if (message.type === 'relay_devices_request') {
@@ -579,7 +663,20 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       });
       return;
     }
-    if (message.type === 'transcript_load_request') peer.historyFailed.delete(message.sessionId);
+    if (message.type === 'transcript_load_request') {
+      if (peer.historyOverflow) {
+        this.sendRaw(
+          peer.cid,
+          createError(
+            'DELIVERY_UNCERTAIN',
+            'History delivery could not be tracked; reconnect before retrying',
+            { requestId: message.id },
+          ),
+        );
+        return;
+      }
+      peer.historyFailed.delete(message.sessionId);
+    }
     const sessionId =
       message.type === 'hello'
         ? message.resumeSessionId
@@ -743,6 +840,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     clearTimeout(offer.timer);
     offer.confirmed?.(false);
     offer.policy.secret.fill(0);
+    const peer = offer.reserved ? this.peers.get(offer.reserved) : undefined;
+    if (peer && peer.stage !== 'ready') void this.closePeer(peer);
   }
   private async revoke(
     fingerprint: string,
@@ -781,6 +880,50 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   sendStatus(id: string, status: AgentStatus, context?: string): boolean {
     return this.sendRaw(id, createSessionUpdate(id, status, context));
   }
+  private refuseSemantic(
+    peer: Peer,
+    message: ProtocolMessage,
+    code: 'PAYLOAD_TOO_LARGE' | 'SEND_QUEUE_FULL',
+  ): false {
+    if ('sessionId' in message && typeof message.sessionId === 'string') {
+      if (peer.historyFailed.size < 32 || peer.historyFailed.has(message.sessionId))
+        peer.historyFailed.add(message.sessionId);
+      else peer.historyOverflow = true;
+    }
+    peer.sendNotice = code;
+    this.log(`Relay semantic send refused: ${code}; delivery uncertain`);
+    this.flushNotice(peer);
+    return false;
+  }
+  private flushNotice(peer: Peer): void {
+    if (
+      !peer.sendNotice ||
+      peer.pendingSends >= relayV2.MAX_PENDING_SENDS ||
+      !this.current(peer) ||
+      !peer.channel
+    )
+      return;
+    const code = peer.sendNotice;
+    peer.sendNotice = undefined;
+    this.enqueue(
+      peer,
+      new TextEncoder().encode(
+        serialize(createError(code, 'Relay delivery uncertain: semantic message refused')),
+      ),
+    );
+  }
+  private enqueue(peer: Peer, bytes: Uint8Array): void {
+    peer.pendingSends++;
+    void peer.channel
+      ?.send(bytes)
+      .catch(() => {
+        this.log('Relay semantic send failed; delivery uncertain');
+      })
+      .finally(() => {
+        peer.pendingSends--;
+        this.flushNotice(peer);
+      });
+  }
   sendRaw(id: string, message: ProtocolMessage, aggregated = false): boolean {
     const peer = this.peers.get(id);
     if (peer && message.type === 'session_list_response' && !aggregated) {
@@ -792,26 +935,17 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       void this.closePeer(peer, true);
       return false;
     }
-    if (message.type === 'transcript_load_complete' && peer.historyFailed.has(message.sessionId))
+    if (
+      message.type === 'transcript_load_complete' &&
+      (peer.historyOverflow || peer.historyFailed.has(message.sessionId))
+    )
       return false;
     const bytes = new TextEncoder().encode(serialize(message));
-    if (bytes.length > relayV2.MAX_PLAINTEXT) {
-      if ('sessionId' in message && typeof message.sessionId === 'string') {
-        if (peer.historyFailed.size >= 32)
-          peer.historyFailed.delete(peer.historyFailed.values().next().value as string);
-        peer.historyFailed.add(message.sessionId);
-      }
-      const error = createError(
-        'PAYLOAD_TOO_LARGE',
-        'Relay delivery uncertain: semantic message exceeds channel limit',
-      );
-      void peer.channel.send(new TextEncoder().encode(serialize(error))).catch(() => {});
-      this.log('Relay semantic send refused: oversize');
-      return false;
-    }
-    void peer.channel.send(bytes).catch(() => {
-      this.log('Relay semantic send refused; delivery uncertain');
-    });
+    if (bytes.length > relayV2.MAX_PLAINTEXT)
+      return this.refuseSemantic(peer, message, 'PAYLOAD_TOO_LARGE');
+    if (peer.pendingSends >= relayV2.MAX_PENDING_SENDS)
+      return this.refuseSemantic(peer, message, 'SEND_QUEUE_FULL');
+    this.enqueue(peer, bytes);
     return true;
   }
   broadcast(message: ProtocolMessage): void {
@@ -819,7 +953,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     for (const id of this.peers.keys()) this.sendRaw(id, message);
   }
   hasConnection(id: string): boolean {
-    return this.peers.get(id)?.stage === 'ready';
+    const peer = this.peers.get(id);
+    return !!peer && peer.stage === 'ready' && this.current(peer);
   }
   closeConnection(id: string): boolean {
     const peer = this.peers.get(id);

@@ -87,6 +87,7 @@ test('completed edge revoke is not undone by startup enrollment snapshot', async
     release?.();
     await until(() => notices.some((n) => n.t === 'revoked'));
     const outcome = notices.find((n) => n.t === 'revoked');
+    if (!outcome) throw new Error('MISSING_ACTUAL_REVOKE_RESULT');
     expect(outcome.success).toBe(true);
     expect(outcome.edgeAcknowledged).toBe(true);
     await Bun.sleep(100);

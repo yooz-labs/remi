@@ -136,7 +136,7 @@ Key directories to know:
 
 | vs. | Remi advantage |
 |---|---|
-| Happy Coder | No custom relay; delegates to Tailscale / SSH |
+| Happy Coder | Direct SSH / Tailscale access, with an opt-in v2 hub relay daemon |
 | Muxer (Swift) | Cross-platform; faster development |
 
 ## Hub mode (`remi serve` / `remi start`)
@@ -184,7 +184,7 @@ registers itself in live-sessions.
 | Method | When to use |
 |---|---|
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
-| Signaling relay | Not usable today. Off by default, and nothing remote ships through it (see below) |
+| Signaling relay | V2 hub daemon implemented, off by default; R4 client and deployed acceptance pending |
 
 **Direct connection now requires setting `daemon.bind` (#880).** The default is
 `127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels still work
@@ -199,21 +199,29 @@ peer address. #873 requires identity or a real local capability even on loopback
 keep the documented direct setup. Recommend an SSH tunnel, or an explicit `bind` plus
 `--auth`.
 
-**The relay is off by default, and without an authenticator it accepts nothing (#1193).**
-`network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, `--permanent-code` wins over `relay = false`, and `--no-relay` wins over both.
-Without `--permanent-code`, or with auth explicitly disabled, `cli.ts` prints a notice (how to enable it, what to use today, and how to silence it with `network.relay = false` or `--no-relay`) and creates no adapter, so the daemon holds no connection to the Worker.
-`RelayAdapter` fails closed on its own as the second layer: it refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound `relay` payload before it is parsed (the signaling client has already parsed the outer frame), and acts on `peer-connected` and `peer-disconnected` only for the Worker role `client`.
-The role check was written against the pre-R2 Worker, whose room gave a socket that never joined the role `pending`, told the host whenever any socket closed and could deliver a `relay` frame to the host with no peer ever having joined, so the frame drop is what closed that path.
-That Worker is gone from this repository (R2, #1197, see the next paragraph); the adapter still speaks its v1 protocol until R3 (#1198) deletes it.
-A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the setting and now gets the boot notice instead of a relay.
-No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
-The rebuild is planned (`.context/strategy-2026-10.md` section 9, `.context/relay-rebuild-plan-2026-10.md`); nothing remote ships through the relay today.
+**The v2 relay daemon is hub-owned and off by default (R3, #1198).**
+`remi serve --relay` or `network.relay = true` opts the hub in; `--no-relay` wins.
+Authentication must remain enabled. Session daemons do not register a relay.
+`HubRelay` owns Worker control, encrypted machine channels and capability-verified
+child proxies. `remi pair` uses a real loopback capability endpoint and local TTY
+confirmation of the exact client fingerprint; no remote endpoint creates or
+confirms offers. `remi devices` lists/revokes enrollment; encrypted enrolled clients
+can also list/revoke, but cannot approve anyone or learn the local capability.
+Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
+answers return correlated actual child outcomes, and child discovery is aggregated
+by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
+The old `RelayAdapter`, signaling code client and permanent code store are removed;
+`remi code` and `--permanent-code` refuse with migration guidance. Direct signed
+challenge fields retain `kexSigningInput`; detached direct `/answer` remains.
+R4 web/native client integration, R5/R6 push privacy, deployed Worker and signed
+hardware acceptance remain pending. Existing plaintext `/push` is not protected by
+this channel.
 
 **The Worker in this repository is v2 (R2, #1197), and it is not deployed.**
 It is one Durable Object per machine, named by the room id (the hash of the machine's public key), with no time-to-live: a socket is admitted by a signature over a Worker-issued nonce (the host by the machine key, a client by an enrolled device key or a single-use pairing ticket) before anything else happens, the enrolled set changes only on the host's `enroll` and `revoke`, and a client and the host's pipe are then paired and every message is forwarded unparsed.
 Its rate limits go through one global Durable Object (`GlobalLimiter`), and its numbers are unmeasured defaults.
 What it sees and what it does not, its routes and messages, its limits and the known gaps are in `docs/relay-worker-v2.md`; the deploy steps for the owner are in `docs/relay-worker-deploy-runbook.md`.
-`/connect/<code>` and `/answer/<code>` are deleted from it, so the v1 `RelayAdapter` cannot reach it, and no shipped client speaks v2: the first real endpoints are R3 and R4, and until then the only ones are the fake host and fake client of `packages/signaling/tests/e2e`.
+`/connect/<code>` and `/answer/<code>` are deleted. R3 tests construct the real source hub and capability-verified controlled children against this Worker; shipped R4 clients and deployed acceptance remain pending.
 Those tests run the real Durable Object in workerd under Miniflare (`bun test packages/signaling`); that is not the deployed Cloudflare runtime, and the hibernation threshold, alarm precision and billing there are unverified.
 The legacy `POST /push` is unchanged and stays until push privacy (R5) ships.
 
@@ -238,14 +246,11 @@ mutations share an interprocess lock and atomic restricted files; approval
 persists the grant before deleting its candidate. Physical signed iPhone and
 signed sandboxed macOS acceptance remain unverified owner hardware gates.
 
-**There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
-in this repo. The worker was built to relay a *handshake*, with WebRTC intended
-to carry the session; that second half was never implemented, so the relay was
-left as a data transport that no shipped client can use, and the only remote
-paths that work today are direct ones (an SSH tunnel, or an explicit `bind` plus
-`--auth`).
-Anything describing a peer-to-peer path, DTLS, or TURN relaying opaque blobs is
-describing an intention, not this codebase (#543).
+**There is no WebRTC.** No `RTCPeerConnection` or data channel exists here.
+The historical v1 design intended WebRTC after signaling but never built it
+(#543). The current v2 relay is a WebSocket ciphertext courier, implemented
+on the daemon side by R3. Descriptions of peer-to-peer DTLS or TURN do not
+describe this source.
 
 ## Question Detection and Notifications
 
@@ -700,7 +705,7 @@ Read against `harness/codex/` (`approval-cards.ts`, `codex-decisions.ts`, wired 
 - **No deadline.** Claude's holds are bounded by hook timeouts remi cannot lift. A Codex request waits in the app-server without one, and the card mirrors it, so a card on a lock screen stays answerable for as long as Codex waits; expiring the card would strand a request that is still pending.
 - **The link.** When it drops, every card is retired at once (not answerable, still shown); the replay after the re-attach (`ThreadTracker.onAttached`) creates a new card with a new id and dismisses the retired one, and a card the replay did not bring back within 3 s was resolved while the link was down and is dismissed; with no re-attach the retired cards are dismissed after 30 s. A rotation, `remi unstick` and the session ending dismiss every card. A card dismissed by Cancel (`terminalOnly`) or `remi unstick` comes back at the next replay because the request is still pending; a flapping link pushes the card again at each replay; more than 64 requests at once dismiss the oldest live cards (they stay answerable in the terminal). A dropped link does not cancel or decline a pending request (verified live, 2026-10-04, R1: a probe and real remi killed with -9, even remi and the TUI together; the prompt stayed up and the SAME request id was replayed to the next `thread/resume`). Nothing dismisses a live card from a status change: `serverRequest/resolved` is reported for an answer, an Esc in the TUI, `turn/interrupt` and an RPC `cancel` (verified live), so no status-based dismissal is needed (F3 settled).
 - **Rotation keeps approval authority.** A `/new` in the TUI, or a plain `codex` window in the same directory opened while the session is idle (it looks the same), re-binds the session, and approvals then come from the new thread. Not closed (same user, same machine); never silent: every rotation sends "remi now follows a new Codex thread; approvals come from it" and logs `rotated from <last 8> to <last 8>` (residual R4, confirmed live 2026-10-04: a plain `codex` window re-bound an idle session and the message reached the phone).
-- **Logs and what persists.** No command, cwd, prompt or full thread id: a thread id is shown as its last eight characters (UUIDv7 prefixes collide: two threads created within about 65 s share their first eight; remi's own and Claude's v4 ids keep their first eight), a string request id and a method name are cut and escaped, the question-detected line and the registry's cap-eviction warning log a length for a Codex session (`redactQuestionLogs`). The live-sessions file, the hub census and the menu-bar notifications get a fixed label (`pendingLabel`: "Permission: Codex command" or "Codex asks for approval"), never the text. The card text and `detail` reach connected clients over supported transports (WebSocket and Telegram) because the person must see them; the push carries the cut ask (title 120, body 200 characters) in plaintext to the Worker and APNS like every card; the relay is off by default and no shipped client can join a room; since #1193, no adapter or Worker connection is created without authenticated permanent-code setup, and `sendRaw` refuses until session keys exist, then encrypts before sending. This relay path is separate from push, which remains plaintext as described above. Nothing else persists the text: the replay buffer is memory only, `sessions.json` and the opt-in question trace hold no text. **One exception, the startup line** (`startup-output.ts`, added after LV-4): when a headless Codex (a hub's child or `remi codex --daemon`) exits within 10 seconds of its spawn, before it names a thread, the log gets one line with the first and last 1 KB of what it printed, so a flag error is not opaque. After redaction it holds Codex's own text with every UUID cut to its last eight characters and the session's directory and the home directory shown as `<cwd>` and `~`; it can still hold anything else Codex printed (a config excerpt, a URL, a prompt it echoed), and a path or id cut by the 1 KB limit shows as a fragment. It is escaped, on one line, at most 4096 characters plus a `[cut]` marker when truncated, and never logged for a wrapper session (its terminal already shows the error), for a stop or shutdown remi asked for, or for a session that named its thread. The captured copy is only logged: an attached client reads the same bytes as raw PTY frames, by design.
+- **Logs and what persists.** No command, cwd, prompt or full thread id: a thread id is shown as its last eight characters (UUIDv7 prefixes collide: two threads created within about 65 s share their first eight; remi's own and Claude's v4 ids keep their first eight), a string request id and a method name are cut and escaped, the question-detected line and the registry's cap-eviction warning log a length for a Codex session (`redactQuestionLogs`). The live-sessions file, the hub census and the menu-bar notifications get a fixed label (`pendingLabel`: "Permission: Codex command" or "Codex asks for approval"), never the text. The card text and `detail` reach connected clients over supported transports (WebSocket and Telegram) because the person must see them; the push carries the cut ask (title 120, body 200 characters) in plaintext to the Worker and APNS like every card; the v2 relay daemon is off by default and hub-only; its ready channel carries encrypted semantic messages and refuses raw PTY frames (R3, docs/relay-daemon-v2.md). R4 client and deployed acceptance remain pending. This relay path is separate from push, which remains plaintext as described above. Nothing else persists the text: the replay buffer is memory only, `sessions.json` and the opt-in question trace hold no text. **One exception, the startup line** (`startup-output.ts`, added after LV-4): when a headless Codex (a hub's child or `remi codex --daemon`) exits within 10 seconds of its spawn, before it names a thread, the log gets one line with the first and last 1 KB of what it printed, so a flag error is not opaque. After redaction it holds Codex's own text with every UUID cut to its last eight characters and the session's directory and the home directory shown as `<cwd>` and `~`; it can still hold anything else Codex printed (a config excerpt, a URL, a prompt it echoed), and a path or id cut by the 1 KB limit shows as a fragment. It is escaped, on one line, at most 4096 characters plus a `[cut]` marker when truncated, and never logged for a wrapper session (its terminal already shows the error), for a stop or shutdown remi asked for, or for a session that named its thread. The captured copy is only logged: an attached client reads the same bytes as raw PTY frames, by design.
 
 **Live verification: LV-1, LV-2 and LV-3 were run on 2026-10-04 against the owner's real Codex 0.160.0, by a spike agent. The epic gate holds.**
 Verified live (the ids are the plan's LV-3 letters):
@@ -778,26 +783,10 @@ hand.
 
 ## Core Principles
 
-1. **Zero friction** — pairing is a code, not an account.
-2. **Reliable messaging** — WhatsApp-style states (sending → sent → delivered → read).
-3. **No data in cloud** — the relay should carry ciphertext it cannot read, so the
-   worker is a courier and not a reader. **This is still a goal, not a
-   description.** #543 built the encryption daemon-side only; #881 is that it
-   engages only when an `authenticator` is present, which `cli.ts` supplies only
-   in permanent-code mode (so a default install, and even `--auth` alone, never
-   derives session keys), and that no client implements the other half. Since
-   #1193 the relay is off by default and a daemon without an authenticator
-   refuses in BOTH directions: outbound refuses to send, inbound refuses every
-   peer and frame. Before #1193 outbound REFUSED (a breakage, not a leak) while
-   inbound still ACCEPTED plaintext (a leak). Name the direction; conflating them
-   is how the first draft of this very row got it wrong.
-   The principle as previously written ("peer-to-peer when possible; TURN only
-   relays encrypted blobs") described a WebRTC design that was never built, which
-   is precisely why nobody noticed the worker was receiving plaintext
-   `user_input`, answers and device tokens for months. Direct connections (LAN,
-   Tailscale, VPN, SSH tunnel) genuinely never touch a server; that part is true
-   today. State what ships, not what was intended.
-4. **Graceful degradation** — if parsing fails, show raw text.
+1. **Local pairing** — a short-lived token and exact fingerprint confirmation in the machine owner's terminal, without an account.
+2. **Reliable messaging** — receipt acknowledgments and actual answer outcomes are distinct; an uncertain result is never reported delivered.
+3. **Cloud privacy** — R3 sends encrypted semantic frames through the Worker and refuses raw PTY. The Worker still observes routing metadata. The legacy push path still sends plaintext prompt/excerpt text to the Worker and APNS; R5/R6 and deployed/hardware acceptance remain pending. Direct connections do not use the Worker. Historical v1 privacy claims and failures are preserved in ADR 0011 and ADR 0034; do not describe that retired transport as current.
+4. **Graceful degradation** — direct terminal clients may show raw output. Relay semantic failure reports uncertainty or an explicit refusal, without a raw PTY fallback.
 
 ## Branch Strategy
 

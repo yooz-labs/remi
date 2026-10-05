@@ -616,7 +616,7 @@ describe('the Codex importer allowlist, detector', () => {
     'cli/current-session.ts',
     'session/session-store.ts',
     'server/websocket-server.ts',
-    'remote/relay-adapter.ts',
+    'remote/hub-relay.ts',
     'parser/output-processor.ts',
     'notifications/notification-dispatcher.ts',
     'pty/index.ts',

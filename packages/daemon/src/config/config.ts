@@ -192,16 +192,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   network: {
     mdns: true,
-    // Off by default (#1193). Every install used to register a room with the
-    // signaling Worker, and no shipped client can join one, so the relay gave a
-    // default install no remote capability and an inbound path gated only by
-    // the room code. `relay = true` (or `--permanent-code`) still turns it on,
-    // and without `--auth --permanent-code` the daemon prints a notice and
-    // starts no relay at all (and the adapter would refuse every peer anyway).
-    // A config.toml that already holds `relay = true` (from `remi config init`
-    // before this change) keeps the setting and gets that notice at boot.
+    // Off by default (#1193/#1198). Only the authenticated hub opts into v2
+    // with --relay or this setting; --no-relay wins. Session daemons never
+    // register a relay. Permanent-code mode is retired. R4 client and R7
+    // deployed/hardware acceptance remain pending.
     relay: false,
-    signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
+    signaling_url: 'wss://remi-signaling.yooz.workers.dev',
   },
   auth: {
     enabled: 'auto',
@@ -324,19 +320,6 @@ export interface LoadedConfig {
   /** True when `[notifications] subagent_alert` was absent and the legacy
    *  `auto_approve.subagent_alert` list was used in its place. */
   readonly subagentAlertFromLegacy: boolean;
-}
-
-/**
- * Whether this process registers with the signaling relay (#1193): off unless
- * `network.relay = true` or `--permanent-code` asks for it, and `--no-relay`
- * beats both. `--permanent-code` counts because a fixed relay code means
- * nothing without a relay, and it is what the authenticated mode is started by.
- */
-export function relayRequested(
-  configRelay: boolean,
-  cli: { readonly noRelay: boolean; readonly permanentCode: boolean },
-): boolean {
-  return !cli.noRelay && (configRelay || cli.permanentCode);
 }
 
 /**
@@ -655,8 +638,8 @@ allowed_origins = []
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
-# Off by default: no shipped client connects through the relay yet (#1193).
-# With it on, no relay starts unless the daemon runs with --auth --permanent-code.
+# Opt-in authenticated hub relay (#1198); client/deployed acceptance pending.
+# remi serve --relay opts in; --no-relay wins. Pair locally with remi pair.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
@@ -747,7 +730,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
   lines.push(`  relay = ${config.network.relay}`);
-  lines.push('  # --permanent-code turns the relay on, whatever relay says');
+  lines.push('  # hub-only: --relay opts in; --no-relay wins; permanent codes are retired');
   lines.push(`  signaling_url = "${config.network.signaling_url}"`);
   lines.push('');
   lines.push('[auth]');

@@ -207,6 +207,7 @@ async function paired() {
     }),
   );
   const ready = await socket.text();
+  expect(existsSync(join(running.dir, 'state/authorized_keys.json'))).toBe(true);
   const grants = JSON.parse(readFileSync(join(running.dir, 'state/authorized_keys.json'), 'utf8'));
   expect(
     grants.keys.some(
@@ -249,7 +250,16 @@ async function paired() {
 test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
   const { socket, channel, drain } = await paired();
   socket.sendText('pong');
-  const closed = await socket.closed;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closed = await Promise.race([
+    socket.closed,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 1000);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  expect(closed).not.toBeNull();
+  if (!closed) throw new Error('MISSING_READY_TEXT_REFUSAL');
   expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
   // Bun 1.3.11 drops longer outbound close reasons (existing Worker E2E probe).
   expect(closed.reason).toBe(Bun.version === '1.3.11' ? '' : relayV2.FAILURE_CLOSE.reason);

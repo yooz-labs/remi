@@ -228,6 +228,7 @@ import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
+import { legacyRelayUrlNotice } from './remote/relay-url.ts';
 import {
   AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
@@ -395,6 +396,13 @@ const cliSubcommandArg = parsedArgs.subcommandArg;
 const serveMode = cliSubcommand === 'serve';
 const cliDaemonMode = parsedArgs.daemonMode || serveMode;
 const cliPermanentCode = parsedArgs.permanentCode;
+if (serveMode && !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay)) {
+  const notice = legacyRelayUrlNotice(cliSignalingUrl ?? remiConfig.network.signaling_url);
+  if (notice) {
+    console.error(notice);
+    process.exit(1);
+  }
+}
 const cliForce = parsedArgs.force;
 const cliStopAll = parsedArgs.stopAll;
 const cliUsePassphrase = parsedArgs.usePassphrase;
@@ -2124,8 +2132,8 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: disabled by default. Enable with --auth flag.
-// Local/private networks don't need auth; relay/public access does.
+// #873: auth defaults on for every bind. Only explicit false/--no-auth
+// disables it with a visible warning; local capability admission is separate.
 // ---------------------------------------------------------------------------
 // `bindHost` is declared near the CLI flags above, not here: port
 // auto-selection probes with it long before this point (#880).

@@ -505,7 +505,7 @@ describe('Connection auth state machine', () => {
   });
 });
 
-describe('Connection answer extraction (#627)', () => {
+describe('Connection answer extraction (#627)', async () => {
   function connectedConn(
     onAnswer: (
       sessionId: UUID,
@@ -514,44 +514,60 @@ describe('Connection answer extraction (#627)', () => {
       claudeSessionId?: UUID,
       extra?: AnswerExtras,
     ) => void,
-  ): Connection {
+  ): { conn: Connection; answered: Promise<void> } {
+    let delivered!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
     const ws = new MockWebSocket();
-    const conn = new Connection(ws as unknown as WebSocket, { onAnswer }, { skipHelloAck: false });
+    const conn = new Connection(
+      ws as unknown as WebSocket,
+      {
+        onAnswer: (...args) => {
+          onAnswer(...args);
+          delivered();
+        },
+      },
+      { skipHelloAck: false },
+    );
     conn.handleMessage(serialize(createHello('c', '1.0.0')));
-    return conn;
+    return { conn, answered };
   }
   const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
   const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
 
-  test('a cancel message forwards extra.cancel = true', () => {
+  test('a cancel message forwards extra.cancel = true', async () => {
     let captured: AnswerExtras | undefined;
     let called = false;
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       called = true;
       captured = extra;
     });
     conn.handleMessage(serialize(createCancelQuestion(SID, QID)));
+    await answered;
     expect(called).toBe(true);
     expect(captured).toEqual({ selections: undefined, cancel: true });
   });
 
-  test('a selections message forwards extra.selections (no cancel)', () => {
+  test('a selections message forwards extra.selections (no cancel)', async () => {
     const sels = [{ questionIndex: 0, optionIndices: [1] }];
     let captured: AnswerExtras | undefined;
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       captured = extra;
     });
     conn.handleMessage(serialize(createAuqAnswer(SID, QID, sels)));
+    await answered;
     expect(captured?.selections).toEqual(sels);
     expect(captured?.cancel).toBeUndefined();
   });
 
-  test('a plain answer forwards undefined extra', () => {
+  test('a plain answer forwards undefined extra', async () => {
     let captured: AnswerExtras | undefined = { cancel: true }; // sentinel != undefined
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       captured = extra;
     });
     conn.handleMessage(serialize(createAnswer(SID, QID, 'y')));
+    await answered;
     expect(captured).toBeUndefined();
   });
 });

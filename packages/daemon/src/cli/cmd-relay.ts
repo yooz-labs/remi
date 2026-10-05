@@ -7,6 +7,15 @@ import { toString as qrCode } from 'qrcode';
 import { remiHome } from '../config/remi-home.ts';
 import { capabilityWsOptions } from './capability-client.ts';
 
+/** The package's UTF-8 renderer honors the four-module quiet zone; its
+ * terminal renderer ignores margin. Force white background/black modules. */
+export async function renderPairingQr(token: string): Promise<string> {
+  const qr = await qrCode(token, { type: 'utf8', errorCorrectionLevel: 'M', margin: 4 });
+  return qr
+    .split('\n')
+    .map((line) => `\x1b[47;30m${line}\x1b[0m`)
+    .join('\n');
+}
 export function escapeDeviceName(name: string): string {
   return JSON.stringify(name).replace(
     /[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
@@ -94,12 +103,7 @@ export async function runRelayCommand(
             typeof value['token'] === 'string' &&
             value['token'].startsWith('remi-pair2:')
           ) {
-            const qr = await qrCode(value['token'], {
-              type: 'terminal',
-              small: true,
-              errorCorrectionLevel: 'M',
-              margin: 4,
-            });
+            const qr = await renderPairingQr(value['token']);
             if (done) return;
             process.stdout.write(
               `${qr}\n${value['token']}\nCompare the fingerprint on both devices before confirming.\n`,

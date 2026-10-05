@@ -1032,3 +1032,25 @@ Harder: every failure looks the same to a user, so a revoked device and a networ
 - v1 code read for this ADR: `packages/shared/src/relay-crypto.ts`, `packages/shared/src/sealed-answer.ts`, `packages/daemon/src/auth/authenticator.ts`.
 - [ADR 0014](0014-two-sided-conformance-tests.md): the two-sided conformance pattern this phase follows for the wire.
 - [ADR 0011](0011-verify-before-you-describe.md): every sentence here is meant to be true of the code R1 ships, and anything not verified is labeled unverified.
+
+## R3 source integration (daemon, #1198)
+
+The hub now constructs `remote/hub-relay.ts`, whose Worker control and encrypted
+machine channel route semantic messages through actual capability-verified child
+sockets. [The daemon contract](../../docs/relay-daemon-v2.md) records the caller
+map, limits, result meanings, retirement boundary and focused gates. R3 is an
+opt-in daemon implementation, not deployed/client/hardware acceptance or push
+privacy. Section 19 remains the end-to-end R7 gate inventory.
+
+Cancellation is checked inside the existing store lock before grant/enrollment
+persistence, and `ready` follows persistence and Worker acknowledgment. Every
+outbound frame rechecks durable enrollment after queued crypto. Child generations
+bind pid, port and start time; old frames and old socket closes cannot affect a
+replacement. The actual old input/answer handlers now log metadata rather than
+plaintext. Raw PTY has no relay fallback. Answer receipt and actual outcome are
+separate, with finite correlated results and constant-size content deduplication.
+
+Close handlers drain the caller's wrapper receive queue before asking the channel
+for its close verdict; the library cannot see frames not yet passed to `receive`.
+The actual Worker emits control `gone` only for a pending client; a ready client
+closes its pipe. No cross-socket ready-stage `gone` ordering claim is needed.

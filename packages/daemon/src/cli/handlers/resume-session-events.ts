@@ -24,9 +24,8 @@
  * (`remi codex resume <thread id>`); resuming one through a hub is not built.
  *
  * Hub mode (`remi serve`, #1124): the hub is a session-less supervisor and
- * must never run Claude itself, but both transports (`server/connection.ts`,
- * `remote/relay-adapter.ts`) dispatch resume requests to this handler
- * unconditionally. With `hubMode` set, every request is refused up front
+ * must never run Claude itself, but direct and HubRelay virtual `Connection` dispatch untargeted resume requests
+ * to this handler. With `hubMode` set, every request is refused up front
  * with `errorCode: 'UNSUPPORTED'` and none of the three paths above runs.
  * Resuming through the hub by spawning a child session daemon is tracked in
  * #1129; it needs two things that do not exist yet (a session daemon that

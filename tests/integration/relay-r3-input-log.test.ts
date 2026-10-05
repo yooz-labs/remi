@@ -35,13 +35,14 @@ test('real WebSocket user input does not enter plaintext logs even when refused'
       { onUserInput: handlers.onUserInput },
     );
     await server.start();
-    ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    ws = socket;
     await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => ws?.send(serialize(createHello('owned', '2.0.0')));
-      ws.onmessage = (e) => {
+      socket.onopen = () => socket.send(serialize(createHello('owned', '2.0.0')));
+      socket.onmessage = (e) => {
         if (deserialize(String(e.data))?.type === 'hello_ack') resolve();
       };
-      ws.onerror = () => reject(Error('ws'));
+      socket.onerror = () => reject(Error('ws'));
     });
     ws.send(serialize(createUserInput('owned-session', 'OWNED_PRIVATE_INPUT_SENTINEL', false)));
     const deadline = Date.now() + 1000;

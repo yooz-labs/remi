@@ -8,7 +8,7 @@
  * message — `deserialize()` silently returns `null` for it repo-wide, and
  * nothing fails loudly (the daemon logs `INVALID_MESSAGE` and moves on).
  *
- * `GOLDEN_TYPES` below is the exact 45-entry `validTypes` array as it stood
+ * `GOLDEN_TYPES` below is the independent original 45-entry `validTypes` array plus the five R3 types
  * in `packages/shared/src/protocol.ts` (lines 1005-1051) before the registry
  * was introduced, copied by hand from that array. It is intentionally NOT
  * derived from anything else in this codebase, so it cannot silently drift
@@ -17,7 +17,7 @@
 import { describe, expect, test } from 'bun:test';
 import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
-/** The exact `validTypes` array from `isValidMessage`, pre-#895, verbatim. */
+/** The Independent golden types: original #895 list plus explicit R3 additions (#1198). */
 const GOLDEN_TYPES = [
   'hello',
   'hello_ack',
@@ -64,15 +64,20 @@ const GOLDEN_TYPES = [
   'question_resolved',
   'remi_status',
   'question_snapshot',
+  'answer_result',
+  'relay_devices_request',
+  'relay_devices_response',
+  'relay_device_revoke_request',
+  'relay_device_revoke_response',
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 45 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(45);
-    expect(new Set(GOLDEN_TYPES).size).toBe(45);
+  test('GOLDEN_TYPES has exactly 50 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(50);
+    expect(new Set(GOLDEN_TYPES).size).toBe(50);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 45 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 50 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -120,6 +125,8 @@ describe('protocol registry golden equality (#895)', () => {
     'ping',
     'pong',
     'ack',
+    'relay_devices_request',
+    'relay_device_revoke_request',
   ] as const;
 
   test('every inbound-routed type is tagged c2d or both, never d2c', () => {
