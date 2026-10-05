@@ -5,11 +5,10 @@ import SQLite3
 /// A failure blocks Keychain mutation. A later Keychain failure leaves this
 /// authority invalidated; SQLite and Keychain are not a distributed transaction.
 protocol NativeIdentityAuthorityBarrier {
-    func invalidateIdentityAuthority() throws
-    func installIdentityAuthority(publicKey: Data, revision: String) throws
+    func acquireIdentityMutation() throws -> NativeIdentityMutationLease
 }
 
-enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity, changed }
+enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity, changed, busy }
 
 /// #1200 A scaffolding: opens an actual private/shared SQLite file. Authority
 /// operations remain fail-closed until the separately committed behavior pins
@@ -31,6 +30,13 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     deinit { if let database { sqlite3_close(database) } }
 
     func currentAuthority() throws -> Authority? { nil }
-    func invalidateIdentityAuthority() throws { throw NativePushStateError.unavailable }
-    func installIdentityAuthority(publicKey: Data, revision: String) throws { throw NativePushStateError.unavailable }
+    func acquireIdentityMutation() throws -> NativeIdentityMutationLease { throw NativePushStateError.unavailable }
+}
+
+final class NativeIdentityMutationLease {
+    func invalidateIdentityAuthority() throws -> Int64 { throw NativePushStateError.unavailable }
+    func installIdentityAuthority(publicKey: Data, revision: String, generation: Int64) throws {
+        throw NativePushStateError.unavailable
+    }
+    func release() {}
 }
