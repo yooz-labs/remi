@@ -348,10 +348,10 @@ describe('ClaudeHarness.createSession', () => {
   });
 
   test('secure push context cannot retain action after actual option meaning changes, registry removal or launch replacement', async () => {
-    const { session, sessionId, question } = visiblePrompt();
+    const { decisions, sessionId, card: question, response } = await holdPrompt(false);
     const contexts = new SecurePushContexts({
       questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
-      validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
     });
     const runtime = contexts.begin(sessionId);
     const snapshot = await pushRecipient();
@@ -365,7 +365,9 @@ describe('ClaudeHarness.createSession', () => {
     const first = contexts.capture(runtime, snapshot, event);
     expect(first).not.toBeNull();
     if (!first) return;
+    expect(first.payload.actionable).toBe(true);
     expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(true);
+    expect(contexts.latestAction(runtime, question.id, snapshot.publicKey)?.context).toBe(first);
     const changed = {
       ...question,
       options: question.options.map((o, i) =>
@@ -386,6 +388,8 @@ describe('ClaudeHarness.createSession', () => {
     expect(replacement.instance).not.toBe(runtime.instance);
     expect(relayV2.fromB64u(replacement.instance)).toHaveLength(32);
     expect(contexts.capture(runtime, snapshot, event)).toBeNull();
+    expect(decisions.answerHeld(question.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
   });
 
   test('secure push context capacity refuses another current recipient without evicting the first', async () => {

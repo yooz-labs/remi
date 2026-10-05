@@ -4,8 +4,9 @@ The implementation work for #1200 is approved. These bounds describe the new
 local context implementation; they do not establish complete caller integration
 or native/deployed acceptance.
 
-Each session launch or resume receives a fresh system-random 32-byte instance
-before the message API or harness is constructed. Closing or replacing that
+The context class assigns a fresh system-random 32-byte instance at `begin`.
+Its CLI caller must invoke this before constructing the message API or harness;
+that caller integration is still pending at this checkpoint. Closing or replacing that
 runtime invalidates every captured context. The process admits at most 64
 runtimes, 2048 recipient contexts in total, and 32 distinct logical notification
 slots per runtime. A slot can fan out to the secure store's 64 recipients subject
