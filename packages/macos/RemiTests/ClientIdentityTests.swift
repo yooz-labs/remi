@@ -269,6 +269,53 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(external as? Bool, false, "An external main document must not reach the native signer")
     }
 
+    @MainActor
+    func testProtectedLegacyImportSignsForegroundThroughRealBridgeOnly() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-protected-wk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "<html><body>Protected import</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let legacy = ClientIdentity(privateKey: .init())
+        let imported = try await web.callAsyncJavaScript(
+            "try { return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'import',pkcs8:pkcs8,publicKey:publicKey,revision:null,requiresAppUnlock:true}) } catch { return {refused:true} }",
+            arguments: ["pkcs8":Ed25519PKCS8.encode(legacy.privateKey).base64EncodedString(),"publicKey":legacy.publicKeyRaw.base64EncodedString()],
+            in:nil, contentWorld:.page)
+        let reply = try XCTUnwrap(imported as? [String:Any])
+        XCTAssertNil(reply["refused"], "Explicit protected legacy import must reach durable native storage")
+        guard reply["refused"] == nil else { return }
+        XCTAssertEqual(reply["requiresAppUnlock"] as? Bool, true)
+        XCTAssertEqual(reply["locked"] as? Bool, false, "Explicit protected import unlocks only this foreground bridge session")
+        let durable = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        let message = Data("protected bridge signing".utf8)
+        let signed = try await web.callAsyncJavaScript(
+            "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message})",
+            arguments:["revision":durable.revision,"publicKey":durable.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()],
+            in:nil,contentWorld:.page)
+        let signature = try XCTUnwrap(Data(base64Encoded:try XCTUnwrap((signed as? [String:Any])?["signature"] as? String)))
+        XCTAssertTrue(legacy.publicKey.isValidSignature(signature,for:message))
+        let suite = "remi1199-protected-bridge-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:durable,defaults:defaults))
+        // Reconstructing the actual bridge loses the foreground unlock, never the durable policy.
+        config.userContentController.removeScriptMessageHandler(forName:NativeIdentityBridge.handlerName,contentWorld:.page)
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme:"remi-app",service:service,account:account),contentWorld:.page,name:NativeIdentityBridge.handlerName)
+        let cold = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message}); return true } catch { return false }",
+            arguments:["revision":durable.revision,"publicKey":durable.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()],in:nil,contentWorld:.page)
+        XCTAssertEqual(cold as? Bool,false,"A cold bridge must require explicit foreground authentication")
+    }
+
     func testProtectedNativeIdentityRefusesBackgroundButCanSignInForeground() throws {
         _ = try ClientIdentityStore.loadOrCreate(service: service, account: account)
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
@@ -303,6 +350,18 @@ final class ClientIdentityTests: XCTestCase {
             replacing: protected.revision, requiresAppUnlock: false, service: service, account: account)
         XCTAssertTrue(imported.requiresAppUnlock, "Replacement cannot implicitly enable background signing")
         XCTAssertNotEqual(imported.revision, protected.revision)
+    }
+
+    @MainActor
+    func testNativeReplacementInvalidatesCapturedHubIdentity() {
+        let identity = ClientIdentity(privateKey: .init())
+        let hub = HubClient(scanPorts: [], identity: identity)
+        XCTAssertEqual(hub.publicFingerprint, identity.fingerprint)
+        NotificationCenter.default.post(name: .nativeIdentityReplaced, object: nil)
+        XCTAssertEqual(hub.publicFingerprint, "", "A captured monitor signer must stop when the WebView replaces its key")
+        guard case .identityUnavailable = hub.phase else {
+            return XCTFail("Native replacement must require restart before the monitor uses a new identity")
+        }
     }
 
     // MARK: - Signing / verification
