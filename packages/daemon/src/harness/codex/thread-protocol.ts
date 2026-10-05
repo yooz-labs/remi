@@ -99,7 +99,10 @@ export function parseThread(v: unknown): ThreadInfo | null {
  */
 export interface TurnCompletedInfo {
   threadId: string;
-  /** `Turn.id`, when it is non-empty text: a turn without one cannot be told from a repeat. */
+  /**
+   * `Turn.id`, when it is non-blank text of at most {@link ID_MAX_LENGTH} characters: a turn without
+   * one cannot be told from a repeat.
+   */
   turnId: string | null;
   /** `Turn.status`: `completed`, `interrupted`, `failed` or `inProgress`; null when absent or not text. */
   status: string | null;
@@ -124,6 +127,18 @@ export interface TurnCompletedInfo {
 const nonBlank = (v: unknown): string | null =>
   typeof v === 'string' && v.trim() !== '' ? v : null;
 
+/**
+ * The longest turn or item id that is kept (UUIDs are 36 characters). An id is copied into every
+ * message made from its item and remembered to drop a repeat, so a hostile frame with a huge one
+ * would be copied and held; a longer id is treated as no id.
+ */
+export const ID_MAX_LENGTH = 200;
+
+const idOrNull = (v: unknown): string | null => {
+  const id = nonBlank(v);
+  return id !== null && id.length <= ID_MAX_LENGTH ? id : null;
+};
+
 /** A `turn/completed` notification's params, or null when they are not `{threadId, turn}`. */
 export function parseTurnCompleted(v: unknown): TurnCompletedInfo | null {
   if (!isRecord(v) || typeof v['threadId'] !== 'string' || v['threadId'] === '') return null;
@@ -144,7 +159,7 @@ export function parseTurnCompleted(v: unknown): TurnCompletedInfo | null {
   const view = turn['itemsView'];
   return {
     threadId: v['threadId'],
-    turnId: nonBlank(turn['id']),
+    turnId: idOrNull(turn['id']),
     status: stringOrNull(turn['status']),
     durationMs:
       typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 ? duration : null,
@@ -179,10 +194,14 @@ export type ThreadItemInfo =
       exitCode: number | null;
     };
 
-/** A chat item, or null when `v` is not one (see {@link ThreadItemInfo}) or has no usable id. */
+/**
+ * A chat item, or null when `v` is not one (see {@link ThreadItemInfo}) or has no usable id: none,
+ * or one longer than {@link ID_MAX_LENGTH} characters.
+ */
 export function parseThreadItem(v: unknown): ThreadItemInfo | null {
   if (!isRecord(v) || typeof v['id'] !== 'string' || v['id'] === '') return null;
   const id = v['id'];
+  if (id.length > ID_MAX_LENGTH) return null;
   switch (v['type']) {
     case 'userMessage': {
       const content = v['content'];
