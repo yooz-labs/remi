@@ -48,10 +48,20 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                     }
                     try execute("CREATE TABLE authority_generation (slot INTEGER PRIMARY KEY CHECK(slot=1), generation INTEGER NOT NULL CHECK(generation>=0))")
                     try execute("INSERT INTO authority_generation VALUES(1,0)")
-                    try execute("CREATE TABLE identity_authority (slot INTEGER PRIMARY KEY CHECK(slot=1), public_key BLOB NOT NULL CHECK(length(public_key)=32), revision TEXT NOT NULL CHECK(length(revision)=36))")
+                    try execute("CREATE TABLE identity_authority (slot INTEGER PRIMARY KEY CHECK(slot=1), public_key BLOB NOT NULL CHECK(length(public_key)=32), revision TEXT NOT NULL CHECK(length(revision)=36), requires_unlock INTEGER NOT NULL CHECK(requires_unlock IN(0,1)))")
                     try execute("PRAGMA application_id=1380798514") // RMP2
-                    try execute("PRAGMA user_version=1")
-                } else if version != 1 || application != 1380798514 { throw NativePushStateError.corrupt }
+                    try execute("PRAGMA user_version=2")
+                } else if version == 1 && application == 1380798514 {
+                    // Legacy authority has no reliable protection policy. Close
+                    // it rather than assuming its private identity is unprotected.
+                    guard try integer("SELECT generation FROM authority_generation WHERE slot=1") < Int64.max else {
+                        throw NativePushStateError.capacity
+                    }
+                    try execute("ALTER TABLE identity_authority ADD COLUMN requires_unlock INTEGER NOT NULL DEFAULT 1 CHECK(requires_unlock IN(0,1))")
+                    try execute("DELETE FROM identity_authority")
+                    try execute("UPDATE authority_generation SET generation=generation+1 WHERE slot=1")
+                    try execute("PRAGMA user_version=2")
+                } else if version != 2 || application != 1380798514 { throw NativePushStateError.corrupt }
                 guard try integer("SELECT generation FROM authority_generation WHERE slot=1") >= 0 else {
                     throw NativePushStateError.corrupt
                 }
@@ -67,7 +77,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
 
     func currentAuthority() throws -> Authority? {
         connectionLock.lock(); defer { connectionLock.unlock() }
-        return try statement("SELECT public_key,revision FROM identity_authority WHERE slot=1") { stmt in
+        return try statement("SELECT public_key,revision,requires_unlock FROM identity_authority WHERE slot=1") { stmt in
             let status = sqlite3_step(stmt)
             if status == SQLITE_DONE { return nil }
             guard status == SQLITE_ROW, sqlite3_column_type(stmt, 0) == SQLITE_BLOB,
@@ -75,11 +85,14 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                   sqlite3_column_type(stmt, 1) == SQLITE_TEXT, let text = sqlite3_column_text(stmt, 1) else {
                 throw NativePushStateError.corrupt
             }
+            guard sqlite3_column_type(stmt, 2) == SQLITE_INTEGER,
+                  [0, 1].contains(sqlite3_column_int(stmt, 2)) else { throw NativePushStateError.corrupt }
+            let protected = sqlite3_column_int(stmt, 2) == 1
             let key = Data(bytes: bytes, count: 32)
             let revision = String(cString: text)
             try Self.validate(key, revision)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
-            return Authority(publicKey: key, revision: revision, requiresAppUnlock: false)
+            return Authority(publicKey: key, revision: revision, requiresAppUnlock: protected)
         }
     }
 
@@ -89,12 +102,12 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     /// the NSE has only this public ledger and never reads the Dpk private item.
     func reconcileObservedIdentity(publicKey: Data?, revision: String?, requiresAppUnlock: Bool?) throws {
         guard let installed = try currentAuthority(),
-              installed.publicKey != publicKey || installed.revision != revision else { return }
+              installed.publicKey != publicKey || installed.revision != revision || installed.requiresAppUnlock != requiresAppUnlock else { return }
         let lease = try acquireIdentityMutation()
         defer { lease.release() }
         // Another writer may have changed authority before lock acquisition.
         if let latest = try currentAuthority(),
-           latest.publicKey != publicKey || latest.revision != revision {
+           latest.publicKey != publicKey || latest.revision != revision || latest.requiresAppUnlock != requiresAppUnlock {
             _ = try lease.invalidateIdentityAuthority()
         }
     }
@@ -125,10 +138,11 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             guard generation > 0,
                   try integer("SELECT generation FROM authority_generation WHERE slot=1") == generation,
                   try currentAuthority() == nil else { throw NativePushStateError.changed }
-            try statement("INSERT INTO identity_authority(slot,public_key,revision) VALUES(1,?,?)") { stmt in
+            try statement("INSERT INTO identity_authority(slot,public_key,revision,requires_unlock) VALUES(1,?,?,?)") { stmt in
                 let bound = publicKey.withUnsafeBytes { sqlite3_bind_blob(stmt, 1, $0.baseAddress, 32, Self.transient) }
                 guard bound == SQLITE_OK,
                       sqlite3_bind_text(stmt, 2, revision, -1, Self.transient) == SQLITE_OK,
+                      sqlite3_bind_int(stmt, 3, requiresAppUnlock ? 1 : 0) == SQLITE_OK,
                       sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.unavailable }
             }
         }

@@ -12,11 +12,19 @@ enum NativePushConfiguration {
     private static func configuredGroup(_ name: String) throws -> String {
         guard let group = Bundle.main.object(forInfoDictionaryKey: name) as? String,
               !group.isEmpty, group.utf8.count <= 256,
+              let prefix = group.split(separator: ".", maxSplits: 1).first,
+              !prefix.isEmpty, prefix.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) }),
+              group.contains("."),
               group.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) ||
                                      ($0 >= 97 && $0 <= 122) || $0 == 46 || $0 == 45 }) else {
             throw NativePushStateError.unavailable
         }
         return group
+    }
+
+    static func sharedKeyStore() throws -> NativePushKeyStore {
+        NativePushKeyStore(service: "live.yooz.remi.secure-push", account: "p256-seal-key",
+                           accessGroup: try pushAccessGroup())
     }
 
     static func sharedState() throws -> NativePushState {
