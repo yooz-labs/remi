@@ -41,6 +41,10 @@ struct WebViewWindow: NSViewRepresentable {
         configuration.setURLSchemeHandler(
             DistSchemeHandler(), forURLScheme: DistSchemeHandler.scheme)
 
+        configuration.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme: DistSchemeHandler.scheme, service: ClientIdentityStore.defaultService,
+                                 account: ClientIdentityStore.defaultAccount),
+            contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let script = WKUserScript(
             source: Self.nativeBootstrapScript(hubUrl: hubClient.hubURL),
             injectionTime: .atDocumentStart,
@@ -101,12 +105,14 @@ struct WebViewWindow: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-            if url.scheme == DistSchemeHandler.scheme || url.absoluteString == "about:blank" {
+            if navigationAction.targetFrame?.isMainFrame == true &&
+                NativeIdentityBridge.isBundledDocument(url, scheme: DistSchemeHandler.scheme) {
                 decisionHandler(.allow)
                 return
             }
             decisionHandler(.cancel)
-            NSWorkspace.shared.open(url)
+            if navigationAction.targetFrame?.isMainFrame != false,
+                ["https", "http"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
         }
 
         /// target=_blank / window.open(): never create a second

@@ -38,24 +38,77 @@ final class HubClient: ObservableObject {
     /// This app's Ed25519 identity (#872), for completing the daemon's
     /// `auth_challenge` handshake. Injectable so tests can give a client its
     /// own throwaway identity instead of touching the real Keychain item.
-    private let identity: ClientIdentity
+    private var identity: ClientIdentity?
+    private var identityObserver: NSObjectProtocol?
+    private var inactiveObserver: NSObjectProtocol?
+    private let unlockLifetime = NativeUnlockLifetime()
+    private var foregroundUnlocked = false
+    var canUnlockIdentity: Bool { identity?.requiresAppUnlock == true && !foregroundUnlocked }
 
-    var publicFingerprint: String { identity.fingerprint }
-    var publicIdentityJSON: String { identity.publicIdentityJSON }
-    var authorizeCommand: String { identity.authorizeCommand }
+    var publicFingerprint: String { identity?.fingerprint ?? "" }
+    var publicIdentityJSON: String { identity?.publicIdentityJSON ?? "" }
+    var authorizeCommand: String { identity?.authorizeCommand ?? "" }
     /// Present only for a valid signed challenge's manual-approval refusal (#873).
     @Published private(set) var approvalErrorCode: String?
 
     init(
         scanPorts: [Int] = Array(basePort..<(basePort + portRange)),
-        identity: ClientIdentity = ClientIdentityStore.loadOrCreate()
+        identity: ClientIdentity? = nil
     ) {
         self.scanPorts = scanPorts
-        self.identity = identity
+        if let identity { self.identity = identity }
+        else {
+            do { self.identity = try ClientIdentityStore.loadOrCreate() }
+            catch {
+                self.identity = nil
+                self.phase = .identityUnavailable(reason: "The durable native identity could not be loaded. Its Keychain entry was preserved.")
+            }
+        }
+        if canUnlockIdentity { phase = .identityUnavailable(reason: "Open Remi and unlock this protected identity. Background answers remain disabled.") }
+        identityObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.invalidateIdentity() }
+            }
+        inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.identity?.requiresAppUnlock == true else { return }
+                    self.foregroundUnlocked = false
+                    self.started = false
+                    self.reconnectTask?.cancel()
+                    self.reconnectTask = nil
+                    self.teardownSocket()
+                    self.phase = .identityUnavailable(reason: "Open Remi and unlock this protected identity. Background answers remain disabled.")
+                }
+            }
+    }
+
+    deinit {
+        if let identityObserver { NotificationCenter.default.removeObserver(identityObserver) }
+        if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
+    }
+
+    private func invalidateIdentity() {
+        started = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        teardownSocket()
+        identity = nil
+        approvalErrorCode = nil
+        phase = .identityUnavailable(reason: "The native signing identity changed. Restart Remi before connecting with the new identity.")
+    }
+
+    func unlockIdentity() async {
+        guard let captured = identity, captured.requiresAppUnlock,
+              await unlockLifetime.authenticate(revision: captured.revision, currentRevision: { self.identity?.revision }), identity?.revision == captured.revision else { return }
+        foregroundUnlocked = true
+        phase = .scanning
+        start()
     }
 
     enum Phase: Equatable {
         case scanning
+        case identityUnavailable(reason: String)
         case connected(port: Int, isHub: Bool)
         case unreachable
         /// Authentication refusal; the error code distinguishes manual approval
@@ -144,6 +197,8 @@ final class HubClient: ObservableObject {
 
     var menuStatusLine: String {
         switch phase {
+        case let .identityUnavailable(reason):
+            return reason
         case .scanning:
             return "Hub: looking…"
         case .unreachable:
@@ -201,7 +256,7 @@ final class HubClient: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
     func start() {
-        guard !started else { return }
+        guard !started, identity != nil, !canUnlockIdentity else { return }
         started = true
         Task { await scanAndConnect() }
     }
@@ -219,7 +274,7 @@ final class HubClient: ObservableObject {
         switch phase {
         case .unreachable, .rejected:
             Task { await scanAndConnect(preferring: lastConnectedPort) }
-        case .scanning, .connected:
+        case .identityUnavailable, .scanning, .connected:
             return
         }
     }
@@ -256,6 +311,7 @@ final class HubClient: ObservableObject {
         phase = .scanning
         let ports = Self.scanOrder(hintPort: hintPort, ports: scanPorts)
         let responders = await Self.probe(ports: ports)
+        guard identity != nil, !canUnlockIdentity else { return }
         guard let port = Self.choosePort(responders: responders, hint: hintPort) else {
             phase = .unreachable
             scheduleReconnect()
@@ -445,6 +501,7 @@ final class HubClient: ObservableObject {
             handleAuthRejected(port: port, reason: "the hub's public key fingerprint does not match its claim")
             return
         }
+        guard let identity else { return }
         pendingChallenge = (challengeData, serverPublicKeyRaw)
         do {
             let signature = try identity.sign(challengeData)

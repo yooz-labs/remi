@@ -108,8 +108,19 @@ export async function startWorker(vars: Record<string, string> = {}): Promise<Te
     ),
     port: 0,
   });
-  const url = String((await mf.ready) as URL).replace(/\/$/, '');
-  return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
+  try {
+    const url = String((await mf.ready) as URL).replace(/\/$/, '');
+    return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
+  } catch (error) {
+    // Startup can leave its real loopback listener open even after workerd exits.
+    // Dispose before rejecting, while the owner still has the Miniflare handle.
+    try {
+      await mf.dispose();
+    } catch {
+      /* preserve the original readiness failure */
+    }
+    throw error;
+  }
 }
 
 /** `fetch` without keep-alive: Miniflare closes idle keep-alive connections after 5 s. */

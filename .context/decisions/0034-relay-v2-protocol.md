@@ -60,9 +60,35 @@ The implementation never decides a curve, hash or cipher at run time: nothing is
 Production ephemeral P-256 pairs come from the engine's own `generateKey` (the public point exported raw, the private key non-extractable), and production Ed25519 identities from `generateKey` (or from a key the caller imported from its own storage) wrapped by `signerFromKey`.
 `signerFromKey` is async: it signs and verifies a 62-byte labeled probe once, so a private key that does not match the public key, or cannot sign, fails at construction with `BAD_SIGNATURE` instead of silently at the peer.
 `generateIdentity` re-imports its PKCS8 export as non-extractable for the in-memory signer, so the extractable key `generateKey` made is not kept.
-A persisted key is the engine's own export: PKCS8 for the private key (the form the v1 identity stores, `createIdentity` and `unlockIdentity` in `identity.ts`) together with the raw public key, so nothing in production asks an engine to derive a public key from a bare scalar or seed.
+A persisted TypeScript key is the engine's own export: PKCS8 for the private key (the form the v1 identity stores, `createIdentity` and `unlockIdentity` in `identity.ts`) together with the raw public key, so nothing in production asks an engine to derive a public key from a bare scalar or seed.
 Building a key from a bare scalar (PKCS8 with no public half, then a JWK export) exists only in `deterministic.ts`, for tests, the vector generator and the verifiers' reproducibility.
 Section 17 records why: that path fails on WebKit.
+
+**Native identity persistence exception (R4, #1199).** CryptoKit's Ed25519 private
+key export is a 32-byte seed, not a PKCS8 export. The native-only
+`Ed25519PKCS8` adapter in `packages/macos/Remi/ClientIdentity.swift` stores that
+engine seed inside the exact 48-byte RFC 8410 form: the fixed 16-byte prefix
+`302e020100300506032b657004220420` followed by the seed, alongside the 32-byte
+raw public key. Import accepts only that exact length and prefix, reconstructs
+the key through CryptoKit, checks CryptoKit's derived public key against the
+stored public bytes, and signs/verifies a probe through CryptoKit. This is fixed
+encoding around an engine-owned key; it is not the engine's own PKCS8 export
+and does not implement a signing algorithm or scalar arithmetic. Native private
+bytes, including this encoding and the seed, never return to JavaScript; clients
+receive a revision-bound signer operation.
+
+`ClientIdentityTests.testNativeCodecMatchesActualSharedEnginePKCS8Fixtures`
+constructs the real adapter from the committed shared-engine exports and checks
+its exact round trip and the shared-engine signatures through CryptoKit. It also
+refuses short/trailing-byte encodings, changed prefixes, short public keys and a
+real different public key. The actual guarded WKWebView/provider tests import
+browser-owned legacy PKCS8 inward, verify durable native storage before cleanup,
+and verify native-produced signatures through the real WebCrypto provider and
+CryptoKit. These are unsigned local interoperability checks, not signed iPhone
+or Android acceptance. The exception is limited to native Ed25519 identity
+persistence: production ephemeral P-256 generation and the prohibition on
+scalar-built production P-256 keys remain unchanged, as do section 17's
+WebKit/deterministic test paths.
 
 An ephemeral or push-seal P-256 private key is a 32-byte big-endian scalar `d` with `1 <= d < n`, where `n` is the group order `FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551`.
 A generator that draws a scalar outside that range draws again.
@@ -978,7 +1004,7 @@ A row is closed only by the evidence named in its last column.
 | R3 (#1198) | Close with `FAILURE_CLOSE` when a handshake step throws (a step only ever throws a `RelayError`) and on every text frame after the handshake; do not close on a refused send | A test per path against the real adapter |
 | R4 (#1199) | Run the committed engine check in a real WKWebView on an iPhone (the owner) | `scripts/relay-v2-engine-check/` (README: bundle `entry-page.ts`, load it, call `__run`) run on the device has no `base` or `jwk` failure, and its output is recorded in the issue |
 | R4 (#1199) | Run the committed engine check on the Android target's WebView, and decide what the client does on a WebView without WebCrypto Ed25519 (the library fails closed) | The same check run on the Android target; its output and the minimum WebView version found are recorded in the issue |
-| R4 (#1199) | Keep the device key in the platform keychain and persist it as the engine's PKCS8 export plus the raw public key; never import a bare scalar | A test and a code review of the identity store |
+| R4 (#1199) | Keep the native device key in the platform keychain with its raw public key; use the strict native RFC 8410 identity adapter of section 1 (CryptoKit does not export PKCS8), and never return private bytes to TypeScript | A test and a code review of the identity store |
 | R4 (#1199) | Pin `M_pk` from the token, check expiry locally, show the fingerprint while waiting for `ready`, treat any close as final for the connection | Client tests of each |
 | R5 (#1200) | Carry the device push key over the authenticated channel and bind it to the enrolled device; never put a push key in the QR | A test that a push key sent by a device other than the enrolled one is refused, and that the token has no push key |
 | R6 (#1201) | Answers: globally unique question ids per prompt, a session nonce or expiry, single-accept by the daemon (the channel cannot detect delay) | Tests of a replayed, a late and a duplicate answer, each refused |

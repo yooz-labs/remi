@@ -16,7 +16,9 @@
  * path (which has the same limitation) or surfaces an "open the app" failure.
  */
 
-import { sealAnswer, sign } from '@remi/shared';
+import { sealAnswer } from '@remi/shared';
+import { signClient } from './client-signer';
+import { currentNativeIdentity, usesNativeIdentity } from './native-identity';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from './identity-client';
 
 /** Outcome of a direct-relay attempt. */
@@ -88,13 +90,19 @@ async function buildAuth(
 ): Promise<{ signature: string; clientPublicKey: string; clientFingerprint: string } | null> {
   // No identity at all (isIdentityEncrypted() returns false in this case, so it
   // must be checked separately) OR an encrypted identity: cannot sign here.
+  if (usesNativeIdentity()) {
+    const identity = currentNativeIdentity();
+    if (!identity || identity.requiresAppUnlock) return null;
+    return { signature: await signClient(identity, new TextEncoder().encode(message).buffer as ArrayBuffer),
+      clientPublicKey: identity.publicKeyRaw, clientFingerprint: identity.fingerprint };
+  }
   if (!hasIdentity() || isIdentityEncrypted()) return null;
   // `unlockStoredIdentity()` with no passphrase succeeds only for an
   // unencrypted identity (the encrypted/missing cases are filtered above); it
   // returns usable CryptoKey objects, so sign directly.
   const identity = await unlockStoredIdentity();
   const data = new TextEncoder().encode(message).buffer as ArrayBuffer;
-  const signature = await sign(identity.privateKey, data);
+  const signature = await signClient(identity, data);
   return {
     signature,
     clientPublicKey: identity.publicKeyRaw,

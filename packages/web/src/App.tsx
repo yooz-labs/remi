@@ -14,6 +14,9 @@ import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
+import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
+import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
+import type { RelayAnswerStatus } from '@/lib/relay-requests';
 import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
@@ -66,7 +69,9 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import type { UnlockedIdentity } from '@remi/shared';
+import type { ClientSigningIdentity, NativeSigningIdentity } from '@/lib/client-signer';
+import { NativeIdentityPanel } from '@/components/settings/NativeIdentityPanel';
+import { currentNativeIdentity, inspectNativeIdentity, unlockNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
 import { assertNever, isValidMessage } from '@remi/shared';
 import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
@@ -256,6 +261,7 @@ function App() {
   // banner and outgoing user input is wrapped in a markdown blockquote so
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
+  const [deviceConnectionId, setDeviceConnectionId] = useState<ConnectionId | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [modalConnectionId, setModalConnectionId] = useState<ConnectionId | null>(null);
   const openConnectModal = useCallback(() => {
@@ -269,7 +275,9 @@ function App() {
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
+  const [unlockedIdentity, setUnlockedIdentity] = useState<ClientSigningIdentity | null>(null);
+  const [relayIdentityRevision, setRelayIdentityRevision] = useState(0);
+  const restoredRelayIdentityRef = useRef<string | null>(null);
 
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
@@ -294,6 +302,7 @@ function App() {
   // re-create handleSend and bust InputArea memoization.
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
+  const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
   // Outstanding user_input sends awaiting their `ack`, keyed by message id
   // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
@@ -511,6 +520,7 @@ function App() {
 
     switch (message.type) {
       case 'hello_ack': {
+        const relayConnection = connectionModeRef.current?.(connectionId) === 'relay';
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
           // Normal for a session-less hub (#542): its ack carries null and
@@ -556,7 +566,7 @@ function App() {
           // session ID (the daemon may have assigned a new session). Keep sessions from
           // other connections and sessions matching the new ID untouched.
           const cleaned = prev.filter(
-            (s) => s.connectionId !== connectionId || s.id === sessionId,
+            (s) => relayConnection || s.connectionId !== connectionId || s.id === sessionId,
           );
 
           const exists = cleaned.some((s) => s.id === sessionId);
@@ -605,11 +615,10 @@ function App() {
         // right daemon when multiple are paired. Look up the connection's URL
         // synchronously from the latest snapshot.
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
-        if (conn?.url) {
+        if (conn?.url && conn.mode === 'direct') {
           rememberSessionDaemon(sessionId, conn.url);
-          // Mirror the daemon URL + signer to native storage (#591 P2) so a
-          // lock-screen answer can sign + POST to the daemon's /answer endpoint
-          // without opening the app. No-ops off-native; never throws.
+          // Store only the public daemon route for the native direct-answer
+          // handler. Its signer uses the durable native identity (#1199).
           void setNativeRoute(sessionId, {
             wsUrl: conn.url,
             ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
@@ -630,7 +639,7 @@ function App() {
         // deep-links navigate via their own `push-notification-tap` handler,
         // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive && oldActive !== sessionId) {
+        if (!relayConnection && oldActive && oldActive !== sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
           if (oldSession?.connectionId === connectionId) {
             setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
@@ -904,7 +913,8 @@ function App() {
         // answer with no in-app confirmation), flip a still-pending card to a
         // brief "resolved elsewhere" trace, then fade it after the linger window.
         // resolveQuestionCard decides per card: pending => trace+fade, submitting
-        // (#627) => removed here, answered-locally => left to its own timer.
+        // (#627 direct) => removed here, relay receipt => waits for correlation,
+        // answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
         // Compute the next map from the CURRENT committed ref, then drive both
@@ -1106,7 +1116,10 @@ function App() {
           if (attachedSession && !discoveredIds.has(attachedSession.id)) {
             result.push(attachedSession);
           }
-          result.push(...discovered);
+          result.push(...discovered.map(session => {
+            const previous = live.find(item => item.id === session.id && item.connectionId === connectionId);
+            return previous?.attachState ? { ...session, attachState: previous.attachState } : session;
+          }));
           // Ensure the hello_ack session is always marked connected
           if (helloAckSessionId) {
             for (let i = 0; i < result.length; i++) {
@@ -1131,7 +1144,7 @@ function App() {
 
         // Auto-connect to other daemon ports on the same machine.
         // Use setTimeout to run after this handler completes (avoids stale refs).
-        if (message.daemonPorts && message.daemonPorts.length > 0) {
+        if (connectionModeRef.current?.(connectionId) !== 'relay' && message.daemonPorts && message.daemonPorts.length > 0) {
           const ports = [...message.daemonPorts];
           const host = connectionId.replace(/:\d+$/, '');
           setTimeout(() => {
@@ -1600,7 +1613,8 @@ function App() {
           // "Answering..." forever (#800 review). Force-remove it outright by
           // id first, mirroring resolveQuestionCard's submitting-card branch
           // for question_resolved: no trace, no protection.
-          if (staleSessionId && staleQuestionId) {
+          if (staleSessionId && staleQuestionId && !getSessionQuestions(questionsRef.current, staleSessionId)
+            .some(question => question.id === staleQuestionId && question.awaitingRelayOutcome)) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
               staleSessionId,
@@ -1719,8 +1733,8 @@ function App() {
       case 'auth_result':
         break;
 
-      // Relay outcomes and device responses are explicitly ignored until the
-      // R4 connection coordinator is installed (#1199).
+      // R4 encrypted outcomes are routed through the connection coordinator.
+      // Its handlers are installed together with the relay channel below.
       case 'answer_result':
       case 'relay_devices_response':
       case 'relay_device_revoke_response':
@@ -1776,10 +1790,9 @@ function App() {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
 
-  // Bridge the current signer to native storage once on launch (#591 P2) so the
-  // lock-screen answer handler can sign even before a fresh connection — covers
-  // a cold start from a push and identity changes made in Settings. No-op
-  // off-native; re-pinned per-connection at hello_ack.
+  // Cleanup of the old Preferences seed is permitted only after verified
+  // inward native migration (#1199). The native signer owns its durable key;
+  // this call never writes private bytes from JavaScript.
   useEffect(() => {
     void syncNativeIdentity();
   }, []);
@@ -1796,10 +1809,30 @@ function App() {
     replyContextsRef.current = replyContexts;
   }, [replyContexts]);
 
+  const handleRelayAnswerOutcome = useCallback((_connectionId: ConnectionId, status: RelayAnswerStatus) => {
+    const next = new Map(questionsRef.current);
+    for (const [key, question] of next) {
+      if (question.sessionId !== status.sessionId || question.id !== status.questionId) continue;
+      next.set(key, { ...question, submitting: false, awaitingRelayOutcome: true, deliveryOutcome: status.outcome,
+        ...(status.outcome === 'delivered' ? { answeredWith: question.submittedAnswer ?? 'Submitted' } : {}) });
+    }
+    questionsRef.current = next; setQuestions(next);
+    if (status.outcome === 'delivered') {
+      setTimeout(() => {
+        const remaining = removeQuestionById(questionsRef.current, status.sessionId, status.questionId);
+        questionsRef.current = remaining; setQuestions(remaining);
+      }, RESOLVED_TRACE_LINGER_MS);
+    }
+  }, []);
+
   // Connection manager: manages N simultaneous WebSocket connections
   const {
     connections,
     connectDirect,
+    connectRelay,
+    requestSessionAttach,
+    listRelayDevices,
+    revokeRelayDevice,
     disconnect: disconnectConnection,
     reconnect: reconnectConnection,
     disconnectAll,
@@ -1820,13 +1853,30 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    getConnectionMode,
+    getOwnFingerprint,
   } = useConnectionManager({
     onMessage: handleMessage,
+    onAnswerOutcome: handleRelayAnswerOutcome,
     unlockedIdentity,
     clientId: 'remi-web',
     clientVersion: '0.0.1',
     autoReconnect: settings.autoReconnect,
   });
+
+  const nativeConnectionsRef = useRef(connections);
+  nativeConnectionsRef.current = connections;
+  connectionModeRef.current = getConnectionMode;
+
+  const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
+    setUnlockedIdentity(identity);
+    if (!identity) { restoredRelayIdentityRef.current = null; disconnectAll(); return; }
+    provideIdentity('' as ConnectionId, identity);
+    for (const connection of nativeConnectionsRef.current) {
+      if (connection.status === 'error' || connection.status === 'disconnected') reconnectConnection(connection.connectionId);
+    }
+  }, [disconnectAll, provideIdentity, reconnectConnection]);
+
 
   // Keep refs in sync for use in handleMessage callbacks
   getSessionIdRef.current = getSessionId;
@@ -1875,9 +1925,9 @@ function App() {
       });
       return changed ? next : prev;
     });
-    // Clear stale questions if all connections are down
+    // Drop actionable stale cards while keeping delivery receipts after close (#1199).
     if (!hasAnyConnected && !isAnyConnecting) {
-      setQuestions(new Map());
+      setQuestions(previous => new Map([...previous].filter(([, question]) => question.awaitingRelayOutcome)));
       setResumingSession(null);
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
@@ -1901,6 +1951,21 @@ function App() {
   }, [connectedIds, requestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
+  useEffect(() => {
+    const changed = () => { restoredRelayIdentityRef.current = null; setUnlockedIdentity(null); setRelayIdentityRevision(value => value + 1); };
+    window.addEventListener('remi:identity-changed', changed);
+    return () => window.removeEventListener('remi:identity-changed', changed);
+  }, []);
+  useEffect(() => {
+    const stored = usesNativeIdentity() ? null : loadIdentity();
+    const publicKey = unlockedIdentity?.publicKeyRaw ?? (stored && !isIdentityEncrypted() ? stored.publicKey : null);
+    if (!publicKey) { restoredRelayIdentityRef.current = null; return; }
+    const context = `${relayIdentityRevision}:${publicKey}`;
+    if (restoredRelayIdentityRef.current === context) return;
+    restoredRelayIdentityRef.current = context;
+    for (const pin of loadRelayPins()) void connectRelay(pin).catch(() => { /* Public pin remains available for explicit retry. */ });
+  }, [unlockedIdentity, connectRelay, relayIdentityRevision]);
+
   const connectDirectRef = useRef(connectDirect);
   useEffect(() => {
     connectDirectRef.current = connectDirect;
@@ -2102,7 +2167,7 @@ function App() {
       // waiting out the 25s deadline. Covers both "no identity" and "encrypted
       // identity" (isIdentityEncrypted() is false when none is stored, so both
       // are checked).
-      if (authRequired && (!hasIdentity() || isIdentityEncrypted())) {
+      if (authRequired && (usesNativeIdentity() ? !currentNativeIdentity() : (!hasIdentity() || isIdentityEncrypted()))) {
         console.warn('[App] WS fallback blocked: identity missing or needs passphrase');
         notifyFailure();
         return;
@@ -2258,6 +2323,9 @@ function App() {
       // This covers both external transcript sessions and daemon sessions (which use a
       // Remi UUID as their ID — the daemon resolves it via its active watcher).
       const session = sessions.find((s) => s.id === id);
+      if (session && connectionModeRef.current?.(session.connectionId) === 'relay') {
+        requestSessionAttach(session.connectionId, id);
+      }
       const hasMessages = messagesRef.current.some((m) => m.sessionId === id);
       if (session && !hasMessages && !loadedTranscriptsRef.current.has(id)) {
         loadedTranscriptsRef.current.add(id);
@@ -2267,7 +2335,7 @@ function App() {
         requestTranscriptLoad(session.connectionId, id);
       }
     },
-    [sessions, requestTranscriptLoad],
+    [sessions, requestTranscriptLoad, requestSessionAttach],
   );
 
   const handleBack = useCallback(() => {
@@ -2279,6 +2347,16 @@ function App() {
   // bottom InputArea is no longer hijacked when a question is pending
   // (#401): the user can ask the agent a fresh question without it
   // being treated as an answer to a stale prompt.
+  const recordRelaySubmission = useCallback((question: UIQuestion, answer: string) => {
+    const key = questionKey(question.sessionId, question.agentId);
+    const existing = questionsRef.current.get(key);
+    if (!existing || existing.id !== question.id) return;
+    const next = new Map(questionsRef.current);
+    next.set(key, { ...existing, submitting: true, awaitingRelayOutcome: true, submittedAnswer: answer, deliveryOutcome: undefined });
+    // Publish before any decrypt continuation can process a resolution/result.
+    questionsRef.current = next; setQuestions(next);
+  }, []);
+
   const handleAnswer = useCallback(
     (question: UIQuestion, content: string) => {
       const sid = question.sessionId;
@@ -2316,6 +2394,10 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, failMsg]);
+        return;
+      }
+      if (connectionModeRef.current?.(connId) === 'relay') {
+        recordRelaySubmission(question, content);
         return;
       }
       const key = questionKey(sid, question.agentId);
@@ -2359,7 +2441,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [getActiveConnectionId, sendAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAnswer],
   );
 
   // #627: submit a structured AskUserQuestion answer. The daemon answers it
@@ -2379,6 +2461,7 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Submitted'); return; }
       // The card a refusal naming no question can be about (#1126): a held
       // AskUserQuestion keeps its hold on an answer it refuses (#1127).
       lastAnsweredIdRef.current.set(sid, question.id);
@@ -2391,7 +2474,7 @@ function App() {
         return next;
       });
     },
-    [getActiveConnectionId, sendAuqAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAuqAnswer],
   );
 
   // #627: cancel a pending question — the universal unstick. The daemon
@@ -2404,7 +2487,9 @@ function App() {
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
       if (!connId) return;
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
-      sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      const sent = sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Cancelled'); return; }
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
@@ -2414,7 +2499,7 @@ function App() {
         return next;
       });
     },
-    [getActiveConnectionId, sendCancelQuestion],
+    [getActiveConnectionId, recordRelaySubmission, sendCancelQuestion],
   );
 
   // Persistent escape: send a bare Esc to the ACTIVE session at any time — it
@@ -3047,6 +3132,7 @@ function App() {
       onAddConnection={openConnectModal}
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
+      onManageRelay={setDeviceConnectionId}
       onDisconnectAll={handleDisconnectAll}
       onOpenNewSession={handleOpenNewSession}
       onKillSession={handleKillSession}
@@ -3096,6 +3182,7 @@ function App() {
 
   return (
     <>
+      {usesNativeIdentity() && <NativeIdentityPanel gate onReady={handleNativeIdentityReady} />}
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
 
       <SettingsPanel
@@ -3105,16 +3192,41 @@ function App() {
         onChange={handleSettingsChange}
       />
 
+      {deviceConnectionId && (() => {
+        const connection = connections.find(item => item.connectionId === deviceConnectionId);
+        return connection?.relayPin ? <RelayDevicesPanel key={deviceConnectionId} connection={connection}
+          ownFingerprint={getOwnFingerprint() ?? undefined}
+          list={() => listRelayDevices(deviceConnectionId)}
+          revoke={fingerprint => revokeRelayDevice(deviceConnectionId, fingerprint)}
+          onClose={() => setDeviceConnectionId(null)}
+          forget={() => { forgetRelayPin(connection.relayPin?.machinePublicKey ?? ''); disconnectConnection(deviceConnectionId); }} /> : null;
+      })()}
+
       <ConnectModal
         isOpen={showConnectModal || needsPassphrase}
-        onClose={() => setShowConnectModal(false)}
+        onClose={() => {
+          if (modalConnection?.mode === 'relay' && modalConnection.status !== 'connected') disconnectConnection(modalConnection.connectionId);
+          setShowConnectModal(false);
+        }}
         onConnectDirect={handleConnectDirect}
+        onConnectRelay={async (token, signal) => {
+          const id = await connectRelay(token, signal);
+          if (!signal.aborted) setModalConnectionId(id);
+          else disconnectConnection(id);
+        }}
+        onUnlockNative={async () => {
+          const state = await inspectNativeIdentity();
+          const unlocked = state.kind === 'locked' ? await unlockNativeIdentity(state.native) : state;
+          if (unlocked.kind !== 'ready') throw new Error('Native identity requires setup.');
+          handleNativeIdentityReady(unlocked.identity);
+        }}
+        relayConnection={modalConnection?.mode === 'relay' ? modalConnection : undefined}
         connectionStatus={effectiveStatus}
         approvalConnection={approvalConnection}
         onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
         needsPassphrase={showConnectModal ? Boolean(modalConnection?.needsPassphrase) : needsPassphrase}
-        hasIdentity={hasIdentity()}
+        hasIdentity={usesNativeIdentity() ? unlockedIdentity != null : hasIdentity()}
         hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={showConnectModal ? modalConnection?.serverFingerprint : passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
