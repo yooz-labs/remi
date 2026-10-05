@@ -678,3 +678,53 @@ describe('#880 the shipped defaults do not expose an unauthenticated daemon', ()
     expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('127.0.0.1');
   });
 });
+
+// #1193: the relay registered a room with the signaling Worker on every
+// install, and no shipped client can use it. These pin the loader and the
+// defaults, not just the constant, so a default that is overridden somewhere
+// between the file and the daemon would show up here.
+describe('network.relay is off by default (#1193)', () => {
+  const missing = () => path.join(TEST_DIR, 'nonexistent.toml');
+
+  test('with no config file', () => {
+    expect(DEFAULT_CONFIG.network.relay).toBe(false);
+    expect(loadConfig(missing()).network.relay).toBe(false);
+  });
+
+  test('a config.toml that sets other network keys leaves it off', () => {
+    fs.writeFileSync(TEST_CONFIG, '[network]\nmdns = false\n');
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.network.mdns).toBe(false);
+    expect(cfg.network.relay).toBe(false);
+  });
+
+  test('an explicit relay = true in config.toml still turns it on', () => {
+    fs.writeFileSync(TEST_CONFIG, '[network]\nrelay = true\n');
+    expect(loadConfig(TEST_CONFIG).network.relay).toBe(true);
+  });
+
+  test('an explicit relay = false stays off', () => {
+    fs.writeFileSync(TEST_CONFIG, '[network]\nrelay = false\n');
+    expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);
+  });
+
+  test('`remi config` shows the configured value, and says --permanent-code turns the relay on regardless', () => {
+    // formatConfig prints what the FILE says; the command line is not in
+    // scope, so `--permanent-code` can start a relay while this says `false`.
+    // The honest output names that instead of claiming an effective state.
+    const stock = formatConfig(loadConfig(missing()), missing());
+    expect(stock).toContain('relay = false');
+    expect(stock).toContain('--permanent-code turns the relay on');
+    fs.writeFileSync(TEST_CONFIG, '[network]\nrelay = true\n');
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain('relay = true');
+  });
+
+  test('`remi config init` writes the off value for a new install', () => {
+    // It materializes the default into the file, and a value on disk beats a
+    // changed default; an install that ran it before this change keeps `relay =
+    // true`, which now only prints a notice at boot (integration/relay-registration.test.ts).
+    initConfigFile(TEST_CONFIG);
+    expect(fs.readFileSync(TEST_CONFIG, 'utf-8')).toContain('relay = false');
+    expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);
+  });
+});

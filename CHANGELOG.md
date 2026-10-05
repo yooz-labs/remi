@@ -4,6 +4,26 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Relay: off by default, and closed without authentication (#1193)
+
+`network.relay` now defaults to `false`.
+No shipped client can join a relay room or do its key exchange, yet every daemon registered a room and accepted an unauthenticated peer, gated only by the 30-bit room code.
+Nobody could use the relay, so nobody loses anything; one inbound door is shut.
+
+#### Changed
+
+- A stock daemon no longer registers a room with the signaling Worker.
+  `network.relay = true` in `config.toml` or `--permanent-code` still enables it (`--permanent-code` also wins over `relay = false`), and `--no-relay` still wins over both.
+- With the relay requested and no `--auth --permanent-code`, the daemon prints a notice and registers no relay, so it holds no connection to the Worker.
+  A `config.toml` written by `remi config init` before this change holds `relay = true` and gets this notice at boot; set `network.relay = false` or pass `--no-relay` to silence it.
+- The relay adapter also refuses every peer and drops every inbound frame when it has no authenticator (only `--auth --permanent-code` supplies one), including frames that arrive with no peer and lock-screen answers.
+  It acts on peer events only for the Worker role `client`, so a socket that never joined can no longer drop the connected peer by connecting and closing.
+- The signaling client logs each unknown frame type once (at most 16 types) instead of one line per frame.
+- The room code is no longer printed to the log when no authenticator is configured, since nobody can use it.
+- With `--auth --permanent-code` the key exchange is unchanged, and the daemon now prints a warning at boot: unless `--no-tofu` is set, any client that knows the room code is added to the authorized keys on its first connection.
+- `remi --help`, `remi code`, `remi config`, the README and AGENTS.md no longer describe the relay as a way to connect from anywhere.
+  Nothing remote ships through it today; a rebuild is planned.
+
 ### Harness seam: Claude Code is one implementation of an interface (#1161, [ADR 0032](.context/decisions/0032-harness-seam-and-identity-shim.md))
 
 The first step toward a second agent CLI: the daemon asks a `Harness` for what is specific to the CLI it wraps, and Claude Code is the only implementation.

@@ -52,6 +52,7 @@ describe('daemon opens sealed lock-screen answers', () => {
   let clientPublicKeyRaw: string;
   let clientFingerprint: string;
   let signBody: (message: string) => Promise<string>;
+  let authenticator: Authenticator;
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-sealed-'));
@@ -62,7 +63,7 @@ describe('daemon opens sealed lock-screen answers', () => {
     const store = new IdentityStore(dir);
     await store.generate('serverpass');
     const identity = await store.unlock('serverpass');
-    const authenticator = new Authenticator({
+    authenticator = new Authenticator({
       identity,
       identityStore: store,
       tofuMode: 'auto-accept',
@@ -177,7 +178,8 @@ describe('daemon opens sealed lock-screen answers', () => {
         enabled: true,
         signalingUrl: 'wss://example.invalid',
         code: 'TEST-CODE',
-        rotateCode: true,
+        rotateCode: false,
+        authenticator,
         createTransport: () => bareTransport,
       },
       {
