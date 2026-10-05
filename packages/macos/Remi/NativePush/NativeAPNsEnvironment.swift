@@ -21,4 +21,6 @@ final class NativeAPNsEnvironment {
     func resolve(stillCurrent: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() }) async -> Outcome {
         .unavailable
     }
+
+    func cancel() {}
 }
