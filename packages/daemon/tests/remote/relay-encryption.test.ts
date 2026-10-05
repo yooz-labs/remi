@@ -86,7 +86,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
     const store = new IdentityStore(dir);
     await store.generate('testpass');
     const identity = await store.unlock('testpass');
-    authenticator = new Authenticator({ identity, identityStore: store, tofuMode: 'auto-accept' });
+    authenticator = new Authenticator({ identity, identityStore: store });
     transport = new RecordingTransport();
   });
 
@@ -129,6 +129,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
     const clientStore = new IdentityStore(path.join(dir, 'client'));
     await clientStore.generate('clientpass');
     const clientIdentity = await clientStore.unlock('clientpass');
+    await new IdentityStore(dir).addAuthorizedKey(clientIdentity.publicKeyRaw, 'local-test-client');
     // `unlock()` already hands back live CryptoKeys; no re-import needed.
     const clientPrivate = clientIdentity.privateKey;
 

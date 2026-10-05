@@ -355,12 +355,8 @@ describe('relay adapter with an authenticator (permanent code), the unchanged pa
   });
 });
 
-// #1193 review F1: the permanent-code mode authenticates a key, but by default
-// (trust on first use, `tofuMode: 'auto-accept'`) it ADDS any unknown key it is
-// shown to the authorized keys. So anyone who knows the room code is admitted on
-// their first connection. This change does not widen into a behavior change;
-// it makes the property loud at boot, with the way to turn it off.
-describe('permanent-code mode warns that trust on first use admits unknown keys', () => {
+// #873 removes first-comer trust from every authenticator, including permanent-code relay.
+describe('permanent-code mode cannot enable automatic trust (#873)', () => {
   let log: ReturnType<typeof captureConsole>;
 
   beforeEach(() => {
@@ -371,8 +367,8 @@ describe('permanent-code mode warns that trust on first use admits unknown keys'
     log.restore();
   });
 
-  async function startWith(tofuMode: 'auto-accept' | 'reject'): Promise<string[]> {
-    const made = await makeAuthenticator(tofuMode);
+  async function startWith(): Promise<string[]> {
+    const made = await makeAuthenticator();
     const transport = new RecordingTransport();
     const adapter = new RelayAdapter(
       {
@@ -394,20 +390,16 @@ describe('permanent-code mode warns that trust on first use admits unknown keys'
     }
   }
 
-  test('with trust on first use (the default) it says unknown keys are added, and how to stop that', async () => {
-    const lines = await startWith('auto-accept');
-    const warning = lines.find((line) => line.includes('authorized keys'));
-    expect(warning).toBeDefined();
-    expect(warning).toContain('first connection');
-    expect(warning).toContain('--no-tofu');
-    // One or two lines, and nothing a reader could use to find the room.
-    expect((warning as string).split('\n').length).toBeLessThanOrEqual(2);
-    expect(warning).not.toContain(ROOM_CODE);
-    expect(warning).not.toContain(SIGNALING_URL);
+  test('unknown keys are never auto-accepted, so relay has no first-comer trust warning', async () => {
+    const lines = await startWith();
+    expect(lines.some((line) => line.includes('authorized keys'))).toBe(false);
+    expect(lines.some((line) => line.includes('first connection'))).toBe(false);
+    expect(lines.some((line) => line.includes(ROOM_CODE))).toBe(false);
+    expect(lines.some((line) => line.includes(SIGNALING_URL))).toBe(false);
   });
 
   test('with --no-tofu (reject) there is no such warning', async () => {
-    const lines = await startWith('reject');
+    const lines = await startWith();
     expect(lines.some((line) => line.includes('authorized keys'))).toBe(false);
   });
 });

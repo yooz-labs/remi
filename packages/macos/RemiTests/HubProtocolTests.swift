@@ -174,7 +174,7 @@ final class HubProtocolTests: XCTestCase {
     /// message rather than a blank "authentication failed".
     func testDescribeAuthErrorCoversKnownAndUnknownCodes() {
         XCTAssertEqual(
-            HubClient.describeAuthError("UNKNOWN_KEY"), "the hub does not trust this app yet")
+            HubClient.describeAuthError("UNKNOWN_KEY"), "this app is waiting for local approval on the daemon machine")
         XCTAssertEqual(
             HubClient.describeAuthError("INVALID_SIGNATURE"), "signature verification failed")
         XCTAssertEqual(

@@ -639,11 +639,9 @@ describe('#880 the shipped defaults do not expose an unauthenticated daemon', ()
     expect(DEFAULT_CONFIG.daemon.bind).toBe('127.0.0.1');
   });
 
-  test('auth still defaults to "auto", which resolves OFF — so the bind is what protects', () => {
-    // Documenting the coupling rather than asserting a fix that has not
-    // happened: `"auto"` is still false on every bind (#880 remains open for
-    // the semantics + TOFU work). That is exactly why the bind default is
-    // load-bearing and must not be widened casually.
+  test('auth defaults to auto; its on-by-default behavior is proved by the real hub test', () => {
+    // This config test pins only the value. first-connect-process.test.ts constructs
+    // the actual hub and proves that auto enables authentication (#873).
     expect(DEFAULT_CONFIG.auth.enabled).toBe('auto');
   });
 

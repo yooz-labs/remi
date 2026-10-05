@@ -66,7 +66,6 @@ describe('daemon opens sealed lock-screen answers', () => {
     authenticator = new Authenticator({
       identity,
       identityStore: store,
-      tofuMode: 'auto-accept',
     });
 
     // A phone the daemon already trusts.

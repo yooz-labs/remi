@@ -149,7 +149,7 @@ describe('the daemon opens a relay connection only when it can authenticate one'
     expect(run.output).toContain('--no-relay');
   }, 40_000);
 
-  test('relay = true with --auth --permanent-code opens one, to the room path, and warns about trust on first use', async () => {
+  test('relay = true with --auth --permanent-code opens one to the room path without automatic trust', async () => {
     const run = await runHub({
       args: ['--auth', '--permanent-code'],
       config: RELAY_ON,
@@ -158,11 +158,11 @@ describe('the daemon opens a relay connection only when it can authenticate one'
     expect(run.connections).toBe(1);
     expect(run.paths[0]).toMatch(/^\/connect\/[A-Z]{4}-[2-9]{4}$/);
     expect(run.output).not.toContain(NOTICE);
-    expect(run.output).toContain('authorized keys');
-    expect(run.output).toContain('--no-tofu');
+    expect(run.output).not.toContain('authorized keys');
+    expect(run.output).toContain('unknown keys require local approval');
   }, 40_000);
 
-  test('--permanent-code wins over relay = false (the command line beats the config) and --no-tofu drops the warning', async () => {
+  test('--permanent-code wins over relay = false (the command line beats the config) and --no-tofu prints its retirement notice', async () => {
     const run = await runHub({
       args: ['--auth', '--permanent-code', '--no-tofu'],
       config: RELAY_OFF,
@@ -170,5 +170,6 @@ describe('the daemon opens a relay connection only when it can authenticate one'
     });
     expect(run.connections).toBe(1);
     expect(run.output).not.toContain('authorized keys');
+    expect(run.output).toContain('--no-tofu is retired');
   }, 40_000);
 });
