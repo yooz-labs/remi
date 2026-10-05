@@ -26,4 +26,6 @@ extend-exclude = [
   # Relay v2 test vectors (R1): hex and base64url tokens, not prose; random-looking
   # substrings such as "Iy" and "Ot" trip the checker by chance.
   "packages/shared/tests/fixtures/relay-v2/vectors.json",
+  # Signed push vectors (#1200): the same synthetic binary fixture encoding.
+  "packages/shared/tests/fixtures/relay-v2/push-vectors.json",
 ]
