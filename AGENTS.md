@@ -601,8 +601,8 @@ those two are both exactly `{token, title, body}`.
   does not outlive a turn that succeeded.
 - **Push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
-  in its body, the same posture as `turn_complete` (the end of Claude's last
-  message) and a question's text: the daemon POSTs it to the signaling
+  in its body, the same posture as `turn_complete` (the first 200 characters
+  of Claude's last message) and a question's text: the daemon POSTs it to the signaling
   Worker's `/push`, which forwards it to APNS, outside the relay data channel
   and its encryption. Tracked by the relay and push privacy work
   (`.context/strategy-2026-10.md` section 9); the relay channel has its own
