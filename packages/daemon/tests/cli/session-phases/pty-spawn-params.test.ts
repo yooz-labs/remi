@@ -19,7 +19,6 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
   CLAUDE_INLINE_RENDERER_ENV,
-  NOOP_OUTPUT_SINK,
   type PtyLaunch,
   type PtyOutputSink,
   type PtySessionSetupArgs,
@@ -28,6 +27,9 @@ import {
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+
+/** A sink that does nothing, for the runs that do not look at the output. */
+const NOOP_SINK: PtyOutputSink = { process: () => {}, flush: () => {} };
 
 const SID = 'b1b2b3b4-e5f6-4890-8bcd-ef0123456789' as UUID;
 const fakeMessageAPI = {
@@ -156,7 +158,7 @@ describe('createPtySessionForSession: launch (command, childEnv) and outputSink'
   }
 
   test('with none of the new parameters it is the Claude launch: claude, its args, REMI_PORT and the inline renderer', async () => {
-    await run(NOOP_OUTPUT_SINK, {}, 'claude.done');
+    await run(NOOP_SINK, {}, 'claude.done');
 
     expect(seen('claude.argv')).toBe('--flag value');
     expect(seen('claude.remi_port')).toBe('9999');
@@ -165,22 +167,14 @@ describe('createPtySessionForSession: launch (command, childEnv) and outputSink'
   });
 
   test('a launch spawns its command instead of claude', async () => {
-    await run(
-      NOOP_OUTPUT_SINK,
-      { launch: { command: 'fakecodex', childEnv: {} } },
-      'fakecodex.done',
-    );
+    await run(NOOP_SINK, { launch: { command: 'fakecodex', childEnv: {} } }, 'fakecodex.done');
 
     expect(seen('fakecodex.argv')).toBe('--flag value');
     expect(fs.existsSync(path.join(outDir, 'claude.done'))).toBe(false);
   });
 
   test('an empty childEnv adds nothing: no REMI_PORT, no inline-renderer variable', async () => {
-    await run(
-      NOOP_OUTPUT_SINK,
-      { launch: { command: 'fakecodex', childEnv: {} } },
-      'fakecodex.done',
-    );
+    await run(NOOP_SINK, { launch: { command: 'fakecodex', childEnv: {} } }, 'fakecodex.done');
 
     expect(seen('fakecodex.remi_port')).toBe('UNSET');
     expect(seen('fakecodex.renderer')).toBe('UNSET');
@@ -188,7 +182,7 @@ describe('createPtySessionForSession: launch (command, childEnv) and outputSink'
 
   test('childEnv reaches the child verbatim, and replaces the Claude defaults', async () => {
     await run(
-      NOOP_OUTPUT_SINK,
+      NOOP_SINK,
       { launch: { command: 'fakecodex', childEnv: { PROBE: 'from-child-env' } } },
       'fakecodex.done',
     );
@@ -208,15 +202,8 @@ describe('createPtySessionForSession: launch (command, childEnv) and outputSink'
     expect(sink.calls.at(-1)).toBe('flush');
   });
 
-  test('the no-op sink takes data and a flush and does nothing, and the exit path still runs', async () => {
-    expect(NOOP_OUTPUT_SINK.process('anything')).toBeUndefined();
-    expect(NOOP_OUTPUT_SINK.flush()).toBeUndefined();
-
-    await run(
-      NOOP_OUTPUT_SINK,
-      { launch: { command: 'fakecodex', childEnv: {} } },
-      'fakecodex.done',
-    );
+  test('a sink that does nothing still lets the exit path run', async () => {
+    await run(NOOP_SINK, { launch: { command: 'fakecodex', childEnv: {} } }, 'fakecodex.done');
 
     // run() asserts the exit handler reached exitProcess; the session is closed.
     expect(sessionRegistry.getSession(SID)).toBeUndefined();
@@ -228,7 +215,7 @@ describe('createPtySessionForSession: launch (command, childEnv) and outputSink'
           sessionRegistry,
           sessionStore: new SessionStore(path.join(tmpDir, 'sessions.json')),
           liveSessionsRegistry: new SessionRegistryFile(path.join(tmpDir, 'live-sessions')),
-          outputSink: NOOP_OUTPUT_SINK,
+          outputSink: NOOP_SINK,
           wsPort: 9999,
           sendMessage: () => {},
           cleanup: async () => {},

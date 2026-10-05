@@ -54,7 +54,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 2. Connect via local network, connection code, or direct address
 3. Monitor and respond to all your agent sessions
 
-### Codex (status, command approvals, turn notifications and chat; approvals checked live against Codex 0.160.0 on 2026-10-04, except subagents and the daemon's cold start; turns and chat not yet run against a real Codex)
+### Codex (status, command approvals, turn notifications and chat; approvals checked live against Codex 0.160.0 on 2026-10-04, except subagents; turns and chat not yet run against a real Codex)
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
 A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes and No (Codex's own No), and "Yes, and don't ask again for this command this session" if Codex ever offers it.
@@ -78,13 +78,15 @@ A message typed in the app to a Codex session is refused (the app shows it as fa
 The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
 The relay and the Worker carry the whole card, so a command up to 20000 characters, in plaintext until the relay's end-to-end encryption engages by default (#881).
 The card's command and directory are kept in memory only: the live-sessions file, the hub's session list and the menu-bar app show a fixed label ("Permission: Codex command"), and the remi log carries lengths, never the command, the directory, or a thread id beyond its last eight characters (a thread id is a UUIDv7, whose first eight characters are a timestamp that two threads created within about a minute share).
+The one exception is a headless Codex (a hub's child) that dies within ten seconds of starting, before it names a thread: its first and last kilobyte of output is logged once, with every UUID cut to its last eight characters and the working directory and your home directory shown as `<cwd>` and `~`, so a flag error is not opaque; anything else Codex printed, such as a config excerpt or a URL, can still appear in it.
 Whenever remi starts following a new Codex thread (a `/new` in the terminal, or another `codex` window in the same directory), the session says so, and approvals then come from the new thread.
 A `kill -9` of remi also ends your Codex window (Codex gets a hangup when remi's terminal closes, as Claude does), while a pending approval stays pending in Codex's app-server.
 
 Starting Codex on another machine: `remi codex --host <ip>` (or `remi new --host <ip> --harness codex`) asks that machine's remi to start it, and only if that remi lists `codex` among the harnesses it can start (an older remi does not, and then nothing is started).
-The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-a untrusted`, `-s read-only` and `resume <thread id>` (resume through a hub is unverified against a real Codex), and refuses the request otherwise.
-A remote request may only tighten the host's approval and sandbox settings, never loosen them, so `-a on-request` and `-s workspace-write` are refused there (widening needs a person at the terminal, where `remi codex` allows them).
-A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI says so when it starts one, and attaches you to the new session, which is where you answer such a prompt (not yet checked against a real Codex).
+The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-s read-only` and `resume <thread id>`, and refuses the request otherwise.
+A remote request may only tighten the host's settings, never loosen them, so `-s workspace-write` is refused there (widening needs a person at the terminal, where `remi codex` allows it), and so is `-a` with any value: Codex 0.160.0 accepts only `on-request` and `never`, and neither can be shown to tighten an approval policy the host's own configuration may already have set stricter, so set that on the host.
+A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI says so when it starts one, and attaches you to the new session, which is where you answer such a prompt (NOT RUN against a real Codex: no modal appeared in the live run, so that advice is unverified).
+The live run (2026-10-04, Codex 0.160.0) started a Codex session through a hub from a raw `create_session_request` and reached its prompt headless; no live run used the CLI sender (`remi codex --host`, `remi new --host --harness codex`) against a real Codex, so that path is covered by the fake-agent tests only.
 The notice the hub sends has a second line for a client that does not attach: it names `remi attach <host>:<port>/<id>` for exactly that session, since a bare `remi attach` takes the newest one (the web app does not show the notice yet).
 
 **Checked live** (against the real Codex 0.160.0, on 2026-10-04, by a spike agent):
@@ -101,9 +103,10 @@ the handshake of remi's own client works against the real server (`initialize` a
 The first live run found that Codex answers every WebSocket ping with two pongs, which dropped remi's link about every 70 seconds; that is fixed and tested.
 
 **Not yet seen:**
+NOT RUN in the live run of a hub-created Codex session: an approval card on that session (the host's posture never asked), `remi codex --host` from a second machine, the web label, and the Update and Trust modals through `remi attach`;
 (h) whether a subagent's request is addressed to a connection that resumed only the main thread, and replayed;
 (f) what Codex does with "Yes, and don't ask again for this command this session": none of 7 real command approvals on 0.160.0 listed `acceptForSession` (they offered accept, one amendment object and cancel), so the option does not appear in practice;
-Codex's daemon starting itself on a cold start (remi never starts it), `remi codex -- exec x` and `-- login`, and a `/resume` in the terminal of a thread the daemon has not loaded.
+`remi codex -- exec x` and `-- login`, and a `/resume` in the terminal of a thread the daemon has not loaded.
 A plain window and a remi-spawned one are indistinguishable in `thread/started`, and `originator` is one value for the whole daemon, set by whichever client initialized first: after remi initialized first, later threads made in the terminal read the originator "remi".
 
 - **Arguments.**

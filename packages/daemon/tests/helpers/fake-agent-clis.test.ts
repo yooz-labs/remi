@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { installFakeAgents, waitForRecordedArgv } from './fake-agent-clis.ts';
 
-const ARGS = ['--no-alt-screen', '-m', 'fixture-model', '-a', 'untrusted'];
+const ARGS = ['--no-alt-screen', '-m', 'fixture-model', '-s', 'read-only'];
 
 describe('a fake agent that is slow to record', () => {
   let home: string;
@@ -70,5 +70,65 @@ describe('a fake agent that is slow to record', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(fs.readFileSync(argv, 'utf8')).toBe(`${ARGS.join('\n')}\n`);
+  });
+});
+
+describe('a fake codex that dies at startup (LV-4)', () => {
+  let home: string;
+  let codexDir: string;
+  let bin: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-fake-agents-'));
+    codexDir = installFakeAgents(home, { codex: true }).codexDir;
+    bin = path.join(home, 'fake-bin', 'codex');
+  });
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const run = (env: Record<string, string>) =>
+    Bun.spawn([bin, '--no-alt-screen'], {
+      env: { PATH: '/usr/bin:/bin', FAKE_CODEX_DIR: codexDir, ...env },
+      stdout: 'pipe',
+      stderr: 'ignore',
+    });
+
+  test('it prints the text and exits with the code asked for, after the pause asked for', async () => {
+    const started = Date.now();
+    const proc = run({
+      FAKE_AGENT_PRINT: 'error: no good',
+      FAKE_AGENT_EXIT: '2',
+      FAKE_AGENT_EXIT_AFTER: '0.4',
+    });
+    expect(await proc.exited).toBe(2);
+    expect(await new Response(proc.stdout).text()).toBe('error: no good\n');
+    // A sleep never ends early; 50 ms of slack is for the clock.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(350);
+    // It records first, as every fake does, so a test can still read what it was started with.
+    expect(await waitForRecordedArgv(codexDir)).toEqual(['--no-alt-screen']);
+  });
+
+  test('a later print comes out after the first, 0.2 s on, as a second chunk', async () => {
+    const started = Date.now();
+    const proc = run({
+      FAKE_AGENT_PRINT: 'first',
+      FAKE_AGENT_PRINT_LATER: 'second',
+      FAKE_AGENT_EXIT: '0',
+    });
+    expect(await proc.exited).toBe(0);
+    expect(await new Response(proc.stdout).text()).toBe('first\nsecond\n');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test('with no exit code it prints and then waits for release, as before', async () => {
+    const proc = run({ FAKE_AGENT_PRINT: 'still here' });
+    await waitForRecordedArgv(codexDir);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(proc.exitCode).toBeNull();
+    fs.writeFileSync(path.join(codexDir, 'release'), '');
+    expect(await proc.exited).toBe(0);
+    expect(await new Response(proc.stdout).text()).toBe('still here\n');
   });
 });

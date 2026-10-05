@@ -89,14 +89,14 @@ describe('a daemon starts its harness with the arguments after -- (#1179)', () =
       '-m',
       'some-model',
       '-a',
-      'untrusted',
+      'on-request',
     ]);
     expect(await argvOf(r.agents.codexDir, r)).toEqual([
       '--no-alt-screen',
       '-m',
       'some-model',
       '-a',
-      'untrusted',
+      'on-request',
     ]);
   }, 60000);
 
