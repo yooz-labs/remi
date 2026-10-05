@@ -19,6 +19,7 @@
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Miniflare } from 'miniflare';
@@ -99,30 +100,45 @@ export async function startWorker(
 ): Promise<TestWorker> {
   const cfg = Bun.TOML.parse(await Bun.file(`${PKG}/wrangler.toml`).text()) as WranglerConfig;
   const sqlite = new Set(cfg.migrations.flatMap((m) => m.new_sqlite_classes ?? []));
+  // Configure the exact owned audience BEFORE the first runtime start. Reserving an
+  // ephemeral loopback port avoids restarting workerd solely to learn its origin.
+  let port = ownedPersistence?.port ?? 0;
+  if (pinPushAudience && port === 0) {
+    const listener = createServer();
+    await new Promise<void>((resolve, reject) => {
+      listener.once('error', reject);
+      listener.listen(0, '127.0.0.1', resolve);
+    });
+    const address = listener.address();
+    if (!address || typeof address === 'string') throw new Error('owned listener unavailable');
+    port = address.port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((e) => (e ? reject(e) : resolve())),
+    );
+  }
+  const audience = `http://127.0.0.1:${port}`;
   const options = {
     modules: true,
     script: await bundle(),
     compatibilityDate: cfg.compatibility_date,
-    bindings: { ...cfg.vars, ...vars },
+    bindings: { ...cfg.vars, ...vars, ...(pinPushAudience ? { PUSH_AUDIENCE: audience } : {}) },
     durableObjects: Object.fromEntries(
       cfg.durable_objects.bindings.map((b) => [
         b.name,
         { className: b.class_name, useSQLite: sqlite.has(b.class_name) },
       ]),
     ),
-    port: ownedPersistence?.port ?? 0,
+    port,
     ...(ownedPersistence ? { durableObjectsPersist: ownedPersistence.path } : {}),
   };
   const mf = new Miniflare(options);
-  const url = String((await mf.ready) as URL).replace(/\/$/, '');
-  if (pinPushAudience) {
-    // Explicit owned test origin, set BEFORE any test request, never inferred by production.
-    await mf.setOptions({
-      ...options,
-      port: Number(new URL(url).port),
-      bindings: { ...options.bindings, PUSH_AUDIENCE: url },
-    });
-    await mf.ready;
+  let url: string;
+  try {
+    url = String((await mf.ready) as URL).replace(/\/$/, '');
+    if (pinPushAudience && url !== audience) throw new Error('owned audience listener mismatch');
+  } catch (e) {
+    await mf.dispose();
+    throw e;
   }
   return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
 }
