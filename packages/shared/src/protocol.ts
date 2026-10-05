@@ -12,6 +12,13 @@
 
 import type { HarnessId, SessionIdentity } from './harness.ts';
 import type {
+  AnswerResultMessage,
+  RelayDeviceRevokeRequestMessage,
+  RelayDeviceRevokeResponseMessage,
+  RelayDevicesRequestMessage,
+  RelayDevicesResponseMessage,
+} from './relay-messages.ts';
+import type {
   Acknowledgment,
   AgentStatus,
   DiscoverableSession,
@@ -81,6 +88,11 @@ export interface ProtocolMessageMap {
   edit: EditMessage;
   question: QuestionMessage;
   answer: AnswerMessage;
+  answer_result: AnswerResultMessage;
+  relay_devices_request: RelayDevicesRequestMessage;
+  relay_devices_response: RelayDevicesResponseMessage;
+  relay_device_revoke_request: RelayDeviceRevokeRequestMessage;
+  relay_device_revoke_response: RelayDeviceRevokeResponseMessage;
   session_update: SessionUpdateMessage;
   ping: PingMessage;
   pong: PongMessage;
@@ -193,6 +205,11 @@ export const MESSAGE_DIRECTION = {
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
+  answer_result: 'd2c',
+  relay_devices_request: 'c2d',
+  relay_devices_response: 'd2c',
+  relay_device_revoke_request: 'c2d',
+  relay_device_revoke_response: 'd2c',
   session_update: 'd2c',
   ping: 'both',
   pong: 'both',
