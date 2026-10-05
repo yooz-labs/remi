@@ -283,7 +283,11 @@ final class ClientIdentityTests: XCTestCase {
         let generator = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))
         generator.setValue(Data(token.utf8), forKey: "inputMessage")
         generator.setValue("M", forKey: "inputCorrectionLevel")
-        let image = try XCTUnwrap(generator.outputImage).transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let modules = try XCTUnwrap(generator.outputImage)
+        // Add an opaque white four-module quiet zone before integer scaling,
+        // matching remi pair's margin instead of relying on the generator border.
+        let background = CIImage(color: .white).cropped(to: modules.extent.insetBy(dx: -4, dy: -4))
+        let image = modules.composited(over: background).transformed(by: CGAffineTransform(scaleX: 8, y: 8))
         let cgImage = try XCTUnwrap(CIContext().createCGImage(image, from: image.extent))
         let data = try XCTUnwrap(NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]))
         return (token, data)
