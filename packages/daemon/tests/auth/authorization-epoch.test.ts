@@ -75,7 +75,9 @@ test('secure grant epoch: malformed present generations refuse without repair or
     key.authorizationEpoch = malformed;
     const bytes = JSON.stringify(file);
     fs.writeFileSync(path.join(directory, 'authorized_keys.json'), bytes);
-    expect(() => store.captureAuthorizationEpoch(identity.publicKey)).toThrow();
+    expect(() => store.captureAuthorizationEpoch(identity.publicKey)).toThrow(
+      'Authorized keys file has invalid records',
+    );
     expect(fs.readFileSync(path.join(directory, 'authorized_keys.json'), 'utf8')).toBe(bytes);
   }
 });
