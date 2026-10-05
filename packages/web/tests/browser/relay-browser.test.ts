@@ -36,11 +36,42 @@ beforeAll(async () => {
   });
 }, 15000);
 
+function closeOwnedHTTPConnections() {
+  const server = vite?.httpServer;
+  if (server && 'closeAllConnections' in server) server.closeAllConnections();
+}
+
 afterAll(async () => {
   if (!enabled) return;
-  await browser?.close();
-  await vite?.close();
-  await rm(privateDir, { recursive: true, force: true });
+  let closing: Promise<void> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await browser?.close();
+    closing = vite?.close();
+    const released = await Promise.race([
+      closing?.then(() => true) ?? Promise.resolve(true),
+      new Promise<boolean>((resolve) => {
+        deadline = setTimeout(() => resolve(false), 1500);
+      }),
+    ]);
+    expect(released).toBe(true);
+  } finally {
+    if (deadline) clearTimeout(deadline);
+    // Always release this fixture's sockets, including an assertion failure.
+    closeOwnedHTTPConnections();
+    let fallbackDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        closing ?? vite?.close(),
+        new Promise<void>((resolve) => {
+          fallbackDeadline = setTimeout(resolve, 500);
+        }),
+      ]);
+    } finally {
+      if (fallbackDeadline) clearTimeout(fallbackDeadline);
+      if (privateDir) await rm(privateDir, { recursive: true, force: true });
+    }
+  }
 });
 
 browserTest(
