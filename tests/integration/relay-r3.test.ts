@@ -1,6 +1,14 @@
 /** R3 composes the actual source hub, Worker and shared client; no deployed service or model. */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { CAPABILITY_HEADER } from '../../packages/daemon/src/auth/capability-token.ts';
@@ -116,3 +124,113 @@ test('noninteractive pair refuses before dialing or starting a model', async () 
   expect(code).toBe(1);
   expect(`${out}${err}`).toContain('interactive terminal');
 }, 10000);
+
+import { deserialize, generateId, now, relayV2, serialize } from '@remi/shared';
+import {
+  Mailbox,
+  Socket,
+  admit,
+  clientUrl,
+  hex,
+  newIdentity,
+} from '../../packages/signaling/tests/e2e/endpoints.ts';
+async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
+  const ws = new WebSocket(`ws://127.0.0.1:${running.port}/relay-control`, {
+    headers: { [CAPABILITY_HEADER]: running.capability },
+  } as never);
+  sockets.push(ws);
+  const inbox = new Mailbox<Record<string, unknown>>();
+  ws.onmessage = (event) => inbox.push(JSON.parse(String(event.data)));
+  await new Promise<void>((resolve, reject) => {
+    ws.onopen = () => resolve();
+    ws.onerror = () => reject(new Error('local control refused'));
+  });
+  return { ws, inbox };
+}
+test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
+  const running = await hub();
+  const local = await localSocket(running);
+  // Health precedes asynchronous control admission; ask only once it has had time to admit.
+  await Bun.sleep(150);
+  local.ws.send(JSON.stringify({ t: 'pair', id: 'pair-one' }));
+  const offer = await local.inbox.next();
+  expect(offer['t']).toBe('offer');
+  const token = await relayV2.decodePairingToken(
+    String(offer['token']),
+    Math.floor(Date.now() / 1000),
+  );
+  const rid = await relayV2.ridOf(token.machinePublicKey);
+  const device = await newIdentity();
+  const socket = await Socket.open(clientUrl(running.worker, hex(rid)));
+  sockets.push(socket.ws);
+  await admit(socket, device, 'client', rid, await relayV2.admitTag(token.secret));
+  expect((await socket.json())['t']).toBe('admitted');
+  expect((await socket.json())['t']).toBe('open');
+  const start = await relayV2.clientStart(
+    {
+      machinePublicKey: token.machinePublicKey,
+      device: device.signer,
+      mode: 'pair',
+      pairingSecret: token.secret,
+      random: relayV2.systemRandom,
+      deviceName: 'owned test device',
+    },
+    Date.now(),
+  );
+  socket.sendText(start.hello);
+  const auth = await start.onHelloAck(await socket.text(), Date.now());
+  socket.sendText(auth.auth);
+  const compare = await local.inbox.next();
+  expect(compare['t']).toBe('compare');
+  expect(compare['fingerprint']).toBe(auth.fingerprint);
+  expect(existsSync(join(running.dir, 'state/authorized_keys.json'))).toBe(false);
+  local.ws.send(
+    JSON.stringify({
+      t: 'confirm',
+      id: 'pair-one',
+      offerId: offer['offerId'],
+      connectionId: compare['connectionId'],
+      fingerprint: compare['fingerprint'],
+      accept: true,
+    }),
+  );
+  const ready = await socket.text();
+  const grants = JSON.parse(readFileSync(join(running.dir, 'state/authorized_keys.json'), 'utf8'));
+  expect(
+    grants.keys.some(
+      (key: { publicKey: string }) =>
+        key.publicKey === Buffer.from(device.publicKey).toString('base64'),
+    ),
+  ).toBe(true);
+  expect(
+    JSON.parse(readFileSync(join(running.dir, 'state/relay_devices.json'), 'utf8')),
+  ).toHaveLength(1);
+  const channel = await auth.onReady(ready, Date.now(), {
+    emit: (frame) => socket.sendBinary(frame),
+    close: (code) => socket.close(code),
+  });
+  const inbox = new Mailbox<ReturnType<typeof deserialize>>();
+  let incoming = Promise.resolve();
+  socket.tap((frame) => {
+    incoming = incoming.then(async () => {
+      if (typeof frame !== 'string') {
+        const bytes = await channel.receive(frame);
+        if (bytes) inbox.push(deserialize(new TextDecoder().decode(bytes)));
+      }
+    });
+  });
+  const id = generateId();
+  await channel.send(
+    new TextEncoder().encode(serialize({ type: 'relay_devices_request', id, timestamp: now() })),
+  );
+  const response = await inbox.next();
+  expect(response?.type).toBe('relay_devices_response');
+  if (response?.type !== 'relay_devices_response')
+    throw new Error('expected correlated devices response');
+  expect(response.requestId).toBe(id);
+  expect(response.devices).toHaveLength(1);
+  socket.sendText('pong');
+  expect(await socket.closed).toEqual(relayV2.FAILURE_CLOSE);
+  await incoming;
+  expect(await channel.transportClosed()).toBe('unclean');
+}, 20000);
