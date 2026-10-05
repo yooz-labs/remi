@@ -28,13 +28,13 @@ zero errors and the existing52 warnings; `typos` and `git diff --check` passed.
   path. The precisely selected isolated case passed1test/2assertions on BOTH.
   Its combined-run cause remains unexplained; no production fix, deadline increase
   or repeated combined/full retry is claimed.
-- Exact final private mutation baseline AND restored source:52pass/0fail/439assertions
+- Complete private mutation baseline AND restored source before the positive-boundary correction:52pass/0fail/439assertions
   across real gateway, builder, raw body reader and shared codec files on EACH Bun.
   These include concurrent nonce ownership, stale epoch, deadline, all14 reviewed
   weak encodings in both public fields, signed off-curve P256 and actual configured
   enrollment maximum1,000,000. The final production/shared source compared equal
   after restoration; only copied test updates remained dirty in the private clone.
-- Final shared codec/vector/surface/domain/source-guard checks:29pass/0fail/529assertions
+- Corrected shared codec/vector/surface/domain/source-guard checks:29pass/0fail/533assertions
   on EACH Bun. The earlier four-message protocol/fixtures gate passed174/438 EACH.
   Independent Python verification passed all10 public synthetic cross-engine vectors.
 
@@ -61,6 +61,17 @@ retained. A corrected-target first attempt failed by an uncaught business except
 which is explicitly not counted as an assertion kill. An explicit positive boundary
 expectation then killed the corrected whole-inner guard on BOTH. No timeout, startup,
 syntax or import failure was counted as a kill.
+
+Independent receipt review additionally found the original TTL-inclusive and
+future-skew-inclusive families failed by uncaught RelayError before expectations.
+Those four attempts were misclassified and are now retained as
+`invalid_business_exception`, excluded from the assertion count. Explicit positive
+promise-resolution expectations corrected both families. Only those exact two
+mutants were rerun: named resolves assertions now kill both on EACH runtime,
+with the selected boundary test baseline/restoration1pass/25assertions EACH.
+The final accepted count remains47 families per runtime after these replacements.
+Original uncaught logs remain `*-uncaught-{142,1311}.log`; no production or tuple
+change and no combined suite repetition was made for this correction.
 
 Exact final variant names:
 

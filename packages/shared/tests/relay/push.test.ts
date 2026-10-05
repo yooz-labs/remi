@@ -380,14 +380,11 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
     ['turn_complete', info, 300],
   ] as const) {
     const c = { ...content, kind, expiresAt: content.issuedAt + max };
-    expect(
-      (
-        await required<typeof r.buildPushContentSigningInput>('buildPushContentSigningInput')(
-          c,
-          p === payload ? text(JSON.stringify(p)) : r.buildPushPayload(p),
-        )
-      ).length,
-    ).toBeGreaterThan(32);
+    const exactTtl = required<typeof r.buildPushContentSigningInput>(
+      'buildPushContentSigningInput',
+    )(c, p === payload ? text(JSON.stringify(p)) : r.buildPushPayload(p));
+    await expect(exactTtl, 'inclusive content TTL is admitted').resolves.toBeInstanceOf(Uint8Array);
+    expect((await exactTtl).length).toBeGreaterThan(32);
     expect(
       await codeOf(
         r.buildPushContentSigningInput(
@@ -421,17 +418,22 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
       sealed: r.b64u(sealed),
     };
     if (skew === 60)
-      expect((await r.openPushContent(recipient, carrier, authority, now)).payload).toEqual(
-        dismiss,
-      );
+      await expect(
+        r.openPushContent(recipient, carrier, authority, now),
+        'inclusive future content skew is admitted',
+      ).resolves.toMatchObject({ payload: dismiss });
     else
       expect(await codeOf(r.openPushContent(recipient, carrier, authority, now))).toBe('EXPIRED');
   }
   const { unsigned } = await signedSubmission();
-  expect(
-    (await r.buildPushSubmitSigningInput({ ...unsigned, expiresAt: unsigned.issuedAt + 60 }))
-      .length,
-  ).toBeGreaterThan(32);
+  const exactSubmitTtl = r.buildPushSubmitSigningInput({
+    ...unsigned,
+    expiresAt: unsigned.issuedAt + 60,
+  });
+  await expect(exactSubmitTtl, 'inclusive submit TTL is admitted').resolves.toBeInstanceOf(
+    Uint8Array,
+  );
+  expect((await exactSubmitTtl).length).toBeGreaterThan(32);
   expect(
     await codeOf(r.buildPushSubmitSigningInput({ ...unsigned, expiresAt: unsigned.issuedAt + 61 })),
   ).toBe('MALFORMED');
@@ -443,10 +445,10 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
       signature: r.b64u(await actual.machine.sign(await r.buildPushSubmitSigningInput(matching))),
     };
     if (skew === 60)
-      expect(
-        (await r.verifyPushSubmit(proof, { rid: proof.rid, audience: proof.audience }, now))
-          .requestDigest,
-      ).toMatch(/^[a-f0-9]{64}$/);
+      await expect(
+        r.verifyPushSubmit(proof, { rid: proof.rid, audience: proof.audience }, now),
+        'inclusive future submit skew is admitted',
+      ).resolves.toMatchObject({ requestDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
     else
       expect(
         await codeOf(r.verifyPushSubmit(proof, { rid: proof.rid, audience: proof.audience }, now)),

@@ -52,8 +52,10 @@ ownership and signed expiry are checked synchronously, with no intervening await
 No network operation runs inside `blockConcurrencyWhile`.
 
 Nonce capacity is 4096 per room, with retention through submit expiry plus 60 seconds.
-Capacity refuses rather than evicting live entries. The same exact request returns
-its retained result or uncertain; different content with its nonce is refused.
+Capacity refuses rather than evicting live entries. Only an original submission that remains unexpired may consult its retained result
+or uncertain outcome. The extra60 seconds of retention prevents nonce reuse; it
+does not extend eligibility or provide a separate status route. Different content
+with its nonce is refused.
 Concurrent identical submissions initiate at most one effect. A pending record
 survives the tested orderly workerd restart as uncertain. Physical crash durability
 is not measured by that restart test.
