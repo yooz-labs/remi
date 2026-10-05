@@ -1,7 +1,7 @@
 /** Retained v1 compatibility signing encoding/export; not a current transport (#1198).
  * Authenticator's legacy createChallengeWithRelayKex/verifyRelayKex methods reference
  * this helper but have no production callers. Direct Connection auth uses
- * createChallenge/verifyResponse. Relay v2 uses relay/signing-inputs.ts.
+ * createChallenge/verifyResponse. Relay v2 uses separate handshake/admission builders.
  */
 const KEX_CONTEXT = 'remi-relay-kex-v1';
 
