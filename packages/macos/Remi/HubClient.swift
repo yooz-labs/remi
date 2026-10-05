@@ -40,6 +40,12 @@ final class HubClient: ObservableObject {
     /// own throwaway identity instead of touching the real Keychain item.
     private let identity: ClientIdentity
 
+    var publicFingerprint: String { identity.fingerprint }
+    var publicIdentityJSON: String { identity.publicIdentityJSON }
+    var authorizeCommand: String { identity.authorizeCommand }
+    /// Present only for a valid signed challenge's manual-approval refusal (#873).
+    @Published private(set) var approvalErrorCode: String?
+
     init(
         scanPorts: [Int] = Array(basePort..<(basePort + portRange)),
         identity: ClientIdentity = ClientIdentityStore.loadOrCreate()
@@ -52,14 +58,8 @@ final class HubClient: ObservableObject {
         case scanning
         case connected(port: Int, isHub: Bool)
         case unreachable
-        /// A peer answered but rejected this app's identity (#872):
-        /// `require_local_auth` is on and TOFU didn't (or couldn't) trust
-        /// the key — e.g. the daemon runs with `--no-tofu`, or a
-        /// previously-trusted key was later revoked. Distinct from
-        /// `.unreachable` so the UI can say WHY instead of just "not
-        /// running" (issue #872 acceptance: this must read in words, not a
-        /// spinner). `reason` is human-readable, derived from the wire
-        /// error code.
+        /// Authentication refusal; the error code distinguishes manual approval
+        /// from invalid signatures or failed mutual authentication (#873).
         case rejected(port: Int, reason: String)
     }
 
@@ -230,6 +230,15 @@ final class HubClient: ObservableObject {
     /// path, which would itself call scheduleReconnect() and start an
     /// unrelated backoff chain — exactly the ambiguity a rescanNow() test
     /// needs to avoid racing against. Compiled out of Release builds.
+    /// Stop this isolated test client's timers/socket before its hub is torn down.
+    func stopForTesting() {
+        started = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        teardownSocket()
+        phase = .unreachable
+    }
+
     func forceUnreachableForTesting() {
         phase = .unreachable
     }
@@ -319,8 +328,7 @@ final class HubClient: ObservableObject {
         task.resume()
 
         // Sent immediately, before knowing whether the daemon will
-        // challenge this connection (#872). When `require_local_auth` is
-        // on, the daemon answers this with an AUTH_REQUIRED error while its
+        // challenge this connection (#873). With stock authentication on, the daemon answers this with an AUTH_REQUIRED error while its
         // state is "authenticating" (harmlessly ignored below, same as any
         // other unhandled frame type) and we resend hello once the real
         // auth_challenge/auth_response/auth_result exchange succeeds. When
@@ -448,6 +456,11 @@ final class HubClient: ObservableObject {
             return
         }
         guard frame.success else {
+            if pendingChallenge != nil && (frame.error == "UNKNOWN_KEY" || frame.error == "PENDING_QUEUE_FULL" || frame.error?.hasPrefix("AUTH_STORE_ERROR") == true) {
+                approvalErrorCode = frame.error
+            } else {
+                approvalErrorCode = nil
+            }
             handleAuthRejected(port: port, reason: Self.describeAuthError(frame.error))
             return
         }
@@ -458,10 +471,12 @@ final class HubClient: ObservableObject {
                 rawRepresentation: pending.serverPublicKeyRaw),
             serverKey.isValidSignature(signatureData, for: pending.challengeData)
         else {
+            approvalErrorCode = nil
             handleAuthRejected(port: port, reason: "the hub's identity could not be verified")
             return
         }
         pendingChallenge = nil
+        approvalErrorCode = nil
         sendHello()
     }
 
@@ -472,16 +487,17 @@ final class HubClient: ObservableObject {
         scheduleReconnect()
     }
 
-    /// Human-readable copy for the wire error codes `AuthResultMessage` can
-    /// carry (packages/shared/src/protocol.ts, packages/daemon/src/auth/
-    /// authenticator.ts). `UNKNOWN_KEY` is the one an operator is likely to
-    /// actually hit — the daemon's TOFU defaults to auto-accept (cli.ts
-    /// `tofuMode`), so this only fires with `--no-tofu` or after this key
-    /// was later removed from authorized-keys.
+    /// Error copy follows the actual refusal; only UNKNOWN_KEY means pending (#873).
     nonisolated static func describeAuthError(_ code: String?) -> String {
         switch code {
         case "UNKNOWN_KEY":
-            return "the hub does not trust this app yet"
+            return "this app is waiting for local approval on the daemon machine"
+        case "PENDING_QUEUE_FULL":
+            return "the pending approval queue is full; this request was not saved"
+        case let code? where code.hasPrefix("AUTH_STORE_ERROR"):
+            return "the daemon could not save this approval request (\(code))"
+        case "FINGERPRINT_MISMATCH":
+            return "the claimed fingerprint did not match the signing key"
         case "INVALID_SIGNATURE":
             return "signature verification failed"
         case "NO_PENDING_CHALLENGE":

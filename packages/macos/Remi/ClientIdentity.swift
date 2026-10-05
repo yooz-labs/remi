@@ -44,6 +44,14 @@ struct ClientIdentity {
     /// display/logging only, but it must still be correct.
     var fingerprint: String { Self.fingerprint(ofPublicKeyRaw: publicKeyRaw) }
 
+    /// Approval export (#873): contains only the canonical public key and its fingerprint.
+    var publicIdentityJSON: String {
+        // Both strings contain only base64/hex, so they need no JSON escaping.
+        "{\n  \"publicKey\": \"\(publicKeyRaw.base64EncodedString())\",\n  \"fingerprint\": \"\(fingerprint)\"\n}"
+    }
+
+    var authorizeCommand: String { "remi authorize \(fingerprint)" }
+
     static func fingerprint(ofPublicKeyRaw raw: Data) -> String {
         let digest = SHA256.hash(data: raw)
         let hex = digest.map { String(format: "%02x", $0) }.joined()
@@ -58,9 +66,8 @@ struct ClientIdentity {
 }
 
 /// Loads or creates this app's `ClientIdentity`, persisted in the Keychain
-/// so the daemon's TOFU trust survives relaunches — regenerating a new key
-/// on every launch would mean re-earning trust (or, once `--no-tofu` is set
-/// on the daemon, never connecting at all) every single time.
+/// so explicit local authorization survives relaunches (#873). Regenerating
+/// a key would require another human approval on the daemon machine.
 ///
 /// No new entitlement is needed: a sandboxed app can create and read its own
 /// default-access-group Keychain items without the `keychain-access-groups`

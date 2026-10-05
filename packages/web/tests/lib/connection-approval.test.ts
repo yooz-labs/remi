@@ -14,7 +14,8 @@ describe('first-connect approval (#873)', () => {
     expect(snapshot?.fingerprint).toBe(await fingerprint(fromBase64(identity.publicKeyRaw)));
     expect(snapshot?.authorizeCommand).toBe(`remi authorize ${identity.fingerprint}`);
     expect(JSON.parse(snapshot?.publicJson ?? '{}')).toEqual({
-      publicKey: identity.publicKeyRaw, fingerprint: identity.fingerprint,
+      publicKey: identity.publicKeyRaw,
+      fingerprint: identity.fingerprint,
     });
     expect(snapshot?.publicJson).not.toContain('private');
     approval.disconnected();

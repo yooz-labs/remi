@@ -3008,7 +3008,8 @@ function App() {
   // for the ConnectModal's own connect-attempt feedback, which is
   // deliberately global -- it's about the connection the user just tried,
   // not about any particular chat session.
-  const errorConnection = connections.find((c) => c.status === 'error');
+  const errorConnection = connections.find((c) => c.error);
+  const approvalConnection = connections.find((c) => c.approval);
   const error: string | null = errorConnection
     ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
@@ -3106,6 +3107,8 @@ function App() {
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         connectionStatus={effectiveStatus}
+        approvalConnection={approvalConnection}
+        onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}

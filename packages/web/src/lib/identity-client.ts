@@ -37,11 +37,13 @@ export function loadIdentity(): RemiIdentity | null {
 /** Save identity to localStorage */
 export function saveIdentity(identity: RemiIdentity): void {
   localStorage.setItem(IDENTITY_KEY, serializeIdentity(identity));
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('remi:identity-changed', { detail: identity.publicKey }));
 }
 
 /** Remove identity from localStorage */
 export function removeIdentity(): void {
   localStorage.removeItem(IDENTITY_KEY);
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('remi:identity-changed', { detail: null }));
 }
 
 /** Check if an identity exists */

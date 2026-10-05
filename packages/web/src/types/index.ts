@@ -52,6 +52,8 @@ export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
 
 /** Per-connection state tracked by the connection manager */
 export interface ConnectionState {
+  /** Own public identity after manual-approval refusal (#873). */
+  readonly approval?: import('@/lib/connection-approval').ClientApproval | null;
   readonly connectionId: ConnectionId;
   readonly url: string;
   readonly status: ConnectionStatus;

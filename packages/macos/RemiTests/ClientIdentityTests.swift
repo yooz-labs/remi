@@ -38,6 +38,16 @@ final class ClientIdentityTests: XCTestCase {
         super.tearDown()
     }
 
+    func testApprovalExportContainsOnlyPublicIdentity() throws {
+        let identity = ClientIdentity(privateKey: .init())
+        let json = try XCTUnwrap(identity.publicIdentityJSON.data(using: .utf8))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: String])
+        XCTAssertEqual(Set(object.keys), Set(["publicKey", "fingerprint"]))
+        XCTAssertEqual(object["publicKey"], identity.publicKeyRaw.base64EncodedString())
+        XCTAssertEqual(object["fingerprint"], identity.fingerprint)
+        XCTAssertEqual(identity.authorizeCommand, "remi authorize \(identity.fingerprint)")
+    }
+
     // MARK: - Keychain persistence
 
     func testLoadOrCreatePersistsAcrossInstantiations() {
