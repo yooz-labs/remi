@@ -105,10 +105,71 @@ browserTest(
 );
 
 browserTest(
-  'actual App pairs only after local comparison and lists enrolled devices over encrypted machine channel',
+  'actual App refuses native Android relay before browser identity or transport activity',
   async () => {
     const local = await ownedRelayOffer();
     const context = await browser.newContext();
+    const page = await context.newPage();
+    const relayHTTP: string[] = [];
+    page.on('request', request => {
+      if (request.url().includes('/v2/')) relayHTTP.push(request.url());
+    });
+    try {
+      await page.addInitScript(() => {
+        // Installed Capacitor detects this actual external native ingress; no UA/platform override.
+        Object.defineProperty(window, 'androidBridge', { value: Object.freeze({}) });
+        const counters = { identityWrites: 0, signatures: 0, relaySockets: 0 };
+        (window as unknown as { ownedAndroidActivity: typeof counters }).ownedAndroidActivity = counters;
+        const originalSet = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(key, value) {
+          if (key === 'remi-identity') counters.identityWrites++;
+          return originalSet.call(this, key, value);
+        };
+        const originalSign = crypto.subtle.sign.bind(crypto.subtle);
+        crypto.subtle.sign = (...args) => { counters.signatures++; return originalSign(...args); };
+        const RealWebSocket = window.WebSocket;
+        window.WebSocket = class extends RealWebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            if (String(url).includes('/v2/client/')) counters.relaySockets++;
+          }
+        };
+      });
+      await page.goto(origin);
+      const platform = await page.evaluate(async () => {
+        const url = '/src/lib/platform.ts';
+        const actual = await import(url);
+        return { platform: actual.getPlatform(), native: actual.isNative() };
+      });
+      expect(platform).toEqual({ platform: 'android', native: true });
+      await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+      await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+      await page.getByLabel('Pairing token').fill(String(local.offer['token']));
+      await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+      // Observe the real submission, with a bounded interval rather than waiting for a missing alert.
+      await page.waitForTimeout(1200);
+      expect(await page.evaluate(() =>
+        (window as unknown as { ownedAndroidActivity: Record<string, number> }).ownedAndroidActivity
+      )).toEqual({ identityWrites: 0, signatures: 0, relaySockets: 0 });
+      expect(relayHTTP).toEqual([]);
+      expect(await page.getByRole('alert').textContent()).toBe(
+        'Relay pairing is unavailable in the Android app until its native identity provider is supported.'
+      );
+      expect(await page.evaluate(() => localStorage.getItem('remi-identity'))).toBeNull();
+      expect(await page.evaluate(() => localStorage.getItem('remi-relay-machines-v2'))).toBeNull();
+      expect(await page.getByLabel('Pairing token').inputValue()).toBe('');
+    } finally {
+      await context.close();
+    }
+  },
+  20000,
+);
+
+browserTest(
+  'actual App in Android browser pairs only after local comparison and lists enrolled devices',
+  async () => {
+    const local = await ownedRelayOffer();
+    const context = await browser.newContext({ userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36' });
     const page = await context.newPage();
     try {
       await page.goto(origin);
