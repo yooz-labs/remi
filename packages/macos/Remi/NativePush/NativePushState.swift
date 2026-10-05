@@ -83,8 +83,21 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         }
     }
 
-    // Observation behavior is pinned separately before its implementation.
-    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws {}
+    /// An observed deletion, corruption, read failure or different revision
+    /// closes prior authority. A successful later read never installs it again.
+    /// External Keychain changes remain unobservable until an app reader runs;
+    /// the NSE has only this public ledger and never reads the Dpk private item.
+    func reconcileObservedIdentity(publicKey: Data?, revision: String?) throws {
+        guard let installed = try currentAuthority(),
+              installed.publicKey != publicKey || installed.revision != revision else { return }
+        let lease = try acquireIdentityMutation()
+        defer { lease.release() }
+        // Another writer may have changed authority before lock acquisition.
+        if let latest = try currentAuthority(),
+           latest.publicKey != publicKey || latest.revision != revision {
+            _ = try lease.invalidateIdentityAuthority()
+        }
+    }
 
     func acquireIdentityMutation() throws -> NativeIdentityMutationLease {
         let descriptor = open(mutationLock.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
