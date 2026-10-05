@@ -18,6 +18,7 @@
 
 import CryptoKit
 import Security
+import WebKit
 import XCTest
 
 
@@ -209,6 +210,63 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(chosen.publicKeyRaw, incoming.publicKeyRaw)
         XCTAssertNotEqual(chosen.revision, original.revision)
         XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.revision, chosen.revision)
+    }
+
+    @MainActor
+    func testNativeBridgeUsesRealFrameProvenanceAndPublicOnlyReplies() async throws {
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-wk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let document = root.appendingPathComponent("index.html")
+        try "<html><body>Native signer boundary</body></html>".write(to: document, atomically: true, encoding: .utf8)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertFalse(web.isLoading)
+        let publicReply = try await web.callAsyncJavaScript(
+            "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'public'})",
+            arguments: [:], in: nil, contentWorld: .page)
+        let record = try XCTUnwrap(publicReply as? [String: Any])
+        XCTAssertEqual(Set(record.keys), Set(["exists", "publicKey", "fingerprint", "revision"]))
+        XCTAssertEqual(record["publicKey"] as? String, identity.publicKeyRaw.base64EncodedString())
+        let message = Data("real WK native signing".utf8)
+        let signing = "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message})"
+        let signed = try await web.callAsyncJavaScript(signing, arguments: ["revision":identity.revision,
+            "publicKey":identity.publicKeyRaw.base64EncodedString(), "message":message.base64EncodedString()], in: nil, contentWorld: .page)
+        let reply = try XCTUnwrap(signed as? [String: Any])
+        XCTAssertEqual(Set(reply.keys), Set(["exists", "publicKey", "fingerprint", "revision", "signature"]))
+        let signature = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(reply["signature"] as? String)))
+        XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: message))
+        let stale = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:'stale',publicKey:publicKey,message:message}); return true } catch { return false }",
+            arguments: ["publicKey":identity.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()], in:nil,contentWorld:.page)
+        XCTAssertEqual(stale as? Bool, false)
+        let oversized = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:btoa('x'.repeat(9000))}); return true } catch { return false }",
+            arguments: ["publicKey":identity.publicKeyRaw.base64EncodedString(),"revision":identity.revision], in:nil,contentWorld:.page)
+        XCTAssertEqual(oversized as? Bool, false)
+        let iframe = try await web.callAsyncJavaScript("""
+            return await new Promise(resolve => {
+              const frame = document.createElement('iframe');
+              window.addEventListener('message', event => { if (event.source === frame.contentWindow) resolve(event.data) });
+              frame.srcdoc = `<script>window.webkit.messageHandlers.remiIdentity.postMessage({op:'public'}).then(() => parent.postMessage(true,'*'), () => parent.postMessage(false,'*'))</script>`;
+              document.body.appendChild(frame);
+            });
+            """, arguments: [:], in:nil,contentWorld:.page)
+        XCTAssertEqual(iframe as? Bool, false, "A real child frame must not reach the native signer")
+        web.loadFileURL(document, allowingReadAccessTo: root)
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let external = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'public'}); return true } catch { return false }",
+            arguments:[:], in:nil,contentWorld:.page)
+        XCTAssertEqual(external as? Bool, false, "An external main document must not reach the native signer")
     }
 
     // MARK: - Signing / verification
