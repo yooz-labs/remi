@@ -24,6 +24,7 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
+import { isAuthorityEpoch, newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
 
 export class DuplicateKeyError extends Error {
@@ -45,6 +46,7 @@ export interface PendingKey {
 }
 const PENDING_TTL_MS = 600_000;
 const MAX_PENDING_KEYS = 32;
+type StoredAuthorizedKey = AuthorizedKey & { readonly authorizationEpoch?: string };
 
 /** Strict raw Ed25519 representation; alternate Base64 encodings are not identities. */
 function publicKeyBytes(publicKey: string): ArrayBuffer {
@@ -186,6 +188,7 @@ export class IdentityStore {
         typeof key['label'] !== 'string' ||
         !validDate(key['addedAt']) ||
         (key['lastUsedAt'] !== null && !validDate(key['lastUsedAt'])) ||
+        ('authorizationEpoch' in key && !isAuthorityEpoch(key['authorizationEpoch'])) ||
         seen.has(key['fingerprint'] as string)
       )
         throw new Error('Authorized keys file has invalid records');
@@ -195,6 +198,40 @@ export class IdentityStore {
   }
   private writeAuthorizedKeys(file: AuthorizedKeysFile): void {
     this.atomicWrite(this.authorizedKeysPath, JSON.stringify(file, null, 2));
+  }
+
+  /** Capture a durable generation only for a currently present grant, migrating old records lazily. */
+  captureAuthorizationEpoch(publicKey: string): string | null {
+    return this.withAuthorizationEpoch(publicKey, (epoch) => epoch, true);
+  }
+
+  /**
+   * Read the current grant generation and invoke one synchronous decision in
+   * the authorization lock. A network invocation may return its promise, but
+   * all preparation/awaits belong outside this callback; the lock then releases.
+   * Callers must compare their captured generation before performing an effect.
+   */
+  withAuthorizationEpoch<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+    migrate = false,
+  ): T {
+    return this.transaction(() => {
+      const file = this.loadAuthorizedKeys();
+      const key = file.keys.find((candidate) => candidate.publicKey === publicKey) as
+        | StoredAuthorizedKey
+        | undefined;
+      let epoch = key?.authorizationEpoch;
+      if (key && epoch === undefined && migrate) {
+        epoch = newAuthorityEpoch();
+        const updated: StoredAuthorizedKey = { ...key, authorizationEpoch: epoch };
+        this.writeAuthorizedKeys({
+          ...file,
+          keys: file.keys.map((candidate) => (candidate === key ? updated : candidate)),
+        });
+      }
+      return operation(epoch ?? null);
+    });
   }
   private readPendingKeys(): PendingKey[] {
     const parsed = this.readJson(this.pendingKeysPath);
@@ -275,7 +312,8 @@ export class IdentityStore {
       const file = this.loadAuthorizedKeys();
       if (file.keys.some((key) => key.fingerprint === fingerprint))
         throw new DuplicateKeyError(fingerprint);
-      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, grant] });
+      const stored: StoredAuthorizedKey = { ...grant, authorizationEpoch: newAuthorityEpoch() };
+      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, stored] });
       // Grant is durable FIRST. A crash leaves only an ignored stale candidate.
       this.writePendingKeys(keys.filter((key) => key.fingerprint !== fingerprint));
       return grant;
@@ -295,7 +333,8 @@ export class IdentityStore {
       const file = this.loadAuthorizedKeys();
       if (file.keys.some((existing) => existing.fingerprint === key.fingerprint))
         throw new DuplicateKeyError(key.fingerprint);
-      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, key] });
+      const stored: StoredAuthorizedKey = { ...key, authorizationEpoch: newAuthorityEpoch() };
+      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, stored] });
       return key;
     });
   }

@@ -25,7 +25,7 @@ function records(): { version: number; keys: Array<Record<string, unknown>> } {
 }
 function legacyFile(): void {
   const file = records();
-  for (const key of file.keys) key.authorizationEpoch = undefined;
+  for (const key of file.keys) key['authorizationEpoch'] = undefined;
   fs.writeFileSync(path.join(directory, 'authorized_keys.json'), JSON.stringify(file));
 }
 
@@ -35,7 +35,7 @@ test('secure grant epoch: actual add and pending approval persist fresh canonica
   const added = await store.addAuthorizedKey(first.publicKey, 'synthetic first');
   await store.registerPendingKey(second.publicKey);
   const approved = await store.authorizePendingKey(second.fingerprint, 'synthetic second');
-  const epochs = records().keys.map((key) => key.authorizationEpoch);
+  const epochs = records().keys.map((key) => key['authorizationEpoch']);
   expect(epochs).toHaveLength(2);
   for (const epoch of epochs) {
     expect(epoch).toBeString();
@@ -72,7 +72,7 @@ test('secure grant epoch: malformed present generations refuse without repair or
     const file = records();
     const key = file.keys[0];
     if (!key) throw new Error('missing fixture grant');
-    key.authorizationEpoch = malformed;
+    key['authorizationEpoch'] = malformed;
     const bytes = JSON.stringify(file);
     fs.writeFileSync(path.join(directory, 'authorized_keys.json'), bytes);
     expect(() => store.captureAuthorizationEpoch(identity.publicKey)).toThrow(
@@ -139,7 +139,9 @@ test('secure grant epoch: two real processes migrate one legacy grant to one dur
     expect(result.code).toBe(0);
     expect(result.error).toBe('');
   }
-  expect(results[0]?.value.trim()).toBe(store.captureAuthorizationEpoch(identity.publicKey));
+  const current = store.captureAuthorizationEpoch(identity.publicKey);
+  if (typeof current !== 'string') throw new Error('missing concurrent generation');
+  expect(results[0]?.value.trim()).toBe(current);
   expect(results[1]?.value).toBe(results[0]?.value);
   expect(fs.statSync(path.join(directory, 'authorized_keys.json')).mode & 0o777).toBe(0o600);
   expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
@@ -180,6 +182,8 @@ test('secure grant epoch: a real second process cannot revoke inside the synchro
   });
   if (!child) throw new Error('owned revoker was not launched');
   expect(await child.exited).toBe(0);
+  if (!(child.stderr instanceof ReadableStream))
+    throw new Error('owned revoker has no stderr pipe');
   expect(await new Response(child.stderr).text()).toBe('');
   expect(fs.existsSync(finished)).toBe(true);
   expect(store.captureAuthorizationEpoch(identity.publicKey)).toBeNull();
