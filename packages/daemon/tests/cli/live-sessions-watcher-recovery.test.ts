@@ -1,6 +1,8 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import type { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { ProtocolMessage } from '@remi/shared';
 import { startLiveSessionsWatcher } from '../../src/cli/live-sessions-watcher.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
@@ -18,7 +20,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 async function fixture(registerBeforeArm = false) {
-  const dir = fs.mkdtempSync('/private/tmp/remi-watcher-recovery-');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-watcher-recovery-'));
   ownedDirs.push(dir);
   const registry = new SessionRegistryFile(dir);
   const register = () =>
@@ -39,11 +41,16 @@ async function fixture(registerBeforeArm = false) {
     await pause(500);
   }
   const watchers: fs.FSWatcher[] = [];
+  const notifications: fs.WatchListener<string>[] = [];
   const realWatch = fs.watch;
-  // Delegate every watch to the real OS. Capture its actual EventEmitter only
-  // to inject a controlled OS-boundary error; no collection/registry logic is replaced.
+  // Delegate every watch to the real OS. Capture its actual EventEmitter and
+  // callback for explicitly labelled OS-boundary error/notification injection;
+  // no collection/registry logic is replaced.
   const recordWatch = ((...args: unknown[]): fs.FSWatcher => {
+    const notification = args.at(-1);
+    if (typeof notification !== 'function') throw new Error('actual watcher callback missing');
     const watcher = Reflect.apply(realWatch, fs, args) as fs.FSWatcher;
+    notifications.push(notification as fs.WatchListener<string>);
     watchers.push(watcher);
     return watcher;
   }) as typeof fs.watch;
@@ -64,6 +71,7 @@ async function fixture(registerBeforeArm = false) {
   return {
     registry,
     watchers,
+    notifications,
     broadcasts,
     errors,
     get collects() {
@@ -97,13 +105,19 @@ for (const boundary of ['pending debounce', 'closed rearm window'] as const) {
     try {
       const watcher = firstWatcher(f.watchers);
       if (boundary === 'pending debounce') {
+        // Startup notification loss has its own census pin. Wait for the real
+        // empty census before requiring an OS event from this running watcher.
+        await waitFor(() => f.collects > 0);
+        const beforeRegistration = f.collects;
         let observed = false;
         (watcher as unknown as EventEmitter).once('change', () => {
           observed = true;
         });
         f.register();
         await waitFor(() => observed);
-        expect(f.collects, 'the real registration event is still waiting in debounce').toBe(0);
+        expect(f.collects, 'the real registration event is still waiting in debounce').toBe(
+          beforeRegistration,
+        );
       }
       interrupt(watcher);
       if (boundary === 'closed rearm window') f.register();
@@ -141,20 +155,20 @@ test('closer cancels actual pending rearm and reconciliation (OS-boundary error 
   }
 });
 
-test('rearm reconciliation and a real registration event share one debounce', async () => {
+test('rearm reconciliation and a controlled OS rename notification share one debounce', async () => {
   const f = await fixture();
   try {
     interrupt(firstWatcher(f.watchers));
     f.register();
     await waitFor(() => f.watchers.length === 2);
-    const watcher = f.watchers[1];
-    if (!watcher) throw new Error('actual replacement watcher was not constructed');
-    let observed = false;
-    (watcher as unknown as EventEmitter).once('change', () => {
-      observed = true;
-    });
+    const notification = f.notifications[1];
+    if (!notification) throw new Error('actual replacement watcher callback missing');
     f.register();
-    await waitFor(() => observed);
+    // Controlled OS-boundary notification into the actual replacement watch
+    // callback, overlapping its queued census. The watcher and durable write
+    // are real; this pin does not measure natural OS notification delivery,
+    // which was observed missing during startup and has separate coverage.
+    notification('rename', '11111111-1111-1111-1111-111111111111.json');
     await pause(350);
     expect(f.broadcasts, 'event and reconciliation produce one debounced delivery').toHaveLength(1);
   } finally {
