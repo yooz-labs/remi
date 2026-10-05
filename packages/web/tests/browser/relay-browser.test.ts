@@ -148,3 +148,90 @@ browserTest(
   },
   20000,
 );
+
+browserTest(
+  'actual App identity removal publishes disconnected state and same-key restoration constructs fresh transport',
+  async () => {
+    const local = await ownedRelayOffer();
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await page.goto(origin);
+      await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+      await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+      await page.getByLabel('Pairing token').fill(String(local.offer['token']));
+      await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+      const compare = await local.inbox.next();
+      expect(compare['t']).toBe('compare');
+      await page.getByText('Compare on the daemon machine', { exact: true }).waitFor();
+      expect(await page.getByText(String(compare['fingerprint']), { exact: true }).count()).toBe(1);
+      expect(await page.evaluate(() => localStorage.getItem('remi-relay-machines-v2'))).toBeNull();
+      local.ws.send(
+        JSON.stringify({
+          t: 'confirm',
+          id: 'owned-r4',
+          offerId: local.offer['offerId'],
+          connectionId: compare['connectionId'],
+          fingerprint: compare['fingerprint'],
+          accept: true,
+        }),
+      );
+      await page.getByText('Relay machine connected', { exact: true }).waitFor();
+      const stored = await page.evaluate(() => localStorage.getItem('remi-relay-machines-v2'));
+      const pins = JSON.parse(stored ?? '[]');
+      expect(pins).toHaveLength(1);
+      expect(Object.keys(pins[0]).sort()).toEqual(['machinePublicKey', 'relayUrl']);
+      expect(stored).not.toContain('secret');
+      expect(stored).not.toContain('remi-pair2:');
+      await page.getByRole('button', { name: 'Machine devices', exact: true }).click();
+      await page.getByRole('button', { name: /^Revoke device / }).waitFor();
+      expect(await page.getByRole('button', { name: /^Revoke device / }).count()).toBe(1);
+      await page.getByRole('button', { name: 'Close', exact: true }).click();
+      await page.evaluate(async () => {
+        const identity = await import('/src/lib/identity-client.ts');
+        window.ownedIdentity = identity.loadIdentity();
+        identity.removeIdentity();
+      });
+      await page.waitForTimeout(200);
+      expect(await page.getByText('Relay machine connected', { exact: true }).count()).toBe(0);
+      await page.evaluate(async () => {
+        const identity = await import('/src/lib/identity-client.ts');
+        identity.saveIdentity(window.ownedIdentity);
+        delete window.ownedIdentity;
+      });
+      await page.getByText('Relay machine connected', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Machine devices', exact: true }).click();
+      await page.getByRole('button', { name: /^Revoke device / }).waitFor();
+      expect(await page.getByRole('button', { name: /^Revoke device / }).count()).toBe(1);
+    } finally {
+      await context.close();
+    }
+  },
+  20000,
+);
+
+browserTest('actual browser refuses a 65th distinct pin while preserving all 64 existing public pins', async () => {
+  const context = await browser.newContext(); const page = await context.newPage();
+  try {
+    await page.goto(origin);
+    const counts = await page.evaluate(async () => {
+      const { rememberRelayPin, loadRelayPins } = await import('/src/lib/relay-pins.ts');
+      const pins = [];
+      for (let i = 0; i < 65; i++) {
+        const key = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+        const raw = new Uint8Array(await crypto.subtle.exportKey('raw', key.publicKey));
+        const machinePublicKey = btoa(String.fromCharCode(...raw)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+        pins.push({ relayUrl: 'wss://owned.example', machinePublicKey });
+      }
+      for (const pin of pins.slice(0, 64)) rememberRelayPin(pin);
+      const before = localStorage.getItem('remi-relay-machines-v2');
+      let refused = false;
+      try { rememberRelayPin(pins[64]); } catch { refused = true; }
+      const preserved = localStorage.getItem('remi-relay-machines-v2') === before;
+      const loaded = loadRelayPins().length;
+      rememberRelayPin(pins[0]);
+      return { refused, preserved, loaded, afterNextWrite: loadRelayPins().length };
+    });
+    expect(counts).toEqual({ refused: true, preserved: true, loaded: 64, afterNextWrite: 64 });
+  } finally { await context.close(); }
+}, 10000);
