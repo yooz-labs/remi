@@ -26,6 +26,7 @@ import {
 import { remiHome } from '../config/remi-home.ts';
 import { isAuthorityEpoch, newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import { purgeSecurePushSubscriptionsLocked } from '../storage/secure-push-subscriptions.ts';
 
 export class DuplicateKeyError extends Error {
   constructor(fingerprint: string) {
@@ -346,6 +347,10 @@ export class IdentityStore {
       // Purge stale candidates while this key is still authorized, so revoke cannot resurrect one.
       this.pendingInsideTransaction();
       this.writeAuthorizedKeys({ ...file, keys });
+      purgeSecurePushSubscriptionsLocked(
+        this.dir,
+        file.keys.filter((key) => key.fingerprint === fp).map((key) => key.publicKey),
+      );
       return true;
     });
   }
