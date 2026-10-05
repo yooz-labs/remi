@@ -158,6 +158,20 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(result as? Data, corrupt, "A failed load must preserve the existing entry")
     }
 
+    func testDirectAnswerSignerWorksAfterLegacyPreferencesSeedIsRemoved() throws {
+        let suite = "remi1199-direct-answer-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let message = "session|question|yes"
+        let auth = try XCTUnwrap(RemiNativeStore.sign(message: message, identity: identity, defaults: defaults),
+                                 "The shipping direct-answer signer must use the durable native identity before seed cleanup")
+        let signature = try XCTUnwrap(Data(base64Encoded: auth.signature))
+        XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: Data(message.utf8)))
+        XCTAssertEqual(auth.publicKey, identity.publicKeyRaw.base64EncodedString())
+        XCTAssertEqual(auth.fingerprint, identity.fingerprint)
+    }
+
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {

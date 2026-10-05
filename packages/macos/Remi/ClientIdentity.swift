@@ -232,3 +232,55 @@ enum ClientIdentityStore {
         _ = try JSONDecoder().decode(Record.self, from: verified).identity()
     }
 }
+
+/// Reads the JS-bridged identity + routes from Capacitor Preferences
+/// (UserDefaults `CapacitorStorage.<key>`) and signs with CryptoKit.
+enum RemiNativeStore {
+    struct Auth { let signature: String; let publicKey: String; let fingerprint: String }
+    struct Route { let wsUrl: String; let claudeSessionId: String? }
+
+    private static let identityKey = "CapacitorStorage.remi-native-identity"
+    private static let routesKey = "CapacitorStorage.remi-native-routes"
+
+    /// Sign `message` with the bridged Ed25519 seed. Returns the base64 signature
+    /// + the public key (raw, base64) + fingerprint for the daemon's auth block.
+    /// Distinguishes "never set up" (silent nil, expected pre-onboarding) from a
+    /// corrupt blob / invalid key / signing failure (logged) — mirrors `route()`
+    /// below, so a previously-working device suddenly failing to answer isn't
+    /// indistinguishable from one that was simply never configured.
+    static func sign(message: String, identity: ClientIdentity? = nil, defaults: UserDefaults = .standard) -> Auth? {
+        guard let raw = defaults.string(forKey: identityKey) else { return nil }
+        guard let data = raw.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
+              let seedB64 = obj["seed"], let pub = obj["publicKey"], let fp = obj["fingerprint"],
+              let seed = Data(base64Encoded: seedB64)
+        else {
+            NSLog("[remi] RemiNativeStore: identity blob is corrupt or unreadable")
+            return nil
+        }
+        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+            NSLog("[remi] RemiNativeStore: identity seed is not a valid Curve25519 key")
+            return nil
+        }
+        guard let sig = try? key.signature(for: Data(message.utf8)) else {
+            NSLog("[remi] RemiNativeStore: failed to sign with stored identity")
+            return nil
+        }
+        return Auth(signature: sig.base64EncodedString(), publicKey: pub, fingerprint: fp)
+    }
+
+    /// Look up the daemon ws URL pinned for a session (written by the web app).
+    /// Distinguishes "never set up" (silent nil) from a corrupt blob (logged) so
+    /// the two failure modes aren't indistinguishable in the device log.
+    static func route(forSession sessionId: String) -> Route? {
+        guard let raw = UserDefaults.standard.string(forKey: routesKey) else { return nil }
+        guard let data = raw.data(using: .utf8),
+              let map = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String: String]]
+        else {
+            NSLog("[remi] RemiNativeStore: routes blob is corrupt or unreadable")
+            return nil
+        }
+        guard let r = map[sessionId], let wsUrl = r["wsUrl"] else { return nil }
+        return Route(wsUrl: wsUrl, claudeSessionId: r["claudeSessionId"])
+    }
+}
