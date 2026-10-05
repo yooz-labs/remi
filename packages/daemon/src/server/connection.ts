@@ -21,6 +21,8 @@ import {
   createHelloAck,
   createPing,
   createPong,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterResponse,
   deserialize,
   generateId,
   now,
@@ -315,6 +317,16 @@ export class Connection {
           this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
         relay_device_revoke_request: () =>
           this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
+        // #1200: only the hub's authenticated, enrolled READY relay peer owns
+        // secure registration. Direct transport never infers it from a token.
+        secure_push_register_request: (m) =>
+          this.send(
+            createSecurePushRegisterResponse(m.id, { success: false, error: 'UNSUPPORTED' }),
+          ),
+        secure_push_unregister_request: (m) =>
+          this.send(
+            createSecurePushUnregisterResponse(m.id, { success: false, error: 'UNSUPPORTED' }),
+          ),
         user_input: (m) => this.handleUserInput(m),
         answer: (m) => this.handleAnswer(m),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),

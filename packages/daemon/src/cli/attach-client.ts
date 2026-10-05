@@ -400,6 +400,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       relay_devices_response: 'ignore',
       relay_device_revoke_request: 'ignore',
       relay_device_revoke_response: 'ignore',
+      // Secure push belongs to an enrolled native relay client, not terminal attach (#1200).
+      secure_push_register_request: 'ignore',
+      secure_push_register_response: 'ignore',
+      secure_push_unregister_request: 'ignore',
+      secure_push_unregister_response: 'ignore',
       hello_ack: 'ignore',
       user_input: 'ignore',
       ack: 'ignore',
