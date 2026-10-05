@@ -110,7 +110,7 @@ interface Attachment {
   readonly rid: string;
   /** Connection id, lowercase hex (clients and pipes). */
   readonly c?: string;
-  /** Device key, lowercase hex (clients, once admitted). */
+  /** Presented device key, lowercase hex (clients, from the start of verification). */
   readonly k?: string;
   /** The nonce, base64url, while the socket is `new`. */
   readonly n?: string;
@@ -351,6 +351,9 @@ export class ConnectionRoom {
     nonce: Uint8Array,
   ): Promise<boolean> {
     const key = hex(admit.key);
+    // Revocation can cancel this socket across any admission await. This key is not verified
+    // yet and must not count toward admitted capacity; clientReservations tracks verified work.
+    this.setAttachment(ws, { ...att, st: 'auth', k: key });
     let window: string | null = null;
     if (admit.ticket) {
       window = await matchTicket(admit.ticket, await this.windows(), this.now());
@@ -391,7 +394,7 @@ export class ConnectionRoom {
   private reserveClient(ws: RoomSocket, key: string): boolean {
     const occupied = new Set(this.clientReservations.values());
     for (const e of this.socketsTagged('client')) {
-      if (e.att.k) occupied.add(e.att.k);
+      if (e.att.k && e.att.st !== 'new' && e.att.st !== 'auth') occupied.add(e.att.k);
     }
     // Concurrent replacements of the same device share its existing slot. Their final,
     // synchronous attachment update still ensures one live socket per device key.
@@ -435,7 +438,7 @@ export class ConnectionRoom {
     return true;
   }
 
-  /** Removes the key and closes its live connections, so revocation holds at the edge. */
+  /** Removes the key and closes its admitted or verifying connections at the edge. */
   private async revoke(key: Uint8Array): Promise<void> {
     const k = hex(key);
     await this.state.storage.delete(`dev:${k}`);

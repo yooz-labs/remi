@@ -117,6 +117,9 @@ Endpoint to Worker:
 Anything else, from a socket that has not been admitted or from the host, closes the socket.
 A client must wait for `open` before it says anything: a client that speaks earlier is closed.
 The enrolled set changes only on `enroll` and `revoke` from the admitted host control socket; the same text sent by a client or a pipe is only forwarded.
+Revocation also cancels sockets presenting that device key while admission is being verified.
+Those unverified keys do not consume admitted capacity. A fresh valid pairing ticket can still
+authorize a later admission, as for any device outside the enrolled set.
 
 ### Client states
 
@@ -213,8 +216,11 @@ It needs a signed message the ADR does not define; see the pull request for the 
 ## Verified and unverified
 
 Verified by tests that run the real Worker and Durable Object in workerd under `bun test`: everything in "Admission", "After admission" and "State", the limits at the values the tests set, frames of `MAX_FRAME` crossing and one byte more refused, a session far older than ten minutes alive, revocation closing a live session, real hibernation (the object rebuilt after about eleven idle seconds while sockets stayed open), and the Worker never holding a sentinel plaintext, the pairing secret or a device name.
-The initial R2 tests ran on Bun 1.4.2 and 1.3.11; the review corrections and their regression tests ran on Bun 1.4.2.
-A rerun of the review corrections on Bun 1.3.11 remains unverified.
+The initial R2 tests ran on Bun 1.4.2 and 1.3.11; the current PR records exact-head gates for
+the review corrections separately. The cancellation regression deliberately pauses delivery
+of a real enrollment read after the storage input gate completes. It pins cancellation across
+an asynchronous boundary; it does not demonstrate that current workerd naturally schedules
+revocation in that window, or that a deployed runtime has done so.
 
 **Unverified (the owner deploys):**
 

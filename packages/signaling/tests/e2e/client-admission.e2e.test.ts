@@ -78,7 +78,7 @@ describe('cancellation across an enrollment read', () => {
     await admit(socket, device, 'client', machine.rid);
     await waitForEnrollmentBarrier(machine.ridHex);
     try {
-      expect((await host.revoke(device.publicKey)).ok).toBe(true);
+      expect((await host.revoke(device.publicKey))['ok']).toBe(true);
       expect((await roomState(worker, machine.ridHex)).storage[key]).toBeUndefined();
     } finally {
       await enrollmentBarrier(machine.ridHex, null);
@@ -101,11 +101,21 @@ describe('cancellation across an enrollment read', () => {
     await admit(pending, device, 'client', machine.rid);
     await waitForEnrollmentBarrier(machine.ridHex);
     try {
-      const { socket } = await connectClient(worker, machine, other);
-      expect(socket.isClosed).toBe(false);
+      const socket = await Socket.open(clientUrl(worker, machine.ridHex));
+      await admit(socket, other, 'client', machine.rid);
+      const reply = await Promise.race([
+        socket.json(1000),
+        socket.closed.then(() => ({ t: 'closed' })),
+      ]);
+      expect(reply['t']).toBe('admitted');
     } finally {
       await enrollmentBarrier(machine.ridHex, null);
     }
+    const resumed = await Promise.race([
+      pending.json(1000),
+      pending.closed.then(() => ({ t: 'closed' })),
+    ]);
+    expect(resumed['t']).toBe('closed');
     await refused(pending);
   });
 });
