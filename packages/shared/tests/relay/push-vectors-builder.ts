@@ -18,11 +18,17 @@ export async function buildPushVectors() {
     'turn_failed',
     'dismiss',
     'question-reordered',
+    'question-yn',
+    'question-open-app-setMode',
+    'informational-question-no-authority',
   ] as const;
   const cases = [];
   for (let i = 0; i < kinds.length; i++) {
     const name = kinds[i] as (typeof kinds)[number];
-    const kind = name === 'question-reordered' ? 'question' : name;
+    const kind: r.SecurePushKind =
+      name.startsWith('question-') || name === 'informational-question-no-authority'
+        ? 'question'
+        : (name as r.SecurePushKind);
     const content: r.PushContentMetadata = {
       machinePublicKey: r.b64u(machine.publicKey),
       rid: hex(await r.ridOf(machine.publicKey)),
@@ -36,7 +42,7 @@ export async function buildPushVectors() {
       issuedAt: 1700000000,
       expiresAt: 1700000120,
     };
-    const payload: r.SecurePushPayload =
+    let payload: r.SecurePushPayload =
       kind === 'dismiss'
         ? { type: 'dismiss', actionable: false }
         : kind === 'question'
@@ -83,6 +89,36 @@ export async function buildPushVectors() {
               title: 'Synthetic event',
               body: 'Open the app',
             };
+    if (name === 'informational-question-no-authority')
+      payload = {
+        type: 'informational',
+        actionable: false,
+        sessionId: null,
+        title: 'Setup required',
+        body: 'Open the app',
+      };
+    if (payload.type === 'question' && name === 'question-yn')
+      payload = {
+        ...payload,
+        category: 'REMI_YN',
+        options: payload.options.filter((o) => o.standingGrant === null),
+      };
+    if (payload.type === 'question' && name === 'question-open-app-setMode')
+      payload = {
+        ...payload,
+        category: 'none',
+        options: payload.options.map((o) =>
+          o.standingGrant === 'addRules'
+            ? {
+                ...o,
+                value: 'set-mode',
+                label: 'Approve with mode change',
+                description: 'Change mode for this session only; open the app',
+                standingGrant: 'setMode',
+              }
+            : o,
+        ),
+      };
     const payloadBytes =
       name === 'question-reordered'
         ? text(

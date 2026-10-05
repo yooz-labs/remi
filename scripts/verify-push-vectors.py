@@ -115,6 +115,6 @@ for case in fixture['cases']:
     except InvalidSignature:
         pass
     assert parsed['type'] == ('dismiss' if c['kind'] == 'dismiss' else
-                              'question' if c['kind'] == 'question' else 'informational')
-assert len(fixture['cases']) == 7
-print('7 independent push vectors: exact tuples, signatures, ECIES, raw JSON and cross-purpose refusal verified')
+                              'question' if c['kind'] == 'question' and case['name'] != 'informational-question-no-authority' else 'informational')
+assert len(fixture['cases']) == 10
+print('10 independent push vectors: exact tuples, signatures, ECIES, raw JSON and cross-purpose refusal verified')
