@@ -3,7 +3,7 @@ import { relayV2 } from '@remi/shared';
 import { WorkerControl } from '../../packages/daemon/src/remote/worker-control.ts';
 import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 
-test('ACK deadline poisons the whole actual control generation; late same-op ACK cannot settle queued commands', async () => {
+async function controlFailure(mode: 'timeout' | 'malformed' | 'unexpected'): Promise<void> {
   const worker = await startWorker();
   const identity = await relayV2.generateIdentity();
   const rid = await relayV2.ridOf(identity.signer.publicKey);
@@ -38,6 +38,9 @@ test('ACK deadline poisons the whole actual control generation; late same-op ACK
               ws.send(text);
             };
             entered();
+            if (mode === 'malformed') ws.send('{invalid');
+            if (mode === 'unexpected')
+              ws.send(JSON.stringify({ t: 'ack', op: 'revoke', ok: true }));
           } else ws.send(text);
         };
         up.onclose = () => ws.close();
@@ -64,11 +67,12 @@ test('ACK deadline poisons the whole actual control generation; late same-op ACK
     await control.start();
     const device = await relayV2.generateIdentity();
     const first = control.command({ t: 'enroll', key: device.signer.publicKey });
-    const firstRejected = expect(first).rejects.toThrow('RELAY_ACK_UNCERTAIN');
+    void first.catch(() => {});
     await held;
     const queued = control.command({ t: 'enroll', key: device.signer.publicKey });
-    const queuedRejected = expect(queued).rejects.toThrow('RELAY_CONTROL_UNAVAILABLE');
-    await Promise.all([firstRejected, queuedRejected]);
+    void queued.catch(() => {});
+    await expect(first).rejects.toThrow('RELAY_ACK_UNCERTAIN');
+    await expect(queued).rejects.toThrow('RELAY_CONTROL_UNAVAILABLE');
     late?.();
     await expect(control.command({ t: 'enroll', key: device.signer.publicKey })).rejects.toThrow(
       'RELAY_CONTROL_UNAVAILABLE',
@@ -80,4 +84,15 @@ test('ACK deadline poisons the whole actual control generation; late same-op ACK
     bridge.stop(true);
     await worker.stop();
   }
-}, 15000);
+}
+
+test(
+  'ACK deadline poisons the whole actual control generation; late same-op ACK cannot settle queued commands',
+  () => controlFailure('timeout'),
+  15000,
+);
+test.each(['malformed', 'unexpected'] as const)(
+  '%s Worker ACK poisons queued and later commands with no second enrollment',
+  (mode) => controlFailure(mode),
+  10000,
+);
