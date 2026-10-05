@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000010000000000000002 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000001; };
+        120000010000000000000003 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000001; };
+        120000010000000000000005 /* NativePushStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000004; };
 		120000030000000000000007 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */; };
 		120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */; };
 		120000030000000000000002 /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000001 /* NativeAPNsEnvironment.swift */; };
@@ -58,6 +61,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000010000000000000001 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushState.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000004 /* NativePushStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushStateTests.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Remi/NativePush/NativeAPNsEnvironmentQuery.m; sourceTree = SOURCE_ROOT; };
 		120000030000000000000001 /* NativeAPNsEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativeAPNsEnvironment.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000004 /* NativeAPNsEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativeAPNsEnvironmentTests.swift; sourceTree = SOURCE_ROOT; };
@@ -115,6 +120,7 @@
 				7568FF36CA5C521240F3E18B /* ClientIdentity.swift */,
 				119900020000000000000001 /* NativeIdentityBridge.swift */,
 				120000030000000000000001 /* NativeAPNsEnvironment.swift */,
+                120000010000000000000001 /* NativePushState.swift */,
 				120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */,
 				B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */,
 				81CA6F64B5FFA6B90233A956 /* HubClient.swift */,
@@ -141,6 +147,7 @@
 				55D0D50141E60616E472B2C5 /* ClientIdentityTests.swift */,
 				120000050000000000000001 /* NativePushPresentationTests.swift */,
 				120000030000000000000004 /* NativeAPNsEnvironmentTests.swift */,
+                120000010000000000000004 /* NativePushStateTests.swift */,
 				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
@@ -300,6 +307,7 @@
 				AD7C394E7D732D8388D54353 /* ClientIdentity.swift in Sources */,
 				119900020000000000000002 /* NativeIdentityBridge.swift in Sources */,
 				120000030000000000000002 /* NativeAPNsEnvironment.swift in Sources */,
+                120000010000000000000002 /* NativePushState.swift in Sources */,
 				120000030000000000000007 /* NativeAPNsEnvironmentQuery.m in Sources */,
 				A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */,
 				779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */,
@@ -324,6 +332,8 @@
 				55BD09EFD7CB8CA48CCE0840 /* ClientIdentity.swift in Sources */,
 				119900020000000000000003 /* NativeIdentityBridge.swift in Sources */,
 				120000030000000000000003 /* NativeAPNsEnvironment.swift in Sources */,
+                120000010000000000000003 /* NativePushState.swift in Sources */,
+                120000010000000000000005 /* NativePushStateTests.swift in Sources */,
 				120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */,
 				120000030000000000000005 /* NativeAPNsEnvironmentTests.swift in Sources */,
 				E930A603D1AABF15D2F6197D /* ClientIdentityTests.swift in Sources */,
