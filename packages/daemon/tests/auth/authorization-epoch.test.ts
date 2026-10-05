@@ -144,3 +144,43 @@ test('secure grant epoch: two real processes migrate one legacy grant to one dur
   expect(fs.statSync(path.join(directory, 'authorized_keys.json')).mode & 0o777).toBe(0o600);
   expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
 }, 10000);
+
+test('secure grant epoch: a real second process cannot revoke inside the synchronous authority decision', async () => {
+  const identity = await createIdentity();
+  await store.addAuthorizedKey(identity.publicKey, 'synthetic serialized');
+  const captured = store.captureAuthorizationEpoch(identity.publicKey);
+  const attempted = path.join(directory, 'attempted');
+  const finished = path.join(directory, 'finished');
+  const module = new URL('../../src/auth/identity-store.ts', import.meta.url).href;
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  store.withAuthorizationEpoch(identity.publicKey, (current) => {
+    expect(current).toBe(captured);
+    const script = `import { writeFileSync } from 'node:fs';
+      import { IdentityStore } from ${JSON.stringify(module)};
+      writeFileSync(${JSON.stringify(attempted)}, 'attempted');
+      new IdentityStore(${JSON.stringify(directory)}).removeAuthorizedKey(${JSON.stringify(identity.fingerprint)});
+      writeFileSync(${JSON.stringify(finished)}, 'finished');`;
+    child = Bun.spawn([process.execPath, '-e', script], {
+      cwd: directory,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    children.push(child);
+    const sleep = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 1000;
+    while (!fs.existsSync(attempted)) {
+      if (Date.now() >= deadline) throw new Error('owned revoker did not start');
+      Atomics.wait(sleep, 0, 0, 5);
+    }
+    // Real time and a real competing process; the callback is deliberately
+    // held briefly to expose overlap, rather than substituting the lock.
+    Atomics.wait(sleep, 0, 0, 100);
+    expect(fs.existsSync(finished)).toBe(false);
+    expect(store.isAuthorized(identity.publicKey, identity.fingerprint)).toBe(true);
+  });
+  if (!child) throw new Error('owned revoker was not launched');
+  expect(await child.exited).toBe(0);
+  expect(await new Response(child.stderr).text()).toBe('');
+  expect(fs.existsSync(finished)).toBe(true);
+  expect(store.captureAuthorizationEpoch(identity.publicKey)).toBeNull();
+}, 10000);
