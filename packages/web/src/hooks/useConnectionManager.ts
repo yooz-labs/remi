@@ -16,11 +16,16 @@ import {
   unlockStoredIdentity,
 } from '@/lib/identity-client';
 import { ConnectionApproval } from '@/lib/connection-approval';
-import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, errorToString, type relayV2 } from '@remi/shared';
+import type { RelayDevicesResponseMessage, RelayDeviceRevokeResponseMessage } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
 import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
+import { RelayMachineChannel, type RelayMachinePin } from '@/lib/relay-machine-channel';
+import { RelayTransport, type ConnectionTransport } from '@/lib/relay-transport';
+import { rememberRelayPin } from '@/lib/relay-pins';
+import { RelayRequests, type RelayAnswerStatus } from '@/lib/relay-requests';
 import {
   allocateStaggerSlot,
   collectPendingChallengeConnections,
@@ -65,7 +70,7 @@ const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
 
 /** Internal per-connection state */
 interface ManagedConnection {
-  client: WebSocketClient;
+  client: ConnectionTransport;
   connectionId: ConnectionId;
   url: string;
   mode: 'direct' | 'relay';
@@ -81,6 +86,11 @@ interface ManagedConnection {
    * read-only/waiting state instead of the user believing their input sent.
    */
   attachState?: 'attached' | 'queued';
+  relayPin?: RelayMachinePin;
+  relayCancel?: () => void;
+  relayConfirmation?: string;
+  relayRequests?: RelayRequests;
+  sessionAttachments?: Map<string, 'attached' | 'queued'>;
   helloSent: boolean;
   pendingChallenge: {
     challenge: string;
@@ -108,6 +118,7 @@ interface ManagedConnection {
 export interface UseConnectionManagerOptions {
   /** Message handler: receives connectionId and the protocol message */
   onMessage?: (connectionId: ConnectionId, message: ProtocolMessage) => void;
+  onAnswerOutcome?: (connectionId: ConnectionId, status: RelayAnswerStatus) => void;
   /** Pre-unlocked identity (shared across all connections) */
   unlockedIdentity?: ClientSigningIdentity | null;
   /** Client ID for identification */
@@ -124,6 +135,10 @@ export interface UseConnectionManagerReturn {
   connections: readonly ConnectionState[];
   /** Add a new direct connection. Returns connectionId. */
   connectDirect: (url: string, directory?: string) => ConnectionId;
+  connectRelay: (tokenOrPin: string | RelayMachinePin, signal?: AbortSignal) => Promise<ConnectionId>;
+  requestSessionAttach: (connectionId: ConnectionId, sessionId: string) => boolean;
+  listRelayDevices: (connectionId: ConnectionId) => Promise<RelayDevicesResponseMessage>;
+  revokeRelayDevice: (connectionId: ConnectionId, fingerprint: string) => Promise<RelayDeviceRevokeResponseMessage>;
   /** Disconnect a specific connection */
   disconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection by re-running port discovery against its host (#435). */
@@ -185,6 +200,8 @@ export interface UseConnectionManagerReturn {
   /** Provide unlocked identity for a connection needing passphrase */
   provideIdentity: (connectionId: ConnectionId, identity: ClientSigningIdentity) => void;
   /** Get the hello_ack session ID for a connection (reads from live state, not React state) */
+  getOwnFingerprint: () => string | null;
+  getConnectionMode: (connectionId: ConnectionId) => 'direct' | 'relay' | null;
   getSessionId: (connectionId: ConnectionId) => string | null;
   /** Whether any connection needs a passphrase */
   needsPassphrase: boolean;
@@ -231,6 +248,8 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     sessionId: mc.sessionId,
     attachState: mc.attachState ?? null,
     approval: mc.approval.snapshot,
+    relayPin: mc.relayPin,
+    relayConfirmation: mc.relayConfirmation,
   };
 }
 
@@ -239,6 +258,7 @@ export function useConnectionManager(
 ): UseConnectionManagerReturn {
   const {
     onMessage,
+    onAnswerOutcome,
     unlockedIdentity,
     clientId = 'remi-web',
     clientVersion = '0.0.1',
@@ -248,6 +268,8 @@ export function useConnectionManager(
   const connectionsMapRef = useRef<Map<ConnectionId, ManagedConnection>>(new Map());
   const [connectionsState, setConnectionsState] = useState<readonly ConnectionState[]>([]);
   const onMessageRef = useRef(onMessage);
+  const answerOutcomeRef = useRef(onAnswerOutcome);
+  useEffect(() => { answerOutcomeRef.current = onAnswerOutcome; }, [onAnswerOutcome]);
   const identityRef = useRef<ClientSigningIdentity | null>(unlockedIdentity ?? null);
   const autoReconnectRef = useRef(autoReconnect);
   /** Stagger slots currently held by live connections (#685,
@@ -281,6 +303,7 @@ export function useConnectionManager(
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
+          if (mc.mode === 'relay') { mc.relayRequests?.closed(); mc.client.disconnect(); }
         }
       }
       identityRef.current = unlockedIdentity;
@@ -294,12 +317,30 @@ export function useConnectionManager(
       for (const mc of connectionsMapRef.current.values()) {
         mc.approval.reset();
         mc.authAttempt = null;
-        if (usesNativeIdentity()) { mc.pendingChallenge = null; mc.client.disconnect(); }
+        if (usesNativeIdentity() || mc.mode === 'relay') { mc.pendingChallenge = null; mc.relayRequests?.closed(); mc.client.disconnect(); }
       }
       syncState();
     };
     window.addEventListener('remi:identity-changed', changed);
     return () => window.removeEventListener('remi:identity-changed', changed);
+  }, [syncState]);
+
+  useEffect(() => {
+    const locked = () => {
+      const identity = identityRef.current;
+      if (!identity || !('kind' in identity) || !identity.requiresAppUnlock) return;
+      identityRef.current = null;
+      for (const mc of connectionsMapRef.current.values()) {
+        mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
+        mc.status = 'disconnected'; mc.helloSent = false; mc.pendingChallenge = null; mc.authAttempt = null;
+        mc.error = new Error('Unlock Identity in the foreground before reconnecting.');
+      }
+      syncState();
+    };
+    const hidden = () => { if (document.visibilityState !== 'visible') locked(); };
+    window.addEventListener('remi:native-identity-locked', locked);
+    document.addEventListener('visibilitychange', hidden);
+    return () => { window.removeEventListener('remi:native-identity-locked', locked); document.removeEventListener('visibilitychange', hidden); };
   }, [syncState]);
 
   /** Get a managed connection by ID */
@@ -524,6 +565,7 @@ export function useConnectionManager(
           return;
         }
 
+        if (mc.mode === 'relay' && !mc.relayRequests?.receive(message)) return;
         // Intercept auth messages
         if (message.type === 'auth_challenge') {
           handleAuthChallenge(
@@ -553,8 +595,12 @@ export function useConnectionManager(
 
         // Track session ID + attach state from hello_ack
         if (message.type === 'hello_ack') {
-          mc.sessionId = message.sessionId;
-          mc.attachState = message.attachState;
+          if (mc.mode === 'relay') {
+            if (message.sessionId && message.attachState) mc.sessionAttachments?.set(message.sessionId, message.attachState);
+          } else {
+            mc.sessionId = message.sessionId;
+            mc.attachState = message.attachState;
+          }
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
           }
@@ -737,6 +783,119 @@ export function useConnectionManager(
     [createMessageHandler, sendHello, syncState, escalateReconnect],
   );
 
+  const connectRelay = useCallback(async (input: string | RelayMachinePin, signal?: AbortSignal): Promise<ConnectionId> => {
+    let tokenOrPin = input;
+    let identity = identityRef.current;
+    if (!identity) {
+      const revision = getIdentityRevision();
+      if (usesNativeIdentity()) identity = await currentNativeIdentity();
+      else {
+        const stored = await ensureIdentity();
+        if (signal?.aborted || loadIdentity()?.publicKey !== stored.publicKey) throw new Error('Identity changed during relay setup.');
+        if (isEncrypted(stored)) throw new Error('Unlock your identity before pairing.');
+        const setupRevision = getIdentityRevision();
+        const unlocked = await unlockStoredIdentity();
+        if (signal?.aborted || getIdentityRevision() !== setupRevision || loadIdentity()?.publicKey !== stored.publicKey || unlocked.publicKeyRaw !== stored.publicKey) throw new Error('Identity changed during relay setup.');
+        identity = unlocked;
+      }
+      if (!identity || (usesNativeIdentity() && getIdentityRevision() !== revision)) throw new Error('Identity unavailable or replaced.');
+      if (signal?.aborted) throw new Error('Pairing canceled.');
+      identityRef.current = identity;
+    }
+    const signedIdentity = identity;
+    const revision = getIdentityRevision();
+    const currentIdentity = () => {
+      const live = identityRef.current;
+      return live?.publicKeyRaw === signedIdentity.publicKeyRaw && getIdentityRevision() === revision &&
+        (!('kind' in signedIdentity) || (live && 'kind' in live && live.revision === signedIdentity.revision && live.requiresAppUnlock === signedIdentity.requiresAppUnlock));
+    };
+    const signer: relayV2.Signer = {
+      publicKey: new Uint8Array(fromBase64(signedIdentity.publicKeyRaw)),
+      sign: async bytes => new Uint8Array(fromBase64(await signClient(signedIdentity, new Uint8Array(bytes).buffer))),
+    };
+    let first: RelayMachineChannel | null = null;
+    let pin: RelayMachinePin;
+    if (typeof tokenOrPin === 'string') {
+      first = await RelayMachineChannel.pair(tokenOrPin, signer, currentIdentity);
+      pin = first.pin;
+    } else pin = tokenOrPin;
+    if (signal?.aborted || !currentIdentity()) { await first?.close(); throw new Error('Identity changed during pairing.'); }
+    const connectionId = makeConnectionId(`relay:${pin.machinePublicKey}`);
+    const existing = connectionsMapRef.current.get(connectionId);
+    if (existing && !isConnectionReplaceable(existing.status)) { await first?.close(); return connectionId; }
+    existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
+    const mc: ManagedConnection = {
+      client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
+      status: 'connecting', error: null, sessionId: null, helloSent: false, pendingChallenge: null,
+      approval: new ConnectionApproval(), authAttempt: null, needsPassphrase: false,
+      serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
+    };
+    const alive = () => currentIdentity() && connectionsMapRef.current.get(connectionId) === mc;
+    const messages = createMessageHandler(mc);
+    mc.relayRequests = new RelayRequests(message => mc.client.send(message), status => {
+      if (connectionsMapRef.current.get(connectionId) === mc) answerOutcomeRef.current?.(connectionId, status);
+    });
+    mc.client = new RelayTransport(async (events, resume) => {
+      // The initial unconfirmed token is used once. No retry retains it or its secret.
+      if (!resume && first) {
+        const initialPin = first.pin;
+        await first.close(); first = null;
+        // Build with the real event callbacks only once, then release token text.
+        if (typeof tokenOrPin !== 'string') throw new Error('Pairing token unavailable.');
+        const text = tokenOrPin; tokenOrPin = initialPin;
+        return RelayMachineChannel.pair(text, signer, alive, events);
+      }
+      return RelayMachineChannel.resume(pin, signer, alive, events);
+    }, alive, autoReconnectRef.current, {
+      onMessage: messages,
+      onPhase: (phase, fingerprint) => {
+        if (!alive()) return;
+        mc.relayConfirmation = phase === 'confirmation' ? fingerprint : undefined; syncState();
+      },
+      onReady: verifiedPin => { if (alive()) { mc.relayCancel?.(); mc.relayPin = verifiedPin; rememberRelayPin(verifiedPin); } },
+      onError: error => { if (alive()) { mc.error = error; syncState(); } },
+      onClose: () => { if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
+      onStatus: status => {
+        if (!alive()) return;
+        mc.status = status;
+        if (status === 'connected') { mc.error = null; mc.relayConfirmation = undefined; mc.helloSent = false; sendHello(mc); }
+        if (status === 'disconnected') { mc.helloSent = false; mc.sessionAttachments?.clear(); }
+        syncState();
+      },
+    }, typeof tokenOrPin !== 'string');
+    connectionsMapRef.current.set(connectionId, mc);
+    if (signal && typeof tokenOrPin === 'string') {
+      const cancel = () => {
+        mc.relayCancel?.();
+        mc.relayRequests?.closed(); mc.client.disconnect();
+        void first?.close(); first = null; tokenOrPin = pin;
+        if (connectionsMapRef.current.get(connectionId) === mc) connectionsMapRef.current.delete(connectionId);
+        syncState();
+      };
+      mc.relayCancel = () => { signal.removeEventListener('abort', cancel); mc.relayCancel = undefined; };
+      signal.addEventListener('abort', cancel, { once: true });
+      if (signal.aborted) { cancel(); throw new Error('Pairing canceled.'); }
+    }
+    void (mc.client as RelayTransport).connect(); syncState(); return connectionId;
+  }, [createMessageHandler, sendHello, syncState]);
+
+  const requestSessionAttach = useCallback((connectionId: ConnectionId, sessionId: string): boolean => {
+    const mc = connectionsMapRef.current.get(connectionId);
+    if (!mc || mc.mode !== 'relay') return false;
+    return mc.client.send(createHello(clientId, clientVersion, { resumeSessionId: sessionId,
+      deviceId: getOrCreateDeviceId(window.localStorage) }));
+  }, [clientId, clientVersion]);
+  const listRelayDevices = useCallback((connectionId: ConnectionId) => {
+    const requests = connectionsMapRef.current.get(connectionId)?.relayRequests;
+    return requests ? requests.devices() : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
+  const revokeRelayDevice = useCallback((connectionId: ConnectionId, fingerprint: string) => {
+    const mc = connectionsMapRef.current.get(connectionId);
+    const requests = mc?.relayRequests;
+    if (mc && identityRef.current?.fingerprint === fingerprint) (mc.client as RelayTransport).suspendResume();
+    return requests ? requests.revoke(fingerprint) : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
+
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
   // re-running port discovery against its host. Ignored while a connection is
   // live or already (re)connecting, so a stray tap can't disrupt it. (#435)
@@ -752,7 +911,8 @@ export function useConnectionManager(
       ) {
         return;
       }
-      void escalateReconnect(mc);
+      if (mc.mode === 'relay') mc.client.forceReconnect();
+      else void escalateReconnect(mc);
     },
     [escalateReconnect],
   );
@@ -762,6 +922,8 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
+      mc.relayCancel?.();
+      mc.relayRequests?.closed();
       mc.client.disconnect();
       connectionsMapRef.current.delete(connectionId);
       // Free the stagger slot (#685) so a later connection can reuse it.
@@ -774,6 +936,8 @@ export function useConnectionManager(
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
+      mc.relayCancel?.();
+      mc.relayRequests?.closed();
       mc.client.disconnect();
     }
     connectionsMapRef.current.clear();
@@ -790,6 +954,7 @@ export function useConnectionManager(
         );
         return false;
       }
+      if (mc.mode === 'relay' && message.type === 'answer') return mc.relayRequests?.answer(message) ?? false;
       return mc.client.send(message);
     },
     [getMc],
@@ -943,6 +1108,7 @@ export function useConnectionManager(
         for (const mc of connectionsMapRef.current.values()) {
           mc.approval.reset();
           mc.authAttempt = null;
+          if (mc.mode === 'relay') { mc.relayRequests?.closed(); mc.client.disconnect(); }
         }
       }
       identityRef.current = identity;
@@ -1049,6 +1215,8 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
+        mc.relayCancel?.();
+        mc.relayRequests?.closed();
         mc.client.disconnect();
       }
       connectionsMapRef.current.clear();
@@ -1059,6 +1227,10 @@ export function useConnectionManager(
   return {
     connections: connectionsState,
     connectDirect,
+    connectRelay,
+    requestSessionAttach,
+    listRelayDevices,
+    revokeRelayDevice,
     disconnect,
     reconnect,
     disconnectAll,
@@ -1076,6 +1248,8 @@ export function useConnectionManager(
     requestSessionHistory,
     provideIdentity,
     getSessionId,
+    getOwnFingerprint: () => identityRef.current?.fingerprint ?? null,
+    getConnectionMode: connectionId => connectionsMapRef.current.get(connectionId)?.mode ?? null,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,

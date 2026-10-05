@@ -19,6 +19,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let unlockLifetime = NativeUnlockLifetime()
     private let foreground: () -> Bool
     private let authorization: () async -> Bool
+    private weak var webView: WKWebView?
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
     private var replacedObserver: NSObjectProtocol?
@@ -34,7 +35,11 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         super.init()
         inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
             object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.unlockedRevision = nil }
+                MainActor.assumeIsolated {
+                    self?.unlockedRevision = nil
+                    // Public-only lifecycle notice lets the web owner discard derived relay keys.
+                    self?.webView?.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-identity-locked'))")
+                }
             }
         replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
             object: nil, queue: .main) { [weak self] _ in
@@ -65,6 +70,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
               Self.isBundledDocument(frame.request.url, scheme: scheme),
               Self.isBundledDocument(message.webView?.url, scheme: scheme)
         else { replyHandler(nil, "Native identity request refused"); return }
+        webView = message.webView
         if let request = message.body as? [String: Any], request["op"] as? String == "unlock" {
             Task { @MainActor in
                 do {

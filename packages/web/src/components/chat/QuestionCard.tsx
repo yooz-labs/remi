@@ -521,6 +521,18 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
     );
   }
 
+  if (question.awaitingRelayOutcome && (question.submitting || (question.deliveryOutcome && question.deliveryOutcome !== 'delivered'))) {
+    return <output className="mx-3.5 my-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-light)] p-4">
+      <p className="text-sm font-medium">{question.prompt}</p>
+      <p className="mt-2 text-sm">{question.submitting
+        ? 'Waiting for delivery confirmation…'
+        : question.deliveryOutcome === 'uncertain'
+          ? 'Delivery unverified. Check the daemon or terminal before answering again.'
+          : `Answer refused: ${question.deliveryOutcome}. Review the current prompt on the daemon.`}</p>
+      <p className="mt-1 text-xs text-[var(--color-text-secondary)]">No answer is retried automatically. Delivery does not mean the tool completed.</p>
+    </output>;
+  }
+
   return (
     <div
       className={clsx('mx-3.5 my-2 overflow-hidden rounded-[18px]', className)}

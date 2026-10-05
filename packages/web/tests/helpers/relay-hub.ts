@@ -1,12 +1,21 @@
 /** Real source hub + Worker with private state and inert CLI binaries. Never uses user credentials. */
 import { afterEach } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { CAPABILITY_HEADER } from '../../../daemon/src/auth/capability-token';
 import { reserveRange } from '../../../daemon/tests/session/port-test-helpers';
-import { type TestWorker, startWorker } from '../../../signaling/tests/e2e/harness';
 import { Mailbox } from '../../../signaling/tests/e2e/endpoints';
+import { type TestWorker, startWorker } from '../../../signaling/tests/e2e/harness';
 const homes: string[] = [];
 const processes: ReturnType<typeof Bun.spawn>[] = [];
 const workers: TestWorker[] = [];
@@ -87,13 +96,44 @@ export async function ownedRelayOffer() {
   } as never);
   sockets.push(ws);
   const inbox = new Mailbox<Record<string, unknown>>();
-  ws.onmessage = event => inbox.push(JSON.parse(String(event.data)));
+  ws.onmessage = (event) => inbox.push(JSON.parse(String(event.data)));
   await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve(); ws.onerror = () => reject(new Error('local control refused'));
+    ws.onopen = () => resolve();
+    ws.onerror = () => reject(new Error('local control refused'));
   });
   await Bun.sleep(150);
   ws.send(JSON.stringify({ t: 'pair', id: 'owned-r4' }));
   const offer = await inbox.next();
   if (offer['t'] !== 'offer') throw new Error('expected real pairing offer');
   return { running, ws, inbox, offer };
+}
+
+/** Controlled /bin/cat child: no Claude/Codex model turns or user config. */
+export async function ownedRelayChild(running: Awaited<ReturnType<typeof ownedRelayHub>>) {
+  writeFileSync(join(running.dir, 'bin/claude'), '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
+  const port = await reserveRange(1, 50, '127.0.0.1');
+  const child = spawn(running.dir, [
+    '--daemon',
+    '--port',
+    String(port),
+    '--no-relay',
+    '--no-mdns',
+    '--no-telegram',
+  ]);
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null)
+      throw new Error(`controlled child exited: ${await stdout} ${await stderr}`);
+    const live = join(running.dir, 'state/live-sessions');
+    if (existsSync(live))
+      for (const name of readdirSync(live).filter((name) => name.endsWith('.json'))) {
+        const entry = JSON.parse(readFileSync(join(live, name), 'utf8'));
+        if (entry.pid === child.pid && entry.claudeChildPid)
+          return { child, entry: entry as { sessionId: string; hookPort: number; wsPort: number } };
+      }
+    await Bun.sleep(10);
+  }
+  throw new Error('controlled child registration deadline');
 }

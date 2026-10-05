@@ -187,6 +187,8 @@ final class ClientIdentityTests: XCTestCase {
             let message = try XCTUnwrap(Data(base64Encoded: item.message))
             let signature = try XCTUnwrap(Data(base64Encoded: item.signature))
             XCTAssertTrue(key.publicKey.isValidSignature(signature, for: message))
+            XCTAssertThrowsError(try Ed25519PKCS8.decode(Data(pkcs8.dropLast()), publicKey: publicKey))
+            XCTAssertThrowsError(try Ed25519PKCS8.decode(pkcs8, publicKey: Data(publicKey.dropLast())))
             XCTAssertThrowsError(try Ed25519PKCS8.decode(pkcs8 + Data([0]), publicKey: publicKey))
             var malformed = pkcs8; malformed[0] ^= 1
             XCTAssertThrowsError(try Ed25519PKCS8.decode(malformed, publicKey: publicKey))
@@ -337,18 +339,18 @@ final class ClientIdentityTests: XCTestCase {
             in:nil,contentWorld:.page)
         let signature = try XCTUnwrap(Data(base64Encoded:try XCTUnwrap((signed as? [String:Any])?["signature"] as? String)))
         XCTAssertTrue(legacy.publicKey.isValidSignature(signature,for:message))
-        _ = try await web.callAsyncJavaScript(
-            "window.nativeLockEvents = 0; window.addEventListener('remi:native-identity-locked', () => { ++window.nativeLockEvents; });",
-            arguments:[:],in:nil,contentWorld:.page)
-        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
-        let lockEvents = try await web.callAsyncJavaScript("return window.nativeLockEvents",arguments:[:],in:nil,contentWorld:.page)
-        XCTAssertEqual(lockEvents as? Int,1,"Actual native inactivity must notify the web channel owner without exposing identity bytes")
         active = false // Sign must check OS state even if no inactive callback has arrived yet.
         let inactiveSign = try await web.callAsyncJavaScript(
             "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message}); return true } catch { return false }",
             arguments:["revision":durable.revision,"publicKey":durable.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()],in:nil,contentWorld:.page)
         XCTAssertEqual(inactiveSign as? Bool,false,"Protected signer must check current foreground state at ingress")
         active = true
+        _ = try await web.callAsyncJavaScript(
+            "window.nativeLockEvents = 0; window.addEventListener('remi:native-identity-locked', () => { ++window.nativeLockEvents; });",
+            arguments:[:],in:nil,contentWorld:.page)
+        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        let lockEvents = try await web.callAsyncJavaScript("return window.nativeLockEvents",arguments:[:],in:nil,contentWorld:.page)
+        XCTAssertEqual(lockEvents as? Int,1,"Actual native inactivity must notify the web channel owner without exposing identity bytes")
         let suite = "remi1199-protected-bridge-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
         defer { defaults.removePersistentDomain(forName:suite) }

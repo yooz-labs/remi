@@ -37,11 +37,13 @@ export function NativeIdentityPanel({
     };
     void inspect();
     window.addEventListener('focus', inspect);
+    window.addEventListener('remi:native-identity-locked', inspect);
     return () => {
       active = false;
       controller.abort();
       actionRef.current?.abort();
       window.removeEventListener('focus', inspect);
+      window.removeEventListener('remi:native-identity-locked', inspect);
     };
   }, [onReady]);
 
