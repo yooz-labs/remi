@@ -55,7 +55,19 @@ async function sourceHub() {
     },
   );
   // Drain privately. No raw process output or token is included in a diagnostic.
-  const output = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  let admitted = false;
+  const readAdmission = async () => {
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let tail = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      tail = (tail + decoder.decode(value, { stream: true })).slice(-4096);
+      if (tail.includes('Relay control admitted')) admitted = true;
+    }
+  };
+  const output = Promise.all([readAdmission(), new Response(proc.stderr).text()]);
   const sockets: Socket[] = [];
   const locals: WebSocket[] = [];
   const cleanup = async () => {
@@ -74,6 +86,11 @@ async function sourceHub() {
       const response = await fetch(`http://127.0.0.1:${port}/health`).catch(() => null);
       if (response?.ok) break;
       if (Date.now() > deadline) throw new Error('OWNED_CLOCK_HUB_NOT_READY');
+      await Bun.sleep(10);
+    }
+    while (!admitted) {
+      if (proc.exitCode !== null || Date.now() > deadline)
+        throw new Error('OWNED_CLOCK_CONTROL_NOT_ADMITTED');
       await Bun.sleep(10);
     }
     const capability = readFileSync(join(dir, 'state/capability.key'), 'utf8').trim();
