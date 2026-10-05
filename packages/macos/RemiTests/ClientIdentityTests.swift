@@ -269,6 +269,27 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(external as? Bool, false, "An external main document must not reach the native signer")
     }
 
+    func testProtectedNativeIdentityRefusesBackgroundButCanSignInForeground() throws {
+        _ = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
+            kSecAttrService as String:service,kSecAttrAccount as String:account]
+        var read = query; read[kSecReturnData as String] = true
+        var result: AnyObject?
+        XCTAssertEqual(SecItemCopyMatching(read as CFDictionary, &result), errSecSuccess)
+        var record = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(result as? Data)) as? [String:Any])
+        record["requiresAppUnlock"] = true
+        XCTAssertEqual(SecItemUpdate(query as CFDictionary,
+            [kSecValueData as String:try JSONSerialization.data(withJSONObject:record)] as CFDictionary),errSecSuccess)
+        let protected = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        let message = Data("protected foreground signing".utf8)
+        XCTAssertTrue(protected.publicKey.isValidSignature(try protected.sign(message),for:message))
+        let suite = "remi1199-protected-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:protected,defaults:defaults),
+                     "An imported app-unlock policy must not silently enable background answers")
+    }
+
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {
