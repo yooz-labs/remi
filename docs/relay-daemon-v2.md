@@ -111,6 +111,16 @@ bun run typecheck:signaling
 node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json
 ```
 
+The wall-clock source-hub/real-Worker probes are opt-in and skipped in the default
+suite. They use unchanged production timers; run each explicitly (about 30 seconds,
+two minutes and ten minutes respectively):
+
+```sh
+REMI_R3_CLOCK_GATE=half-open bun test tests/integration/relay-r3-clock.test.ts
+REMI_R3_CLOCK_GATE=confirmation bun test tests/integration/relay-r3-clock.test.ts
+REMI_R3_CLOCK_GATE=offers bun test tests/integration/relay-r3-clock.test.ts
+```
+
 The scoped integration typecheck is also an ordinary step in the existing CI
 Type Check job. Its main/develop branch filter is unchanged: an epic-target phase
 PR has local gate receipts, while the final develop PR runs Linux CI. Full suite
