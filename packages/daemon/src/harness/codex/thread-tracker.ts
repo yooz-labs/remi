@@ -74,7 +74,9 @@
  * which is how a server request is kept from becoming a card for a thread that is
  * not this session's. `onAttached` fires after each successful attach: the app-server
  * replays a pending request to a client that attaches, so that is the moment the
- * replay window of a reconnect starts.
+ * replay window of a reconnect starts. Phase 6 (#1180) adds `onAttaching` and `onAttachFailed`
+ * around it, for the chat's hold of live items: the hold starts when the request is sent,
+ * not when it succeeds.
  */
 
 import { realpathSync } from 'node:fs';
@@ -104,6 +106,22 @@ export interface ThreadTrackerDeps {
    */
   onIdentity(threadId: string): void;
   onStatus(threadId: string, status: ThreadStatus): void;
+  /**
+   * A `thread/resume` for the tracked thread is about to be sent (every attempt: the first, a
+   * retry, one after a reconnect or a rotation). From here a frame for the thread can reach the
+   * client: the app-server may write the response and the thread's next frame in one chunk, and
+   * the client reads a whole chunk before any callback of the response runs. A throw is logged
+   * and changes nothing.
+   */
+  onAttaching?: (threadId: string) => void;
+  /**
+   * The attempt announced by `onAttaching` ended without an attach of the tracked thread: the
+   * request failed (an error, a dropped link, a method the server lacks) or the tracked thread
+   * changed while it was out (a new attempt for the new thread follows). Exactly one of this and
+   * `onAttached` ends each announced attempt, unless the tracker is disposed. A throw is logged
+   * and changes nothing.
+   */
+  onAttachFailed?: (threadId: string) => void;
   /**
    * The attach to the tracked thread succeeded (first time, after a retry, after a reconnect or
    * a rotation). A throw is logged and changes nothing.
@@ -490,11 +508,13 @@ export class ThreadTracker {
     if (this.resumeUnavailable) return;
     this.clearRetry();
     this.attaching = true;
+    this.announce('onAttaching', id);
     this.deps.client.request('thread/resume', { threadId: id, excludeTurns: true }).then(
       (result) => {
         this.attaching = false;
         if (this.disposed) return;
         if (this.current !== id) {
+          this.announce('onAttachFailed', id);
           this.attach();
           return;
         }
@@ -512,6 +532,7 @@ export class ThreadTracker {
       (error: unknown) => {
         this.attaching = false;
         if (this.disposed) return;
+        this.announce('onAttachFailed', id);
         if (this.current !== id) {
           this.attach();
           return;
@@ -536,6 +557,15 @@ export class ThreadTracker {
         );
       },
     );
+  }
+
+  /** Call an attach hook; one that throws is logged and changes nothing. */
+  private announce(hook: 'onAttaching' | 'onAttachFailed', id: string): void {
+    try {
+      this.deps[hook]?.(id);
+    } catch (error) {
+      this.deps.log(`attach hook failed (${describeError(error)})`);
+    }
   }
 
   private clearRetry(): void {

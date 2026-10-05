@@ -3,8 +3,8 @@
  * Extract redacted Codex app-server fixtures from the spike's raw frame logs
  * (epic #1175, phase 1 #1181). A dev tool, never run by CI.
  *
- *   bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--out <dir>]
- *   CODEX_SPIKE_DIR=<raw-log-dir> bun scripts/extract-codex-fixtures.ts
+ *   bun scripts/extract-codex-fixtures.ts <raw-log-dir> --out <scratch-dir> [--source <basename.jsonl>]
+ *   CODEX_SPIKE_DIR=<raw-log-dir> bun scripts/extract-codex-fixtures.ts --out <scratch-dir>
  *
  * The raw logs hold local paths, thread ids and account metadata, so they are
  * read here and never copied: only frames on the method allowlist survive, each
@@ -14,13 +14,23 @@
  * `approved-free-text.json`), and nothing is written when it finds a
  * leak. Output is deterministic for the same inputs, and `index.json` records
  * each source file's sha256 so a later run can tell whether its inputs changed.
+ * Always extract to an explicit scratch directory. Review and scan the output,
+ * then merge selected captures and index entries into the committed fixtures.
  *
  * No path or name from the raw logs is written in this file: roots are
  * discovered from the data (`codexHome`, the threads' `cwd`).
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   APPROVED_FREE_TEXT_FILE,
   FIXTURE_DIR,
@@ -32,7 +42,7 @@ import {
 } from '../packages/daemon/tests/helpers/codex-fixtures.ts';
 import { freeTextOf, scanForLeaks } from '../packages/daemon/tests/helpers/fixture-scan.ts';
 
-const EXTRACTOR_VERSION = 1;
+const EXTRACTOR_VERSION = 2;
 const CLI_VERSION = '0.160.0';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -74,9 +84,19 @@ const KEEP_IN_METHODS = new Set([
 /** Item types kept inside `item/started` and `item/completed` (reasoning items are dropped). */
 const KEEP_ITEM_TYPES = new Set(['userMessage', 'agentMessage', 'commandExecution']);
 /** Client requests kept (the prompts and thread-creation requests are dropped). */
-const KEEP_OUT_METHODS = new Set(['initialized', 'thread/resume', 'thread/unsubscribe']);
+const KEEP_OUT_METHODS = new Set([
+  'initialized',
+  'thread/resume',
+  'thread/unsubscribe',
+  'thread/items/list',
+]);
 /** Responses kept when they answer one of these client requests. */
-const KEEP_RESPONSE_TO = new Set(['initialize', 'thread/resume', 'thread/unsubscribe']);
+const KEEP_RESPONSE_TO = new Set([
+  'initialize',
+  'thread/resume',
+  'thread/unsubscribe',
+  'thread/items/list',
+]);
 
 /** Keys removed wherever they appear. */
 const DROP_KEYS = new Set(['installationId', 'serverName', 'planType', 'rateLimits']);
@@ -156,6 +176,40 @@ function keep(rec: RawRecord, c: Correlator): boolean {
     return hasKey(f, 'result') && c.isServerRequestId(rec.client, f['id']);
   }
   return false;
+}
+
+/** Keep a captured history page's item rows and ids while removing any reasoning prose. */
+function redactReasoningItems(frame: Obj): { frame: Obj; changed: boolean } {
+  const result = frame['result'];
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+    return { frame, changed: false };
+  }
+  const data = (result as Obj)['data'];
+  if (!Array.isArray(data)) return { frame, changed: false };
+  let changed = false;
+  const cleanStrings = (value: Json, key = ''): Json => {
+    if (key === 'id' || key === 'type') return value;
+    if (typeof value === 'string') return '[redacted]';
+    if (Array.isArray(value)) return value.map((child) => cleanStrings(child, key));
+    if (value !== null && typeof value === 'object') {
+      const out: Obj = {};
+      for (const [childKey, child] of Object.entries(value)) {
+        out[childKey] = cleanStrings(child, childKey);
+      }
+      return out;
+    }
+    return value;
+  };
+  const cleanData = data.map((entry) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const item = (entry as Obj)['item'];
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return entry;
+    if ((item as Obj)['type'] !== 'reasoning') return entry;
+    changed = true;
+    return { ...(entry as Obj), item: cleanStrings(item) };
+  });
+  if (!changed) return { frame, changed: false };
+  return { frame: { ...frame, result: { ...(result as Obj), data: cleanData } }, changed: true };
 }
 
 /** Placeholder state shared by every file in one run, so ids stay consistent across files. */
@@ -338,12 +392,26 @@ function syntheticFromSchema(r: Redactor): FixtureFrame[] {
 
 const toLine = (f: FixtureFrame): string => `${JSON.stringify(f)}\n`;
 
-/** `<raw-log-dir>` (or CODEX_SPIKE_DIR) and an optional `--out <dir>` (default: the committed fixture directory). */
+/** Resolve an output path through its nearest existing ancestor to detect symlink aliases. */
+function resolveThroughExistingAncestors(path: string): string {
+  let ancestor = resolve(path);
+  const suffix: string[] = [];
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    suffix.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+  return resolve(realpathSync(ancestor), ...suffix);
+}
+
+/** `<raw-log-dir>` (or CODEX_SPIKE_DIR) and a required `--out <scratch-dir>`. */
 function parseArgs(argv: string[]): {
   rawDir: string;
   outDir: string;
   approvedFile: string;
   showUnapproved: boolean;
+  source?: string;
 } {
   const args = [...argv];
   const take = (name: string): string | undefined => {
@@ -353,28 +421,72 @@ function parseArgs(argv: string[]): {
     args.splice(flag, 2);
     return value;
   };
-  const outDir = resolve(take('--out') ?? FIXTURE_DIR);
+  const outIndex = args.indexOf('--out');
+  const outValue = outIndex < 0 ? undefined : args[outIndex + 1];
+  if (!outValue || outValue.startsWith('--')) {
+    console.error(
+      '--out is required; choose a scratch directory outside the committed fixture tree',
+    );
+    process.exit(2);
+  }
+  args.splice(outIndex, 2);
+  const outDir = resolve(outValue);
+  const actualOut = resolveThroughExistingAncestors(outDir);
+  const fixtureRoot = realpathSync(FIXTURE_DIR);
+  if (actualOut === fixtureRoot || actualOut.startsWith(`${fixtureRoot}${sep}`)) {
+    console.error('--out must be a scratch directory outside the committed fixture tree');
+    process.exit(2);
+  }
   const approvedFile = resolve(take('--approved') ?? APPROVED_FREE_TEXT_FILE);
+  const sourceIndex = args.indexOf('--source');
+  if (sourceIndex >= 0) {
+    const value = args[sourceIndex + 1];
+    if (!value || value.startsWith('--')) {
+      console.error('--source requires a non-empty basename ending in .jsonl');
+      process.exit(2);
+    }
+  }
+  const source = take('--source');
+  if (
+    source !== undefined &&
+    (source.length <= '.jsonl'.length ||
+      source === '.' ||
+      source === '..' ||
+      source.includes('/') ||
+      source.includes('\\') ||
+      /^[A-Za-z]:/.test(source) ||
+      !source.endsWith('.jsonl'))
+  ) {
+    console.error('--source must be a non-empty basename ending in .jsonl');
+    process.exit(2);
+  }
   const showFlag = args.indexOf('--show-unapproved');
   if (showFlag >= 0) args.splice(showFlag, 1);
   const raw = args[0] ?? process.env['CODEX_SPIKE_DIR'];
   if (!raw) {
     console.error(
-      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--out <dir>] [--approved <file>] [--show-unapproved] (or CODEX_SPIKE_DIR)',
+      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> --out <scratch-dir> [--source <basename.jsonl>] [--approved <file>] [--show-unapproved] (or CODEX_SPIKE_DIR)',
     );
     process.exit(2);
   }
-  return { rawDir: resolve(raw), outDir, approvedFile, showUnapproved: showFlag >= 0 };
+  return {
+    rawDir: resolve(raw),
+    outDir,
+    approvedFile,
+    showUnapproved: showFlag >= 0,
+    ...(source === undefined ? {} : { source }),
+  };
 }
 
 function main(): void {
-  const { rawDir, outDir, approvedFile, showUnapproved } = parseArgs(process.argv.slice(2));
+  const { rawDir, outDir, approvedFile, showUnapproved, source } = parseArgs(process.argv.slice(2));
+  const sources: readonly Source[] = source === undefined ? SOURCES : [{ file: source }];
   const redactor = new Redactor();
   const files: FixtureIndexFile[] = [];
   const outputs = new Map<string, string>();
 
   // Pass 1: read every source and learn the path roots from all of it.
-  const loaded = SOURCES.map((s) => {
+  const loaded = sources.map((s) => {
     const bytes = readFileSync(join(rawDir, s.file));
     return { source: s, sha: sha256(bytes), records: readRaw(join(rawDir, s.file)) };
   });
@@ -393,12 +505,21 @@ function main(): void {
       if (wanted && keep(rec, c)) kept.push({ rec, line });
     });
     redactor.anchorTimes(kept.map((k) => k.rec.frame));
-    const frames: FixtureFrame[] = kept.map(({ rec, line }) => ({
-      client: rec.client,
-      dir: rec.dir as 'in' | 'out',
-      line,
-      frame: redactor.redact(rec.frame) as Record<string, unknown>,
-    }));
+    let redactedReasoning = false;
+    const frames: FixtureFrame[] = kept.map(({ rec, line }) => {
+      const isListResponse =
+        rec.dir === 'in' && c.answeredMethod(rec.client, rec.frame['id']) === 'thread/items/list';
+      const prepared = isListResponse
+        ? redactReasoningItems(rec.frame)
+        : { frame: rec.frame, changed: false };
+      redactedReasoning ||= prepared.changed;
+      return {
+        client: rec.client,
+        dir: rec.dir as 'in' | 'out',
+        line,
+        frame: redactor.redact(prepared.frame) as Record<string, unknown>,
+      };
+    });
     outputs.set(source.file, frames.map(toLine).join(''));
     files.push({
       file: source.file,
@@ -406,6 +527,7 @@ function main(): void {
       source: source.file,
       sourceSha256: sha,
       frames: frames.length,
+      ...(redactedReasoning ? { redactions: ['reasoning-item-strings'] } : {}),
     });
   }
 

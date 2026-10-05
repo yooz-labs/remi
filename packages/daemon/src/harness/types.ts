@@ -16,7 +16,7 @@
  * the harness id) are added by the phase that first needs them, not before.
  */
 
-import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
+import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/index.ts';
@@ -84,6 +84,24 @@ export interface DecisionChannel {
 }
 
 /**
+ * A session's chat history, for a harness that keeps it somewhere remi reads through the
+ * harness and not as a file (Codex: its app-server, #1180). A harness without one (Claude: its
+ * transcript file, read by the transcript handler) leaves `HarnessSession.chat` unset.
+ *
+ * Only history is on the seam. A harness sends its live updates itself, through the launch
+ * context's `sendAndRecord`, as Claude's transcript binder does, so a client that is connected
+ * sees a new message without asking.
+ */
+export interface HarnessChat {
+  /**
+   * Replay the session's history oldest first through `emit`, one `transcript_content` per
+   * message, as pages arrive. Resolves with the number of messages emitted; rejects when the
+   * history cannot be read (what was emitted before stays emitted).
+   */
+  readHistory(emit: (message: TranscriptContentMessage) => void): Promise<number>;
+}
+
+/**
  * One launched session: the PTY (built, not yet started), how its pending
  * decisions are answered, and how to start and end it. `cli.ts` registers the
  * PTY with the session registry between construction and `start()`, which is
@@ -103,6 +121,12 @@ export interface HarnessSession {
    * would confirm.
    */
   readonly acceptsTypedChat?: boolean;
+  /**
+   * The session's chat history, when the harness provides it itself (Codex, #1180). Absent means
+   * the history is a transcript file the transcript handler reads (Claude). The handler asks for
+   * it through `chatFor` when a client sends `transcript_load_request`.
+   */
+  readonly chat?: HarnessChat | undefined;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
   /**

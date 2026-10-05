@@ -380,7 +380,18 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
     target: 'session/legacy-writers',
     why: 'LegacyWriter and IDENTITY_SHIM_MIN_VERSION, for the older-daemon refusal message (phase 3)',
   },
+  {
+    target: 'api/message-api',
+    why: 'MessageAPI, the bullet structurer that gives a chat history message the structured form every transcript_content carries (phase 6); a history read builds one of its own, so the session stream is untouched',
+  },
+  {
+    target: 'notifications/turn-events',
+    why: 'TurnEventSink, the interface a finished Codex turn is reported through (phase 6); a type-only import, so a Codex file reaches no notification code, which a test pins',
+  },
 ];
+
+/** The entries of `CODEX_MAY_IMPORT` a Codex file may reach only as a type (erased, so no runtime code). */
+const CODEX_TYPE_ONLY = ['notifications/turn-events'] as const;
 
 /** Every `.ts` file under `harness/codex/`, as an absolute path. */
 function codexFiles(): string[] {
@@ -420,6 +431,19 @@ function codexViolations(fileName: string, source: string): string[] {
     if (isCodexTarget(bare)) continue;
     if (CODEX_MAY_IMPORT.some((entry) => entry.target === bare)) continue;
     out.add(target);
+  }
+  return [...out];
+}
+
+/** The type-only entries of the allowlist that `source`, a file under `harness/codex/`, imports at runtime. */
+function codexTypeOnlyViolations(fileName: string, source: string): string[] {
+  const out = new Set<string>();
+  for (const { text, typeOnly } of moduleSpecifiers(fileName, source)) {
+    if (typeOnly) continue;
+    const target = daemonTarget(text, fileName);
+    if (target === null) continue;
+    const bare = stripExtension(target);
+    if ((CODEX_TYPE_ONLY as readonly string[]).includes(bare)) out.add(bare);
   }
   return [...out];
 }
@@ -530,6 +554,33 @@ describe('the Codex import allowlists, detector', () => {
       'const tpl = `await import("../../parser/index.ts")`;',
     ].join('\n');
     expect(codexViolations(FROM_CODEX, source)).toEqual([]);
+  });
+
+  test('a type-only entry is imported as a type: a runtime import of it is flagged', () => {
+    expect(
+      codexTypeOnlyViolations(
+        FROM_CODEX,
+        `import type { T } from '../../notifications/turn-events.ts';`,
+      ),
+    ).toEqual([]);
+    expect(
+      codexTypeOnlyViolations(
+        FROM_CODEX,
+        `import { createTurnEventSink } from '../../notifications/turn-events.ts';`,
+      ),
+    ).toEqual(['notifications/turn-events']);
+    expect(
+      codexTypeOnlyViolations(
+        FROM_CODEX,
+        `const m = await import('../../notifications/turn-events.ts');`,
+      ),
+    ).toEqual(['notifications/turn-events']);
+    expect(
+      codexTypeOnlyViolations(
+        FROM_CODEX,
+        `export { createTurnEventSink } from '../../notifications/turn-events.ts';`,
+      ),
+    ).toEqual(['notifications/turn-events']);
   });
 
   test('every allowlist entry names a real module and says which phase needs it', () => {
@@ -660,6 +711,16 @@ describe('Codex modules and everything else stay apart', () => {
     const offences: string[] = [];
     for (const file of codexFiles()) {
       for (const target of codexViolations(file, readFileSync(file, 'utf8'))) {
+        offences.push(`${relative(SRC, file)} -> ${target}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  test('the type-only entries of the allowlist are imported only as types by every Codex module', () => {
+    const offences: string[] = [];
+    for (const file of codexFiles()) {
+      for (const target of codexTypeOnlyViolations(file, readFileSync(file, 'utf8'))) {
         offences.push(`${relative(SRC, file)} -> ${target}`);
       }
     }

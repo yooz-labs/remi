@@ -55,6 +55,32 @@ const CAPTURED_500 = {
     'API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.',
 };
 
+/** Codex's string `codexErrorInfo` values (the generated schema's `CodexErrorInfo`) with a reason, and what each reads as (#1180). */
+const CODEX_CODES: ReadonlyArray<readonly [string, string]> = [
+  ['usageLimitExceeded', 'Usage limit reached'],
+  ['rateLimitExceeded', 'Rate limit reached'],
+  ['serverOverloaded', 'API overloaded'],
+  ['internalServerError', 'Server error'],
+  ['unauthorized', 'Authentication failed'],
+  ['badRequest', 'Invalid request'],
+  ['contextWindowExceeded', 'Context window exceeded'],
+  ['sessionBudgetExceeded', 'Session budget exceeded'],
+  ['sandboxError', 'Sandbox error'],
+  ['other', 'Unknown error'],
+];
+
+describe('describeTurnFailure: Codex codes (#1180)', () => {
+  test.each(CODEX_CODES)('%s reads as "%s", as a Claude code does', (code, phrase) => {
+    expect(describeTurnFailure(code)).toBe(phrase);
+  });
+
+  test('a Codex code with no phrase is shown as is, like any unknown code', () => {
+    for (const code of ['cyberPolicy', 'tooManyDenials', 'flexUnavailable']) {
+      expect(describeTurnFailure(code)).toBe(code);
+    }
+  });
+});
+
 describe('describeTurnFailure', () => {
   test.each(DOCUMENTED_CODES)('%s reads as "%s"', (code, phrase) => {
     expect(describeTurnFailure(code)).toBe(phrase);
@@ -198,6 +224,29 @@ describe('buildTurnFailedText', () => {
     expect(body).toBe('code-reviewer · Rate or usage limit reached');
   });
 
+  test('the agent is Claude unless the caller names another: Codex reads as Codex stopped (#1180)', () => {
+    expect(buildTurnFailedText('remi', { error: 'rate_limit' }, 'Codex').title).toBe(
+      'remi: Codex stopped',
+    );
+    expect(buildTurnFailedText('remi', { error: 'rate_limit' }, 'Claude').title).toBe(
+      'remi: Claude stopped',
+    );
+    expect(buildTurnFailedText('remi', { error: 'rate_limit' }).title).toBe('remi: Claude stopped');
+  });
+
+  test('the agent name is one line, never empty, and the title stays capped (#1180)', () => {
+    expect(buildTurnFailedText('remi', {}, 'Co\ndex').title).toBe('remi: Co dex stopped');
+    expect(buildTurnFailedText('remi', {}, '  ').title).toBe('remi: Agent stopped');
+    expect(buildTurnFailedText('remi', {}, 'a'.repeat(300)).title.length).toBe(120);
+  });
+
+  test('the agent name changes the title and nothing else (#1180)', () => {
+    const claude = buildTurnFailedText('remi', CAPTURED_500);
+    const codex = buildTurnFailedText('remi', CAPTURED_500, 'Codex');
+    expect(codex.body).toBe(claude.body);
+    expect(codex.title).not.toBe(claude.title);
+  });
+
   test('the body never exceeds the 200-character cap, whatever the inputs', () => {
     const { body } = buildTurnFailedText('remi', {
       error: 'e'.repeat(500),
@@ -323,6 +372,20 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       expect(opts['dynOptions']).toBeUndefined();
       expect(opts['dismiss']).toBeUndefined();
     }
+  });
+
+  test('the agent the caller names is the one the notification says stopped (#1180)', async () => {
+    register(false);
+    deviceTokens.set('a', device('a'));
+    const sessionName = registry.getSession(SID)?.name ?? '';
+
+    await make().pushTurnFailed({ error: 'rate_limit' }, 'Codex');
+    await make().pushTurnFailed({ error: 'rate_limit' });
+
+    expect(sent.map((p) => p.opts['title'])).toEqual([
+      `${sessionName}: Codex stopped`,
+      `${sessionName}: Claude stopped`,
+    ]);
   });
 
   test('the collapse key is the session-scoped key, never a card id, and is the same on a repeat', async () => {
@@ -588,6 +651,17 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       await flush();
       const cleared = sent.filter((p) => p.opts['kind'] === 'dismiss');
       expect(cleared.map((p) => p.opts['questionId'])).toEqual([turnFailedCollapseId(SID)]);
+    });
+
+    test("passes the agent's name through to the notification (#1180)", async () => {
+      deviceTokens.set('a', device('a'));
+      const routes = createTurnFailedRoutes(new Map([[SID, dispatcherFor(SID)]]));
+
+      routes.push(SID, failure(), 'Codex');
+      await flush();
+
+      expect(sent).toHaveLength(1);
+      expect(String(sent[0]?.opts['title']).endsWith(': Codex stopped')).toBe(true);
     });
 
     test('a session with no dispatcher is a no-op, not a throw', async () => {

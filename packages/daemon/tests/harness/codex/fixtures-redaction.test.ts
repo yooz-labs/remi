@@ -6,9 +6,11 @@
  * 1. the committed fixtures pass the structural scan and are consistent with `index.json`;
  * 2. the scan catches a seeded leak of every kind it names, and does not flag what the fixtures
  *    legitimately hold;
- * 3. the extractor redacts a synthetic raw log it was never tuned on (every value in it invented
+ * 3. the extractor redacts synthetic raw logs it was never tuned on (every value in them invented
  *    here, none taken from a real session), is deterministic, and refuses to write anything when a
- *    leak survives its rules or when free text is not in the reviewed approved set.
+ *    leak survives its rules or when free text is not in the reviewed approved set. Its optional
+ *    single-source path is separately pinned to preserve only that source and its correlated list
+ *    response.
  */
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
@@ -19,6 +21,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -99,7 +102,7 @@ describe('the committed fixtures', () => {
   test('index.json lists exactly the fixture files, with real counts and provenance', () => {
     const index = readFixtureIndex();
     expect(index.cliVersion).toBe('0.160.0');
-    expect(index.extractorVersion).toBeGreaterThanOrEqual(1);
+    expect(index.extractorVersion).toBe(2);
     expect(index.files.map((f) => f.file).sort()).toEqual(
       fixtureFiles().filter((f) => f !== 'index.json' && f !== 'approved-free-text.json'),
     );
@@ -109,6 +112,9 @@ describe('the committed fixtures', () => {
       if (entry.label === 'real') {
         expect(entry.sourceSha256, entry.file).toMatch(/^[0-9a-f]{64}$/);
         expect(entry.source, entry.file).toBe(entry.file);
+        if (entry.file === 'lv5.jsonl') {
+          expect(entry.redactions).toEqual(['reasoning-item-strings']);
+        }
       } else {
         expect(['report-derived', 'synthetic-from-schema']).toContain(entry.label);
         expect(entry.sourceSha256, entry.file).toBeUndefined();
@@ -216,6 +222,17 @@ describe('the scan catches what it names', () => {
   const scan = (text: string) =>
     scanForLeaks(text, { approvedFreeText: approved, identity: IDENTITY });
   const rules = (text: string): string[] => scan(text).map((f) => f.rule);
+
+  test('accepts the exact placeholder cursor on all app-server cursor fields', () => {
+    const value = `{"requestedThreadId":"${placeholderUuid(1)}","rolloutOrdinal":1,"includeAnchor":true,"scope":{"kind":"Turn"}}`;
+    for (const key of ['turnsBackwardsCursor', 'backwardsCursor', 'nextCursor']) {
+      expect(rules(seeded(key, value)), key).not.toContain('cursor-shape');
+    }
+  });
+
+  test('the extractor redaction marker is safe in a free-text field', () => {
+    expect(rules(seeded('text', '[redacted]'))).toEqual([]);
+  });
 
   /** Each row is one thing that must not get through, as the field it would arrive in. Several rules may fire. */
   const CASES: Array<[name: string, text: () => string, expected: string]> = [
@@ -344,6 +361,16 @@ describe('the scan catches what it names', () => {
     [
       'a cursor that is not a placeholder cursor',
       () => seeded('turnsBackwardsCursor', '{"requestedThreadId":"x"}'),
+      'cursor-shape',
+    ],
+    [
+      'a lower-case backwards cursor that is not a placeholder cursor',
+      () => seeded('backwardsCursor', 'private-cursor'),
+      'cursor-shape',
+    ],
+    [
+      'a next cursor that is not a placeholder cursor',
+      () => seeded('nextCursor', 'private-cursor'),
       'cursor-shape',
     ],
     ['a control character', () => seeded('source', 'a\u0007b'), 'bad-char'],
@@ -600,6 +627,11 @@ describe('the extractor', () => {
     return mkdtempSync(join(tmpdir(), 'remi-extractor-'));
   }
 
+  function indexedFixtureBytes(): Array<[string, string]> {
+    const names = ['index.json', ...readFixtureIndex().files.map((entry) => entry.file)].sort();
+    return names.map((name) => [name, readFileSync(join(FIXTURE_DIR, name), 'utf8')]);
+  }
+
   const frames = (text: string): Array<{ line?: number; frame: Record<string, unknown> }> =>
     text
       .trim()
@@ -708,6 +740,288 @@ describe('the extractor', () => {
       );
       const flags = frames(readFileSync(join(base, 'out', 'expFlags.jsonl'), 'utf8'));
       expect(flags.map((f) => f.line)).toEqual([11]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('requires an explicit scratch output and refuses the committed fixture tree before reading input', async () => {
+    const base = scratch();
+    const originalNames = readdirSync(FIXTURE_DIR).sort();
+    const originalBytes = indexedFixtureBytes();
+    try {
+      const raw = join(base, 'missing-raw');
+      const alias = join(base, 'fixture-alias');
+      symlinkSync(FIXTURE_DIR, alias, 'junction');
+
+      for (const args of [[raw], [raw, '--out'], [raw, '--out', '--source']]) {
+        const result = await spawnExtractor(args);
+        expect(result.code, args.join(' ')).toBe(2);
+        expect(result.err, args.join(' ')).toContain('--out is required');
+        expect(result.err, args.join(' ')).not.toContain('extraction failed');
+      }
+
+      const protectedTargets = [
+        FIXTURE_DIR,
+        join(FIXTURE_DIR, 'not-created-output'),
+        join(alias, 'not-created-output'),
+      ];
+      for (const target of protectedTargets) {
+        const result = await spawnExtractor([raw, '--out', target]);
+        expect(result.code, target).toBe(2);
+        expect(result.err, target).toContain(
+          '--out must be a scratch directory outside the committed fixture tree',
+        );
+        expect(result.err, target).not.toContain('extraction failed');
+      }
+
+      expect(existsSync(join(FIXTURE_DIR, 'not-created-output'))).toBe(false);
+      expect(existsSync(join(alias, 'not-created-output'))).toBe(false);
+      expect(readdirSync(FIXTURE_DIR).sort()).toEqual(originalNames);
+      expect(indexedFixtureBytes()).toEqual(originalBytes);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('single-source mode keeps only the named log and correlated thread/items/list frames', async () => {
+    const base = scratch();
+    try {
+      const raw = join(base, 'raw');
+      mkdirSync(raw, { recursive: true });
+      writeFileSync(
+        join(raw, 'lv5.jsonl'),
+        [
+          JSON.stringify({
+            client: 'A',
+            dir: 'out',
+            frame: { id: 7, method: 'thread/items/list', params: {} },
+          }),
+          JSON.stringify({
+            client: 'A',
+            dir: 'in',
+            frame: { id: 7, result: { data: [], nextCursor: null, backwardsCursor: null } },
+          }),
+          JSON.stringify({
+            client: 'A',
+            dir: 'out',
+            frame: { id: 8, method: 'turn/start', params: {} },
+          }),
+          JSON.stringify({
+            client: 'A',
+            dir: 'in',
+            frame: { method: 'turn/completed', params: {} },
+          }),
+        ]
+          .join('\n')
+          .concat('\n'),
+      );
+      const approvedFile = writeApproved(base);
+      const first = await run(raw, join(base, 'one'), approvedFile, ['--source', 'lv5.jsonl']);
+      const second = await run(raw, join(base, 'two'), approvedFile, ['--source', 'lv5.jsonl']);
+      expect(first.code, first.err).toBe(0);
+      expect(second.code, second.err).toBe(0);
+      expect(readdirSync(join(base, 'one')).sort()).toEqual([
+        'index.json',
+        'lv5.jsonl',
+        'report-derived.jsonl',
+        'synthetic-from-schema.jsonl',
+      ]);
+      for (const file of readdirSync(join(base, 'one'))) {
+        expect(readFileSync(join(base, 'two', file), 'utf8'), file).toBe(
+          readFileSync(join(base, 'one', file), 'utf8'),
+        );
+      }
+      const kept = frames(readFileSync(join(base, 'one', 'lv5.jsonl'), 'utf8'));
+      expect(kept.map((f) => f.frame['method'] ?? 'response')).toEqual([
+        'thread/items/list',
+        'response',
+        'turn/completed',
+      ]);
+      const index = JSON.parse(readFileSync(join(base, 'one', 'index.json'), 'utf8')) as {
+        extractorVersion: number;
+        files: Array<{ file: string; label: string; source?: string; sourceSha256?: string }>;
+      };
+      expect(index.extractorVersion).toBe(2);
+      expect(index.files.find((entry) => entry.file === 'lv5.jsonl')).toMatchObject({
+        label: 'real',
+        source: 'lv5.jsonl',
+      });
+      expect(index.files.find((entry) => entry.file === 'lv5.jsonl')?.sourceSha256).toMatch(
+        /^[0-9a-f]{64}$/,
+      );
+      expect(kept[0]?.frame['params']).toEqual({});
+      expect(kept[1]?.frame['result']).toEqual({
+        data: [],
+        nextCursor: null,
+        backwardsCursor: null,
+      });
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('single-source rejects path components and non-jsonl names before reading a source', async () => {
+    const base = scratch();
+    try {
+      const raw = join(base, 'raw');
+      mkdirSync(raw, { recursive: true });
+      const approvedFile = writeApproved(base);
+      for (const name of [
+        '../lv5.jsonl',
+        'folder/lv5.jsonl',
+        'folder\\\\lv5.jsonl',
+        'C:lv5.jsonl',
+        '.jsonl',
+        'lv5.txt',
+      ]) {
+        const result = await run(raw, join(base, 'out'), approvedFile, ['--source', name]);
+        expect(result.code, name).toBe(2);
+        expect(result.err, name).toContain(
+          '--source must be a non-empty basename ending in .jsonl',
+        );
+        expect(existsSync(join(base, 'out')), name).toBe(false);
+      }
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('single-source requires its value and refuses a following flag as the value', async () => {
+    const base = scratch();
+    try {
+      const raw = join(base, 'raw');
+      mkdirSync(raw, { recursive: true });
+      const approvedFile = writeApproved(base);
+      for (const extra of [['--source'], ['--source', '--out', join(base, 'out')]]) {
+        const result = await run(raw, join(base, 'out'), approvedFile, extra);
+        expect(result.code, extra.join(' ')).toBe(2);
+        expect(result.err, extra.join(' ')).toContain(
+          '--source requires a non-empty basename ending in .jsonl',
+        );
+        expect(existsSync(join(base, 'out')), extra.join(' ')).toBe(false);
+      }
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('single-source keeps reasoning rows but redacts every string in their item payload', async () => {
+    const base = scratch();
+    try {
+      const raw = join(base, 'raw');
+      mkdirSync(raw, { recursive: true });
+      writeFileSync(
+        join(raw, 'lv5.jsonl'),
+        [
+          JSON.stringify({
+            client: 'A',
+            dir: 'out',
+            frame: { id: 9, method: 'thread/items/list', params: {} },
+          }),
+          JSON.stringify({
+            client: 'A',
+            dir: 'in',
+            frame: {
+              id: 9,
+              result: {
+                data: [
+                  {
+                    turnId: '00000000-0000-7000-8000-000000000021',
+                    item: {
+                      type: 'reasoning',
+                      id: 'rs_abcdef012345',
+                      summary: ['private reasoning'],
+                    },
+                    startedAtMs: FICTIONAL_MS,
+                    completedAtMs: FICTIONAL_MS + 1,
+                  },
+                ],
+                nextCursor: null,
+                backwardsCursor: null,
+              },
+            },
+          }),
+        ]
+          .join('\n')
+          .concat('\n'),
+      );
+      const result = await run(raw, join(base, 'out'), writeApproved(base), [
+        '--source',
+        'lv5.jsonl',
+      ]);
+      expect(result.code, result.err).toBe(0);
+      const text = readFileSync(join(base, 'out', 'lv5.jsonl'), 'utf8');
+      expect(text).not.toContain('private reasoning');
+      expect(text).toContain('"type":"reasoning"');
+      expect(text).toContain('"summary":["[redacted]"]');
+      expect(
+        scanForLeaks(text, { approvedFreeText: readApprovedFreeText(writeApproved(base)) }),
+      ).toEqual([]);
+      const index = JSON.parse(readFileSync(join(base, 'out', 'index.json'), 'utf8')) as {
+        files: Array<{ file: string; redactions?: string[] }>;
+      };
+      expect(index.files.find((entry) => entry.file === 'lv5.jsonl')?.redactions).toEqual([
+        'reasoning-item-strings',
+      ]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('single-source learns a path root from a command item in thread/items/list', async () => {
+    const base = scratch();
+    try {
+      const raw = join(base, 'raw');
+      mkdirSync(raw, { recursive: true });
+      writeFileSync(
+        join(raw, 'lv5.jsonl'),
+        [
+          JSON.stringify({
+            client: 'A',
+            dir: 'out',
+            frame: { id: 10, method: 'thread/items/list', params: {} },
+          }),
+          JSON.stringify({
+            client: 'A',
+            dir: 'in',
+            frame: {
+              id: 10,
+              result: {
+                data: [
+                  {
+                    turnId: '00000000-0000-7000-8000-000000000031',
+                    item: {
+                      type: 'commandExecution',
+                      id: 'exec-00000000-0000-7000-8000-000000000032',
+                      command: 'sleep 61',
+                      cwd: '/Users/lv5-private-path/project',
+                      status: 'completed',
+                      exitCode: 0,
+                      aggregatedOutput: null,
+                    },
+                    startedAtMs: FICTIONAL_MS,
+                    completedAtMs: FICTIONAL_MS + 1,
+                  },
+                ],
+                nextCursor: null,
+                backwardsCursor: null,
+              },
+            },
+          }),
+        ]
+          .join('\n')
+          .concat('\n'),
+      );
+      const approvedFile = writeApproved(base, ['sleep 61']);
+      const result = await run(raw, join(base, 'out'), approvedFile, ['--source', 'lv5.jsonl']);
+      expect(result.code, result.err).toBe(0);
+      const text = readFileSync(join(base, 'out', 'lv5.jsonl'), 'utf8');
+      expect(text).toContain('"cwd":"/work/project"');
+      expect(text).not.toContain('lv5-private-path');
+      expect(scanForLeaks(text, { approvedFreeText: readApprovedFreeText(approvedFile) })).toEqual(
+        [],
+      );
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -840,7 +1154,10 @@ describe('the extractor', () => {
   test('exits 2 with a usage line when given no input directory, and on a missing source file', async () => {
     const base = scratch();
     try {
-      const none = await spawnExtractor([], { ...process.env, CODEX_SPIKE_DIR: '' });
+      const none = await spawnExtractor(['--out', join(base, 'out')], {
+        ...process.env,
+        CODEX_SPIKE_DIR: '',
+      });
       expect(none.code).toBe(2);
       expect(none.err).toContain('usage');
       mkdirSync(join(base, 'empty'));

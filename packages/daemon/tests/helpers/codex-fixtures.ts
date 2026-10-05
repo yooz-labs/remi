@@ -32,6 +32,8 @@ export interface FixtureIndexFile {
   /** Raw capture the frames came from; absent for the two derived files. */
   source?: string;
   sourceSha256?: string;
+  /** Structural redactions applied to this captured source before it became public. */
+  redactions?: string[];
   frames: number;
 }
 

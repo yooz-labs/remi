@@ -104,6 +104,7 @@ export class FakeAppServer {
     (params: unknown, client: number) => unknown | Promise<unknown>
   >();
   private readonly silent = new Set<string>();
+  private readonly withResume = new Map<string, Json[]>();
   private readonly pongs: Uint8Array[] = [];
   /** Frames sent to a client right after its `initialize` result, as Codex sends `configWarning`. */
   initializeFrames: Json[] = [];
@@ -195,6 +196,17 @@ export class FakeAppServer {
     reply: (params: unknown, client: number) => unknown | Promise<unknown>,
   ): void {
     this.handlers.set(method, reply);
+  }
+
+  /**
+   * Write `frames` in the SAME socket write as the next successful `thread/resume` response for
+   * `threadId` (once, to the resuming client, after the response and before any replayed server
+   * request). The real app-server may write a thread's next frame right behind the response, and
+   * the client hands every frame of one read chunk over before a callback of the response runs.
+   * It applies to the built-in `thread/resume`, not to one answered by {@link onRequest}.
+   */
+  withNextResume(threadId: string, frames: Json[]): void {
+    this.withResume.set(threadId, frames);
   }
 
   /** Never answer `method` (for timeout tests). */
@@ -392,10 +404,19 @@ export class FakeAppServer {
     const result = this.fixtureResult('expA-accept.jsonl', 38) as { thread: Json };
     result.thread['id'] = threadId;
     result.thread['sessionId'] = threadId;
-    reply(result);
-    for (const { threadId: t, frame: request } of this.pending.values()) {
-      if (t === threadId) this.emitTo(client, request);
-    }
+    const along = this.withResume.get(threadId) ?? [];
+    this.withResume.delete(threadId);
+    const write = (): void => {
+      reply(result);
+      for (const frame of along) this.emitTo(client, frame);
+      for (const { threadId: t, frame: request } of this.pending.values()) {
+        if (t === threadId) this.emitTo(client, request);
+      }
+    };
+    // `cork` batches the sends into one write, so one read of the client's socket holds them all.
+    const socket = this.clients.get(client);
+    if (socket === undefined) write();
+    else socket.cork(write);
   }
 
   /** A fresh copy of the `result` of fixture frame `line`. */

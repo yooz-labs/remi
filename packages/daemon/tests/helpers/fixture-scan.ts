@@ -97,7 +97,7 @@ const PLACEHOLDER_ID = new RegExp(
   'i',
 );
 const ID_KEY = /(?:^|[a-z])id$/i;
-const CURSOR_KEY = /BackwardsCursor$/;
+const CURSOR_KEY = /BackwardsCursor$|^backwardsCursor$|^nextCursor$/;
 const CURSOR = new RegExp(
   `^\\{"requestedThreadId":"${PLACEHOLDER_UUID_SOURCE}","rolloutOrdinal":\\d+,"includeAnchor":true,"scope":\\{"kind":"[A-Za-z]+"\\}\\}$`,
   'i',
@@ -318,7 +318,7 @@ function checkField(
   if (PATH_KEY.test(key)) return isAllowedPath(value) ? [] : flag('path-field', value);
   if (CURSOR_KEY.test(key)) return CURSOR.test(value) ? [] : flag('cursor-shape', value);
   if (FREE_TEXT_KEYS.has(key)) {
-    if (value === '' || !options.approvedFreeText) return [];
+    if (value === '' || value === '[redacted]' || !options.approvedFreeText) return [];
     return options.approvedFreeText.has(normalizeFreeText(value))
       ? []
       : flag('unapproved-free-text', 'not in approved-free-text.json');

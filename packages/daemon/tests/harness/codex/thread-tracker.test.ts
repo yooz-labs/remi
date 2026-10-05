@@ -63,6 +63,8 @@ interface Ctx {
   attachCount(): number;
   /** The thread id of each `onAttached` call, in order. */
   attached: string[];
+  /** Every attach hook call, in order: `attaching <id>`, `failed <id>` or `attached <id>`. */
+  hooks: string[];
 }
 
 interface Options {
@@ -83,6 +85,8 @@ interface Options {
   spawnedAtMs?: number;
   /** `onAttached` throws (a callback that fails must not break the attach). */
   attachedThrows?: boolean;
+  /** `onAttaching` and `onAttachFailed` throw (they must not break the attach either). */
+  hooksThrow?: boolean;
   /** What the notices say about where to look: absent is a session with a terminal. */
   terminal?: () => TerminalWords;
 }
@@ -103,6 +107,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
   const notices: string[] = [];
   const siblingAsked: boolean[] = [];
   const attached: string[] = [];
+  const hooks: string[] = [];
   const claimed = new Set<string>();
   let ready!: () => void;
   const isReady = new Promise<void>((resolve) => {
@@ -151,8 +156,17 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       notices.push(m);
     },
     onStatus: (id, status) => statuses.push({ id, status }),
+    onAttaching: (id) => {
+      hooks.push(`attaching ${id}`);
+      if (opts.hooksThrow) throw new Error('the callback failed');
+    },
+    onAttachFailed: (id) => {
+      hooks.push(`failed ${id}`);
+      if (opts.hooksThrow) throw new Error('the callback failed');
+    },
     onAttached: (id) => {
       attached.push(id);
+      hooks.push(`attached ${id}`);
       if (opts.attachedThrows) throw new Error('the callback failed');
     },
     log: (m) => logs.push(m),
@@ -190,6 +204,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     status: (id, status) => server.emit(threadStatusFrame(id, status), { broadcast: true }),
     attachCount: () => logs.filter((l) => l.startsWith('attached to thread')).length,
     attached,
+    hooks,
   };
 }
 
@@ -1411,5 +1426,104 @@ describe('onAttached: the attach to the tracked thread succeeded (#1178)', () =>
     ctx.server.createRollout(id);
     await settle(250);
     expect(ctx.attached).toEqual([]);
+  });
+});
+
+describe('onAttaching and onAttachFailed: the attach attempt is announced before it starts and when it ends without attaching (#1180 review)', () => {
+  test('each thread/resume is announced before it is sent and ended by exactly one of failed or attached', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.resumeFrames().length >= 3, 'two failed attempts and a third');
+    ctx.server.createRollout(id);
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the attach');
+
+    // Announced, failed, announced, failed, ..., announced, attached: never two announcements in a row.
+    expect(ctx.hooks.length).toBeGreaterThanOrEqual(6);
+    ctx.hooks.forEach((hook, i) => {
+      expect(hook).toBe(
+        i % 2 === 0
+          ? `attaching ${id}`
+          : i === ctx.hooks.length - 1
+            ? `attached ${id}`
+            : `failed ${id}`,
+      );
+    });
+    expect(ctx.hooks.length % 2).toBe(0);
+  });
+
+  test('a method the app-server does not have is a failed attempt, announced once', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    ctx.server.onRequest('thread/resume', () => {
+      throw { code: -32601, message: 'method not found' };
+    });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.hooks.length >= 2, 'the failed attempt');
+    await settle(200);
+    expect(ctx.hooks).toEqual([`attaching ${id}`, `failed ${id}`]);
+  });
+
+  test('a link that drops while the request is out is a failed attempt, and the new connection announces its own', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const id = crypto.randomUUID();
+    ctx.server.createRollout(id);
+    ctx.server.onRequest('thread/resume', () => new Promise(() => {}));
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.hooks.length === 1, 'the announcement');
+    ctx.server.dropClient(ctx.server.clientIds()[0] as number);
+    await waitUntil(ctx, () => ctx.hooks.length >= 3, 'the failure and the next announcement');
+    expect(ctx.hooks.slice(0, 3)).toEqual([`attaching ${id}`, `failed ${id}`, `attaching ${id}`]);
+  });
+
+  test('a rotation while the request is out ends that attempt as failed, then announces the new thread', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    ctx.server.createRollout(a);
+    ctx.server.createRollout(b);
+    let release: () => void = () => {};
+    let held = true;
+    ctx.server.onRequest('thread/resume', (params) => {
+      const threadId = (params as Json)['threadId'] as string;
+      if (threadId === a && held) {
+        return new Promise((resolve) => {
+          release = () => resolve({ thread: { id: a, status: { type: 'idle' } } });
+        });
+      }
+      return { thread: { id: threadId, status: { type: 'idle' } } };
+    });
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.hooks.length === 1, 'the first announcement');
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.logs.some((l) => l.startsWith('rotated from')), 'the rotation');
+    held = false;
+    release();
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the attach of the new thread');
+
+    expect(ctx.hooks).toEqual([`attaching ${a}`, `failed ${a}`, `attaching ${b}`, `attached ${b}`]);
+  });
+
+  test('a hook that throws is logged and does not break the attach', async () => {
+    const ctx = await setup({ retryMs: 40, hooksThrow: true });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.resumeFrames().length >= 2, 'a failed attempt and a retry');
+    ctx.server.createRollout(id);
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the attach');
+    expect(ctx.logs.filter((l) => l.includes('attach hook failed')).length).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+
+  test('after dispose neither hook fires', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    ctx.server.onRequest('thread/resume', () => new Promise(() => {}));
+    ctx.started('tui', crypto.randomUUID());
+    await waitUntil(ctx, () => ctx.hooks.length === 1, 'the announcement');
+    ctx.tracker.dispose();
+    ctx.server.dropClient(ctx.server.clientIds()[0] as number);
+    await settle(250);
+    expect(ctx.hooks).toHaveLength(1);
   });
 });
