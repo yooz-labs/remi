@@ -54,11 +54,13 @@ async function fixture() {
       },
     },
   });
+  const port = server.port;
+  if (port === undefined) throw new Error('MISSING_FIXTURE_PORT');
   const registry = new SessionRegistryFile(join(dir, 'live'));
   const entry = {
     sessionId: 'owned-child',
     pid: process.pid,
-    wsPort: server.port,
+    wsPort: port,
     hookPort: 1,
     projectPath: dir,
     name: 'owned',
