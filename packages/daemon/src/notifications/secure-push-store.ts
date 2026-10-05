@@ -68,6 +68,18 @@ export class SecurePushStore {
       true,
     );
   }
+  /** READY peers keep the same captured generations for their entire channel lifetime. */
+  isCurrentAuthority(authority: SecurePushAuthority): boolean {
+    try {
+      return this.trust.withAuthorizationEpoch(
+        authority.publicKey,
+        (epoch) =>
+          !!epoch && epoch === authority.authorizationEpoch && this.enrollmentCurrent(authority),
+      );
+    } catch {
+      return false;
+    }
+  }
   async register(
     authority: SecurePushAuthority,
     registration: SecurePushRegistration,

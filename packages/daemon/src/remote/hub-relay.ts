@@ -11,6 +11,8 @@ import {
   type UnlockedIdentity,
   createAgentOutput,
   createError,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterResponse,
   createSessionListResponse,
   createSessionUpdate,
   deserialize,
@@ -26,6 +28,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
@@ -71,6 +74,7 @@ type Peer = {
   connection?: Connection;
   proxy?: ChildProxy;
   key?: string;
+  pushAuthority?: SecurePushAuthority;
   revision?: number;
   timer: ReturnType<typeof setTimeout>;
   offers: readonly Offer[];
@@ -99,6 +103,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private readonly offers = new Map<string, Offer>();
   private readonly locals = new Map<string, (text: string) => void>();
   private readonly devices: RelayDeviceStore;
+  private readonly subscriptions: SecurePushStore;
   private stateTail: Promise<unknown> = Promise.resolve();
   private readonly revisions = new Map<string, number>();
   private reconnect: ReturnType<typeof setTimeout> | undefined;
@@ -116,6 +121,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     )
       throw new Error('RELAY_PRODUCTION_CRYPTO_REQUIRED');
     this.devices = new RelayDeviceStore(cfg.dir, cfg.trust);
+    this.subscriptions = new SecurePushStore(cfg.dir, cfg.trust);
   }
   get connectionCount(): number {
     return [...this.peers.values()].filter((peer) => peer.stage === 'ready' && this.current(peer))
@@ -232,6 +238,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       !peer.transportClosing &&
       !!peer.key &&
       peer.revision === (this.revisions.get(peer.key) ?? 0) &&
+      (peer.pushAuthority
+        ? this.subscriptions.isCurrentAuthority(peer.pushAuthority)
+        : peer.stage !== 'ready') &&
       (peer.stage !== 'ready' || this.enrolled(peer))
     );
   }
@@ -404,13 +413,21 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                       .loadAuthorizedKeys()
                       .keys.some((key) => key.publicKey === peer.key),
                 );
+                // Capture before edge enrollment/READY awaits. A same-key
+                // regrant or re-pair cannot refresh this channel's authority.
+                const authority = this.subscriptions.captureAuthority(peer.key as string);
+                if (!authority) throw new Error('RELAY_CANCELLED');
+                peer.pushAuthority = authority;
                 if (
                   !this.current(peer) ||
                   !(await this.control?.command({ t: 'enroll', key: step.devicePublicKey }))
                 )
                   throw new Error('RELAY_ENROLL_UNCERTAIN');
-              } else if (!this.devices.isEnrolled(peer.key as string))
-                throw new Error('RELAY_REVOKED');
+              } else {
+                const authority = this.subscriptions.captureAuthority(peer.key as string);
+                if (!authority) throw new Error('RELAY_REVOKED');
+                peer.pushAuthority = authority;
+              }
               if (!this.current(peer) || !this.enrolled(peer)) throw new Error('RELAY_CANCELLED');
               const ready = await step.ready(Date.now(), {
                 emit: (frame) => {
@@ -625,6 +642,57 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
+    if (message.type === 'secure_push_register_request') {
+      const authority = peer.pushAuthority;
+      if (!authority) throw new Error('RELAY_REVOKED');
+      const allowed = [
+        'type',
+        'id',
+        'timestamp',
+        'token',
+        'environment',
+        'pushPublicKey',
+        'keyVersion',
+        'pushPrefs',
+      ];
+      const result = Object.keys(message).some((key) => !allowed.includes(key))
+        ? { success: false as const, error: 'INVALID_SUBSCRIPTION' as const }
+        : await this.subscriptions.register(
+            authority,
+            {
+              token: message.token,
+              environment: message.environment,
+              pushPublicKey: message.pushPublicKey,
+              keyVersion: message.keyVersion,
+              ...(message.pushPrefs === undefined ? {} : { pushPrefs: message.pushPrefs }),
+            },
+            () =>
+              this.active(peer) &&
+              !peer.transportClosing &&
+              peer.stage === 'ready' &&
+              peer.pushAuthority === authority,
+          );
+      // register's commit callback is inside the authorization lock: use only
+      // in-memory lifecycle state there, never current()'s nested disk lock.
+      this.sendRaw(peer.cid, createSecurePushRegisterResponse(message.id, result));
+      return;
+    }
+    if (message.type === 'secure_push_unregister_request') {
+      const authority = peer.pushAuthority;
+      if (!authority) throw new Error('RELAY_REVOKED');
+      let result: Parameters<typeof createSecurePushUnregisterResponse>[1];
+      try {
+        result = Object.keys(message).some((key) => !['type', 'id', 'timestamp'].includes(key))
+          ? { success: false, error: 'INVALID_SUBSCRIPTION' }
+          : this.subscriptions.unregister(authority)
+            ? { success: true }
+            : { success: false, error: 'NOT_AUTHORIZED' };
+      } catch {
+        result = { success: false, error: 'STORE_ERROR' };
+      }
+      this.sendRaw(peer.cid, createSecurePushUnregisterResponse(message.id, result));
+      return;
+    }
     if (message.type === 'session_list_request') {
       if (peer.listing) {
         this.sendRaw(
