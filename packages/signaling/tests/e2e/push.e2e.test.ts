@@ -1,6 +1,6 @@
 /** Real SQLite DO + JWT/signature/seal; only Apple network destination is owned HTTP/1.1. */
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { type Server, createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -680,4 +680,59 @@ test('actual pending nonce ownership replacement during JWT completion prevents 
   await gate(w, m.ridHex, null);
   expect((await result).outcome).toBe('uncertain');
   expect(requests.length).toBe(0);
+}, 15000);
+
+test('actual gateway refuses all14 reviewed weak encodings in both public fields and an off-curve signed P256 recipient', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  // Read the single reviewed table; independent shared arithmetic tests validate its exact membership.
+  const table = readFileSync(
+    new URL('../../../shared/src/relay/small-order.ts', import.meta.url),
+    'utf8',
+  );
+  const encodings = [...table.matchAll(/'([0-9a-f]{64})'/g)].map((m) => m[1] as string);
+  expect(encodings.length).toBe(14);
+  for (const key of encodings)
+    for (const field of ['machinePublicKey', 'devicePublicKey']) {
+      expect(
+        await post(w, JSON.stringify({ ...s, [field]: r.b64u(Buffer.from(key, 'hex')) })),
+      ).toMatchObject({ outcome: 'rejected', reason: 'MALFORMED', requestDigest: null });
+    }
+  const offCurve = new Uint8Array(65);
+  offCurve[0] = 4;
+  const signed = await submission(w, m, d, p, { pushPublicKey: r.b64u(offCurve) });
+  expect(await post(w, signed)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'MALFORMED',
+    requestDigest: null,
+  });
+  expect(requests.length).toBe(0);
+  expect(
+    Object.keys((await roomState(w, m.ridHex)).storage).filter((k) => k.startsWith('push-nonce:')),
+  ).toEqual([]);
+}, 15000);
+
+test('actual configured enrollment limit above64 still admits push with lazy per-row authority', async () => {
+  const {
+    worker: w,
+    machine: m,
+    device: d,
+    recipient: p,
+  } = await setup({ MAX_ENROLLED: '1000000' });
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  expect(requests.length).toBe(1);
+}, 15000);
+
+test('actual retained nonce from a revoked enrollment never acknowledges a fresh re-enrollment epoch', async () => {
+  const { worker: w, machine: m, device: d, recipient: p, host } = await setup();
+  const signed = await submission(w, m, d, p);
+  expect((await post(w, signed)).outcome).toBe('accepted');
+  expect((await host.revoke(d.publicKey))['ok']).toBe(true);
+  expect((await host.enroll(d.publicKey))['ok']).toBe(true);
+  expect(await post(w, signed)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'NOT_ENROLLED',
+    retryable: false,
+  });
+  expect(requests.length).toBe(1);
 }, 15000);

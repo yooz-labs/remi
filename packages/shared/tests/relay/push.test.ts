@@ -471,6 +471,10 @@ test('whole signed inner measures multibyte UTF8 exactly at2048 and refuses2049 
   const options = value.options.map((o, i) => (i === 0 ? { ...o, description: desc } : o));
   const exact = r.buildPushPayload({ ...value, options });
   const sig = await machine.sign(await r.buildPushContentSigningInput(content, exact));
+  expect(
+    () => r.encodeSignedPushContent(content, exact, sig),
+    'whole signed inner accepts exactly2048 UTF8 bytes',
+  ).not.toThrow();
   const inner = r.encodeSignedPushContent(content, exact, sig);
   expect(inner.length).toBe(2048);
   const sealed = await r.seal(
