@@ -275,11 +275,12 @@ final class ClientIdentityTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try "<html><body>Protected import</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        var active = false
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
@@ -287,6 +288,7 @@ final class ClientIdentityTests: XCTestCase {
         let legacy = ClientIdentity(privateKey: .init())
         XCTAssertFalse(NativeForegroundUnlock.isActive(), "Unhosted test process must not activate the user app")
         NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        active = true // OS foreground boundary: resuming does not revive the original decrypt interaction.
         let imported = try await web.callAsyncJavaScript(
             "try { return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'import',pkcs8:pkcs8,publicKey:publicKey,revision:null,requiresAppUnlock:true}) } catch { return {refused:true} }",
             arguments: ["pkcs8":Ed25519PKCS8.encode(legacy.privateKey).base64EncodedString(),"publicKey":legacy.publicKeyRaw.base64EncodedString()],
@@ -303,11 +305,12 @@ final class ClientIdentityTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try "<html><body>Protected import</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        var active = true
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            NativeIdentityBridge(scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
@@ -321,7 +324,11 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertNil(reply["refused"], "Explicit protected legacy import must reach durable native storage")
         guard reply["refused"] == nil else { return }
         XCTAssertEqual(reply["requiresAppUnlock"] as? Bool, true)
-        XCTAssertEqual(reply["locked"] as? Bool, false, "Explicit protected import unlocks only this foreground bridge session")
+        XCTAssertEqual(reply["locked"] as? Bool, true, "Import cannot implicitly unlock even in an active foreground")
+        let unlocked = try await web.callAsyncJavaScript(
+            "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'unlock',revision:revision,publicKey:publicKey})",
+            arguments:["revision":reply["revision"]!,"publicKey":legacy.publicKeyRaw.base64EncodedString()],in:nil,contentWorld:.page)
+        XCTAssertEqual((unlocked as? [String:Any])?["locked"] as? Bool,false)
         let durable = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
         let message = Data("protected bridge signing".utf8)
         let signed = try await web.callAsyncJavaScript(
@@ -330,6 +337,12 @@ final class ClientIdentityTests: XCTestCase {
             in:nil,contentWorld:.page)
         let signature = try XCTUnwrap(Data(base64Encoded:try XCTUnwrap((signed as? [String:Any])?["signature"] as? String)))
         XCTAssertTrue(legacy.publicKey.isValidSignature(signature,for:message))
+        active = false // Sign must check OS state even if no inactive callback has arrived yet.
+        let inactiveSign = try await web.callAsyncJavaScript(
+            "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message}); return true } catch { return false }",
+            arguments:["revision":durable.revision,"publicKey":durable.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()],in:nil,contentWorld:.page)
+        XCTAssertEqual(inactiveSign as? Bool,false,"Protected signer must check current foreground state at ingress")
+        active = true
         let suite = "remi1199-protected-bridge-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
         defer { defaults.removePersistentDomain(forName:suite) }
@@ -431,7 +444,7 @@ final class ClientIdentityTests: XCTestCase {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot:root),forURLScheme:"remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme:"remi-app",service:service,account:account),contentWorld:.page,name:NativeIdentityBridge.handlerName)
+            NativeIdentityBridge(scheme:"remi-app",service:service,account:account,foreground:{ true },authorization:{ true }),contentWorld:.page,name:NativeIdentityBridge.handlerName)
         let web = WKWebView(frame:.zero,configuration:config)
         web.load(URLRequest(url:try XCTUnwrap(URL(string:"remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds:20_000_000) }
@@ -492,7 +505,9 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(pending["legacyStored"] as? Bool,true)
         XCTAssertNil(try ClientIdentityStore.load(service:service,account:account),"A rejected protected import cannot create a volatile replacement")
         let after = try await web.callAsyncJavaScript("""
-            const state = await window.nativeProviderTest.chooseNativeIdentity(window.migration,'legacy','r4-isolated-passphrase');
+            const migrated = await window.nativeProviderTest.chooseNativeIdentity(window.migration,'legacy','r4-isolated-passphrase');
+            if (migrated.kind !== 'locked') throw new Error('protected import implicitly unlocked');
+            const state = await window.nativeProviderTest.unlockNativeIdentity(migrated.native);
             const signature = await state.identity.sign(new TextEncoder().encode('protected actual provider'));
             return {kind:state.kind,publicKey:state.identity.publicKeyRaw,protected:state.identity.requiresAppUnlock,
               legacyStored:localStorage.getItem('remi-identity') !== null,signature};

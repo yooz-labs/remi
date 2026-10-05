@@ -6,12 +6,14 @@ import {
   chooseNativeIdentity,
   currentNativeIdentity,
   inspectNativeIdentity,
+  unlockNativeIdentity,
 } from '../../src/lib/native-identity';
 
 Object.assign(window, {
   nativeProviderTest: {
     chooseNativeIdentity,
     inspectNativeIdentity,
+    unlockNativeIdentity,
     currentNativeIdentity,
     signClient,
     async storeLegacy(passphrase?: string) {

@@ -103,6 +103,7 @@ export function NativeIdentityPanel({
             <p>
               Import stores the key in the device Keychain, replacing passphrase encryption at rest.
               A protected legacy identity retains app unlock and cannot answer from the lock screen.
+              After import, use Unlock Identity to authenticate with the device before signing.
             </p>
             {state.legacy.salt && (
               <input

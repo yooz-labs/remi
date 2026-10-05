@@ -17,14 +17,20 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let service: String
     private let account: String
     private let unlockLifetime = NativeUnlockLifetime()
+    private let foreground: () -> Bool
+    private let authorization: () async -> Bool
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
     private var replacedObserver: NSObjectProtocol?
 
-    init(scheme: String, service: String, account: String) {
+    init(scheme: String, service: String, account: String,
+         foreground: @escaping () -> Bool = NativeForegroundUnlock.isActive,
+         authorization: @escaping () async -> Bool = NativeForegroundUnlock.authenticate) {
         self.scheme = scheme
         self.service = service
         self.account = account
+        self.foreground = foreground
+        self.authorization = authorization
         super.init()
         inactiveObserver = NotificationCenter.default.addObserver(forName: NativeForegroundUnlock.inactiveNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -70,7 +76,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                           try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw,
                           await unlockLifetime.authenticate(revision: identity.revision, currentRevision: {
                               try? ClientIdentityStore.load(service: self.service, account: self.account)?.revision
-                          }),
+                          }, authorization: authorization, foreground: foreground),
                           Self.isBundledDocument(message.webView?.url, scheme: scheme),
                           try ClientIdentityStore.load(service: service, account: account)?.revision == identity.revision
                     else { throw NativeIdentityError.changed }
@@ -95,7 +101,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         ["exists": true, "publicKey": identity.publicKeyRaw.base64EncodedString(),
          "fingerprint": identity.fingerprint, "revision": identity.revision,
          "requiresAppUnlock": identity.requiresAppUnlock,
-         "locked": identity.requiresAppUnlock && unlockedRevision != identity.revision]
+         "locked": identity.requiresAppUnlock && (unlockedRevision != identity.revision || !foreground())]
     }
 
     private func handle(_ body: Any) throws -> [String: Any] {
@@ -128,9 +134,10 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                 publicKey: bytes(request["publicKey"], count: 32...32), replacing: revision,
                 requiresAppUnlock: protected.boolValue,
                 service: service, account: account)
-            // Only an explicit foreground import has decrypted the legacy identity.
-            // The durable policy still denies all background answers.
-            if imported.requiresAppUnlock { unlockedRevision = imported.revision }
+            // Decryption in JS does not grant a native foreground signing lifetime.
+            // Import always remains locked until an explicit OS-authenticated unlock;
+            // a decrypt/export continuation may have crossed inactive -> active (#1199).
+            if imported.requiresAppUnlock { unlockedRevision = nil }
             var response = publicRecord(imported)
             let replaced = previous != nil && previous?.revision != imported.revision
             response["requiresRestart"] = scheme == "remi-app" && replaced
@@ -155,7 +162,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                   identity.revision == revision,
                   try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw
             else { throw NativeIdentityError.changed }
-            guard !identity.requiresAppUnlock || unlockedRevision == identity.revision else {
+            guard !identity.requiresAppUnlock || (unlockedRevision == identity.revision && foreground()) else {
                 throw NativeIdentityError.changed
             }
             let signature = try identity.sign(bytes(request["message"], count: 1...4096))
