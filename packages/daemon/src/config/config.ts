@@ -238,20 +238,21 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // and read the auth warning that comes with it.
     //
     // SCOPE, stated so this does not read as more than it is: this closes the
-    // unauthenticated LAN path. It does NOT touch the relay path -- default-on,
-    // dials outward, unaffected by the bind, and still plaintext through the
-    // worker in rotating-code mode (#881) -- nor the local-process path, where
-    // any process on this machine is exempted from auth while
-    // `require_local_auth` is false (#869).
+    // unauthenticated LAN path. It does NOT touch the relay path, which dials
+    // outward and is unaffected by the bind (it was closed separately, #1193:
+    // off by default, and refusing every peer without an authenticator) -- nor
+    // the local-process path, where any process on this machine is exempted
+    // from auth while `require_local_auth` is false (#869).
     //
     // NAME THE DIRECTION on the relay -- an earlier draft of this comment said
     // "the same `answer`/`user_input` power the LAN peer had", which conflates
     // the two halves, the exact error AGENTS.md records a previous draft making.
-    // Traced: outbound `sendRaw` REFUSES without `sessionKeys`
-    // (`relay-adapter.ts`), which rotating-code mode never derives; inbound
-    // falls through to `handleRelayMessage(rawPayload)` in plaintext. So it is
+    // Before #1193, traced: outbound `sendRaw` REFUSED without `sessionKeys`
+    // (`relay-adapter.ts`), which rotating-code mode never derives; inbound fell
+    // through to `handleRelayMessage(rawPayload)` in plaintext. So it was
     // inbound INJECTION, not the LAN peer's bidirectional control -- the daemon
-    // cannot answer back at all (#881).
+    // could not answer back at all (#881). Both halves now refuse without an
+    // authenticator.
     //
     // It also does not reach an install that already MATERIALIZED the old
     // default: `remi config init` writes `bind = "${DEFAULT_CONFIG.daemon.bind}"`
@@ -278,7 +279,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   network: {
     mdns: true,
-    relay: true,
+    // Off by default (#1193). Every install used to register a room with the
+    // signaling Worker, and no shipped client can join one, so the relay gave a
+    // default install no remote capability and an inbound path gated only by
+    // the room code. `relay = true` (or `--permanent-code`) still turns it on,
+    // and without `--auth --permanent-code` the daemon prints a notice and
+    // starts no relay at all (and the adapter would refuse every peer anyway).
+    // A config.toml that already holds `relay = true` (from `remi config init`
+    // before this change) keeps the setting and gets that notice at boot.
+    relay: false,
     signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
   },
   auth: {
@@ -401,6 +410,19 @@ export interface LoadedConfig {
   /** True when `[notifications] subagent_alert` was absent and the legacy
    *  `auto_approve.subagent_alert` list was used in its place. */
   readonly subagentAlertFromLegacy: boolean;
+}
+
+/**
+ * Whether this process registers with the signaling relay (#1193): off unless
+ * `network.relay = true` or `--permanent-code` asks for it, and `--no-relay`
+ * beats both. `--permanent-code` counts because a fixed relay code means
+ * nothing without a relay, and it is what the authenticated mode is started by.
+ */
+export function relayRequested(
+  configRelay: boolean,
+  cli: { readonly noRelay: boolean; readonly permanentCode: boolean },
+): boolean {
+  return !cli.noRelay && (configRelay || cli.permanentCode);
 }
 
 /**
@@ -708,6 +730,8 @@ require_local_auth = false
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
+# Off by default: no shipped client connects through the relay yet (#1193).
+# With it on, no relay starts unless the daemon runs with --auth --permanent-code.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
@@ -799,6 +823,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
   lines.push(`  relay = ${config.network.relay}`);
+  lines.push('  # --permanent-code turns the relay on, whatever relay says');
   lines.push(`  signaling_url = "${config.network.signaling_url}"`);
   lines.push('');
   lines.push('[auth]');

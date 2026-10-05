@@ -40,7 +40,8 @@ describe('runCodeCommand', () => {
     expect(store.refreshCalls).toBe(1);
     expect(out[0]).toBe('New permanent connection code: ROTATED-1');
     expect(out[1]).toBe('Restart the daemon for the new code to take effect.');
-    expect(out.some((m) => m.includes('By default, codes rotate on each reconnect'))).toBe(true);
+    expect(out.some((m) => m.includes('This code belongs to the relay'))).toBe(true);
+    expect(out.some((m) => m.includes('codes rotate'))).toBe(false);
   });
 
   test('default (no refresh) prints existing code if present', () => {
@@ -51,7 +52,9 @@ describe('runCodeCommand', () => {
     expect(store.loadCalls).toBe(1);
     expect(store.refreshCalls).toBe(0);
     expect(out[0]).toBe('Permanent connection code: EXISTING-CODE');
-    expect(out[1]).toBe('Use --permanent-code flag when starting daemon to enable this code.');
+    expect(out[1]).toBe(
+      'Use --auth --permanent-code when starting the daemon to use this code; the relay stays off without them.',
+    );
   });
 
   test('default generates a new code when none exists and annotates it', () => {
@@ -62,7 +65,9 @@ describe('runCodeCommand', () => {
     expect(store.loadCalls).toBe(1);
     expect(store.refreshCalls).toBe(1);
     expect(out[0]).toBe('Permanent connection code: NEW-AUTO (newly generated)');
-    expect(out[1]).toBe('Use --permanent-code flag when starting daemon to enable this code.');
+    expect(out[1]).toBe(
+      'Use --auth --permanent-code when starting the daemon to use this code; the relay stays off without them.',
+    );
   });
 
   test('always appends the exact two-line informational footer', () => {
@@ -70,13 +75,15 @@ describe('runCodeCommand', () => {
     const { io, out } = makeIO();
     runCodeCommand(store, {}, io);
     const footer = out.slice(-2);
-    // Character-for-character equivalence, including the leading \n on the
-    // first line — matches the original console.log('\nNote: ...') exactly.
+    // Character-for-character, including the leading \n on the first line.
+    // It says what is true: the code belongs to the relay, which is off by
+    // default, and no shipped client connects with it (#1193). The old footer
+    // said codes rotate by default and that relay connections need Ed25519
+    // authentication; rotating codes now exist only when the relay is enabled
+    // by hand, and then none is printed.
     expect(footer[0]).toBe(
-      '\nNote: By default, codes rotate on each reconnect. Use --permanent-code to',
+      '\nThis code belongs to the relay. The relay is off by default, and no shipped client connects with a code yet.',
     );
-    expect(footer[1]).toBe(
-      'persist a fixed code (requires Ed25519 authentication for relay connections).',
-    );
+    expect(footer[1]).toBe('It is used only by --auth --permanent-code.');
   });
 });

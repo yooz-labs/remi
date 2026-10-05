@@ -71,6 +71,11 @@ export class Authenticator {
     this.tofuMode = config.tofuMode ?? 'reject';
   }
 
+  /** True when an unknown key is added to the authorized keys on first sight (trust on first use). */
+  get acceptsUnknownKeys(): boolean {
+    return this.tofuMode === 'auto-accept';
+  }
+
   /**
    * Create an auth challenge for a new connection.
    * @param connectionId Unique connection identifier to track the challenge

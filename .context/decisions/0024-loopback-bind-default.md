@@ -1,8 +1,14 @@
 # ADR 0024: The daemon binds loopback by default; reaching it off-machine is opt-in
 
-**Status:** accepted
+**Status:** accepted; amended by #1193 (2026-10-04)
 **Date:** 2026-08-11
 **Owner:** Seyed Yahya Shirazi
+
+> **Amended 2026-10-04 by #1193.**
+> The relay is no longer default-on and no longer accepts a peer without an authenticator, so the "Not closed" bullet below about the relay is history, kept as written because it records what was true when this ADR was decided.
+> `network.relay` defaults to `false`; with it on and no `--auth --permanent-code` the daemon prints a notice and registers no relay at all; the relay adapter itself refuses every peer and drops every inbound frame without an authenticator.
+> Nothing remote ships through the relay today, so "SSH tunnels and the relay are untouched" below is likewise history: SSH tunnels are the one remote path that still works on a stock install.
+> Still not closed by either change: with `--auth --permanent-code` and trust on first use (the default), any client that knows the room code is added to the authorized keys on its first connection; the relay rebuild (#1198) replaces that with a pairing secret.
 
 > Numbered 0024, not 0023: 0023 (`artifact-deletion-is-proved-not-judged`) is
 > claimed by an un-merged branch.
