@@ -123,7 +123,7 @@ Key directories to know:
 
 - `packages/daemon/src` — CLI, PTY / session management, transcript parsing, adapters, auth, mDNS
 - `packages/shared/src` — protocol and shared types consumed across packages
-- `packages/signaling/src` — the relay Worker: the front door (`index.ts`), the per-machine room (`connection-room.ts`), admission checks, the global limiter, and the legacy `/push` with APNS
+- `packages/signaling/src`: the relay Worker, with the front door (`index.ts`), the per-machine room (`connection-room.ts`), admission checks, the global limiter, and the legacy `/push` with APNS
 - `packages/web/src` — React UI, connection flow, chat / session components, hooks, lib utilities
 
 ## Differentiators

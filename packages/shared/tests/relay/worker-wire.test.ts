@@ -135,7 +135,7 @@ describe('admit', () => {
   });
 
   test('the size limit counts UTF-8 bytes, not characters', () => {
-    const multibyte = `{"t":"admit","k":"${K}","s":"${S}","x":"${'é'.repeat(200)}"}`;
+    const multibyte = `{"t":"admit","k":"${K}","s":"${S}","x":"${'\u00e9'.repeat(200)}"}`;
     expect(multibyte.length).toBeLessThan(MAX_WORKER_TEXT);
     expect(codeOfSync(() => decodeAdmit(multibyte))).toBe('OVERSIZE');
   });
