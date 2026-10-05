@@ -11,7 +11,7 @@ function required<T>(name: string): T {
   return value as T;
 }
 
-const payload = {
+const payload: Extract<r.SecurePushPayload, { type: 'question' }> = {
   type: 'question',
   actionable: true,
   sessionId: 'owned-session',
