@@ -334,8 +334,21 @@ final class HubClientIntegrationTests: XCTestCase {
 
     /// Real hub with deliberately inconsistent public identity metadata; no fake gateway.
     func testRejectsRealHubWhoseClaimedFingerprintDoesNotMatchItsKey() async throws {
+        try await rejectHubMetadata(port: 18789, publicKey: nil, fingerprint: "ffffffffffffffff", expectedReason: "fingerprint")
+    }
+
+    func testRejectsSmallOrderHubKeyBeforeSigning() async throws {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("fixtures/ed25519-server-keys.json")
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+        let item = try XCTUnwrap(cases.first { $0["smallOrder"] as? Bool == true })
+        let publicKey = try XCTUnwrap(item["publicKey"] as? String)
+        let fingerprint = try XCTUnwrap(item["fingerprint"] as? String)
+        try await rejectHubMetadata(port: 18790, publicKey: publicKey, fingerprint: fingerprint, expectedReason: "public key is invalid")
+    }
+
+    private func rejectHubMetadata(port: Int, publicKey: String?, fingerprint: String, expectedReason: String) async throws {
         let binary = try requireBinary()
-        let port = 18789
         try spawnHub(binary: binary, port: port)
         let home = try XCTUnwrap(homeDir)
         let identityFile = home.appendingPathComponent(".remi/identity.json")
@@ -347,7 +360,8 @@ final class HubClientIntegrationTests: XCTestCase {
         previous.terminate()
         previous.waitUntilExit()
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: identityFile)) as? [String: Any])
-        object["fingerprint"] = "ffffffffffffffff"
+        object["fingerprint"] = fingerprint
+        if let publicKey { object["publicKey"] = publicKey }
         try JSONSerialization.data(withJSONObject: object).write(to: identityFile, options: .atomic)
         let restarted = Process()
         restarted.executableURL = previous.executableURL
@@ -364,7 +378,7 @@ final class HubClientIntegrationTests: XCTestCase {
             if case .rejected(_, let reason) = phase {
                 let code = await MainActor.run { client.approvalErrorCode }
                 XCTAssertNil(code, "A false server fingerprint must never register pending client approval")
-                XCTAssertTrue(reason.contains("fingerprint"), reason)
+                XCTAssertTrue(reason.contains(expectedReason), reason)
                 XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".remi/pending_keys.json").path))
                 await MainActor.run { client.stopForTesting() }
                 return

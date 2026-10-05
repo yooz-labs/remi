@@ -419,15 +419,30 @@ final class HubClient: ObservableObject {
     /// Sign the challenge with this app's identity and reply with
     /// `auth_response`. A malformed frame or a signing failure (CryptoKit
     /// signing over a valid key does not fail in practice, but this app
-    /// must not silently swallow it if it ever does) is logged and leaves
-    /// the connection to time out and retry — there is nothing else useful
-    /// to do with a challenge this app cannot answer.
+    /// must not silently swallow it if it ever does) rejects the connection.
+    /// Invalid server keys and fingerprint claims are refused before signing (#873).
     private func handleAuthChallenge(data: Data, port: Int) {
         guard let frame = try? JSONDecoder().decode(AuthChallengeFrame.self, from: data),
             let challengeData = Data(base64Encoded: frame.challenge),
             let serverPublicKeyRaw = Data(base64Encoded: frame.serverPublicKey)
         else {
-            NSLog("[HubClient] Malformed auth_challenge from port \(port)")
+            approvalErrorCode = nil
+            handleAuthRejected(port: port, reason: "the hub sent a malformed authentication challenge")
+            return
+        }
+        // Verify the advertised identity before signing, not just possession of
+        // an arbitrary supplied key in auth_result (#873). This client has no persistent server pin.
+        guard serverPublicKeyRaw.count == 32,
+            serverPublicKeyRaw.base64EncodedString() == frame.serverPublicKey,
+            !ClientIdentity.isSmallOrderPublicKey(serverPublicKeyRaw)
+        else {
+            approvalErrorCode = nil
+            handleAuthRejected(port: port, reason: "the hub's public key is invalid")
+            return
+        }
+        guard ClientIdentity.fingerprint(ofPublicKeyRaw: serverPublicKeyRaw) == frame.serverFingerprint else {
+            approvalErrorCode = nil
+            handleAuthRejected(port: port, reason: "the hub's public key fingerprint does not match its claim")
             return
         }
         pendingChallenge = (challengeData, serverPublicKeyRaw)
@@ -440,6 +455,8 @@ final class HubClient: ObservableObject {
             sendJSON(response)
         } catch {
             NSLog("[HubClient] Failed to sign auth_challenge: \(error)")
+            approvalErrorCode = nil
+            handleAuthRejected(port: port, reason: "this app could not sign the authentication challenge")
         }
     }
 
