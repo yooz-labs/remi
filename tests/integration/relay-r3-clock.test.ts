@@ -57,7 +57,7 @@ async function sourceHub() {
   // Drain privately. No raw process output or token is included in a diagnostic.
   let admitted = false;
   const readAdmission = async () => {
-    const reader = proc.stdout.getReader();
+    const reader = proc.stderr.getReader();
     const decoder = new TextDecoder();
     let tail = '';
     while (true) {
@@ -67,7 +67,7 @@ async function sourceHub() {
       if (tail.includes('Relay control admitted')) admitted = true;
     }
   };
-  const output = Promise.all([readAdmission(), new Response(proc.stderr).text()]);
+  const output = Promise.all([new Response(proc.stdout).text(), readAdmission()]);
   const sockets: Socket[] = [];
   const locals: WebSocket[] = [];
   const cleanup = async () => {
