@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -125,7 +126,16 @@ test('noninteractive pair refuses before dialing or starting a model', async () 
   expect(`${out}${err}`).toContain('interactive terminal');
 }, 10000);
 
-import { deserialize, generateId, now, relayV2, serialize } from '@remi/shared';
+import {
+  type ProtocolMessage,
+  createAnswer,
+  createHello,
+  deserialize,
+  generateId,
+  now,
+  relayV2,
+  serialize,
+} from '@remi/shared';
 import {
   Mailbox,
   Socket,
@@ -147,7 +157,7 @@ async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
   });
   return { ws, inbox };
 }
-test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
+async function paired() {
   const running = await hub();
   const local = await localSocket(running);
   // Health precedes asynchronous control admission; ask only once it has had time to admit.
@@ -229,8 +239,121 @@ test('real source hub grants only after exact local confirmation and persists be
     throw new Error('expected correlated devices response');
   expect(response.requestId).toBe(id);
   expect(response.devices).toHaveLength(1);
+  return { running, local, device, socket, channel, inbox, drain: () => incoming };
+}
+test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
+  const { socket, channel, drain } = await paired();
   socket.sendText('pong');
-  expect(await socket.closed).toEqual(relayV2.FAILURE_CLOSE);
-  await incoming;
+  const closed = await socket.closed;
+  expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
+  // Bun 1.3.11 drops longer outbound close reasons (existing Worker E2E probe).
+  expect(closed.reason).toBe(Bun.version === '1.3.11' ? '' : relayV2.FAILURE_CLOSE.reason);
+  await drain();
   expect(await channel.transportClosed()).toBe('unclean');
 }, 20000);
+
+test('authenticated peer BYE receives authenticated host BYE and orderly close', async () => {
+  const { channel, socket, drain } = await paired();
+  await channel.bye();
+  expect((await socket.closed).code).toBe(1000);
+  await drain();
+  expect(await channel.transportClosed()).toBe('clean');
+}, 20000);
+async function nextType(
+  inbox: Mailbox<ReturnType<typeof deserialize>>,
+  type: ProtocolMessage['type'],
+) {
+  for (let i = 0; i < 64; i++) {
+    const message = await inbox.next();
+    if (message?.type === 'raw_pty_output') throw new Error('RAW_PTY_REACHED_RELAY');
+    if (message?.type === type) return message;
+  }
+  throw new Error('semantic response not found');
+}
+test('actual child hook decision yields delivered result while stale answer refuses and raw PTY stays local', async () => {
+  const { running, channel, inbox } = await paired();
+  writeFileSync(
+    join(running.dir, 'bin/claude'),
+    '#!/bin/sh\nprintf "RAW_PTY_PRIVATE_SENTINEL\\n"\nexec /bin/cat\n',
+    { mode: 0o700 },
+  );
+  const port = await reserveRange(1, 50, '127.0.0.1');
+  const child = spawn(running.dir, [
+    '--daemon',
+    '--port',
+    String(port),
+    '--no-relay',
+    '--no-mdns',
+    '--no-telegram',
+  ]);
+  const childOut = new Response(child.stdout).text();
+  const childErr = new Response(child.stderr).text();
+  const deadline = Date.now() + 10000;
+  let entry: { sessionId: string; hookPort: number; wsPort: number } | undefined;
+  while (!entry) {
+    if (child.exitCode !== null)
+      throw new Error(`controlled child exited: ${await childOut} ${await childErr}`);
+    const live = join(running.dir, 'state/live-sessions');
+    if (existsSync(live))
+      for (const name of readdirSync(live).filter((name) => name.endsWith('.json'))) {
+        const value = JSON.parse(readFileSync(join(live, name), 'utf8'));
+        if (value.pid === child.pid && value.claudeChildPid) entry = value;
+      }
+    if (Date.now() > deadline) throw new Error('controlled child registration deadline');
+    if (!entry) await Bun.sleep(10);
+  }
+  await channel.send(
+    new TextEncoder().encode(
+      serialize(createHello('test', '2.0.0', { resumeSessionId: entry.sessionId })),
+    ),
+  );
+  const attached = await nextType(inbox, 'hello_ack');
+  expect(attached.type === 'hello_ack' && attached.sessionId).toBe(entry.sessionId);
+  expect(attached.type === 'hello_ack' && Boolean(attached.attachState)).toBe(true);
+  if (attached.type !== 'hello_ack' || !attached.claudeSessionId)
+    throw new Error('child binding missing');
+  const binding = attached.claudeSessionId;
+  const controller = new AbortController();
+  const hook = fetch(`http://127.0.0.1:${entry.hookPort}/hooks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: controller.signal,
+    body: JSON.stringify({
+      hook_event_name: 'PermissionRequest',
+      session_id: binding,
+      transcript_path: attached.transcriptPath ?? join(running.dir, 'owned.jsonl'),
+      cwd: running.dir,
+      permission_mode: 'default',
+      tool_name: 'Bash',
+      tool_input: { command: 'PRIVATE_TOOL_SENTINEL' },
+    }),
+  });
+  try {
+    const question = await nextType(inbox, 'question');
+    if (question.type !== 'question') throw new Error('expected question');
+    const no = question.question.options.find((option) => option.isNo);
+    if (!no) throw new Error('expected held deny option');
+    const answer = createAnswer(
+      entry.sessionId,
+      question.question.id,
+      no.value,
+      binding,
+      'PRIVATE_DENIAL_SENTINEL',
+    );
+    await channel.send(new TextEncoder().encode(serialize(answer)));
+    const result = await nextType(inbox, 'answer_result');
+    expect(result.type === 'answer_result' && result.requestId).toBe(answer.id);
+    expect(result.type === 'answer_result' && result.outcome).toBe('delivered');
+    const decision = await (await hook).json();
+    expect(decision.hookSpecificOutput.decision.behavior).toBe('deny');
+    expect(decision.hookSpecificOutput.decision.message).toBe('PRIVATE_DENIAL_SENTINEL');
+    const stale = createAnswer(entry.sessionId, 'missing-question', 'yes');
+    await channel.send(new TextEncoder().encode(serialize(stale)));
+    const refused = await nextType(inbox, 'answer_result');
+    expect(refused.type === 'answer_result' && refused.requestId).toBe(stale.id);
+    expect(refused.type === 'answer_result' && refused.outcome).toBe('stale');
+  } finally {
+    controller.abort();
+    await hook.catch(() => {});
+  }
+}, 25000);
