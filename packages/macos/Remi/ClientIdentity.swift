@@ -52,7 +52,7 @@ struct ClientIdentity {
 
     var authorizeCommand: String { "remi authorize \(fingerprint)" }
 
-    /// Cross-language copy of the reviewed 14 encodings in shared/ed25519-public-key.ts.
+    /// Cross-language copy of the reviewed 14 encodings in shared/relay/small-order.ts.
     /// ClientIdentityTests validates this against helper-generated public fixtures;
     /// no new curve algorithm is implemented here (#873).
     private static let smallOrderEncodings: Set<String> = [
