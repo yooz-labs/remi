@@ -10,6 +10,7 @@ import {
   serialize,
 } from '@remi/shared';
 import { SecurePushStore } from '../../packages/daemon/src/notifications/secure-push-store.ts';
+import { RelayDeviceStore } from '../../packages/daemon/src/remote/relay-device-store.ts';
 import { resumed } from './relay-r3-fixture.ts';
 
 async function exchange(running: Awaited<ReturnType<typeof resumed>>, request: ProtocolMessage) {
@@ -136,5 +137,28 @@ test('secure READY channel cannot regain authority after grant revoke and same-k
     expect(running.relay.sendRaw(running.cid, createSecurePushUnregisterRequest())).toBe(false);
   } finally {
     await running.cleanup();
+  }
+}, 10000);
+
+test('secure READY channel cannot adopt a new real pairing generation or corrupt authority storage', async () => {
+  const running = await resumed();
+  try {
+    expect(running.relay.connectionCount).toBe(1);
+    await new RelayDeviceStore(running.dir, running.trust).add(
+      running.device.publicKeyRaw,
+      'synthetic new pairing',
+    );
+    expect(running.relay.connectionCount).toBe(0);
+  } finally {
+    await running.cleanup();
+  }
+  const corrupt = await resumed();
+  try {
+    const { writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    writeFileSync(join(corrupt.dir, 'relay_devices.json'), '{');
+    expect(corrupt.relay.connectionCount).toBe(0);
+  } finally {
+    await corrupt.cleanup();
   }
 }, 10000);
