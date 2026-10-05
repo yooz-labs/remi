@@ -19,6 +19,8 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     let scheme: String
     private let service: String
     private let account: String
+    private let accessGroup: String?
+    private let authority: NativeIdentityAuthorityBarrier
     private let unlockLifetime = NativeUnlockLifetime()
     private let foreground: @MainActor () -> Bool
     private let authorization: @MainActor () async -> Bool
@@ -33,13 +35,15 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var qrTask: Task<Void, Never>?
     private var documentObserver: NSKeyValueObservation?
 
-    init(scheme: String, service: String, account: String,
+    init(authority: NativeIdentityAuthorityBarrier, accessGroup: String?, scheme: String, service: String, account: String,
          foreground: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() },
          authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
          selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
         self.scheme = scheme
         self.service = service
         self.account = account
+        self.authority = authority
+        self.accessGroup = accessGroup
         self.foreground = foreground
         self.authorization = authorization
         self.selectedQRImage = selectedQRImage
@@ -134,14 +138,14 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                     guard JSONSerialization.isValidJSONObject(request),
                           try JSONSerialization.data(withJSONObject: request).count <= 8192,
                           Set(request.keys) == ["op", "revision", "publicKey"],
-                          let identity = try ClientIdentityStore.load(service: service, account: account),
+                          let identity = try ClientIdentityStore.load(authority: authority, accessGroup: accessGroup, service: service, account: account),
                           request["revision"] as? String == identity.revision,
                           try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw,
                           await unlockLifetime.authenticate(revision: identity.revision, currentRevision: {
-                              try? ClientIdentityStore.load(service: self.service, account: self.account)?.revision
+                              try? ClientIdentityStore.load(authority: self.authority, accessGroup: self.accessGroup, service: self.service, account: self.account)?.revision
                           }, authorization: authorization, foreground: foreground),
                           Self.isBundledDocument(message.webView?.url, scheme: scheme),
-                          try ClientIdentityStore.load(service: service, account: account)?.revision == identity.revision
+                          try ClientIdentityStore.load(authority: authority, accessGroup: accessGroup, service: service, account: account)?.revision == identity.revision
                     else { throw NativeIdentityError.changed }
                     unlockedRevision = identity.revision
                     replyHandler(publicRecord(identity), nil)
@@ -182,23 +186,23 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         switch op {
         case "public":
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }
-            guard let identity = try ClientIdentityStore.load(service: service, account: account) else {
+            guard let identity = try ClientIdentityStore.load(authority: authority, accessGroup: accessGroup, service: service, account: account) else {
                 return ["exists": false]
             }
             return publicRecord(identity)
         case "create":
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }
-            return publicRecord(try ClientIdentityStore.loadOrCreate(service: service, account: account))
+            return publicRecord(try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: accessGroup, service: service, account: account))
         case "import":
             guard Set(request.keys) == ["op", "pkcs8", "publicKey", "revision", "requiresAppUnlock"] else {
                 throw NativeIdentityError.malformed
             }
             guard let protected = request["requiresAppUnlock"] as? NSNumber,
                   CFGetTypeID(protected) == CFBooleanGetTypeID() else { throw NativeIdentityError.malformed }
-            let previous = try ClientIdentityStore.load(service: service, account: account)
+            let previous = try ClientIdentityStore.load(authority: authority, accessGroup: accessGroup, service: service, account: account)
             let revision = request["revision"] as? String
             guard request["revision"] is NSNull || revision != nil else { throw NativeIdentityError.malformed }
-            let imported = try ClientIdentityStore.importIdentity(
+            let imported = try ClientIdentityStore.importIdentity(authority: authority, accessGroup: accessGroup,
                 pkcs8: bytes(request["pkcs8"], count: 48...48),
                 publicKey: bytes(request["publicKey"], count: 32...32), replacing: revision,
                 requiresAppUnlock: protected.boolValue,
@@ -218,7 +222,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "protect":
             guard Set(request.keys) == ["op", "revision", "publicKey"],
                   let revision = request["revision"] as? String else { throw NativeIdentityError.malformed }
-            let protected = try ClientIdentityStore.requireAppUnlock(revision: revision,
+            let protected = try ClientIdentityStore.requireAppUnlock(authority: authority, accessGroup: accessGroup, revision: revision,
                 publicKey: bytes(request["publicKey"], count: 32...32), service: service, account: account)
             var response = publicRecord(protected)
             response["requiresRestart"] = scheme == "remi-app" && protected.revision != revision
@@ -227,7 +231,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "sign":
             guard Set(request.keys) == ["op", "revision", "publicKey", "message"],
                   let revision = request["revision"] as? String,
-                  let identity = try ClientIdentityStore.load(service: service, account: account),
+                  let identity = try ClientIdentityStore.load(authority: authority, accessGroup: accessGroup, service: service, account: account),
                   identity.revision == revision,
                   try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw
             else { throw NativeIdentityError.changed }

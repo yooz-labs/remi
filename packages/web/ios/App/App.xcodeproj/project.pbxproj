@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000010000000000000026 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000025; };
+        120000010000000000000024 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000023; };
+        120000010000000000000022 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000021; };
 		120000030000000000000011 /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000010 /* NativeAPNsEnvironment.swift */; };
 		120000030000000000000013 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */; };
 		119900020000000000000002 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
@@ -23,6 +26,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000010000000000000025 /* NativePushKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushKeyStore.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000023 /* NativePushConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushConfiguration.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000021 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushState.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000010 /* NativeAPNsEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeAPNsEnvironment.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ../../../macos/Remi/NativePush/NativeAPNsEnvironmentQuery.m; sourceTree = SOURCE_ROOT; };
 		119900020000000000000001 /* NativeIdentityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativeIdentityBridge.swift; path = ../../../../macos/Remi/NativeIdentityBridge.swift; sourceTree = "<group>"; };
@@ -115,6 +121,9 @@
 				119900010000000000000001 /* ClientIdentity.swift */,
 				119900020000000000000001 /* NativeIdentityBridge.swift */,
 				120000030000000000000010 /* NativeAPNsEnvironment.swift */,
+                120000010000000000000025 /* NativePushKeyStore.swift */,
+                120000010000000000000023 /* NativePushConfiguration.swift */,
+                120000010000000000000021 /* NativePushState.swift */,
 				120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */,
 			);
 			path = App;
@@ -234,6 +243,9 @@
 				119900010000000000000002 /* ClientIdentity.swift in Sources */,
 				119900020000000000000002 /* NativeIdentityBridge.swift in Sources */,
 				120000030000000000000011 /* NativeAPNsEnvironment.swift in Sources */,
+                120000010000000000000026 /* NativePushKeyStore.swift in Sources */,
+                120000010000000000000024 /* NativePushConfiguration.swift in Sources */,
+                120000010000000000000022 /* NativePushState.swift in Sources */,
 				120000030000000000000013 /* NativeAPNsEnvironmentQuery.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -432,7 +444,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 10;
 				DEVELOPMENT_TEAM = 9DQ459HAZB;
-				INFOPLIST_FILE = RemiNotificationService/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = RemiNotificationService/RemiNotificationService.entitlements;
+                INFOPLIST_FILE = RemiNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -455,7 +468,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 10;
 				DEVELOPMENT_TEAM = 9DQ459HAZB;
-				INFOPLIST_FILE = RemiNotificationService/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = RemiNotificationService/RemiNotificationService.entitlements;
+                INFOPLIST_FILE = RemiNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

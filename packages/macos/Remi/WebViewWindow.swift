@@ -41,10 +41,13 @@ struct WebViewWindow: NSViewRepresentable {
         configuration.setURLSchemeHandler(
             DistSchemeHandler(), forURLScheme: DistSchemeHandler.scheme)
 
-        configuration.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: DistSchemeHandler.scheme, service: ClientIdentityStore.defaultService,
-                                 account: ClientIdentityStore.defaultAccount),
-            contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        if let accessGroup = try? NativePushConfiguration.identityAccessGroup() {
+            configuration.userContentController.addScriptMessageHandler(
+                NativeIdentityBridge(authority: NativePushConfiguration.identityAuthority, accessGroup: accessGroup,
+                                     scheme: DistSchemeHandler.scheme, service: ClientIdentityStore.defaultService,
+                                     account: ClientIdentityStore.defaultAccount),
+                contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        }
         let script = WKUserScript(
             source: Self.nativeBootstrapScript(hubUrl: hubClient.hubURL),
             injectionTime: .atDocumentStart,

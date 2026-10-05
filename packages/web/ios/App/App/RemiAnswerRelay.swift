@@ -134,7 +134,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
 
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
-        guard let auth = RemiNativeStore.sign(message: message) else {
+        guard let accessGroup = try? NativePushConfiguration.identityAccessGroup(),
+              let auth = RemiNativeStore.sign(message: message, accessGroup: accessGroup) else {
             NSLog("[remi] relay: no signing identity stored; cannot relay")
             notifyDeliveryFailure(questionId: questionId)
             endTask()

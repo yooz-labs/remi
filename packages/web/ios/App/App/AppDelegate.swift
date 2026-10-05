@@ -212,8 +212,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 final class RemiBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
-        guard let webView = bridge?.webView else { return }
-        let signer = NativeIdentityBridge(scheme: "capacitor", service: ClientIdentityStore.defaultService,
+        guard let webView = bridge?.webView,
+              let accessGroup = try? NativePushConfiguration.identityAccessGroup() else { return }
+        let signer = NativeIdentityBridge(authority: NativePushConfiguration.identityAuthority, accessGroup: accessGroup, scheme: "capacitor", service: ClientIdentityStore.defaultService,
                                           account: ClientIdentityStore.defaultAccount)
         webView.configuration.userContentController.addScriptMessageHandler(
             signer, contentWorld: .page, name: NativeIdentityBridge.handlerName)

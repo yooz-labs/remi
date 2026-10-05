@@ -29,17 +29,24 @@ final class ClientIdentityTests: XCTestCase {
     // collides with) the real app's Keychain item.
     private var service = ""
     private var account = ""
+    private var authority: NativePushState!
+    private var authorityDirectory: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         let unique = UUID().uuidString
         service = "live.yooz.remi.tests.\(unique)"
         account = "ed25519-private-key"
+        authorityDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("remi1200-identity-" + unique)
+        try FileManager.default.createDirectory(at: authorityDirectory, withIntermediateDirectories: false)
+        authority = try NativePushState(file: authorityDirectory.appendingPathComponent("push.sqlite"))
     }
 
-    override func tearDown() {
+    override func tearDownWithError() throws {
         ClientIdentityStore.resetForTesting(service: service, account: account)
-        super.tearDown()
+        authority = nil
+        try FileManager.default.removeItem(at: authorityDirectory)
+        try super.tearDownWithError()
     }
 
     func testApprovalExportContainsOnlyPublicIdentity() throws {
@@ -73,8 +80,8 @@ final class ClientIdentityTests: XCTestCase {
     // MARK: - Keychain persistence
 
     func testLoadOrCreatePersistsAcrossInstantiations() throws {
-        let first = try ClientIdentityStore.loadOrCreate(service: service, account: account)
-        let second = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let first = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let second = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         XCTAssertEqual(
             first.publicKeyRaw, second.publicKeyRaw,
             "a fresh loadOrCreate() call must return the SAME key as before, not regenerate one")
@@ -82,18 +89,18 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     func testResetForTestingForcesAFreshKey() throws {
-        let first = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let first = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         ClientIdentityStore.resetForTesting(service: service, account: account)
-        let second = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let second = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         XCTAssertNotEqual(
             first.publicKeyRaw, second.publicKeyRaw,
             "with the Keychain item deleted, loadOrCreate() must generate a new key")
     }
 
     func testDistinctServiceAccountPairsGetIndependentKeys() throws {
-        let a = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let a = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let otherAccount = "\(account)-other"
-        let b = try ClientIdentityStore.loadOrCreate(service: service, account: otherAccount)
+        let b = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: otherAccount)
         defer { ClientIdentityStore.resetForTesting(service: service, account: otherAccount) }
         XCTAssertNotEqual(a.publicKeyRaw, b.publicKeyRaw)
     }
@@ -109,7 +116,7 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     func testFingerprintIsSixteenHexCharacters() throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         XCTAssertEqual(identity.fingerprint.count, 16)
         XCTAssertTrue(identity.fingerprint.allSatisfy(\.isHexDigit))
         // crypto.ts toHex() is lowercase; the daemon compares strings, so
@@ -120,7 +127,7 @@ final class ClientIdentityTests: XCTestCase {
     /// R4: the native store must durably hold a validated PKCS8/public record,
     /// not return a newly generated signer while leaving only a bare seed behind.
     func testKeychainPersistsPKCS8AndPublicRecord() throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -151,7 +158,7 @@ final class ClientIdentityTests: XCTestCase {
         create[kSecValueData as String] = corrupt
         XCTAssertEqual(SecItemAdd(create as CFDictionary, nil), errSecSuccess)
         do {
-            _ = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+            _ = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
             XCTFail("Corruption must fail visibly instead of generating a different signer")
         } catch {}
         var read = query
@@ -165,9 +172,9 @@ final class ClientIdentityTests: XCTestCase {
         let suite = "remi1199-direct-answer-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let message = "session|question|yes"
-        let auth = try XCTUnwrap(RemiNativeStore.sign(message: message, identity: identity, defaults: defaults),
+        let auth = try XCTUnwrap(RemiNativeStore.sign(message: message, accessGroup: nil, identity: identity, defaults: defaults),
                                  "The shipping direct-answer signer must use the durable native identity before seed cleanup")
         let signature = try XCTUnwrap(Data(base64Encoded: auth.signature))
         XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: Data(message.utf8)))
@@ -200,25 +207,25 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     func testNativeImportConflictPreservesBothUntilExplicitRevisionChoice() throws {
-        let original = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let original = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let incoming = ClientIdentity(privateKey: .init())
         let pkcs8 = Ed25519PKCS8.encode(incoming.privateKey)
-        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
+        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil, pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
                                                                   service: service, account: account))
-        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.publicKeyRaw, original.publicKeyRaw)
-        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: original.publicKeyRaw,
+        XCTAssertEqual(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account)?.publicKeyRaw, original.publicKeyRaw)
+        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil, pkcs8: pkcs8, publicKey: original.publicKeyRaw,
                                                                   replacing: original.revision, service: service, account: account))
-        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.revision, original.revision)
-        let chosen = try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
+        XCTAssertEqual(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account)?.revision, original.revision)
+        let chosen = try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil, pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
                                                             replacing: original.revision, service: service, account: account)
         XCTAssertEqual(chosen.publicKeyRaw, incoming.publicKeyRaw)
         XCTAssertNotEqual(chosen.revision, original.revision)
-        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.revision, chosen.revision)
+        XCTAssertEqual(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account)?.revision, chosen.revision)
     }
 
     @MainActor
     func testNativeBridgeUsesRealFrameProvenanceAndPublicOnlyReplies() async throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("remi1199-wk-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -228,7 +235,7 @@ final class ClientIdentityTests: XCTestCase {
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account),
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account),
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
@@ -335,7 +342,7 @@ final class ClientIdentityTests: XCTestCase {
         var selectionCount = 0
         var heldSelection: CheckedContinuation<Data?, Never>?
         var hold = false
-        let bridge = NativeIdentityBridge(scheme: "remi-app", service: service, account: account,
+        let bridge = NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account,
             foreground: { true }, selectedQRImage: { _ in
                 selectionCount += 1
                 if hold { return await withCheckedContinuation { heldSelection = $0 } }
@@ -417,7 +424,7 @@ final class ClientIdentityTests: XCTestCase {
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
@@ -433,7 +440,7 @@ final class ClientIdentityTests: XCTestCase {
         let reply = try XCTUnwrap(imported as? [String:Any])
         XCTAssertNil(reply["refused"], "Explicit import may persist the protected native record")
         XCTAssertEqual(reply["locked"] as? Bool, true, "A decrypted legacy import arriving after resign-active cannot restore foreground signing")
-        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(service:service,account:account)).requiresAppUnlock)
+        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account)).requiresAppUnlock)
     }
 
     @MainActor
@@ -447,7 +454,7 @@ final class ClientIdentityTests: XCTestCase {
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account, foreground: { active }, authorization: { true }),
             contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
@@ -466,7 +473,7 @@ final class ClientIdentityTests: XCTestCase {
             "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'unlock',revision:revision,publicKey:publicKey})",
             arguments:["revision":reply["revision"]!,"publicKey":legacy.publicKeyRaw.base64EncodedString()],in:nil,contentWorld:.page)
         XCTAssertEqual((unlocked as? [String:Any])?["locked"] as? Bool,false)
-        let durable = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        let durable = try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account))
         let message = Data("protected bridge signing".utf8)
         let signed = try await web.callAsyncJavaScript(
             "return await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message})",
@@ -489,11 +496,11 @@ final class ClientIdentityTests: XCTestCase {
         let suite = "remi1199-protected-bridge-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
         defer { defaults.removePersistentDomain(forName:suite) }
-        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:durable,defaults:defaults))
+        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",accessGroup:nil,identity:durable,defaults:defaults))
         // Reconstructing the actual bridge loses the foreground unlock, never the durable policy.
         config.userContentController.removeScriptMessageHandler(forName:NativeIdentityBridge.handlerName,contentWorld:.page)
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme:"remi-app",service:service,account:account),contentWorld:.page,name:NativeIdentityBridge.handlerName)
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme:"remi-app",service:service,account:account),contentWorld:.page,name:NativeIdentityBridge.handlerName)
         let cold = try await web.callAsyncJavaScript(
             "try { await window.webkit.messageHandlers.remiIdentity.postMessage({op:'sign',revision:revision,publicKey:publicKey,message:message}); return true } catch { return false }",
             arguments:["revision":durable.revision,"publicKey":durable.publicKeyRaw.base64EncodedString(),"message":message.base64EncodedString()],in:nil,contentWorld:.page)
@@ -501,7 +508,7 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     func testProtectedNativeIdentityRefusesBackgroundButCanSignInForeground() throws {
-        _ = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        _ = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
             kSecAttrService as String:service,kSecAttrAccount as String:account]
         var read = query; read[kSecReturnData as String] = true
@@ -511,25 +518,25 @@ final class ClientIdentityTests: XCTestCase {
         record["requiresAppUnlock"] = true
         XCTAssertEqual(SecItemUpdate(query as CFDictionary,
             [kSecValueData as String:try JSONSerialization.data(withJSONObject:record)] as CFDictionary),errSecSuccess)
-        let protected = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        let protected = try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account))
         XCTAssertTrue(protected.requiresAppUnlock)
         let message = Data("protected foreground signing".utf8)
         XCTAssertTrue(protected.publicKey.isValidSignature(try protected.sign(message),for:message))
         let suite = "remi1199-protected-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
         defer { defaults.removePersistentDomain(forName:suite) }
-        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:protected,defaults:defaults),
+        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",accessGroup:nil,identity:protected,defaults:defaults),
                      "An imported app-unlock policy must not silently enable background answers")
     }
 
     func testProtectedImportPersistsPolicyAndCannotSilentlyRemoveIt() throws {
         let incoming = ClientIdentity(privateKey: .init())
-        let protected = try ClientIdentityStore.importIdentity(
+        let protected = try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil,
             pkcs8: Ed25519PKCS8.encode(incoming.privateKey), publicKey: incoming.publicKeyRaw,
             requiresAppUnlock: true, service: service, account: account)
-        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(service: service, account: account)).requiresAppUnlock)
+        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service: service, account: account)).requiresAppUnlock)
         let replacement = ClientIdentity(privateKey: .init())
-        let imported = try ClientIdentityStore.importIdentity(
+        let imported = try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil,
             pkcs8: Ed25519PKCS8.encode(replacement.privateKey), publicKey: replacement.publicKeyRaw,
             replacing: protected.revision, requiresAppUnlock: false, service: service, account: account)
         XCTAssertTrue(imported.requiresAppUnlock, "Replacement cannot implicitly enable background signing")
@@ -550,7 +557,7 @@ final class ClientIdentityTests: XCTestCase {
 
     @MainActor
     func testForegroundUnlockCompletionCannotSurviveInactiveOrReplacement() async throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service:service,account:account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service:service,account:account)
         let lifetime = NativeUnlockLifetime()
         let baseline = await lifetime.authenticate(revision:identity.revision, currentRevision:{identity.revision},
                                                    authorization:{true},foreground:{true})
@@ -586,7 +593,7 @@ final class ClientIdentityTests: XCTestCase {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot:root),forURLScheme:"remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(scheme:"remi-app",service:service,account:account,foreground:{ true },authorization:{ true }),contentWorld:.page,name:NativeIdentityBridge.handlerName)
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme:"remi-app",service:service,account:account,foreground:{ true },authorization:{ true }),contentWorld:.page,name:NativeIdentityBridge.handlerName)
         let web = WKWebView(frame:.zero,configuration:config)
         web.load(URLRequest(url:try XCTUnwrap(URL(string:"remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds:20_000_000) }
@@ -596,7 +603,7 @@ final class ClientIdentityTests: XCTestCase {
 
     @MainActor
     func testActualWebProviderConflictChoiceKeepsNativeAndClearsOnlyVerifiedLegacy() async throws {
-        let native = try ClientIdentityStore.loadOrCreate(service:service,account:account)
+        let native = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service:service,account:account)
         let (web,root) = try await providerWebView()
         defer { try? FileManager.default.removeItem(at:root) }
         let before = try await web.callAsyncJavaScript("""
@@ -610,7 +617,7 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(pending["native"] as? String,native.publicKeyRaw.base64EncodedString())
         XCTAssertNotEqual(pending["legacy"] as? String,pending["native"] as? String)
         XCTAssertEqual(pending["legacyStored"] as? Bool,true,"Conflict inspection must not delete either identity")
-        XCTAssertEqual(try ClientIdentityStore.load(service:service,account:account)?.revision,native.revision)
+        XCTAssertEqual(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account)?.revision,native.revision)
         let selected = try await web.callAsyncJavaScript("""
             const state = await window.nativeProviderTest.chooseNativeIdentity(window.migration,'native');
             const identity = state.identity;
@@ -645,7 +652,7 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertTrue(pending["native"] is NSNull)
         XCTAssertEqual(pending["rejected"] as? Bool,true)
         XCTAssertEqual(pending["legacyStored"] as? Bool,true)
-        XCTAssertNil(try ClientIdentityStore.load(service:service,account:account),"A rejected protected import cannot create a volatile replacement")
+        XCTAssertNil(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account),"A rejected protected import cannot create a volatile replacement")
         let after = try await web.callAsyncJavaScript("""
             const migrated = await window.nativeProviderTest.chooseNativeIdentity(window.migration,'legacy','r4-isolated-passphrase');
             if (migrated.kind !== 'locked') throw new Error('protected import implicitly unlocked');
@@ -659,18 +666,18 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(result["publicKey"] as? String,pending["publicKey"] as? String)
         XCTAssertEqual(result["protected"] as? Bool,true)
         XCTAssertEqual(result["legacyStored"] as? Bool,false)
-        let durable = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        let durable = try XCTUnwrap(ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account))
         let signature = try XCTUnwrap(Data(base64Encoded:try XCTUnwrap(result["signature"] as? String)))
         XCTAssertTrue(durable.publicKey.isValidSignature(signature,for:Data("protected actual provider".utf8)))
         XCTAssertTrue(durable.requiresAppUnlock)
         let suite = "remi1199-provider-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
         defer { defaults.removePersistentDomain(forName:suite) }
-        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:durable,defaults:defaults))
+        XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",accessGroup:nil,identity:durable,defaults:defaults))
     }
 
     func testActualStoreReadAndUpdateFailuresPreserveAuthorizedIdentity() throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service:service,account:account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service:service,account:account)
         let query: [String:Any] = [kSecClass as String:kSecClassGenericPassword,
             kSecAttrService as String:service,kSecAttrAccount as String:account]
         var read = query; read[kSecReturnData as String] = true
@@ -685,30 +692,30 @@ final class ClientIdentityTests: XCTestCase {
         }
         readFailure.add = { query,result in writes += 1; return SecItemAdd(query,result) }
         readFailure.update = { query,attributes in writes += 1; return SecItemUpdate(query,attributes) }
-        XCTAssertThrowsError(try ClientIdentityStore.loadOrCreate(service:service,account:account,operations:readFailure))
+        XCTAssertThrowsError(try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service:service,account:account,operations:readFailure))
         XCTAssertEqual(writes,0,"An OS read error must never enter create/update")
         var writeFailure = NativeKeychainOperations.system
         writeFailure.update = { _,_ in errSecAuthFailed }
         let incoming = ClientIdentity(privateKey:.init())
-        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(pkcs8:Ed25519PKCS8.encode(incoming.privateKey),
+        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(authority: authority, accessGroup: nil, pkcs8:Ed25519PKCS8.encode(incoming.privateKey),
             publicKey:incoming.publicKeyRaw,replacing:identity.revision,service:service,account:account,operations:writeFailure))
         result = nil
         XCTAssertEqual(SecItemCopyMatching(read as CFDictionary,&result),errSecSuccess)
         XCTAssertEqual(result as? Data,original,"A failed atomic update must preserve the prior authorized record byte-for-byte")
-        XCTAssertEqual(try ClientIdentityStore.load(service:service,account:account)?.revision,identity.revision)
+        XCTAssertEqual(try ClientIdentityStore.load(authority: authority, accessGroup: nil, service:service,account:account)?.revision,identity.revision)
     }
 
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let challenge = Data("auth-challenge-fixture".utf8)
         let signature = try identity.sign(challenge)
         XCTAssertTrue(identity.publicKey.isValidSignature(signature, for: challenge))
     }
 
     func testSignedChallengeFailsAgainstADifferentKey() throws {
-        let identity = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         let impostor = ClientIdentity(privateKey: .init())
         let challenge = Data("auth-challenge-fixture".utf8)
         let signature = try identity.sign(challenge)
