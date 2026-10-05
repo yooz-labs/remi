@@ -12,10 +12,10 @@
  *   shows both);
  * - `commandExecution` is an assistant tool entry named `shell`: the command as the
  *   tool's input and its output as the result, 500 characters each as Claude bounds a
- *   tool (cut first, then every control, invisible and bidirectional character written
- *   out as visible text), and an error when the command failed, was declined or exited
- *   non-zero. One
- *   still running is left for its completion, which arrives live;
+ *   tool (cut first, on a code point, then every control, invisible and bidirectional
+ *   character written out as visible text), and an error when the command failed, was
+ *   declined or exited non-zero. One still running is left for its completion, which
+ *   arrives live;
  * - everything else (reasoning, plans, file changes, tool calls, items of a newer Codex)
  *   is not chat and is skipped.
  *
@@ -47,9 +47,10 @@
  * the last 1024).
  *
  * An explicit read (`readHistory`) is bounded too: a cursor that comes back (any earlier one,
- * not only the last) or 1000 pages end it, one read of a session runs at a time with one
- * waiting (a third is refused), and it stops asking as soon as `emit` throws, which the
- * transcript handler does when a send to the requester is refused. Only the session's own (`main`) thread counts: a subagent's
+ * not only the last), 1000 pages or 60 seconds (checked after each page, so a request in flight
+ * can run past it, up to its own 15 s timeout) end it, one read of a session runs at a time
+ * with one waiting (a third is refused), and it stops asking as soon as `emit` throws, which
+ * the transcript handler does when a send to the requester is refused. Only the session's own (`main`) thread counts: a subagent's
  * items and another window's are not this chat (subagent chat is out of scope).
  *
  * What no real frame has shown yet (live step LV-5): the response of `thread/items/list`
@@ -76,6 +77,7 @@ import {
   AppServerRpcError,
 } from './app-server-client.ts';
 import { describeError } from './describe-error.ts';
+import { firstCodePoints } from './safe-text.ts';
 import { type ThreadItemInfo, parseThreadItem } from './thread-protocol.ts';
 
 /** The items asked for per page. The app-server may give fewer, or more. */
@@ -84,13 +86,15 @@ const HISTORY_PAGE_SIZE = 100;
 const HISTORY_MAX_PAGES = 1000;
 /** The catch-up at an attach reads at most this many pages, and delivers only a thread that ends within them. */
 const CATCH_UP_MAX_PAGES = 5;
+/** An explicit history read stops once a page has passed this long after its start. */
+const EXPLICIT_READ_DEADLINE_MS = 60_000;
 /** How long one request of the catch-up may take before it is given up on (the client's own is 15 s). */
 const CATCH_UP_REQUEST_TIMEOUT_MS = 3000;
 /** How many live items are held while a catch-up reads; more are sent at once. */
 const HOLD_MAX = 256;
 /** How many delivered items are remembered to drop a repeat of one. */
 const LIVE_MEMORY = 1024;
-/** Claude bounds a tool's input and output to this many characters; so does the shell entry. */
+/** Claude bounds a tool's input and output to this many characters; the shell entry, to this many code points. */
 const TOOL_FIELD_MAX = 500;
 const SHELL_TOOL = 'shell';
 /** JSON-RPC "Invalid Request": what `thread/resume` answers for a thread with nothing written. */
@@ -111,6 +115,8 @@ export interface CodexChatDeps {
   log: (message: string) => void;
   /** Test seam: how long one request of the catch-up may take (default 3000). */
   catchUpRequestTimeoutMs?: number;
+  /** Test seam: a monotonic clock in milliseconds, for the deadline of an explicit read (default `performance.now`). */
+  clockMs?: () => number;
 }
 
 export interface CodexChat extends HarnessChat {
@@ -125,7 +131,7 @@ export interface CodexChat extends HarnessChat {
 }
 
 /** What could not be read, in words with no server text: the app-server's own message may carry an id or a path. */
-export class CodexHistoryError extends Error {
+class CodexHistoryError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'CodexHistoryError';
@@ -179,9 +185,10 @@ function timestampOf(completedAtMs: number | null): string {
 function toolBlocks(entry: Extract<Entry, { kind: 'shell' }>): TranscriptContentBlock[] {
   // Cut first, escape after (as the Phase 4 cards do): a command and its output are Codex's and the
   // program's words, and a terminal sequence or a bidi override in them is written out as visible
-  // text (`escapeUnsafeText`), so the cut never lands inside an escape.
-  const command = escapeUnsafeText(entry.command.slice(0, TOOL_FIELD_MAX));
-  const output = escapeUnsafeText(entry.output?.slice(0, TOOL_FIELD_MAX) ?? '');
+  // text (`escapeUnsafeText`), so the cut never lands inside an escape. The cut is on a code point,
+  // so a pair is never left as a lone surrogate (Claude's own `slice` can, and is not changed here).
+  const command = escapeUnsafeText(firstCodePoints(entry.command, TOOL_FIELD_MAX));
+  const output = escapeUnsafeText(firstCodePoints(entry.output ?? '', TOOL_FIELD_MAX));
   return [
     {
       type: 'tool_use',
@@ -272,11 +279,12 @@ function historyError(error: unknown): CodexHistoryError {
   return new CodexHistoryError(`the Codex history could not be read (${describeError(error)})`);
 }
 
-/** How a paged read of a thread ended: its last page, the page limit, or a cursor that came back. */
-type PagesEnd = 'complete' | 'capped' | 'looped';
+/** How a paged read of a thread ended: its last page, the page limit, the deadline, or a cursor that came back. */
+type PagesEnd = 'complete' | 'capped' | 'looped' | 'timeout';
 
 export function createCodexChat(deps: CodexChatDeps): CodexChat {
   const { sessionId } = deps;
+  const clockMs = deps.clockMs ?? (() => performance.now());
   /** Items already sent to every client (live or by a catch-up), oldest first. */
   const delivered = new Set<string>();
 
@@ -290,17 +298,19 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
 
   /**
    * Page through the tracked thread's items, oldest first, handing each chat entry to `onEntry` as
-   * its page arrives. Ends at the last page, at `maxPages`, or when a page's cursor is one already
+   * its page arrives. Ends at the last page, at `maxPages`, once `deadlineMs` have passed since it
+   * began (checked after each page that is not the last), or when a page's cursor is one already
    * asked for (the first request has none, so it is never the one repeated). Throws a
    * {@link CodexHistoryError} for every failure but the thread that has nothing written yet,
    * which is a complete, empty read.
    */
   async function readPages(
     threadId: string,
-    limits: { maxPages: number; timeoutMs?: number },
+    limits: { maxPages: number; timeoutMs?: number; deadlineMs?: number },
     onEntry: (entry: Entry, completedAtMs: number | null) => void,
   ): Promise<PagesEnd> {
     const asked = new Set<string>();
+    const startedAt = clockMs();
     let cursor: string | undefined;
     for (let pageNumber = 1; pageNumber <= limits.maxPages; pageNumber++) {
       let result: unknown;
@@ -343,6 +353,8 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       if (asked.has(page.nextCursor)) return 'looped';
       asked.add(page.nextCursor);
       cursor = page.nextCursor;
+      if (limits.deadlineMs !== undefined && clockMs() - startedAt >= limits.deadlineMs)
+        return 'timeout';
     }
     return 'capped';
   }
@@ -358,7 +370,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     let count = 0;
     const end = await readPages(
       threadId,
-      { maxPages: HISTORY_MAX_PAGES },
+      { maxPages: HISTORY_MAX_PAGES, deadlineMs: EXPLICIT_READ_DEADLINE_MS },
       (entry, completedAtMs) => {
         if (seen.has(entry.id)) return;
         const message = buildMessage(sessionId, entry, completedAtMs, history);
@@ -372,6 +384,10 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       deps.log('the app-server repeated a history cursor; the history read stopped');
     else if (end === 'capped')
       deps.log(`the history read stopped after ${HISTORY_MAX_PAGES} pages`);
+    else if (end === 'timeout')
+      deps.log(
+        `the history read stopped after ${EXPLICIT_READ_DEADLINE_MS / 1000} seconds; what it had read was sent`,
+      );
     return count;
   }
 
@@ -441,7 +457,8 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         }
         waiting = true;
         try {
-          await reading.catch(() => {});
+          // Until the slot is free: a read that failed is not this one's failure, and its error is not inherited.
+          while (reading !== null) await reading.catch(() => {});
         } finally {
           waiting = false;
         }
@@ -451,7 +468,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       try {
         return await mine;
       } finally {
-        if (reading === mine) reading = null;
+        reading = null;
       }
     },
 
