@@ -20,11 +20,11 @@ import Capacitor
 ///  - install runs AFTER the push plugin's load() (called from a deferred hook).
 ///
 /// Inputs are bridged from JS via Capacitor Preferences (UserDefaults
-/// `CapacitorStorage.*`): the Ed25519 seed/pubkey/fingerprint and a per-session
+/// `CapacitorStorage.*`): public routes and (for pre-R4 migration only) the legacy seed/public key, plus a per-session
 /// route {wsUrl} — the daemon URL the session is connected on, which the web app
 /// pins on hello_ack (the same URL its cold-start push-answer routing uses). The
 /// answer POSTs to that daemon's direct `/answer` endpoint (the same one
-/// `relayAnswerDirect` uses in-app), signed with the bridged seed. Crypto compat
+/// `relayAnswerDirect` uses in-app), signed by the durable native identity. Crypto compat
 /// is proven in packages/shared/tests/native-bridge.test.ts.
 final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     static let shared = RemiAnswerRelay()

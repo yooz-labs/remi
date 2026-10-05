@@ -233,8 +233,8 @@ enum ClientIdentityStore {
     }
 }
 
-/// Reads the JS-bridged identity + routes from Capacitor Preferences
-/// (UserDefaults `CapacitorStorage.<key>`) and signs with CryptoKit.
+/// Native direct-answer signer and the existing public session-route storage.
+/// Preferences seed import is inward-only for pre-R4 installs; native keys never leave Swift.
 enum RemiNativeStore {
     struct Auth { let signature: String; let publicKey: String; let fingerprint: String }
     struct Route { let wsUrl: String; let claudeSessionId: String? }
@@ -242,31 +242,38 @@ enum RemiNativeStore {
     private static let identityKey = "CapacitorStorage.remi-native-identity"
     private static let routesKey = "CapacitorStorage.remi-native-routes"
 
-    /// Sign `message` with the bridged Ed25519 seed. Returns the base64 signature
-    /// + the public key (raw, base64) + fingerprint for the daemon's auth block.
-    /// Distinguishes "never set up" (silent nil, expected pre-onboarding) from a
-    /// corrupt blob / invalid key / signing failure (logged) — mirrors `route()`
-    /// below, so a previously-working device suddenly failing to answer isn't
-    /// indistinguishable from one that was simply never configured.
+    /// The direct /answer wire remains until R6. Sign with the durable native
+    /// provider before legacy Preferences cleanup; return only public bytes/signature.
+    /// An existing conflicting legacy key refuses rather than silently selecting a key.
     static func sign(message: String, identity: ClientIdentity? = nil, defaults: UserDefaults = .standard) -> Auth? {
-        guard let raw = defaults.string(forKey: identityKey) else { return nil }
-        guard let data = raw.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
-              let seedB64 = obj["seed"], let pub = obj["publicKey"], let fp = obj["fingerprint"],
-              let seed = Data(base64Encoded: seedB64)
-        else {
-            NSLog("[remi] RemiNativeStore: identity blob is corrupt or unreadable")
+        guard message.utf8.count <= 4096 else { return nil }
+        do {
+            var native = identity
+            if native == nil {
+                native = try ClientIdentityStore.load()
+                if let raw = defaults.string(forKey: identityKey) {
+                    guard let data = raw.data(using: .utf8),
+                        let obj = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                        let seed = Data(base64Encoded: obj["seed"] ?? ""), seed.count == 32,
+                        let publicKey = Data(base64Encoded: obj["publicKey"] ?? ""), publicKey.count == 32
+                    else { return nil }
+                    let legacy = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+                    guard legacy.publicKey.rawRepresentation == publicKey else { return nil }
+                    if let native, native.publicKeyRaw != publicKey { return nil }
+                    if native == nil {
+                        native = try ClientIdentityStore.importIdentity(
+                            pkcs8: Ed25519PKCS8.encode(legacy), publicKey: publicKey)
+                    }
+                }
+            }
+            guard let native else { return nil }
+            let signature = try native.sign(Data(message.utf8))
+            return Auth(signature: signature.base64EncodedString(),
+                        publicKey: native.publicKeyRaw.base64EncodedString(), fingerprint: native.fingerprint)
+        } catch {
+            NSLog("[remi] Native direct-answer identity unavailable; open the app")
             return nil
         }
-        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            NSLog("[remi] RemiNativeStore: identity seed is not a valid Curve25519 key")
-            return nil
-        }
-        guard let sig = try? key.signature(for: Data(message.utf8)) else {
-            NSLog("[remi] RemiNativeStore: failed to sign with stored identity")
-            return nil
-        }
-        return Auth(signature: sig.base64EncodedString(), publicKey: pub, fingerprint: fp)
     }
 
     /// Look up the daemon ws URL pinned for a session (written by the web app).

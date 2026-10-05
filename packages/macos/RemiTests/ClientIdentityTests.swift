@@ -172,6 +172,45 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(auth.fingerprint, identity.fingerprint)
     }
 
+    func testNativeCodecMatchesActualSharedEnginePKCS8Fixtures() throws {
+        struct Fixture: Decodable { let pkcs8: String; let publicKey: String; let message: String; let signature: String }
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("fixtures/native-identity-pkcs8.json")
+        let fixtures = try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: file))
+        XCTAssertEqual(fixtures.count, 2)
+        for item in fixtures {
+            let pkcs8 = try XCTUnwrap(Data(base64Encoded: item.pkcs8))
+            let publicKey = try XCTUnwrap(Data(base64Encoded: item.publicKey))
+            let key = try Ed25519PKCS8.decode(pkcs8, publicKey: publicKey)
+            XCTAssertEqual(Ed25519PKCS8.encode(key), pkcs8)
+            let message = try XCTUnwrap(Data(base64Encoded: item.message))
+            let signature = try XCTUnwrap(Data(base64Encoded: item.signature))
+            XCTAssertTrue(key.publicKey.isValidSignature(signature, for: message))
+            XCTAssertThrowsError(try Ed25519PKCS8.decode(pkcs8 + Data([0]), publicKey: publicKey))
+            var malformed = pkcs8; malformed[0] ^= 1
+            XCTAssertThrowsError(try Ed25519PKCS8.decode(malformed, publicKey: publicKey))
+            let different = ClientIdentity(privateKey: .init())
+            XCTAssertThrowsError(try Ed25519PKCS8.decode(pkcs8, publicKey: different.publicKeyRaw))
+        }
+    }
+
+    func testNativeImportConflictPreservesBothUntilExplicitRevisionChoice() throws {
+        let original = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+        let incoming = ClientIdentity(privateKey: .init())
+        let pkcs8 = Ed25519PKCS8.encode(incoming.privateKey)
+        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
+                                                                  service: service, account: account))
+        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.publicKeyRaw, original.publicKeyRaw)
+        XCTAssertThrowsError(try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: original.publicKeyRaw,
+                                                                  replacing: original.revision, service: service, account: account))
+        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.revision, original.revision)
+        let chosen = try ClientIdentityStore.importIdentity(pkcs8: pkcs8, publicKey: incoming.publicKeyRaw,
+                                                            replacing: original.revision, service: service, account: account)
+        XCTAssertEqual(chosen.publicKeyRaw, incoming.publicKeyRaw)
+        XCTAssertNotEqual(chosen.revision, original.revision)
+        XCTAssertEqual(try ClientIdentityStore.load(service: service, account: account)?.revision, chosen.revision)
+    }
+
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {
