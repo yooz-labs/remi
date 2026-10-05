@@ -12,7 +12,8 @@ import {
   isIdentityEncrypted,
   removeIdentity,
 } from '@/lib/identity-client';
-import { syncNativeIdentity } from '@/lib/native-bridge';
+import { NativeIdentityPanel } from './NativeIdentityPanel';
+import { usesNativeIdentity } from '@/lib/native-identity';
 import { checkNotificationPermission, openNotificationSettings } from '@/lib/notifications';
 import { isNative } from '@/lib/platform';
 import type { AppSettings } from '@/types';
@@ -130,9 +131,7 @@ function IdentitySection() {
     try {
       await generateIdentity(usePassphrase ? passphrase : undefined);
       refresh();
-      // Re-bridge the new signer to native storage (#591 P2) so a lock-screen
-      // answer signs with the current key, not the rotated-out one.
-      void syncNativeIdentity();
+
       setShowGenerate(false);
       setPassphrase('');
       setConfirmPassphrase('');
@@ -150,7 +149,6 @@ function IdentitySection() {
     try {
       importIdentity(importJson);
       refresh();
-      void syncNativeIdentity();
       setShowImport(false);
       setImportJson('');
       setFeedback('Identity imported successfully.');
@@ -189,8 +187,7 @@ function IdentitySection() {
     }
     removeIdentity();
     refresh();
-    // Clears the native seed too (deriveNativeIdentity -> null -> Preferences.remove).
-    void syncNativeIdentity();
+
     setConfirmRemove(false);
     setFeedback('Identity removed.');
   };
@@ -428,7 +425,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
         <div className="overflow-y-auto p-4 space-y-6 safe-area-bottom">
           {/* Identity & Security */}
-          <IdentitySection />
+          {usesNativeIdentity() ? <NativeIdentityPanel /> : <IdentitySection />}
 
           {/* Theme */}
           <section>

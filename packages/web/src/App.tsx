@@ -66,7 +66,9 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import type { UnlockedIdentity } from '@remi/shared';
+import type { ClientSigningIdentity, NativeSigningIdentity } from '@/lib/client-signer';
+import { NativeIdentityPanel } from '@/components/settings/NativeIdentityPanel';
+import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
 import { assertNever, isValidMessage } from '@remi/shared';
 import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
@@ -269,7 +271,7 @@ function App() {
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
+  const [unlockedIdentity, setUnlockedIdentity] = useState<ClientSigningIdentity | null>(null);
 
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
@@ -607,9 +609,8 @@ function App() {
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
         if (conn?.url) {
           rememberSessionDaemon(sessionId, conn.url);
-          // Mirror the daemon URL + signer to native storage (#591 P2) so a
-          // lock-screen answer can sign + POST to the daemon's /answer endpoint
-          // without opening the app. No-ops off-native; never throws.
+          // Store only the public daemon route for the native direct-answer
+          // handler. Its signer uses the durable native identity (#1199).
           void setNativeRoute(sessionId, {
             wsUrl: conn.url,
             ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
@@ -1690,6 +1691,8 @@ function App() {
       // omitted -- if a future/older daemon ever echoes one, it is silently
       // dropped instead of console.debug-spamming, and the #897 exhaustiveness
       // sweep records that this was decided, not forgotten.
+      case 'relay_devices_request':
+      case 'relay_device_revoke_request':
       case 'hello':
       case 'user_input':
       case 'answer':
@@ -1715,6 +1718,13 @@ function App() {
       // against ProtocolMessageMap.
       case 'auth_challenge':
       case 'auth_result':
+        break;
+
+      // R4 encrypted outcomes are routed through the connection coordinator.
+      // Its handlers are installed together with the relay channel below.
+      case 'answer_result':
+      case 'relay_devices_response':
+      case 'relay_device_revoke_response':
         break;
 
       // Keep-alive, both directions. lib/websocket-client.ts's own
@@ -1767,10 +1777,9 @@ function App() {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
 
-  // Bridge the current signer to native storage once on launch (#591 P2) so the
-  // lock-screen answer handler can sign even before a fresh connection — covers
-  // a cold start from a push and identity changes made in Settings. No-op
-  // off-native; re-pinned per-connection at hello_ack.
+  // Cleanup of the old Preferences seed is permitted only after verified
+  // inward native migration (#1199). The native signer owns its durable key;
+  // this call never writes private bytes from JavaScript.
   useEffect(() => {
     void syncNativeIdentity();
   }, []);
@@ -1818,6 +1827,18 @@ function App() {
     clientVersion: '0.0.1',
     autoReconnect: settings.autoReconnect,
   });
+
+  const nativeConnectionsRef = useRef(connections);
+  nativeConnectionsRef.current = connections;
+  const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
+    setUnlockedIdentity(identity);
+    if (!identity) { disconnectAll(); return; }
+    provideIdentity('' as ConnectionId, identity);
+    for (const connection of nativeConnectionsRef.current) {
+      if (connection.status === 'error' || connection.status === 'disconnected') reconnectConnection(connection.connectionId);
+    }
+  }, [disconnectAll, provideIdentity, reconnectConnection]);
+
 
   // Keep refs in sync for use in handleMessage callbacks
   getSessionIdRef.current = getSessionId;
@@ -2093,7 +2114,7 @@ function App() {
       // waiting out the 25s deadline. Covers both "no identity" and "encrypted
       // identity" (isIdentityEncrypted() is false when none is stored, so both
       // are checked).
-      if (authRequired && (!hasIdentity() || isIdentityEncrypted())) {
+      if (authRequired && (usesNativeIdentity() ? !currentNativeIdentity() : (!hasIdentity() || isIdentityEncrypted()))) {
         console.warn('[App] WS fallback blocked: identity missing or needs passphrase');
         notifyFailure();
         return;
@@ -3087,6 +3108,7 @@ function App() {
 
   return (
     <>
+      {usesNativeIdentity() && <NativeIdentityPanel gate onReady={handleNativeIdentityReady} />}
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
 
       <SettingsPanel
@@ -3105,7 +3127,7 @@ function App() {
         onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
         needsPassphrase={showConnectModal ? Boolean(modalConnection?.needsPassphrase) : needsPassphrase}
-        hasIdentity={hasIdentity()}
+        hasIdentity={usesNativeIdentity() ? unlockedIdentity != null : hasIdentity()}
         hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={showConnectModal ? modalConnection?.serverFingerprint : passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}

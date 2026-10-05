@@ -19,7 +19,8 @@ import { ConnectionApproval } from '@/lib/connection-approval';
 import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
-import type { UnlockedIdentity } from '@remi/shared';
+import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
+import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
 import {
   allocateStaggerSlot,
   collectPendingChallengeConnections,
@@ -30,7 +31,7 @@ import {
 } from './connection-manager-helpers';
 import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
-import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, sign, toBase64, verify } from '@remi/shared';
+import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, toBase64, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -108,7 +109,7 @@ export interface UseConnectionManagerOptions {
   /** Message handler: receives connectionId and the protocol message */
   onMessage?: (connectionId: ConnectionId, message: ProtocolMessage) => void;
   /** Pre-unlocked identity (shared across all connections) */
-  unlockedIdentity?: UnlockedIdentity | null;
+  unlockedIdentity?: ClientSigningIdentity | null;
   /** Client ID for identification */
   clientId?: string;
   /** Client version */
@@ -182,7 +183,7 @@ export interface UseConnectionManagerReturn {
   /** Request session history via a specific connection */
   requestSessionHistory: (connectionId: ConnectionId, limit?: number) => boolean;
   /** Provide unlocked identity for a connection needing passphrase */
-  provideIdentity: (connectionId: ConnectionId, identity: UnlockedIdentity) => void;
+  provideIdentity: (connectionId: ConnectionId, identity: ClientSigningIdentity) => void;
   /** Get the hello_ack session ID for a connection (reads from live state, not React state) */
   getSessionId: (connectionId: ConnectionId) => string | null;
   /** Whether any connection needs a passphrase */
@@ -209,11 +210,11 @@ export function parseConnectionId(url: string): ConnectionId {
 
 /** Sign an auth challenge with the given identity */
 async function signChallenge(
-  identity: UnlockedIdentity,
+  identity: ClientSigningIdentity,
   challenge: string,
 ): Promise<ProtocolMessage> {
   const challengeData = fromBase64(challenge);
-  const signature = await sign(identity.privateKey, challengeData);
+  const signature = await signClient(identity, challengeData);
   return createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint);
 }
 
@@ -247,7 +248,7 @@ export function useConnectionManager(
   const connectionsMapRef = useRef<Map<ConnectionId, ManagedConnection>>(new Map());
   const [connectionsState, setConnectionsState] = useState<readonly ConnectionState[]>([]);
   const onMessageRef = useRef(onMessage);
-  const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
+  const identityRef = useRef<ClientSigningIdentity | null>(unlockedIdentity ?? null);
   const autoReconnectRef = useRef(autoReconnect);
   /** Stagger slots currently held by live connections (#685,
    *  `allocateStaggerSlot`). Each new WebSocketClient claims the smallest
@@ -273,6 +274,7 @@ export function useConnectionManager(
   }, []);
 
   useEffect(() => {
+    if (usesNativeIdentity() && !unlockedIdentity) identityRef.current = null;
     if (unlockedIdentity) {
       if (identityRef.current?.publicKeyRaw !== unlockedIdentity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
@@ -292,6 +294,7 @@ export function useConnectionManager(
       for (const mc of connectionsMapRef.current.values()) {
         mc.approval.reset();
         mc.authAttempt = null;
+        if (usesNativeIdentity()) { mc.pendingChallenge = null; mc.client.disconnect(); }
       }
       syncState();
     };
@@ -374,6 +377,14 @@ export function useConnectionManager(
       }
 
       let identity = identityRef.current;
+      if (usesNativeIdentity()) {
+        identity = currentNativeIdentity();
+        identityRef.current = identity;
+        if (!identity) {
+          mc.error = new Error('Set up or unlock the durable native identity before connecting.');
+          mc.client.disconnect(); syncState(); return;
+        }
+      }
       if (!identity) {
         const revision = getIdentityRevision();
         const storedBefore = loadIdentity();
@@ -925,7 +936,7 @@ export function useConnectionManager(
   // connection (empty connectionId) so the WebSocket opened just after gets
   // a populated identity ref before the daemon's challenge arrives.
   const provideIdentity = useCallback(
-    (connectionId: ConnectionId, identity: UnlockedIdentity) => {
+    (connectionId: ConnectionId, identity: ClientSigningIdentity) => {
       // Invalidate synchronously: the prop effect runs after this setter and
       // otherwise sees the replacement as already current (#873).
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
