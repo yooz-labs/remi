@@ -103,11 +103,10 @@ export class StartupOutput {
   line(directories: readonly string[]): string {
     const omitted = this.seen - this.head.length - this.tail.length;
     const kept = this.head + (omitted > 0 ? `[${omitted} characters omitted]` : '') + this.tail;
-    const redacted = replacePaths(
-      replacePaths(kept, directories, '<cwd>'),
-      homeDirectories(),
-      '~',
-    ).replace(UUID_SHAPED, (id) => shortThreadId(id));
+    // The session's directories first: the working directory usually lies inside the home directory.
+    const withoutDirectories = replacePaths(kept, directories, '<cwd>');
+    const withoutHome = replacePaths(withoutDirectories, homeDirectories(), '~');
+    const redacted = withoutHome.replace(UUID_SHAPED, (id) => shortThreadId(id));
     const escaped = escapeUnsafeText(redacted).replaceAll('\n', '\\n');
     return escaped.length <= STARTUP_LINE_CHARS
       ? escaped

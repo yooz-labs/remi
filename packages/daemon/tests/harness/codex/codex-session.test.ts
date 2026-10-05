@@ -681,7 +681,7 @@ describe('CodexHarness', () => {
      * A registered session built like `create`, with what it sends to clients kept apart: the raw PTY
      * frames an attached client gets (by design), and every other message.
      */
-    function createSending(deps: CodexLaunchDeps, passThrough = false) {
+    function createSending(deps: CodexLaunchDeps, passThrough = false, directory = workDir) {
       const sessionId = crypto.randomUUID() as UUID;
       const raw: Array<{ data?: string }> = [];
       const others: unknown[] = [];
@@ -692,7 +692,7 @@ describe('CodexHarness', () => {
       );
       const session = new CodexHarness(deps).createSession({
         sessionId,
-        workingDirectory: workDir,
+        workingDirectory: directory,
         extraArgs: [],
         passThrough,
         reservedRows: 0,
@@ -739,9 +739,14 @@ describe('CodexHarness', () => {
         'utf8',
       );
       expect(wire).toBe(`${ERROR}\r\n`);
-      // Nothing else carries the text or its base64 (a frame's data is base64, so a text check
-      // alone could not see one).
-      const encoded = [`${ERROR}\r\n`, ERROR].map((t) => Buffer.from(t).toString('base64'));
+      // Nothing else is sent at all in this scenario, so no copy of the text can be, in any
+      // encoding; and the text and its base64 (a frame's data is base64, so a text check alone
+      // could not see one) appear nowhere in what was.
+      expect(others).toEqual([]);
+      expect(messages).toEqual([]);
+      const encoded = [`${ERROR}\r\n`, ERROR, textOf(printed()[0])].map((t) =>
+        Buffer.from(t).toString('base64'),
+      );
       for (const text of [JSON.stringify(others), JSON.stringify(messages)]) {
         expect(text).not.toContain('invalid value');
         for (const b64 of encoded) expect(text).not.toContain(b64);
@@ -779,6 +784,19 @@ describe('CodexHarness', () => {
       for (const secret of [lower, upper, workDir, os.homedir()]) {
         expect(entry).not.toContain(secret);
       }
+    });
+
+    test('a working directory reached through a symlink is redacted as given and as Codex reports it', async () => {
+      const link = path.join(tmpDir, 'link');
+      fs.symlinkSync(workDir, link);
+      fakeCodex(`${link}/a ${workDir}/b`, 2);
+      const { session } = createSending(buildDeps(startServer()), false, link);
+      await session.start();
+      await exited(session);
+      const [entry] = printed();
+      expect(textOf(entry)).toContain('<cwd>/a <cwd>/b');
+      expect(entry).not.toContain(workDir);
+      expect(entry).not.toContain(link);
     });
 
     test('the working directory is replaced before the home directory, though the first holds the second', async () => {
