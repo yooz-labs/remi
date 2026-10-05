@@ -104,6 +104,8 @@ interface ManagedConnection {
 
 /** Hook options */
 export interface UseConnectionManagerOptions {
+  /** Browser integration scheduling seam after real key imports; public data only. */
+  identitySetupCheckpoint?: (publicKey: string) => Promise<void>;
   /** Message handler: receives connectionId and the protocol message */
   onMessage?: (connectionId: ConnectionId, message: ProtocolMessage) => void;
   /** Pre-unlocked identity (shared across all connections) */
@@ -237,6 +239,7 @@ export function useConnectionManager(
 ): UseConnectionManagerReturn {
   const {
     onMessage,
+    identitySetupCheckpoint,
     unlockedIdentity,
     clientId = 'remi-web',
     clientVersion = '0.0.1',
@@ -366,6 +369,7 @@ export function useConnectionManager(
           await ensureIdentity();
           if (!isIdentityEncrypted()) {
             identity = await unlockStoredIdentity();
+            await identitySetupCheckpoint?.(identity.publicKeyRaw);
             identityRef.current = identity;
           } else {
             mc.needsPassphrase = true;
@@ -397,7 +401,7 @@ export function useConnectionManager(
         syncState();
       }
     },
-    [syncState],
+    [identitySetupCheckpoint, syncState],
   );
 
   /** Handle auth_result for a specific connection */
