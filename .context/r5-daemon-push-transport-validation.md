@@ -105,7 +105,11 @@ no crypto/store/policy implementation is replaced. The current-callback pin uses
 QuestionStore membership/removal and does not claim the root runtime context is integrated.
 A separate owned Bun child captures real legacy diagnostics and is awaited after exit.
 
-Final focused run: 74 pass, 0 fail, 418 assertions across six files on EACH Bun
+The signature pin now explicitly counts two actual signatures (one per content/submit
+tuple), and proves retries call neither signer again; its original ambiguous test title
+was corrected without removing assertions.
+
+Final focused run: 74 pass, 0 fail, 420 assertions across six files on EACH Bun
 1.4.2 and 1.3.11. All four package typechecks and the scoped integration check pass.
 Pinned Biome 1.9.4 reports 0 errors and the 52 existing warnings; typos/diff pass.
 The final owned process audit is empty. The final test-factory mutation has its own

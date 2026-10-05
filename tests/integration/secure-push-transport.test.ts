@@ -102,8 +102,16 @@ function receiver(
   servers.push(server);
   return { server, bodies };
 }
-test('secure transport binds actual signer, signs exactly once and reuses immutable retry bytes', async () => {
+test('secure transport binds actual signer, signs each tuple once and reuses immutable retry bytes', async () => {
   const f = await fixture();
+  let signatures = 0;
+  const signer: r.Signer = {
+    publicKey: f.signer.publicKey,
+    async sign(input) {
+      signatures++;
+      return f.signer.sign(input);
+    },
+  };
   const received = receiver(async (req, body, count) => {
     expect(new URL(req.url).pathname).toBe(`/v2/push/${f.metadata.rid}`);
     const parsed = r.decodePushSubmit(body);
@@ -126,13 +134,14 @@ test('secure transport binds actual signer, signs exactly once and reuses immuta
   ).toThrow('SECURE_PUSH_AUDIENCE');
   const transport = Transport.forOwnedLoopbackTest({
     store: f.store,
-    signer: f.signer,
+    signer,
     audience: received.server.url.origin,
     ownedOrigin: received.server.url.origin,
     retryDelayMs: 1,
   });
   const result = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
   expect(result.outcome).toBe('prepared');
+  expect(signatures).toBe(2); // One actual content signature and one actual submit signature.
   if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
   expect(result.prepared.contentDigest).toMatch(/^[a-f0-9]{64}$/);
   const opened = await r.openPushContent(
@@ -153,6 +162,7 @@ test('secure transport binds actual signer, signs exactly once and reuses immuta
     attempts: 2,
   });
   expect(received.bodies).toHaveLength(2);
+  expect(signatures).toBe(2); // Retrying invokes neither signer again.
   expect(received.bodies[1]).toBe(received.bodies[0]);
   expect(received.bodies[0]).not.toContain('PRIVATE_BODY_SENTINEL');
 });
