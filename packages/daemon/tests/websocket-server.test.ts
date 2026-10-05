@@ -20,6 +20,7 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import { Authenticator } from '../src/auth/authenticator.ts';
+import { CAPABILITY_HEADER, loadOrCreateCapabilityToken } from '../src/auth/capability-token.ts';
 import { IdentityStore } from '../src/auth/identity-store.ts';
 import { WebSocketServer } from '../src/server/websocket-server.ts';
 
@@ -889,6 +890,8 @@ describe('WebSocketServer', () => {
 
     async function startServer(opts: {
       authenticator?: Authenticator;
+      capabilityToken?: string;
+      host?: string;
       relayResult?: 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
       captureRelay?: (args: { sessionId: string; questionId: string; answer: string }) => void;
     }): Promise<WebSocketServer> {
@@ -897,6 +900,8 @@ describe('WebSocketServer', () => {
       const s = new WebSocketServer(
         {
           port: answerPort,
+          ...(opts.capabilityToken !== undefined && { capabilityToken: opts.capabilityToken }),
+          ...(opts.host !== undefined && { host: opts.host }),
           connection: opts.authenticator ? { authenticator: opts.authenticator } : {},
         },
         {
@@ -982,35 +987,56 @@ describe('WebSocketServer', () => {
       expect(((await res.json()) as { result: string }).result).toBe('payload-too-large');
     });
 
-    test('loopback peer is exempt from auth even when an authenticator is configured', async () => {
-      // Mirrors the WebSocket loopback bypass: a same-machine peer is trusted
-      // by virtue of the OS, so the route does not require a signature. The test
-      // client connects over 127.0.0.1, so this proves the route is reachable
-      // (and auth-exempt) for loopback even with auth on.
+    test('auth-enabled loopback answer requires a valid capability before invoking the handler', async () => {
+      // #873: real TCP loopback alone grants no permission to answer. Only a
+      // valid local capability can replace the authorized detached signature.
       const { store, dir } = makeAuthDir();
       try {
         await store.generate();
         const serverIdentity = await store.unlock();
         const authenticator = new Authenticator({ identity: serverIdentity, identityStore: store });
-        await startServer({ authenticator });
-
-        const res = await fetch(`http://localhost:${answerPort}/answer`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: 'Yes' }),
+        const capabilityToken = loadOrCreateCapabilityToken(path.join(dir, 'capability.key'));
+        const captured: Array<{ sessionId: string; questionId: string; answer: string }> = [];
+        await startServer({
+          authenticator,
+          capabilityToken,
+          host: '127.0.0.1',
+          captureRelay: (args) => captured.push(args),
         });
+
+        const post = (headers: Record<string, string> = {}) =>
+          fetch(`http://127.0.0.1:${answerPort}/answer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: 'Yes' }),
+          });
+        for (const headers of [
+          {},
+          { [CAPABILITY_HEADER]: 'wrong-capability' },
+          {
+            [CAPABILITY_HEADER]: 'wrong-capability',
+            'X-Forwarded-For': '127.0.0.1',
+            Forwarded: 'for=127.0.0.1',
+          },
+        ]) {
+          const denied = await post(headers);
+          expect(denied.status).toBe(401);
+          expect(((await denied.json()) as { result: string }).result).toBe('unauthorized');
+          expect(captured).toEqual([]);
+        }
+
+        const res = await post({ [CAPABILITY_HEADER]: capabilityToken });
         expect(res.status).toBe(200);
         expect(((await res.json()) as { result: string }).result).toBe('delivered');
+        expect(captured).toEqual([{ sessionId: 's', questionId: 'q', answer: 'Yes' }]);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
 
-    // The route's networked-peer auth gate calls Authenticator.verifyDetachedRequest;
-    // since loopback peers (the only peer a local test can present) are exempt,
-    // the auth-rejection path is exercised directly against that method — the
-    // exact same gate the route uses (verify signature, then require an
-    // authorized key). This is the SAME trust model the WebSocket handshake uses.
+    // Peers without a valid local capability must pass verifyDetachedRequest:
+    // verify the signature and require an authorized key. The cases below
+    // exercise that verifier directly; the real HTTP boundary is covered above.
     test('verifyDetachedRequest rejects a valid signature from an UNAUTHORIZED key', async () => {
       const { store, dir } = makeAuthDir();
       try {

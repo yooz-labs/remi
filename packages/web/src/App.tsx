@@ -14,7 +14,7 @@ import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
-import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
+import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
   EMPTY_PENDING_SENDS,
@@ -257,6 +257,11 @@ function App() {
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [modalConnectionId, setModalConnectionId] = useState<ConnectionId | null>(null);
+  const openConnectModal = useCallback(() => {
+    setModalConnectionId(null);
+    setShowConnectModal(true);
+  }, []);
   // New-session sheet (#638): recent project directories from the daemon.
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
@@ -564,6 +569,7 @@ function App() {
                     connectionId,
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                    ...(message.harness !== undefined && { harness: message.harness }),
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -588,6 +594,7 @@ function App() {
               preview: 'Connected',
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+              ...(message.harness !== undefined && { harness: message.harness }),
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -1011,6 +1018,7 @@ function App() {
               canResume: showResume,
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
+              ...(ds.harness !== undefined && { harness: ds.harness }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.
@@ -1830,12 +1838,11 @@ function App() {
     return session?.connectionId;
   }, [sessions, activeSessionId]);
 
-  // Close modal on successful connect
+  const modalConnection = connections.find((c) => c.connectionId === modalConnectionId);
+  // A healthy sibling must not close another host's connect attempt (#873).
   useEffect(() => {
-    if (hasAnyConnected) {
-      setShowConnectModal(false);
-    }
-  }, [hasAnyConnected]);
+    if (modalConnection?.status === 'connected') setShowConnectModal(false);
+  }, [modalConnection?.status]);
 
   // Update session connectionStatus when connections change
   useEffect(() => {
@@ -2629,7 +2636,11 @@ function App() {
   const handlePassphraseSubmit = useCallback(
     async (passphrase: string) => {
       try {
+        const revision = getIdentityRevision();
         const identity = await unlockStoredIdentity(passphrase);
+        if (getIdentityRevision() !== revision || loadIdentity()?.publicKey !== identity.publicKeyRaw) {
+          throw new Error('Identity changed during unlock. Try again with the current identity.');
+        }
         setUnlockedIdentity(identity);
         // Seed the connection manager's identity ref synchronously, even if
         // there is no pending connection yet (preflight path, #257). This
@@ -2647,7 +2658,7 @@ function App() {
 
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
-      connectDirect(url, directory);
+      setModalConnectionId(connectDirect(url, directory));
       // Persist connected URLs. Dedupe by normalized connectionId (#682) so
       // reconnecting to the same daemon through a different host alias
       // (e.g. '127.0.0.1' after a previously-stored 'localhost' URL) replaces
@@ -3001,14 +3012,9 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
-  // Derive error from the most recently errored connection (if any). Used
-  // for the ConnectModal's own connect-attempt feedback, which is
-  // deliberately global -- it's about the connection the user just tried,
-  // not about any particular chat session.
-  const errorConnection = connections.find((c) => c.status === 'error');
-  const error: string | null = errorConnection
-    ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
-    : null;
+  // Connect feedback belongs only to this sheet's submitted attempt (#873).
+  const error = modalConnection?.error ?? null;
+  const approvalConnection = modalConnection?.approval ? modalConnection : undefined;
 
   // Chat-view banner (#682): scoped to the connection serving the ACTIVE
   // session, so an unrelated errored/duplicate connection can't pin a
@@ -3017,15 +3023,7 @@ function App() {
   // screen is healthy and attached.
   const chatError = deriveConnectionBannerError(connections, activeSession?.connectionId ?? null);
 
-  // Compute effective status for ConnectModal: show the latest connection's status
-  const effectiveStatus = (() => {
-    if (hasAnyConnected) return 'connected' as const;
-    if (isAnyConnecting) return 'connecting' as const;
-    if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
-    if (connections.some((c) => c.status === 'unreachable')) return 'unreachable' as const;
-    if (connections.some((c) => c.status === 'error')) return 'error' as const;
-    return 'disconnected' as const;
-  })();
+  const effectiveStatus = modalConnection?.status ?? 'disconnected';
 
   // Sidebar content
   const sidebar = (
@@ -3036,8 +3034,8 @@ function App() {
       onSelectSession={handleSelectSession}
       onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
-      onConnect={() => setShowConnectModal(true)}
-      onAddConnection={() => setShowConnectModal(true)}
+      onConnect={openConnectModal}
+      onAddConnection={openConnectModal}
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
@@ -3103,11 +3101,13 @@ function App() {
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         connectionStatus={effectiveStatus}
+        approvalConnection={approvalConnection}
+        onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
-        needsPassphrase={needsPassphrase}
+        needsPassphrase={showConnectModal ? Boolean(modalConnection?.needsPassphrase) : needsPassphrase}
         hasIdentity={hasIdentity()}
         hasUnlockedIdentity={unlockedIdentity != null}
-        serverFingerprint={passphraseServerFingerprint}
+        serverFingerprint={showConnectModal ? modalConnection?.serverFingerprint : passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
       />
 

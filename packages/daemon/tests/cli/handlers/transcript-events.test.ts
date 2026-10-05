@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { identityFromClaudeId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
@@ -116,6 +117,7 @@ describe('createTranscriptHandlers', () => {
       sessionId: 'cccccccc-0000-0000-0000-000000000000' as UUID,
       claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
       transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+      identity: identityFromClaudeId('22222222-2222-2222-2222-222222222222'),
     };
     makeHandlers(() => current).onTranscriptLoadRequest(
       CID,

@@ -110,3 +110,41 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Do you want to proceed?');
   });
 });
+
+describe('a card that carries its own fixed label (#1178)', () => {
+  test('the label is returned as it is, whatever the text, the kind and the questions say', () => {
+    const secret = 'sk-live-do-not-write-this-to-disk';
+    for (const q of [
+      mkQuestion({
+        text: `Allow Codex to run: curl -H "Authorization: Bearer ${secret}"`,
+        pendingLabel: 'Permission: Codex command',
+      }),
+      mkQuestion({
+        kind: 'multi_question',
+        text: secret,
+        questions: [{ header: secret, text: secret, multiSelect: false, options: [] }],
+        pendingLabel: 'Codex asks for approval',
+      }),
+      mkQuestion({
+        source: 'permission_request',
+        text: `Allow Bash: ${secret}`,
+        pendingLabel: 'Codex asks for approval',
+      }),
+    ]) {
+      const label = buildPendingQuestionLabel(q);
+      expect(label).toBe(q.pendingLabel as string);
+      expect(label).not.toContain(secret);
+    }
+  });
+
+  test("a card with no fixed label is labeled as before: Claude's output is unchanged", () => {
+    expect(
+      buildPendingQuestionLabel(
+        mkQuestion({ text: 'Allow Bash: ls', source: 'permission_request' }),
+      ),
+    ).toBe('Permission: Bash');
+    expect(buildPendingQuestionLabel(mkQuestion({ text: 'Proceed with the plan?' }))).toBe(
+      'Proceed with the plan?',
+    );
+  });
+});

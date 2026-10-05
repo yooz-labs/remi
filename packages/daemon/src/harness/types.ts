@@ -1,8 +1,9 @@
 /**
  * The harness seam (epic #1161, phase 2 #1163): what the daemon asks of the
  * agent CLI it wraps, behind one descriptor so a second harness has a place to
- * plug in. Claude Code is the only implementation (`ClaudeHarness`), and
- * wiring it in changes nothing the daemon does or emits (ADR 0032).
+ * plug in. Claude Code (`ClaudeHarness`) is the default implementation, and wiring
+ * it in changed nothing the daemon does or emits (ADR 0032); Codex
+ * (`CodexHarness`: status and approval cards, no typed chat) is the second (ADR 0033).
  *
  * One daemon hosts one session, so the harness is a per-daemon singleton: it
  * is constructed once in `cli.ts` and handed to the handler factories as a
@@ -15,10 +16,9 @@
  * the harness id) are added by the phase that first needs them, not before.
  */
 
-import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
+import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
-import type { NotificationDispatcher } from '../notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../pty/index.ts';
 import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
@@ -42,8 +42,6 @@ export interface HarnessLaunchContext {
   readonly sendAndRecord: (message: ProtocolMessage) => void;
   /** Forward an outgoing message to the connection layer. */
   readonly sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
-  /** This session's APNS dispatcher, registered by the harness in `sessionNotifiers`. */
-  readonly notifications: NotificationDispatcher;
 }
 
 /**
@@ -86,6 +84,24 @@ export interface DecisionChannel {
 }
 
 /**
+ * A session's chat history, for a harness that keeps it somewhere remi reads through the
+ * harness and not as a file (Codex: its app-server, #1180). A harness without one (Claude: its
+ * transcript file, read by the transcript handler) leaves `HarnessSession.chat` unset.
+ *
+ * Only history is on the seam. A harness sends its live updates itself, through the launch
+ * context's `sendAndRecord`, as Claude's transcript binder does, so a client that is connected
+ * sees a new message without asking.
+ */
+export interface HarnessChat {
+  /**
+   * Replay the session's history oldest first through `emit`, one `transcript_content` per
+   * message, as pages arrive. Resolves with the number of messages emitted; rejects when the
+   * history cannot be read (what was emitted before stays emitted).
+   */
+  readHistory(emit: (message: TranscriptContentMessage) => void): Promise<number>;
+}
+
+/**
  * One launched session: the PTY (built, not yet started), how its pending
  * decisions are answered, and how to start and end it. `cli.ts` registers the
  * PTY with the session registry between construction and `start()`, which is
@@ -94,6 +110,23 @@ export interface DecisionChannel {
 export interface HarnessSession {
   readonly pty: PTYSession;
   readonly decisions: DecisionChannel;
+  /**
+   * Does this session take chat text typed from a client (web, Telegram, the
+   * relay)? Absent means yes. `false` makes the chat handler refuse the text
+   * (`PROMPT_WAITING`, naming the message) and type nothing; raw input (an
+   * attach client's keystrokes, the Escape button or `/interrupt`, which the
+   * client marks `raw`) is never affected. Codex sets it (#1177): it has no screen
+   * reads, so nothing can tell remi that its TUI is showing a modal (an update
+   * notice, a trust prompt) or an approval it has no card for, which a typed Enter
+   * would confirm.
+   */
+  readonly acceptsTypedChat?: boolean;
+  /**
+   * The session's chat history, when the harness provides it itself (Codex, #1180). Absent means
+   * the history is a transcript file the transcript handler reads (Claude). The handler asks for
+   * it through `chatFor` when a client sends `transcript_load_request`.
+   */
+  readonly chat?: HarnessChat | undefined;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
   /**
@@ -122,10 +155,12 @@ export interface Harness {
   /**
    * Where the harness writes the transcript of one of its sessions, derived
    * from the project path and the harness's own session id. It is the path a
-   * session WILL have (or has), not proof the file exists. Claude:
-   * `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
+   * session WILL have (or has), not proof the file exists. `null` when the
+   * harness has no transcript file remi can name (#1176: Codex's history comes
+   * from its app-server, not a file), which every caller reads as "no file".
+   * Claude: `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
    */
-  transcriptPath(projectPath: string, harnessSessionId: string): string;
+  transcriptPath(projectPath: string, harnessSessionId: string): string | null;
 
   /**
    * Build the session's detection, binding and PTY, in the order the harness

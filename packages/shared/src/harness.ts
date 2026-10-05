@@ -1,21 +1,19 @@
 /**
  * Harness identity and the cross-harness decision vocabulary.
  *
- * A "harness" is the agent CLI remi wraps. Claude Code is the only one with an
- * implementation today; `codex` and `opencode` are named so persisted records
- * and later wire fields have a closed vocabulary to grow into. Nothing in this
- * file changes what the daemon does or emits (epic #1161, phase #1162): the
- * wire-level `harness` / `harnessSessionId` fields declared on
- * `DiscoverableSession`, `HelloAckMessage` and `QuestionMessage` are typed but
- * populated by no code. See ADR 0032 for the shim rules.
+ * A "harness" is the agent CLI remi wraps. Claude Code and Codex have
+ * adapters; `opencode` is named so persisted records and wire fields have a
+ * closed vocabulary to grow into. The wire-level `harness` /
+ * `harnessSessionId` fields on `DiscoverableSession`, `HelloAckMessage` and
+ * `QuestionMessage` are sent by the daemon since #1179 (ADR 0032 and 0033 give
+ * the rules).
  */
 
 import type { Question } from './types.ts';
 
 /**
- * Every harness remi names. Only `claude` has an implementation
- * (`ClaudeHarness`, built once by the daemon); there is no id-keyed registry
- * until the Codex epic adds the first caller that looks a harness up by id.
+ * Every harness remi names. `claude` and `codex` have adapters in this build;
+ * `opencode` has none, so no daemon offers it (`hello_ack.harnesses`).
  */
 export const HARNESS_IDS = ['claude', 'codex', 'opencode'] as const;
 
@@ -95,8 +93,8 @@ export type ResolvedBy = 'terminal' | 'phone' | 'lockscreen' | 'harness' | 'time
  * | Strategy field | Where it lives today |
  * |---|---|
  * | `id` | `Question.id` |
- * | `harness` | `QuestionMessage.harness`, typed and never emitted; absent means {@link DEFAULT_HARNESS} |
- * | `harnessSessionId` | `QuestionMessage.harnessSessionId`, typed and never emitted; today `QuestionMessage.claudeSessionId` |
+ * | `harness` | `QuestionMessage.harness`; absent (an older daemon) means {@link DEFAULT_HARNESS} |
+ * | `harnessSessionId` | `QuestionMessage.harnessSessionId`; for Claude it equals `QuestionMessage.claudeSessionId` |
  * | `agentId` | `Question.agentId` (absent for the main agent) |
  * | `kind` | `Question.kind`: `permission`, `multi_question` (the strategy's `question`), `plan_approval` (its `plan`); the strategy's `sandbox` and `trust` have no `kind` today, they are hook-less PTY prompts (`Question.source === 'pty'`) |
  * | `options[]` | `Question.options` |

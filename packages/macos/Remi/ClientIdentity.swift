@@ -7,8 +7,8 @@
 //  ~/.remi/capability.key (PR #874); this app is sandboxed and can never
 //  read that path — Remi.entitlements says so explicitly and that is
 //  deliberate (#649/#651). This is the sandboxed equivalent: a keypair
-//  generated on first launch, held in this app's own Keychain item, that
-//  never leaves the app and lets it complete the daemon's `auth_challenge`
+//  generated on first launch, whose private key stays in this app's own
+//  Keychain item, that lets it complete the daemon's `auth_challenge`
 //  handshake exactly like the web/iOS clients do.
 //
 //  Wire format MUST match packages/shared/src/crypto.ts and
@@ -44,6 +44,38 @@ struct ClientIdentity {
     /// display/logging only, but it must still be correct.
     var fingerprint: String { Self.fingerprint(ofPublicKeyRaw: publicKeyRaw) }
 
+    /// Approval export (#873): contains only the canonical public key and its fingerprint.
+    var publicIdentityJSON: String {
+        // Both strings contain only base64/hex, so they need no JSON escaping.
+        "{\n  \"publicKey\": \"\(publicKeyRaw.base64EncodedString())\",\n  \"fingerprint\": \"\(fingerprint)\"\n}"
+    }
+
+    var authorizeCommand: String { "remi authorize \(fingerprint)" }
+
+    /// Cross-language copy of the reviewed 14 encodings in shared/ed25519-public-key.ts.
+    /// ClientIdentityTests validates this against helper-generated public fixtures;
+    /// no new curve algorithm is implemented here (#873).
+    private static let smallOrderEncodings: Set<String> = [
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000080",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    ]
+
+    static func isSmallOrderPublicKey(_ raw: Data) -> Bool {
+        smallOrderEncodings.contains(raw.map { String(format: "%02x", $0) }.joined())
+    }
+
     static func fingerprint(ofPublicKeyRaw raw: Data) -> String {
         let digest = SHA256.hash(data: raw)
         let hex = digest.map { String(format: "%02x", $0) }.joined()
@@ -58,9 +90,8 @@ struct ClientIdentity {
 }
 
 /// Loads or creates this app's `ClientIdentity`, persisted in the Keychain
-/// so the daemon's TOFU trust survives relaunches — regenerating a new key
-/// on every launch would mean re-earning trust (or, once `--no-tofu` is set
-/// on the daemon, never connecting at all) every single time.
+/// so explicit local authorization survives relaunches (#873). Regenerating
+/// a key would require another human approval on the daemon machine.
 ///
 /// No new entitlement is needed: a sandboxed app can create and read its own
 /// default-access-group Keychain items without the `keychain-access-groups`

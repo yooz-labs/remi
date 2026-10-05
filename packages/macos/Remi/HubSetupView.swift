@@ -39,16 +39,13 @@ struct HubSetupView: View {
         }
     }
 
-    /// #872: a hub answered but rejected this app's Ed25519 identity —
-    /// `[daemon] require_local_auth` is on and TOFU either didn't run
-    /// (`--no-tofu`) or a previously-trusted key was revoked. Distinct copy
-    /// from `unreachableView`: the hub IS running, so the install/start
-    /// instructions there would be actively misleading here.
+    /// #873: first connect needs local approval. Other authentication failures
+    /// keep their distinct reason and never claim a pending request exists.
     private func rejectedView(port: Int, reason: String) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("This app isn't trusted by the hub yet")
+                    Text(hubClient.approvalErrorCode == "UNKNOWN_KEY" ? "Approve this app on the daemon machine" : "Hub authentication failed")
                         .font(.title2)
                         .bold()
                     Text(
@@ -57,17 +54,23 @@ struct HubSetupView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(
-                        "New devices are trusted automatically the first time they connect, unless the hub was started with --no-tofu, or this app's key was later removed from its authorized keys."
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                if let code = hubClient.approvalErrorCode {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Device fingerprint: \(hubClient.publicFingerprint)")
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                        if code == "UNKNOWN_KEY" {
+                            Text("On the daemon machine, run remi keys and compare the pending fingerprint with this app. After comparing, run the command below, then Check Again. Requests expire after 10 minutes; retries do not extend that window.")
+                                .foregroundStyle(.secondary)
+                            CommandRow(title: "Authorize locally", command: hubClient.authorizeCommand)
+                        }
+                        CommandRow(title: "Public identity JSON", command: hubClient.publicIdentityJSON)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Button("Check Again") { hubClient.rescanNow() }
-                    Text("This window checks automatically and closes on its own once trusted.")
+                    Text("This window checks automatically and closes once the connection succeeds.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

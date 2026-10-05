@@ -76,10 +76,11 @@ jobs:
       - name: Check coverage threshold
         run: |
           # The "All files" row is pipe-delimited: File | % Funcs | % Lines | Uncovered.
+          # Treat the stream as text: test-runner diagnostics may contain NUL/control bytes.
           # % Lines is the 3rd field. Strip ANSI colour codes first (bun colourises
           # on a TTY) and fail loudly if parsing yields a non-number — the previous
           # `awk '{print $NF}'` extracted the trailing "|", silently passing the gate.
-          COVERAGE=$(bun test --coverage 2>&1 | grep "All files" | head -1 \
+          COVERAGE=$(bun test --coverage 2>&1 | grep -a "All files" | head -1 \
             | sed 's/\x1b\[[0-9;]*m//g' | awk -F'|' '{gsub(/[[:space:]]/,"",$3); print $3}' | tr -d '%')
           echo "Line coverage: ${COVERAGE}%"
           if ! echo "$COVERAGE" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then

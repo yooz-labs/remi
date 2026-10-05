@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { errorToString } from '@remi/shared';
+import { errorToString, escapeUnsafeText } from '@remi/shared';
 import {
   createDetachSession,
   createHello,
@@ -57,8 +57,16 @@ export interface AttachClientResult {
  * its own fresh row below the cue block, same as before.
  */
 export function formatQuestionBanner(question: Question): string {
-  const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
-  const lines = [`\r\x1b[2K\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
+  // The text and the labels can come from a peer (a Codex approval carries the command it asks to
+  // run): a terminal escape sequence in them would run on this terminal, and a bidi control would
+  // reorder what is read. They are written escaped (`escapeUnsafeText`); the sequences around them
+  // are the banner's own.
+  const options = question.options
+    .map((o, i) => `${i + 1}) ${escapeUnsafeText(o.label)}`)
+    .join('  ');
+  const lines = [
+    `\r\x1b[2K\x1b[36m[remi] pending question: ${escapeUnsafeText(question.text)}\x1b[0m\r\n`,
+  ];
   if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
   lines.push('\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n');
   return lines.join('');

@@ -20,10 +20,11 @@
  * SessionRegistryFile; transcriptPath has no disk column today (a phase-3 concern).
  */
 
-import { identityFromClaudeId, isHarnessId } from '@remi/shared';
-import type { SessionIdentity, UUID } from '@remi/shared';
+import { errorToString } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 
 import { log } from '../cli/logger.ts';
+import { identityOfRecord, isClaudeRecord } from './session-store.ts';
 import type { SessionStore, StoredSession } from './session-store.ts';
 import type { TranscriptIndex } from './transcript-index.ts';
 
@@ -79,15 +80,11 @@ export class SessionBindingStore {
    * string as Claude. A non-string `harness` never reaches here: the parser
    * treats it as absent, so it reads as Claude (ADR 0032, decision 5).
    *
-   * No production caller; the Codex epic (#1165) adds the first (ADR 0032).
+   * The session list's decoration and every question emission call it (#1179).
    */
   getIdentity(remiSessionId: UUID): SessionIdentity | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);
-    if (!stored) return null;
-    if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
-    if (!isHarnessId(stored.harness)) return null;
-    if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
-    return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
+    return stored ? identityOfRecord(stored) : null;
   }
 
   /** Reverse lookup: the full record bound to a Claude session id (disk-backed). */
@@ -111,7 +108,8 @@ export class SessionBindingStore {
   /**
    * Update the durable binding on rotation / first discovery. Delegates to
    * SessionStore.updateClaudeSessionId (a no-op when the record is absent, matching
-   * today). Together with preAssign, the ONLY claudeSessionId writer.
+   * today). Together with preAssign, the ONLY claudeSessionId writer. Throws for
+   * a record of another harness (#1176), before the transcript index is touched.
    */
   update(remiSessionId: UUID, claudeSessionId: string): void {
     const updated = this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
@@ -126,12 +124,52 @@ export class SessionBindingStore {
   }
 
   /**
+   * Record a non-Claude harness's own session id (#1176): first discovery, or
+   * a rotation. The counterpart of `update()` for a record that names its
+   * harness. A no-op when the record is absent, like `update()`. It does not
+   * touch the transcript index, which maps a Claude id to a Claude transcript;
+   * a non-Claude harness has no entry there.
+   *
+   * The Codex launch (#1177) records the thread id with it, once the app-server
+   * names one. It purges first: a record whose process died without exiting
+   * cleanly still counts as an active holder of its thread id until a purge
+   * marks it exited, and would make this write refuse a thread that is free.
+   */
+  updateHarnessIdentity(
+    remiSessionId: UUID,
+    harness: Exclude<HarnessId, 'claude'>,
+    harnessSessionId: string,
+  ): void {
+    this.purgeBeforeIdentity();
+    this.store.updateHarnessIdentity(remiSessionId, harness, harnessSessionId);
+  }
+
+  /**
+   * Mark records of dead processes exited before an identity is recorded, as
+   * `store.list()` does for Claude's `--resume`. Best effort: a purge that
+   * fails (a lock timeout) must not stop the write that follows, which fails
+   * on its own if the store is really unavailable.
+   */
+  private purgeBeforeIdentity(): void {
+    try {
+      this.store.purgeStale();
+    } catch (err) {
+      log(`[sessions] purge before recording a harness identity failed: ${errorToString(err)}`);
+    }
+  }
+
+  /**
    * Pre-spawn deterministic assignment: persist the full session record. Takes the
    * whole StoredSession (not just the binding) because save() creates the row,
    * including the liveness fields (pid/port/exitedAt) which are the CALLER's
    * responsibility to populate correctly — the accessor does not own them.
    */
   preAssign(session: StoredSession): void {
+    // A non-Claude record that names its thread id up front (a Codex resume)
+    // must not collide with a dead process's unpurged record of that thread.
+    if (!isClaudeRecord(session) && typeof session.harnessSessionId === 'string') {
+      this.purgeBeforeIdentity();
+    }
     // Mirror from save()'s returned (normalized) record, not the raw input —
     // otherwise a caller passing an unnormalized projectPath would seed
     // TranscriptIndex with a value that silently diverges from what
@@ -141,9 +179,11 @@ export class SessionBindingStore {
     // session never rotates and is later purged from sessions.json (#577).
     if (saved.claudeSessionId) {
       this.transcriptIndex?.record(saved.remiSessionId, saved.claudeSessionId, saved.projectPath);
-    } else if (this.transcriptIndex) {
+    } else if (this.transcriptIndex && isClaudeRecord(saved)) {
       // No claude id yet (deferred to the first update() on hook adopt/rotation).
       // Log so the deferred index seed is traceable rather than silently skipped.
+      // A non-Claude record never seeds this index, so there is nothing deferred
+      // to trace for it (#1176).
       log(
         `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );

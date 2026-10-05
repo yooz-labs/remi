@@ -8,15 +8,23 @@
  * (from crashed/killed processes) can be detected and auto-cleaned.
  */
 
-import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import { DEFAULT_HARNESS, errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
+import {
+  InterprocessFileLockError,
+  withInterprocessFileLock,
+} from '../storage/interprocess-file-lock.ts';
+export {
+  withInterprocessFileLock,
+  InterprocessFileLockError,
+  SessionStoreLockError,
+} from '../storage/interprocess-file-lock.ts';
 import { isProcessAlive } from './process-alive.ts';
+import { shellQuote } from './shell-quote.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
@@ -61,30 +69,6 @@ const REMI_DIR = remiHome();
 const SESSIONS_FILE = path.join(REMI_DIR, 'sessions.json');
 const MAX_SESSIONS = 100;
 const STALE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const LOCK_SUFFIX = '.lock';
-const LOCK_STALE_AFTER_MS = 30_000;
-const LOCK_WAIT_TIMEOUT_MS = 2_000;
-const LOCK_RETRY_DELAY_MS = 10;
-const LOCK_SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
-
-interface SessionStoreLockOwner {
-  version: 1;
-  ownerId: string;
-  pid: number;
-  host: string;
-  acquiredAt: number;
-}
-
-interface SessionStoreLockSnapshot {
-  owner: SessionStoreLockOwner;
-  mtimeMs: number;
-}
-
-interface SessionStoreLockHandle {
-  lockPath: string;
-  owner: SessionStoreLockOwner;
-}
-
 export class MalformedSessionStoreError extends Error {
   constructor(filePath: string, reason: string) {
     super(`Malformed session store ${filePath}: ${reason}`);
@@ -92,29 +76,17 @@ export class MalformedSessionStoreError extends Error {
   }
 }
 
-export class InterprocessFileLockError extends Error {
-  readonly lockPath: string;
-  readonly retryable: boolean;
-
-  constructor(lockPath: string, reason: string, options: { readonly retryable?: boolean } = {}) {
-    super(`Could not acquire interprocess lock ${lockPath}: ${reason}`);
-    this.name = 'InterprocessFileLockError';
-    this.lockPath = lockPath;
-    this.retryable = options.retryable ?? false;
-  }
-}
-
-/** Backward-compatible name for callers/tests that specifically mention the session store. */
-export { InterprocessFileLockError as SessionStoreLockError };
-
 export class AmbiguousSessionIdentityError extends Error {
-  readonly identity: 'Remi' | 'Claude';
+  /** 'Remi', 'Claude', or a non-Claude harness id ('codex'). */
+  readonly identity: string;
   readonly value: string;
   readonly matchCount: number;
 
-  constructor(identity: 'Remi' | 'Claude', value: string, matchCount: number) {
+  constructor(identity: string, value: string, matchCount: number) {
     super(
-      `Ambiguous ${identity} session ID ${value.slice(0, 8)}: ${matchCount} records; refusing to choose one`,
+      // A Claude or remi id is random throughout, so its first eight characters name it; a
+      // non-Claude harness id (a Codex thread, a UUIDv7) starts with a timestamp, so its last do.
+      `Ambiguous ${identity} session ID ${identity === 'Claude' || identity === 'Remi' ? value.slice(0, 8) : value.slice(-8)}: ${matchCount} records; refusing to choose one`,
     );
     this.name = 'AmbiguousSessionIdentityError';
     this.identity = identity;
@@ -129,12 +101,35 @@ function errorCode(err: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-function sleepSync(milliseconds: number): void {
-  Atomics.wait(LOCK_SLEEP_BUFFER, 0, 0, milliseconds);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * The harness a stored record belongs to: absence means Claude (ADR 0032), so
+ * a record with no `harness` and one naming `claude` read the same. An
+ * unrecognized string is returned as is, never coerced to Claude.
+ */
+export function storedHarness(session: Pick<StoredSession, 'harness'>): string {
+  return session.harness ?? DEFAULT_HARNESS;
+}
+
+/** True for a Claude record (no `harness`, or `claude`). */
+export function isClaudeRecord(session: Pick<StoredSession, 'harness'>): boolean {
+  return storedHarness(session) === DEFAULT_HARNESS;
+}
+
+/**
+ * The harness-neutral identity of a stored record (ADR 0032, #1179): a Claude
+ * record's is derived from `claudeSessionId` alone, so the two cannot differ;
+ * another known harness reports its stored `harnessSessionId`, or null before it
+ * has one. Null for a harness this build does not know, never a guess.
+ */
+export function identityOfRecord(stored: StoredSession): SessionIdentity | null {
+  if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
+  if (!isHarnessId(stored.harness)) return null;
+  if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
+  return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
 }
 
 function parseStoredSession(value: unknown, index: number, filePath: string): StoredSession {
@@ -190,9 +185,27 @@ function parseStoredSession(value: unknown, index: number, filePath: string): St
 function assertUniqueSessionIdentities(sessions: readonly StoredSession[]): void {
   const remiIds = new Map<string, number>();
   const activeClaudeIds = new Map<string, number>();
+  // Two simultaneous active owners of one non-Claude (harness, id) pair are as
+  // unsafe as two of a Claude id: an answer or a resume could reach either.
+  const activeHarnessIds = new Map<string, { harness: string; id: string; count: number }>();
 
   for (const session of sessions) {
     remiIds.set(session.remiSessionId, (remiIds.get(session.remiSessionId) ?? 0) + 1);
+
+    if (
+      !isClaudeRecord(session) &&
+      typeof session.harnessSessionId === 'string' &&
+      session.exitedAt === null
+    ) {
+      const key = `${storedHarness(session)}\0${session.harnessSessionId}`;
+      const entry = activeHarnessIds.get(key) ?? {
+        harness: storedHarness(session),
+        id: session.harnessSessionId,
+        count: 0,
+      };
+      entry.count += 1;
+      activeHarnessIds.set(key, entry);
+    }
 
     // A resumed Claude transcript legitimately has one exited historical Remi
     // row and one current active row. Only simultaneous active owners are an
@@ -215,298 +228,100 @@ function assertUniqueSessionIdentities(sessions: readonly StoredSession[]): void
       throw new AmbiguousSessionIdentityError('Claude', claudeSessionId, count);
     }
   }
+  for (const { harness, id, count } of activeHarnessIds.values()) {
+    if (count > 1) {
+      throw new AmbiguousSessionIdentityError(harness, id, count);
+    }
+  }
+}
+
+function selectSessionMatch(
+  matches: readonly StoredSession[],
+  identity: string,
+  sessionId: string,
+): StoredSession | null {
+  if (matches.length <= 1) return matches[0] ?? null;
+
+  // A normal `--resume` creates a new active Remi row for the same harness
+  // session while retaining the exited historical row. Prefer the single
+  // active owner; multiple active owners remain an unsafe ambiguity.
+  const active = matches.filter((session) => session.exitedAt === null);
+  if (active.length === 1) return active[0] ?? null;
+
+  throw new AmbiguousSessionIdentityError(identity, sessionId, matches.length);
 }
 
 function selectClaudeSessionMatch(
   matches: readonly StoredSession[],
   claudeSessionId: string,
 ): StoredSession | null {
-  if (matches.length <= 1) return matches[0] ?? null;
-
-  // A normal `--resume` creates a new active Remi row for the same Claude
-  // transcript while retaining the exited historical row. Prefer the single
-  // active owner; multiple active owners remain an unsafe ambiguity.
-  const active = matches.filter((session) => session.exitedAt === null);
-  if (active.length === 1) return active[0] ?? null;
-
-  throw new AmbiguousSessionIdentityError('Claude', claudeSessionId, matches.length);
+  return selectSessionMatch(matches, 'Claude', claudeSessionId);
 }
 
-/** Resolve a CLI resume query without ever choosing the first ambiguous row. */
+/**
+ * A resume query named a session that ran under another harness (#1176).
+ * `message` is what the CLI prints before exiting 1. For a Codex record with a
+ * thread id it names the command that resumes it, `remi codex resume <thread
+ * id>` (#1177), with the whole id; every other record gets no pointer, because
+ * no other command exists in this build.
+ */
+export class SessionHarnessMismatchError extends Error {
+  constructor(session: StoredSession) {
+    const harness = storedHarness(session);
+    super(
+      harness === 'codex' && session.harnessSessionId
+        ? `this session ran under codex; resume it with \`remi codex resume ${shellQuote(session.harnessSessionId)}\``
+        : `this session ran under ${harness}; this build cannot resume it`,
+    );
+    this.name = 'SessionHarnessMismatchError';
+  }
+}
+
+/**
+ * Resolve a CLI resume query without ever choosing the first ambiguous row.
+ *
+ * `opts.harness` is the harness the caller resumes; only `claude` (`remi --resume`) has a caller
+ * (#1179 removed the branch that matched another harness's own session id: `remi --sessions`
+ * prints the whole resume command, and `remi codex resume <thread id>` takes a whole thread id,
+ * so nothing resolves a Codex record by remi id or prefix). An exact or prefix Remi id that
+ * names a record of another harness throws `SessionHarnessMismatchError`, so a Codex session is
+ * never resumed as a Claude one. The fallback matches `claudeSessionId` of Claude records only,
+ * so a non-Claude record can never be found by a Claude id. Without `opts.harness` a Remi id
+ * resolves whatever the record's harness.
+ */
 export function resolveStoredSession(
   sessions: readonly StoredSession[],
   query: string,
+  opts: { readonly harness?: 'claude' } = {},
 ): StoredSession | null {
+  const { harness } = opts;
+  // The type already refuses another harness; a cast around it must not get a Claude record back.
+  if (harness !== undefined && harness !== DEFAULT_HARNESS) {
+    throw new Error(`resolveStoredSession resolves ${DEFAULT_HARNESS} sessions only`);
+  }
+  const checked = (session: StoredSession | null): StoredSession | null => {
+    if (session && harness !== undefined && storedHarness(session) !== harness) {
+      throw new SessionHarnessMismatchError(session);
+    }
+    return session;
+  };
+
   const exactRemi = sessions.filter((session) => session.remiSessionId === query);
   if (exactRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, exactRemi.length);
   }
-  if (exactRemi.length === 1) return exactRemi[0] ?? null;
+  if (exactRemi.length === 1) return checked(exactRemi[0] ?? null);
 
   const prefixRemi = sessions.filter((session) => session.remiSessionId.startsWith(query));
   if (prefixRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, prefixRemi.length);
   }
-  if (prefixRemi.length === 1) return prefixRemi[0] ?? null;
+  if (prefixRemi.length === 1) return checked(prefixRemi[0] ?? null);
 
   return selectClaudeSessionMatch(
-    sessions.filter((session) => session.claudeSessionId === query),
+    sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
     query,
   );
-}
-
-function parseLockOwner(raw: string, lockPath: string): SessionStoreLockOwner {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new InterprocessFileLockError(lockPath, 'owner metadata is not valid JSON');
-  }
-
-  if (!isRecord(value)) {
-    throw new InterprocessFileLockError(lockPath, 'owner metadata is not an object');
-  }
-
-  const owner: SessionStoreLockOwner = {
-    version: value['version'] as 1,
-    ownerId: value['ownerId'] as string,
-    pid: value['pid'] as number,
-    host: value['host'] as string,
-    acquiredAt: value['acquiredAt'] as number,
-  };
-  if (
-    owner.version !== 1 ||
-    typeof owner.ownerId !== 'string' ||
-    owner.ownerId.length === 0 ||
-    !Number.isInteger(owner.pid) ||
-    owner.pid <= 0 ||
-    typeof owner.host !== 'string' ||
-    owner.host.length === 0 ||
-    !Number.isFinite(owner.acquiredAt)
-  ) {
-    throw new InterprocessFileLockError(lockPath, 'owner metadata has invalid fields');
-  }
-  return owner;
-}
-
-function ensureLockDirectory(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-}
-
-/** Read and validate a lock without ever treating an unknown lock as free. */
-function readLockSnapshot(lockPath: string): SessionStoreLockSnapshot | null {
-  let stat: fs.Stats;
-  try {
-    stat = fs.lstatSync(lockPath);
-  } catch (err) {
-    if (errorCode(err) === 'ENOENT') return null;
-    throw new InterprocessFileLockError(
-      lockPath,
-      `cannot inspect owner metadata: ${errorToString(err)}`,
-    );
-  }
-
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new InterprocessFileLockError(lockPath, 'owner metadata is not a regular file');
-  }
-
-  let raw: string;
-  try {
-    raw = fs.readFileSync(lockPath, 'utf-8');
-  } catch (err) {
-    // The owner may release the lock between lstatSync and readFileSync.
-    // That is an ordinary unlocked state, not malformed metadata.
-    if (errorCode(err) === 'ENOENT') return null;
-    throw new InterprocessFileLockError(
-      lockPath,
-      `cannot read owner metadata: ${errorToString(err)}`,
-    );
-  }
-  return { owner: parseLockOwner(raw, lockPath), mtimeMs: stat.mtimeMs };
-}
-
-/**
- * A lock is reclaimable only when all evidence agrees: same host, both the
- * owner timestamp and file mtime are old, and the recorded PID is dead.
- * Unknown hosts, future timestamps, malformed metadata, and live PIDs stay
- * locked. This bias prevents a filesystem or clock anomaly from creating
- * overlapping writers.
- */
-function isStaleLock(snapshot: SessionStoreLockSnapshot): boolean {
-  const now = Date.now();
-  return (
-    snapshot.owner.host === os.hostname() &&
-    now - snapshot.owner.acquiredAt >= LOCK_STALE_AFTER_MS &&
-    now - snapshot.mtimeMs >= LOCK_STALE_AFTER_MS &&
-    !isProcessAlive(snapshot.owner.pid)
-  );
-}
-
-/** Restore a lock moved during a raced stale-recovery attempt, without replace semantics. */
-function restoreReclaimedLock(quarantinePath: string, lockPath: string): void {
-  try {
-    // A hard link gives us an exclusive restore: never overwrite a lock that
-    // another process acquired while the old lock was quarantined.
-    fs.linkSync(quarantinePath, lockPath);
-    fs.unlinkSync(quarantinePath);
-  } catch (err) {
-    if (errorCode(err) === 'EEXIST') {
-      // A new owner won while the old lock was quarantined. The old lock is no
-      // longer needed, and deleting the quarantine cannot affect that owner.
-      try {
-        fs.unlinkSync(quarantinePath);
-      } catch (cleanupErr) {
-        if (errorCode(cleanupErr) !== 'ENOENT') {
-          console.warn(
-            `[sessions] Could not remove raced lock quarantine ${quarantinePath}: ${errorToString(cleanupErr)}`,
-          );
-        }
-      }
-      return;
-    }
-    console.warn(
-      `[sessions] Could not restore raced lock ${quarantinePath}: ${errorToString(err)}`,
-    );
-  }
-}
-
-/**
- * Move a stale lock aside, verify its owner token did not change, then
- * remove it. The quarantine prevents a concurrent new owner from being
- * deleted by a stale-recovery cleanup.
- */
-function reclaimStaleLock(lockPath: string, expected: SessionStoreLockOwner): boolean {
-  const quarantinePath = `${lockPath}.recovery-${randomUUID()}`;
-  try {
-    fs.renameSync(lockPath, quarantinePath);
-  } catch (err) {
-    if (errorCode(err) === 'ENOENT') return false;
-    throw new InterprocessFileLockError(lockPath, `stale recovery failed: ${errorToString(err)}`);
-  }
-
-  try {
-    const recovered = readLockSnapshot(quarantinePath);
-    if (!recovered || recovered.owner.ownerId !== expected.ownerId) {
-      restoreReclaimedLock(quarantinePath, lockPath);
-      throw new InterprocessFileLockError(lockPath, 'lock owner changed during stale recovery');
-    }
-    fs.unlinkSync(quarantinePath);
-    return true;
-  } catch (err) {
-    if (err instanceof InterprocessFileLockError) {
-      // If validation failed after the move, put the exact lock back when it
-      // is still safe to do so. Never delete an owner we cannot identify.
-      if (fs.existsSync(quarantinePath)) restoreReclaimedLock(quarantinePath, lockPath);
-      throw err;
-    }
-    throw new InterprocessFileLockError(
-      lockPath,
-      `stale recovery cleanup failed: ${errorToString(err)}`,
-    );
-  }
-}
-
-/** Acquire the bounded cross-process lock used by the durable JSON stores. */
-function acquireInterprocessFileLock(filePath: string): SessionStoreLockHandle {
-  ensureLockDirectory(filePath);
-  const lockPath = `${filePath}${LOCK_SUFFIX}`;
-  const owner: SessionStoreLockOwner = {
-    version: 1,
-    ownerId: randomUUID(),
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: Date.now(),
-  };
-  const deadline = performance.now() + LOCK_WAIT_TIMEOUT_MS;
-
-  while (performance.now() < deadline) {
-    const candidatePath = `${lockPath}.${owner.ownerId}.tmp`;
-    try {
-      // Write the complete metadata to a unique sibling first. Linking that
-      // file into the well-known path is the ownership decision: contenders
-      // cannot observe a partially-written JSON document between O_EXCL
-      // creation and the metadata write.
-      fs.writeFileSync(candidatePath, JSON.stringify(owner), {
-        encoding: 'utf-8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      try {
-        fs.linkSync(candidatePath, lockPath);
-        return { lockPath, owner };
-      } catch (err) {
-        if (errorCode(err) !== 'EEXIST') {
-          throw new InterprocessFileLockError(
-            lockPath,
-            `cannot publish owner metadata: ${errorToString(err)}`,
-          );
-        }
-      } finally {
-        // The hard link (when successful) keeps the published copy alive;
-        // when another writer won, this candidate was never visible as the
-        // lock. Either way it must not survive the attempt.
-        try {
-          fs.unlinkSync(candidatePath);
-        } catch (err) {
-          if (errorCode(err) !== 'ENOENT') {
-            console.warn(
-              `[sessions] Could not remove lock candidate ${candidatePath}: ${errorToString(err)}`,
-            );
-          }
-        }
-      }
-    } catch (err) {
-      if (errorCode(err) !== 'EEXIST') {
-        throw new InterprocessFileLockError(
-          lockPath,
-          `cannot create lock candidate: ${errorToString(err)}`,
-        );
-      }
-    }
-
-    const snapshot = readLockSnapshot(lockPath);
-    if (snapshot && isStaleLock(snapshot)) {
-      if (reclaimStaleLock(lockPath, snapshot.owner)) continue;
-    }
-
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) break;
-    sleepSync(Math.min(LOCK_RETRY_DELAY_MS, remaining));
-  }
-
-  throw new InterprocessFileLockError(lockPath, `timed out after ${LOCK_WAIT_TIMEOUT_MS}ms`, {
-    retryable: true,
-  });
-}
-
-/** Release only our own lock; never unlink a replacement owner. */
-function releaseInterprocessFileLock(handle: SessionStoreLockHandle): void {
-  let snapshot: SessionStoreLockSnapshot | null;
-  try {
-    snapshot = readLockSnapshot(handle.lockPath);
-  } catch (err) {
-    console.warn(`[sessions] Could not inspect lock during release: ${errorToString(err)}`);
-    return;
-  }
-  if (!snapshot || snapshot.owner.ownerId !== handle.owner.ownerId) return;
-
-  try {
-    fs.unlinkSync(handle.lockPath);
-  } catch (err) {
-    if (errorCode(err) !== 'ENOENT') {
-      console.warn(`[sessions] Could not remove lock ${handle.lockPath}: ${errorToString(err)}`);
-    }
-  }
-}
-
-/** Serialize one complete read-modify-write transaction across processes. */
-export function withInterprocessFileLock<T>(filePath: string, operation: () => T): T {
-  const lock = acquireInterprocessFileLock(filePath);
-  try {
-    return operation();
-  } finally {
-    releaseInterprocessFileLock(lock);
-  }
 }
 
 export class SessionStore {
@@ -712,7 +527,11 @@ export class SessionStore {
   /** Find a session by its Claude session ID. */
   findByClaudeSessionId(claudeSessionId: string): StoredSession | null {
     const sessions = this.read();
-    const matches = sessions.filter((s) => s.claudeSessionId === claudeSessionId);
+    // Claude records only: a record of another harness never answers to a
+    // Claude id, whatever its `claudeSessionId` column holds (#1176).
+    const matches = sessions.filter(
+      (s) => isClaudeRecord(s) && s.claudeSessionId === claudeSessionId,
+    );
     return selectClaudeSessionMatch(matches, claudeSessionId);
   }
 
@@ -726,10 +545,16 @@ export class SessionStore {
     return matches[0] ?? null;
   }
 
-  /** Get the most recent session (by startedAt). */
-  getMostRecent(): StoredSession | null {
+  /**
+   * Get the most recent session (by startedAt). With `harness`, the most
+   * recent record of that harness (#1176): `remi --resume` asks for `claude`,
+   * so a newer Codex session is not picked as the one to resume. Without it,
+   * the newest record of any harness.
+   */
+  getMostRecent(harness?: HarnessId): StoredSession | null {
     const sessions = this.list();
-    return sessions[0] ?? null;
+    if (harness === undefined) return sessions[0] ?? null;
+    return sessions.find((s) => storedHarness(s) === harness) ?? null;
   }
 
   /** Mark a session as exited. */
@@ -753,12 +578,21 @@ export class SessionStore {
    * callers that mirror the binding elsewhere don't need a second disk read — a
    * separate read could race a concurrent purgeStale() and observe a null record
    * mid-rotation (#577). Returns null when no record exists (a no-op, as before).
+   * Throws for a record of another harness: its identity is not a Claude id.
    */
   updateClaudeSessionId(remiSessionId: UUID, claudeSessionId: string): StoredSession | null {
     return this.withWriteLock(() => {
       const sessions = this.read();
       assertUniqueSessionIdentities(sessions);
       const session = sessions.find((s) => s.remiSessionId === remiSessionId);
+      if (session && !isClaudeRecord(session)) {
+        // A non-Claude record keeps its own identity in `harnessSessionId`
+        // (`updateHarnessIdentity`); a Claude id written onto it would make
+        // it answer to both (#1176).
+        throw new Error(
+          `updateClaudeSessionId: session ${remiSessionId} belongs to harness ${storedHarness(session)}, not claude`,
+        );
+      }
       if (session) {
         session.claudeSessionId = claudeSessionId;
         assertUniqueSessionIdentities(sessions);
@@ -766,6 +600,48 @@ export class SessionStore {
         return session;
       }
       return null;
+    });
+  }
+
+  /**
+   * Record a non-Claude harness's own session id on a session (#1176), the
+   * counterpart of `updateClaudeSessionId`: it sets `harness` and
+   * `harnessSessionId` together, returns the updated record, and returns null
+   * when no record exists. Two things are refused, by throwing. `claude`: its
+   * record stores neither field (ADR 0032) and its id is `claudeSessionId`, so
+   * writing `harness: 'claude'` would give Claude records two shapes. A record
+   * that names a different harness: a record is created naming its own
+   * (`preAssign`), and this only fills in the id. It also rejects a second
+   * active record holding the same pair, before writing.
+   */
+  updateHarnessIdentity(
+    remiSessionId: UUID,
+    harness: Exclude<HarnessId, 'claude'>,
+    harnessSessionId: string,
+  ): StoredSession | null {
+    if ((harness as string) === DEFAULT_HARNESS) {
+      throw new Error(
+        'updateHarnessIdentity does not take claude: a Claude identity is claudeSessionId (use updateClaudeSessionId)',
+      );
+    }
+    return this.withWriteLock(() => {
+      const sessions = this.read();
+      assertUniqueSessionIdentities(sessions);
+      const session = sessions.find((s) => s.remiSessionId === remiSessionId);
+      if (!session) return null;
+      if (storedHarness(session) !== harness) {
+        // The record is created naming its harness (`preAssign`); this only
+        // fills in the id. Re-labeling a record would leave a Claude row
+        // carrying another harness's id, or the reverse.
+        throw new Error(
+          `updateHarnessIdentity: session ${remiSessionId} belongs to harness ${storedHarness(session)}, not ${harness}`,
+        );
+      }
+      session.harness = harness;
+      session.harnessSessionId = harnessSessionId;
+      assertUniqueSessionIdentities(sessions);
+      this.write(sessions);
+      return session;
     });
   }
 }

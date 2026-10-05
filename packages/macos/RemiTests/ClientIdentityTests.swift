@@ -38,6 +38,34 @@ final class ClientIdentityTests: XCTestCase {
         super.tearDown()
     }
 
+    func testApprovalExportContainsOnlyPublicIdentity() throws {
+        let identity = ClientIdentity(privateKey: .init())
+        let json = try XCTUnwrap(identity.publicIdentityJSON.data(using: .utf8))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: String])
+        XCTAssertEqual(Set(object.keys), Set(["publicKey", "fingerprint"]))
+        XCTAssertEqual(object["publicKey"], identity.publicKeyRaw.base64EncodedString())
+        XCTAssertEqual(object["fingerprint"], identity.fingerprint)
+        XCTAssertEqual(identity.authorizeCommand, "remi authorize \(identity.fingerprint)")
+    }
+
+    func testServerKeyValidatorMatchesActualSharedHelperFixtures() throws {
+        struct Case: Decodable {
+            let publicKey: String
+            let fingerprint: String
+            let smallOrder: Bool
+        }
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("fixtures/ed25519-server-keys.json")
+        let cases = try JSONDecoder().decode([Case].self, from: Data(contentsOf: file))
+        XCTAssertEqual(cases.filter { $0.smallOrder }.count, 14)
+        XCTAssertEqual(cases.filter { !$0.smallOrder }.count, 2)
+        for item in cases {
+            let raw = try XCTUnwrap(Data(base64Encoded: item.publicKey))
+            XCTAssertEqual(ClientIdentity.isSmallOrderPublicKey(raw), item.smallOrder)
+            XCTAssertEqual(ClientIdentity.fingerprint(ofPublicKeyRaw: raw), item.fingerprint)
+        }
+    }
+
     // MARK: - Keychain persistence
 
     func testLoadOrCreatePersistsAcrossInstantiations() {

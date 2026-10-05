@@ -13,10 +13,12 @@
  * `setupHookBridge` is observably load-bearing: `setupHookBridge` reads the
  * binding synchronously (`hook-bridge-setup.ts`, the `preAssignedClaudeId`
  * block) and arms the transcript binder only when one exists, which the launch
- * tests pin. The other two orders, `sessionNotifiers.set` before the tracker
- * and the tracker before the hook bridge, are kept for fidelity: the
- * statements between them are synchronous and the maps are read only inside
- * later callbacks, so moving them is unobservable, and no test can tell.
+ * tests pin. The other order, the tracker before the hook bridge, is kept for
+ * fidelity: the statements between them are synchronous and the maps are read
+ * only inside later callbacks, so moving it is unobservable, and no test can
+ * tell. The session's APNS dispatcher is no longer registered here: the shell
+ * (`createNewSession`) registers it in `sessionNotifiers` before calling
+ * `createSession` (#1165 E), and this launch only reads it back.
  *
  * One thing is relaxed on purpose: the daemon-side registration of the
  * tracker, gate handle and binder closer (formerly the `sessionTrackers`,
@@ -78,7 +80,9 @@ import type {
 /**
  * The daemon-wide services a Claude launch reads, passed once when `cli.ts`
  * builds the harness. `sessionNotifiers` is the daemon's per-session APNS
- * dispatcher registry, which the launch fills in and `onSessionClosed` drains.
+ * dispatcher registry: the shell fills it in before the launch (#1165 E),
+ * `onSessionClosed` drains it, and the launch only reads it, lazily, from the
+ * terminal-notice closures of the hook bridge.
  */
 export interface ClaudeLaunchDeps {
   sessionRegistry: SessionRegistry;
@@ -209,12 +213,7 @@ export function createClaudeSession(
     messageApi,
     sendAndRecord,
     sendMessage,
-    notifications,
   } = ctx;
-
-  // Register this session's APNS dispatcher so the question-resolved path can
-  // dismiss a pushed card through the same device-token fan-out (#585, P7).
-  sessionNotifiers.set(sessionId, notifications);
 
   // The gate attaches once the hook bridge exists (below); the tracker's
   // closures read it through `decisions` lazily, so until then nothing is held
@@ -412,7 +411,7 @@ export function createClaudeSession(
       sessionRegistry,
       sessionStore,
       liveSessionsRegistry,
-      outputProcessor,
+      outputSink: outputProcessor,
       wsPort: deps.wsPort(),
       sendMessage,
       cleanup,

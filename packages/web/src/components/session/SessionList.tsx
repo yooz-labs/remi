@@ -1,3 +1,4 @@
+import { ApprovalNeeded } from './ApprovalNeeded';
 /**
  * SessionList component.
  *
@@ -113,7 +114,7 @@ export function SessionList({
   );
 
   const problemConnections = connections.filter(
-    (c) => c.status === 'error' || c.status === 'reconnecting' || c.status === 'unreachable',
+    (c) => !c.approval && (c.status === 'error' || c.status === 'reconnecting' || c.status === 'unreachable'),
   );
 
   const goToFirstAsking = () => {
@@ -195,6 +196,11 @@ export function SessionList({
         </div>
       </header>
 
+      {connections.filter((c) => c.approval).map((c) => c.approval && (
+        <div key={c.connectionId} className="px-3 pb-2">
+          <ApprovalNeeded approval={c.approval} host={c.connectionId} onRetry={onReconnect ? () => onReconnect(c.connectionId) : undefined} retrying={c.status === 'connecting' || c.status === 'authenticating' || c.status === 'reconnecting'} />
+        </div>
+      ))}
       {/* Connection problem banners */}
       {problemConnections.length > 0 && (
         <div className="space-y-1 px-3 pb-2">

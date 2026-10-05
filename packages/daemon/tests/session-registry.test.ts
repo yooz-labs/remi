@@ -160,6 +160,32 @@ describe('SessionRegistry', () => {
       expect(result.currentQuestions.map((q) => q.id)).toEqual([q1, q2]);
     });
 
+    test("redactQuestionLogs keeps a question's text out of the eviction warning; the default keeps it (#1178)", async () => {
+      const lines: string[] = [];
+      const original = console.warn;
+      console.warn = (line: string) => lines.push(line);
+      const extra = new SessionRegistry({ orphanTimeoutMs: 60000, redactQuestionLogs: true });
+      try {
+        for (const r of [registry, extra]) {
+          const sid = generateId();
+          r.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+          for (let i = 0; i < 9; i++) {
+            r.addQuestion(sid, {
+              ...mkQuestion(generateId()),
+              text: `Allow Codex to run: sk-cmd-${i}`,
+            });
+          }
+        }
+      } finally {
+        console.warn = original;
+        await extra.shutdown();
+      }
+      const [plain, redacted] = lines;
+      expect(plain).toContain('text="Allow Codex to run: sk-cmd-0"');
+      expect(redacted).toContain('chars=');
+      expect(redacted).not.toContain('sk-cmd');
+    });
+
     describe('onQuestionsChanged (#786/#787)', () => {
       test('fires with the full current set on addQuestion', () => {
         const sid = generateId();

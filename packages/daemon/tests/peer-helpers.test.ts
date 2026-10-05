@@ -87,10 +87,10 @@ describe('isLoopbackAddress', () => {
 });
 
 describe('shouldSkipAuthForPeer (#257 + positive control)', () => {
-  test('skips auth for loopback peers when authenticator is configured', () => {
-    expect(shouldSkipAuthForPeer(true, '127.0.0.1')).toBe(true);
-    expect(shouldSkipAuthForPeer(true, '::1')).toBe(true);
-    expect(shouldSkipAuthForPeer(true, 'localhost')).toBe(true);
+  test('bare loopback peers require auth when authenticator is configured', () => {
+    expect(shouldSkipAuthForPeer(true, '127.0.0.1')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, '::1')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, 'localhost')).toBe(false);
   });
 
   test('does NOT skip auth for non-loopback peers (positive control)', () => {

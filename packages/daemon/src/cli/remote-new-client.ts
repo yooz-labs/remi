@@ -16,8 +16,8 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
-import { errorToString } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import { errorToString, escapeUnsafeText } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 import { capabilityWsOptions } from './capability-client.ts';
@@ -27,18 +27,59 @@ export interface RemoteNewOptions {
   readonly port: number;
   readonly directory?: string | undefined;
   readonly timeout?: number;
+  /**
+   * The harness to start there (#1179). Absent sends the plain request an older daemon
+   * understands. A named one is only sent to a daemon whose hello_ack lists it in `harnesses`:
+   * an older daemon ignores the field and would start Claude.
+   */
+  readonly harness?: HarnessId | undefined;
+  /** The harness's arguments (what follows `--`); the remote daemon checks them against its own allowlist. */
+  readonly args?: readonly string[] | undefined;
 }
 
 interface RemoteSessionResult {
   readonly sessionId: UUID;
   readonly port: number;
+  /**
+   * What the daemon says its success does not (#1179): shown to the person, never acted on. It is
+   * text a daemon chose and that this client trusts only on first use, so it arrives escaped
+   * (`escapeUnsafeText`): a terminal sequence or a bidi override in it cannot act on the screen.
+   */
+  readonly notice?: string;
 }
 
-async function createRemoteSession(
+/**
+ * Daemon text, shown escaped. The wire carries whatever JSON a daemon sent, so anything that is not
+ * a string (undefined, null, an array, an object with a `length`) is replaced by `fallback` rather
+ * than handed to `escapeUnsafeText`, which throws on it inside the socket's handler (#1204 round 2).
+ */
+function text(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? escapeUnsafeText(value) : fallback;
+}
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a success the daemon sent can be used: a session id that is a UUID and a port that is an
+ * integer from 1 to 65535 (or none). Both are printed and the port is attached to, and the wire
+ * carries whatever JSON a daemon chose, so a value of another shape (a terminal sequence in the
+ * first eight characters of the id, a string for the port) is refused, not shown (#1179 review, G10).
+ */
+function isUsableAnswer(sessionId: unknown, port: unknown): boolean {
+  if (typeof sessionId !== 'string' || !UUID_SHAPE.test(sessionId)) return false;
+  return (
+    port === undefined ||
+    (Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535)
+  );
+}
+
+export async function createRemoteSession(
   host: string,
   port: number,
   directory?: string,
   timeout = 30000,
+  harness?: HarnessId,
+  args: readonly string[] = [],
 ): Promise<RemoteSessionResult> {
   const url = `ws://${host}:${port}/ws`;
 
@@ -80,17 +121,55 @@ async function createRemoteSession(
 
     function handleMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
-        ws.send(serialize(createCreateSessionRequest(directory)));
+        // Arguments without a harness are Claude's. Either one asks for something an older daemon
+        // would silently drop, starting a plain Claude session, so it is sent only to a daemon
+        // that says it offers the harness.
+        const wanted = harness ?? (args.length > 0 ? 'claude' : undefined);
+        // An array and nothing else: a string has `includes` too, and 'claude,codex' offers nothing.
+        const offered = Array.isArray(msg.harnesses) ? (msg.harnesses as unknown[]) : [];
+        if (wanted !== undefined && !offered.includes(wanted)) {
+          done(
+            undefined,
+            new Error(
+              `The daemon at ${host}:${port} does not offer ${wanted} (it is an older remi, or has no ${wanted} installed); nothing was started.`,
+            ),
+          );
+          return;
+        }
+        ws.send(
+          serialize(
+            createCreateSessionRequest(directory, {
+              harness,
+              args: args.length > 0 ? args : undefined,
+            }),
+          ),
+        );
       } else if (msg.type === 'create_session_response') {
         if (msg.success && msg.sessionId) {
+          if (!isUsableAnswer(msg.sessionId, msg.port)) {
+            done(
+              undefined,
+              new Error(
+                'Failed to create session: the daemon sent an answer this client cannot read',
+              ),
+            );
+            return;
+          }
           // The daemon spawned a new daemon; use the returned port (or original if not present)
-          done({ sessionId: msg.sessionId, port: msg.port ?? port });
+          done({
+            sessionId: msg.sessionId,
+            port: msg.port ?? port,
+            ...(typeof msg.notice === 'string' && { notice: escapeUnsafeText(msg.notice) }),
+          });
         } else {
-          done(undefined, new Error(`Failed to create session: ${msg.error ?? 'unknown error'}`));
+          done(
+            undefined,
+            new Error(`Failed to create session: ${text(msg.error, 'unknown error')}`),
+          );
         }
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED') return;
-        done(undefined, new Error(`Daemon error: ${msg.message}`));
+        done(undefined, new Error(`Daemon error: ${text(msg.message, 'no message')}`));
       }
     }
 
@@ -137,17 +216,32 @@ async function createRemoteSession(
   });
 }
 
-export async function runRemoteNew(opts: RemoteNewOptions): Promise<{ exitCode: number }> {
-  const { host, port, directory, timeout } = opts;
+/** What `runRemoteNew` does outside the create itself; a test replaces both. */
+export interface RemoteNewDeps {
+  readonly attach?: typeof runAttachClient;
+  /** Where the progress lines go: stderr. */
+  readonly err?: (line: string) => void;
+}
 
-  console.error(`Creating session on ${host}:${port}...`);
-  const result = await createRemoteSession(host, port, directory, timeout);
+export async function runRemoteNew(
+  opts: RemoteNewOptions,
+  deps: RemoteNewDeps = {},
+): Promise<{ exitCode: number }> {
+  const { host, port, directory, timeout, harness, args } = opts;
+  const attach = deps.attach ?? runAttachClient;
+  const err = deps.err ?? ((line: string) => console.error(line));
+
+  err(`Creating session on ${host}:${port}...`);
+  const result = await createRemoteSession(host, port, directory, timeout, harness, args);
 
   if (result.port !== port) {
-    console.error(`New daemon spawned on port ${result.port}`);
+    err(`New daemon spawned on port ${result.port}`);
   }
-  console.error(`Session created: ${result.sessionId.slice(0, 8)}`);
-  console.error('Attaching...');
+  err(`Session created: ${result.sessionId.slice(0, 8)}`);
+  // The notice's first line is the condition, the rest what to do about it, which for a person
+  // here is `remi attach`: this command attaches next, so it prints the condition only.
+  if (result.notice !== undefined) err(result.notice.split('\n', 1)[0] as string);
+  err('Attaching...');
 
-  return runAttachClient({ host, port: result.port, sessionId: result.sessionId });
+  return attach({ host, port: result.port, sessionId: result.sessionId });
 }

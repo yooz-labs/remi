@@ -46,7 +46,6 @@ import {
   createAgentOutput,
   createAuthResult,
   createError,
-  createQuestion,
   decryptRelayPayload,
   deriveRelaySessionKeys,
   encryptRelayPayload,
@@ -63,7 +62,6 @@ import type {
   EphemeralKeyPair,
   Message,
   ProtocolMessage,
-  Question,
   RelaySessionKeys,
   UUID,
 } from '@remi/shared';
@@ -74,6 +72,7 @@ import type {
   ConnectionAdapter,
 } from '../adapters/connection-adapter.ts';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { createSessionExtra } from '../server/client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from '../server/route-client-message.ts';
 import { SignalingClient } from './signaling-client.ts';
 
@@ -207,17 +206,6 @@ export class RelayAdapter implements ConnectionAdapter {
       console.warn(
         'Relay enabled without --auth --permanent-code: no relay client can connect in this mode.\n' +
           'Use --auth --permanent-code, an SSH tunnel, or an explicit daemon.bind with --auth (Tailscale or LAN) instead.',
-      );
-    }
-
-    if (this.config.authenticator?.acceptsUnknownKeys) {
-      // The handshake authenticates a key, but trust on first use ADDS the
-      // first unknown key it is shown, so the room code is the only gate on a
-      // first connection. Not widened here (the v1 permanent mode is replaced
-      // by the relay rebuild, #1198); stated at boot instead.
-      console.warn(
-        'Relay: unless --no-tofu is set, any client that knows the room code is added to the authorized keys on its first connection.\n' +
-          'Pass --no-tofu to refuse unknown keys.',
       );
     }
 
@@ -650,7 +638,12 @@ export class RelayAdapter implements ConnectionAdapter {
         this.events.onTranscriptLoadRequest?.(connectionId, m.sessionId, m.id);
       },
       create_session_request: (m) => {
-        this.events.onCreateSessionRequest?.(connectionId, m.directory, m.id);
+        this.events.onCreateSessionRequest?.(
+          connectionId,
+          m.directory,
+          m.id,
+          createSessionExtra(m),
+        );
       },
       resume_session_request: (m) => {
         this.events.onResumeSessionRequest?.(connectionId, m.sessionId, m.id);
@@ -734,10 +727,6 @@ export class RelayAdapter implements ConnectionAdapter {
 
   sendMessage(connectionId: UUID, message: Message): boolean {
     return this.sendRaw(connectionId, createAgentOutput(message));
-  }
-
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    return this.sendRaw(connectionId, createQuestion(question, sessionId));
   }
 
   sendStatus(_connectionId: UUID, _status: AgentStatus, _context?: string): boolean {

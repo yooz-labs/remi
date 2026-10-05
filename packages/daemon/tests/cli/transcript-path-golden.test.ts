@@ -99,6 +99,7 @@ describe('Claude transcript path golden (#1163)', () => {
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
       harness: new ClaudeHarness(discovery),
+      harnessId: 'claude',
     })();
 
     expect(current?.transcriptPath).toBe(expectedPath);

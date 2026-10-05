@@ -185,6 +185,81 @@ describe('ForeignSessionEscalator (#672)', () => {
       expect(pushCalls).toHaveLength(0);
     });
 
+    // #1179: a daemon that hosts Codex owns no Claude transcript and holds no Claude session id,
+    // so its live-sessions entry is no sibling claim, whichever of the two signals names it.
+    describe('an entry of another harness is no sibling claim (#1179)', () => {
+      const liveEntry = (harness: string | undefined) =>
+        liveSessionsRegistry.register({
+          sessionId: 'sibling-remi-session',
+          pid: process.pid,
+          wsPort: 9999,
+          hookPort: 10099,
+          projectPath: tmpDir,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+          ...(harness !== undefined && { harness }),
+        });
+
+      test('the port marker names a daemon that hosts Codex: the foreign session is escalated', async () => {
+        registerToken();
+        liveEntry('codex');
+        const escalator = new ForeignSessionEscalator(deps());
+        escalator.handleUnadmitted(
+          permissionInput({
+            session_id: 'unrelated-claude-id',
+            transcript_path: writeMarkedTranscript('codex-port.jsonl', 9999),
+          }),
+          OUR_SESSION_ID,
+        );
+        await flush();
+        expect(pushCalls).toHaveLength(1);
+      });
+
+      test('the store record is a Claude session whose live entry names Codex: escalated, not claimed', async () => {
+        registerToken();
+        bindingStore.preAssign({
+          remiSessionId: 'sibling-remi-session' as UUID,
+          claudeSessionId: 'foreign-claude-id',
+          projectPath: tmpDir,
+          port: 9999,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+        liveEntry('codex');
+        const escalator = new ForeignSessionEscalator(deps());
+        escalator.handleUnadmitted(
+          permissionInput({ session_id: 'foreign-claude-id' }),
+          OUR_SESSION_ID,
+        );
+        await flush();
+        expect(pushCalls).toHaveLength(1);
+      });
+
+      test.each([
+        ['no harness', undefined],
+        ['claude', 'claude'],
+        ['a harness this build does not know', 'future-harness'],
+      ])(
+        'an entry with %s on the marker port still claims it, silently',
+        async (_name, harness) => {
+          registerToken();
+          liveEntry(harness);
+          const escalator = new ForeignSessionEscalator(deps());
+          escalator.handleUnadmitted(
+            permissionInput({
+              session_id: 'unrelated-claude-id',
+              transcript_path: writeMarkedTranscript('claude-port.jsonl', 9999),
+            }),
+            OUR_SESSION_ID,
+          );
+          await flush();
+          expect(pushCalls).toHaveLength(0);
+        },
+      );
+    });
+
     test('a binding-store record for a DEAD remi session is NOT treated as a live sibling claim', async () => {
       registerToken();
       bindingStore.preAssign({

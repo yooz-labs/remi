@@ -70,7 +70,11 @@ import type { PushConfig, PushFn } from '../notifications/notification-dispatche
 import { sendPushTrigger } from '../notifications/push-client.ts';
 import { tokensWanting } from '../notifications/push-preferences.ts';
 import type { SessionBindingStore } from '../session/index.ts';
-import { type SessionRegistryFile, claudeChildLooksAlive } from '../session/index.ts';
+import {
+  type SessionRegistryFile,
+  claudeChildLooksAlive,
+  couldBeClaudeEntry,
+} from '../session/index.ts';
 import { MARKER_SETTLE_MS, readTranscriptOwnerPort } from '../transcript/transcript-owner.ts';
 import type { PermissionRequestHookInput } from './hook-types.ts';
 
@@ -188,7 +192,8 @@ export class ForeignSessionEscalator {
    * silently falling through to an escalation.
    */
   private classifyOwnership(input: PermissionRequestHookInput): Ownership {
-    const live = this.deps.liveSessionsRegistry.listLive();
+    // A daemon that hosts Codex owns no Claude transcript and holds no Claude session id (#1179).
+    const live = this.deps.liveSessionsRegistry.listLive().filter(couldBeClaudeEntry);
 
     const stored = this.deps.bindingStore.getByClaudeSessionId(input.session_id);
     if (stored) {

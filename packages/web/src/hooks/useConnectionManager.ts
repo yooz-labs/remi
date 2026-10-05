@@ -10,10 +10,12 @@
 import {
   checkKnownHost,
   ensureIdentity,
-  isIdentityEncrypted,
+  getIdentityRevision,
+  loadIdentity,
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
+import { ConnectionApproval } from '@/lib/connection-approval';
 import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
@@ -28,7 +30,7 @@ import {
 } from './connection-manager-helpers';
 import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
-import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
+import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, sign, toBase64, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -86,6 +88,8 @@ interface ManagedConnection {
     /** Pinned alongside the fingerprint so answers can be sealed later (#875). */
     answerEncryptionKey?: string;
   } | null;
+  approval: ConnectionApproval;
+  authAttempt: Awaited<ReturnType<ConnectionApproval['begin']>>;
   needsPassphrase: boolean;
   serverFingerprint: string | null;
   directory?: string;
@@ -225,6 +229,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     error: mc.error?.message ?? null,
     sessionId: mc.sessionId,
     attachState: mc.attachState ?? null,
+    approval: mc.approval.snapshot,
   };
 }
 
@@ -258,12 +263,6 @@ export function useConnectionManager(
   }, [onMessage]);
 
   useEffect(() => {
-    if (unlockedIdentity) {
-      identityRef.current = unlockedIdentity;
-    }
-  }, [unlockedIdentity]);
-
-  useEffect(() => {
     autoReconnectRef.current = autoReconnect;
   }, [autoReconnect]);
 
@@ -272,6 +271,33 @@ export function useConnectionManager(
     const states = Array.from(connectionsMapRef.current.values()).map(toConnectionState);
     setConnectionsState(states);
   }, []);
+
+  useEffect(() => {
+    if (unlockedIdentity) {
+      if (identityRef.current?.publicKeyRaw !== unlockedIdentity.publicKeyRaw) {
+        for (const mc of connectionsMapRef.current.values()) {
+          mc.approval.reset();
+          mc.authAttempt = null;
+          mc.pendingChallenge = null;
+        }
+      }
+      identityRef.current = unlockedIdentity;
+      syncState();
+    }
+  }, [unlockedIdentity, syncState]);
+
+  useEffect(() => {
+    const changed = () => {
+      identityRef.current = null;
+      for (const mc of connectionsMapRef.current.values()) {
+        mc.approval.reset();
+        mc.authAttempt = null;
+      }
+      syncState();
+    };
+    window.addEventListener('remi:identity-changed', changed);
+    return () => window.removeEventListener('remi:identity-changed', changed);
+  }, [syncState]);
 
   /** Get a managed connection by ID */
   const getMc = useCallback((connectionId: ConnectionId): ManagedConnection | undefined => {
@@ -308,35 +334,60 @@ export function useConnectionManager(
       srvPublicKey: string,
       answerEncryptionKey?: string,
     ) => {
-      mc.serverFingerprint = srvFingerprint;
-
-      // Trust On First Use (TOFU): check known hosts
-      const tofuResult = checkKnownHost(mc.url, srvFingerprint);
-      if (tofuResult === 'mismatch') {
-        mc.error = new Error(
-          `Server fingerprint changed for ${mc.url}. ` +
-            'This could indicate a MITM attack. Connection rejected.',
-        );
+      if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
+      const pending = {
+        challenge,
+        serverPublicKey: srvPublicKey,
+        serverFingerprint: srvFingerprint,
+        // Pin the answer encryption key with this server's identity (#875).
+        ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
+      };
+      mc.authAttempt = null;
+      mc.pendingChallenge = pending;
+      const currentChallenge = () =>
+        connectionsMapRef.current.get(mc.connectionId) === mc && mc.pendingChallenge === pending;
+      const challengeRevision = getIdentityRevision();
+      let derivedFingerprint: string;
+      try {
+        const raw = fromBase64(srvPublicKey);
+        if (raw.byteLength !== 32 || toBase64(raw) !== srvPublicKey ||
+            isSmallOrderPublicKey(new Uint8Array(raw))) {
+          throw new Error('Server public key is invalid');
+        }
+        derivedFingerprint = await fingerprint(raw);
+        if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
+        if (derivedFingerprint !== srvFingerprint) {
+          throw new Error('Server public key fingerprint does not match its claim');
+        }
+        const tofuResult = checkKnownHost(mc.url, derivedFingerprint, srvPublicKey);
+        if (tofuResult === 'mismatch') {
+          throw new Error(`Server identity changed for ${mc.url}. Connection rejected.`);
+        }
+        mc.serverFingerprint = derivedFingerprint;
+      } catch (err) {
+        if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
+        mc.approval.reset();
+        mc.error = new Error(errorToString(err));
         mc.client.disconnect();
         syncState();
         return;
       }
 
-      mc.pendingChallenge = {
-        challenge,
-        serverPublicKey: srvPublicKey,
-        serverFingerprint: srvFingerprint,
-        // Pinned with the fingerprint so a lock-screen answer can be sealed
-        // later, when there is no connection to ask over (#875).
-        ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
-      };
-
       let identity = identityRef.current;
       if (!identity) {
+        const revision = getIdentityRevision();
+        const storedBefore = loadIdentity();
+        // First-use creation legitimately emits ONE save event. All other
+        // identity revisions cancel setup, including removal/re-import of the same key.
+        const expectedRevision = revision + (storedBefore ? 0 : 1);
+        const currentSetup = (publicKey: string) => currentChallenge() &&
+          getIdentityRevision() === expectedRevision && loadIdentity()?.publicKey === publicKey;
         try {
-          await ensureIdentity();
-          if (!isIdentityEncrypted()) {
+          const stored = await ensureIdentity();
+          if (!currentSetup(stored.publicKey)) return;
+          if (!isEncrypted(stored)) {
             identity = await unlockStoredIdentity();
+            if (!currentSetup(stored.publicKey) || identity.publicKeyRaw !== stored.publicKey) return;
             identityRef.current = identity;
           } else {
             mc.needsPassphrase = true;
@@ -344,9 +395,11 @@ export function useConnectionManager(
             return;
           }
         } catch (err) {
-          mc.error = new Error(
-            `Identity setup failed: ${errorToString(err)}`,
-          );
+          // An unrelated identity change must not let an obsolete rejection
+          // tear down a replacement attempt, or restore its old signer (#873).
+          if (!currentChallenge() || (getIdentityRevision() !== revision &&
+              getIdentityRevision() !== expectedRevision)) return;
+          mc.error = new Error(`Identity setup failed: ${errorToString(err)}`);
           mc.client.disconnect();
           syncState();
           return;
@@ -354,9 +407,15 @@ export function useConnectionManager(
       }
 
       try {
+        if (connectionsMapRef.current.get(mc.connectionId) !== mc || mc.pendingChallenge !== pending || identityRef.current !== identity) return;
+        const attempt = await mc.approval.begin(identity, mc.url);
+        if (connectionsMapRef.current.get(mc.connectionId) !== mc || mc.pendingChallenge !== pending || identityRef.current !== identity || !attempt) return;
         const response = await signChallenge(identity, challenge);
+        if (connectionsMapRef.current.get(mc.connectionId) !== mc || mc.pendingChallenge !== pending || identityRef.current !== identity || !mc.approval.isCurrent(attempt)) return;
+        mc.authAttempt = attempt;
         mc.client.send(response);
       } catch (err) {
+        if (connectionsMapRef.current.get(mc.connectionId) !== mc || mc.pendingChallenge !== pending) return;
         mc.error = new Error(`Auth failed: ${errorToString(err)}`);
         mc.client.disconnect();
         syncState();
@@ -373,14 +432,22 @@ export function useConnectionManager(
       authError: string | undefined,
       srvSignature: string | undefined,
     ) => {
+      const pending = mc.pendingChallenge;
+      const attempt = mc.authAttempt;
+      const isCurrent = () =>
+        connectionsMapRef.current.get(mc.connectionId) === mc &&
+        mc.pendingChallenge === pending && mc.approval.isCurrent(attempt);
+      if (!isCurrent()) return;
       if (!success) {
+        mc.approval.refuse(attempt, authError);
         mc.error = new Error(`Authentication failed: ${authError ?? 'unknown error'}`);
         mc.client.disconnect();
         syncState();
         return;
       }
 
-      if (!srvSignature || !mc.pendingChallenge) {
+      if (!srvSignature || !pending) {
+        mc.approval.reset();
         mc.error = new Error('Server did not provide mutual authentication signature');
         mc.client.disconnect();
         syncState();
@@ -388,16 +455,20 @@ export function useConnectionManager(
       }
 
       try {
-        const serverPubKey = await importPublicKey(fromBase64(mc.pendingChallenge.serverPublicKey));
-        const challengeData = fromBase64(mc.pendingChallenge.challenge);
+        const serverPubKey = await importPublicKey(fromBase64(pending.serverPublicKey));
+        const challengeData = fromBase64(pending.challenge);
         const valid = await verify(serverPubKey, challengeData, srvSignature);
+        if (!isCurrent()) return;
         if (!valid) {
+          mc.approval.reset();
           mc.error = new Error('Server signature verification failed');
           mc.client.disconnect();
           syncState();
           return;
         }
       } catch (err) {
+        if (!isCurrent()) return;
+        mc.approval.reset();
         mc.error = new Error(
           `Server verification error: ${errorToString(err)}`,
         );
@@ -407,7 +478,9 @@ export function useConnectionManager(
       }
 
       // TOFU: trust on first use
-      const pending = mc.pendingChallenge;
+      if (!isCurrent() || !pending) return;
+      mc.approval.verified(attempt);
+      mc.error = null;
       trustHost(
         mc.url,
         pending.serverFingerprint,
@@ -429,10 +502,10 @@ export function useConnectionManager(
 
   /** Create message handler for a specific connectionId */
   const createMessageHandler = useCallback(
-    (connectionId: ConnectionId) => {
+    (mc: ManagedConnection) => {
+      const connectionId = mc.connectionId;
       return (message: ProtocolMessage) => {
-        const mc = connectionsMapRef.current.get(connectionId);
-        if (!mc) {
+        if (connectionsMapRef.current.get(connectionId) !== mc) {
           console.debug(
             `[ConnectionManager] Dropping message for disconnected connection "${connectionId}":`,
             message.type,
@@ -521,6 +594,7 @@ export function useConnectionManager(
         }
 
         const newUrl = buildWsUrl(parseHostInput(host), resolved);
+        if (mc.url !== newUrl) mc.approval.reset();
         mc.url = newUrl;
         console.debug(`[ConnectionManager] resolved ${host}:${resolved}; reconnecting`);
         // status flows back to 'connecting'/'authenticating' via onStatusChange.
@@ -589,6 +663,8 @@ export function useConnectionManager(
         sessionId: null,
         helloSent: false,
         pendingChallenge: null,
+        approval: existing?.url === url ? existing.approval : new ConnectionApproval(),
+        authAttempt: null,
         needsPassphrase: false,
         serverFingerprint: null,
         directory,
@@ -601,15 +677,16 @@ export function useConnectionManager(
         reconnectStaggerMs,
       };
 
-      const messageHandler = createMessageHandler(connectionId);
+      const messageHandler = createMessageHandler(mc);
 
       const client = new WebSocketClient(config, {
         onStatusChange: (newStatus) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
           mc.status = newStatus;
 
           if (newStatus === 'authenticating') {
             // Clear previous errors on successful transport open
-            mc.error = null;
+            if (!mc.approval.snapshot) mc.error = null;
             sendHello(mc);
           }
 
@@ -620,12 +697,16 @@ export function useConnectionManager(
           if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
             mc.sessionId = null;
             mc.helloSent = false;
+            mc.pendingChallenge = null;
+            mc.authAttempt = null;
+            mc.approval.disconnected();
           }
 
           syncState();
         },
         onMessage: messageHandler,
         onError: (err) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
           console.error(`[ConnectionManager] Error on ${connectionId}:`, err);
           mc.error = err;
           syncState();
@@ -845,6 +926,14 @@ export function useConnectionManager(
   // a populated identity ref before the daemon's challenge arrives.
   const provideIdentity = useCallback(
     (connectionId: ConnectionId, identity: UnlockedIdentity) => {
+      // Invalidate synchronously: the prop effect runs after this setter and
+      // otherwise sees the replacement as already current (#873).
+      if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
+        for (const mc of connectionsMapRef.current.values()) {
+          mc.approval.reset();
+          mc.authAttempt = null;
+        }
+      }
       identityRef.current = identity;
 
       const pending = collectPendingChallengeConnections(connectionsMapRef.current.values());
@@ -863,11 +952,11 @@ export function useConnectionManager(
 
       for (const mc of pending) {
         // Type guard already established by collectPendingChallengeConnections
-        const challenge = mc.pendingChallenge?.challenge;
-        if (!challenge) continue;
+        const pendingChallenge = mc.pendingChallenge;
+        if (!pendingChallenge) continue;
+        const challenge = pendingChallenge.challenge;
         mc.needsPassphrase = false;
-        signChallenge(identity, challenge)
-          .then((response) => mc.client.send(response))
+        handleAuthChallenge(mc, challenge, pendingChallenge.serverFingerprint, pendingChallenge.serverPublicKey, pendingChallenge.answerEncryptionKey)
           .catch((err) => {
             mc.error = new Error(`Auth failed: ${errorToString(err)}`);
             mc.client.disconnect();
@@ -876,7 +965,7 @@ export function useConnectionManager(
       }
       syncState();
     },
-    [syncState],
+    [handleAuthChallenge, syncState],
   );
 
   // Get hello_ack session ID directly from mutable state (avoids React state timing issues)
