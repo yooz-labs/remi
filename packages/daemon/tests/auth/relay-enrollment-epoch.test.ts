@@ -115,6 +115,7 @@ test('secure activation: a revoked raw enrollment bootstraps a durable latch and
   let effects = 0;
   expect(withLegacyPushEligibility(directory, () => ++effects)).toEqual({ allowed: false });
   expect(effects).toBe(0);
+  expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(true);
   expect(
     JSON.parse(fs.readFileSync(path.join(directory, 'secure_push_activation.json'), 'utf8')),
   ).toEqual({ version: 1, activated: true });
