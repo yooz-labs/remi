@@ -260,6 +260,8 @@ describe('the codex help (#1177)', () => {
     expect(codex).toContain('carries no -a at all');
     expect(codex).not.toContain('-a untrusted');
     expect(codex).not.toContain('resume is unverified');
+    // The local launch passes -a through; Codex rejects any other value, and the help says which it takes.
+    expect(codex).toContain('-a takes only on-request or never');
     // LV-4 ran Claude's --resume through a hub, so `remi new --help` no longer calls it unverified.
     expect(words('new')).not.toContain('unverified');
   });

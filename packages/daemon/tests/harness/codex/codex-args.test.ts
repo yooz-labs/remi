@@ -578,6 +578,27 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     }
   });
 
+  test('the -a refusal is one whole sentence that says why, and names no Codex version', () => {
+    expect(remoteRefused(['-a', 'never'])).toBe(
+      "remote codex arguments: -a/--ask-for-approval is not allowed: a remote request may only tighten the host's posture, and no value of it can be shown to tighten it (Codex accepts only on-request and never, and the host's own setting may already be stricter); set it in the host's Codex configuration or at its terminal",
+    );
+  });
+
+  test.each([
+    [['-sa']],
+    [['-ma']],
+    [['-m', '-a']],
+    [['-s', '-a']],
+    [['resume', '-a']],
+    [['-m', 'x', '-s', '-a']],
+  ])(
+    '%j cannot carry -a past the remote validator by hiding it as a value or in a cluster',
+    (args) => {
+      // Whatever the message, it is a refusal: none of these may come out `ok` with an -a in it.
+      expect(remoteRefused(args)).toBeTypeOf('string');
+    },
+  );
+
   test('resume needs a UUID', () => {
     expect(remoteRefused(['resume'])).toContain('resume');
     expect(remoteRefused(['resume', 'last'])).toContain('resume');
