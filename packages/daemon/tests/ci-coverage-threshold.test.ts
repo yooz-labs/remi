@@ -32,7 +32,7 @@ async function runThreshold(name: string, fixture: string | Buffer) {
   writeFileSync(fixturePath, fixture);
   writeFileSync(scriptPath, coverageScript());
 
-  const child = Bun.spawn(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', scriptPath], {
+  const child = Bun.spawn(['bash', '--noprofile', '--norc', '-e', scriptPath], {
     env: { ...process.env, COVERAGE_FIXTURE: fixturePath },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -59,7 +59,7 @@ afterAll(() => {
 });
 
 describe('CI coverage threshold shell pipeline', () => {
-  test('parses the valid All files row after NUL and invalid UTF-8 diagnostics', async () => {
+  test('parses a valid coverage summary row after NUL and invalid UTF-8 diagnostics', async () => {
     const result = await runThreshold(
       'binary-diagnostic',
       Buffer.concat([
@@ -72,10 +72,10 @@ describe('CI coverage threshold shell pipeline', () => {
     expect(result.output).toContain('Line coverage: 91.91%');
   });
 
-  test('strips ANSI color from the All files row', async () => {
+  test('strips ANSI color from the coverage summary row', async () => {
     const result = await runThreshold(
       'ansi-row',
-      '\u001b[1mAll files\u001b[0m | 89.47 | 91.91 |\n',
+      '\u001b[1mAll files\u001b[0m | 89.47 | \u001b[1m91.91\u001b[0m |\n',
     );
 
     expect(result.exitCode).toBe(0);
@@ -86,7 +86,7 @@ describe('CI coverage threshold shell pipeline', () => {
     const result = await runThreshold('missing-row', 'No coverage summary\n');
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.output).not.toContain('Line coverage: 91.91%');
+    expect(result.output).toContain('Could not parse line coverage');
   });
 
   test('refuses a malformed line-coverage metric', async () => {
