@@ -21,6 +21,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
+import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -37,6 +38,7 @@ import type { HarnessSession } from '../../src/harness/index.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -44,6 +46,7 @@ import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/index.ts';
 import type { TranscriptWatcher } from '../../src/transcript/index.ts';
 import { stripComments } from '../helpers/strip-comments.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from '../parser/fixtures/claude-dialogs.ts';
 
 const SRC = path.resolve(import.meta.dir, '..', '..', 'src');
 
@@ -211,7 +214,7 @@ describe('ClaudeHarness.createSession', () => {
     if (opts.register) {
       sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
     }
-    return { session, sessionId };
+    return { session, sessionId, messageApi };
   }
 
   function claudeSessionIdOf(sessionId: UUID): string {
@@ -255,13 +258,104 @@ describe('ClaudeHarness.createSession', () => {
     hookServer = newHookServer();
     hookServer.start();
     freshRegistry();
-    const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
+    const { session, sessionId, messageApi } = launch(newHarness(), {
+      passThrough,
+      register: true,
+    });
     const response = postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
     await until(() => session.decisions.hasMainHold(), 'the prompt to be held');
     const card = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])][0];
     if (!card) throw new Error('the held prompt did not reach the registry as a card');
-    return { decisions: session.decisions, card, response };
+    return { decisions: session.decisions, card, response, sessionId, messageApi };
   }
+
+  /** Feed a captured real permission dialog into the session's real tracker. */
+  function visiblePrompt(terminalOnly = false) {
+    const launched = launch(newHarness(), { register: true });
+    const tracker = launched.session.decisions.screen;
+    if (!(tracker instanceof QuestionPresenceTracker)) throw new Error('no real screen tracker');
+    const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!parsed) throw new Error('the captured permission dialog did not parse');
+    const question = { ...parsed, terminalOnly };
+    tracker.onPTYPromptVisible(question);
+    expect(sessionRegistry.getQuestion(launched.sessionId, question.id)).not.toBeNull();
+    return { ...launched, tracker, question };
+  }
+
+  test('push validity: an actual held hook keeps its captured deadline after configuration changes and closes on answer', async () => {
+    const { decisions, card, response } = await holdPrompt(false);
+    const captured = decisions.answerValidity(card.id);
+    expect(captured.kind).toBe('deadline');
+    if (captured.kind !== 'deadline') throw new Error('no held deadline');
+    expect(captured.expiresAtMs).toBeGreaterThan(Date.now());
+    prompts = { hold_seconds: 5, daemon_hold_seconds: 5 };
+    await Bun.sleep(5);
+    expect(decisions.answerValidity(card.id)).toEqual(captured);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
+    expect(decisions.answerValidity(card.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: removing the actual registered card closes authority while its hook is still held', async () => {
+    const { decisions, card, response, sessionId } = await holdPrompt(false);
+    expect(decisions.answerValidity(card.id).kind).toBe('deadline');
+    sessionRegistry.removeQuestion(sessionId, card.id, 'push-validity-test');
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerValidity(card.id)).toEqual({ kind: 'closed' });
+    // Reading validity did not decide the pending hook.
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
+  });
+
+  test('push validity: a real hookless prompt requires both its registry entry and current screen, including an unchanged redraw', () => {
+    const { session, sessionId, tracker, question } = visiblePrompt();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    const redraw = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!redraw) throw new Error('the captured redraw did not parse');
+    expect(redraw.id).not.toBe(question.id);
+    tracker.onPTYPromptVisible(redraw);
+    // Actual content dedup retains the first card while the same dialog redraws.
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    tracker.clearPending();
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    tracker.onPTYPromptVisible(question);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    sessionRegistry.removeQuestion(sessionId, question.id, 'push-validity-test');
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: a held-stamped card with no gate never gains authority from a matching real screen', () => {
+    const { session, sessionId, messageApi, tracker, question } = visiblePrompt();
+    messageApi.handleQuestion(question, { held: true });
+    expect(sessionRegistry.getQuestion(sessionId, question.id)?.held).toBe(true);
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.isHeld(question.id)).toBe(false);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: a terminal-only or answered registry card and a disposed session have no action authority', () => {
+    const terminal = visiblePrompt(true);
+    expect(terminal.session.decisions.answerValidity(terminal.question.id)).toEqual({
+      kind: 'closed',
+    });
+    freshRegistry();
+    const { session, sessionId, tracker, question } = visiblePrompt();
+    const current = sessionRegistry.getQuestion(sessionId, question.id);
+    if (!current) throw new Error('no current card');
+    current.isAnswered = true;
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    current.isAnswered = false;
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    session.dispose();
+    // Neither lingering registry state nor the prior observed dialog revives a closed launch.
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    expect(session.decisions.answerValidity(generateId())).toEqual({ kind: 'closed' });
+  });
 
   test('a harness built without launch dependencies refuses to create a session', () => {
     const harness = new ClaudeHarness(new TranscriptDiscovery({ projectsDir: tmpDir }));
