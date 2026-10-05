@@ -281,10 +281,17 @@ export class IdentityStore {
       return grant;
     });
   }
-  async addAuthorizedKey(publicKey: string, label: string): Promise<AuthorizedKey> {
+  async addAuthorizedKey(
+    publicKey: string,
+    label: string,
+    mayCommit: () => boolean = () => true,
+  ): Promise<AuthorizedKey> {
     await validatePublicKey(publicKey);
     const key = await createAuthorizedKey(publicKey, label);
     return this.transaction(() => {
+      // Relay approval can be cancelled while async crypto prepares the key.
+      // The final authority decision and write share this synchronous lock.
+      if (!mayCommit()) throw new Error('AUTHORIZATION_CANCELLED');
       const file = this.loadAuthorizedKeys();
       if (file.keys.some((existing) => existing.fingerprint === key.fingerprint))
         throw new DuplicateKeyError(key.fingerprint);

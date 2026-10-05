@@ -387,12 +387,22 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               if (!this.current(peer)) throw new Error('RELAY_CANCELLED');
               if (offer) {
                 try {
-                  await this.cfg.trust.addAuthorizedKey(peer.key as string, step.deviceName);
+                  await this.cfg.trust.addAuthorizedKey(peer.key as string, step.deviceName, () =>
+                    this.current(peer),
+                  );
                 } catch (e) {
                   if (!(e instanceof DuplicateKeyError)) throw e;
                 }
                 if (!this.current(peer)) throw new Error('RELAY_CANCELLED');
-                await this.devices.add(peer.key as string, step.deviceName);
+                await this.devices.add(
+                  peer.key as string,
+                  step.deviceName,
+                  () =>
+                    this.current(peer) &&
+                    this.cfg.trust
+                      .loadAuthorizedKeys()
+                      .keys.some((key) => key.publicKey === peer.key),
+                );
                 if (
                   !this.current(peer) ||
                   !(await this.control?.command({ t: 'enroll', key: step.devicePublicKey }))
@@ -829,6 +839,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     clearTimeout(offer.timer);
     offer.confirmed?.(false);
     offer.policy.secret.fill(0);
+    const peer = offer.reserved ? this.peers.get(offer.reserved) : undefined;
+    if (peer && peer.stage !== 'ready') void this.closePeer(peer);
   }
   private async revoke(
     fingerprint: string,
