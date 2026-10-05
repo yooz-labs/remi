@@ -137,6 +137,27 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(record["publicKey"] as? String, identity.publicKeyRaw.base64EncodedString())
     }
 
+    func testCorruptKeychainRefusesWithoutRotationOrDeletion() throws {
+        let corrupt = Data("not-an-identity".utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        var create = query
+        create[kSecValueData as String] = corrupt
+        XCTAssertEqual(SecItemAdd(create as CFDictionary, nil), errSecSuccess)
+        do {
+            _ = try ClientIdentityStore.loadOrCreate(service: service, account: account)
+            XCTFail("Corruption must fail visibly instead of generating a different signer")
+        } catch {}
+        var read = query
+        read[kSecReturnData as String] = true
+        var result: AnyObject?
+        XCTAssertEqual(SecItemCopyMatching(read as CFDictionary, &result), errSecSuccess)
+        XCTAssertEqual(result as? Data, corrupt, "A failed load must preserve the existing entry")
+    }
+
     // MARK: - Signing / verification
 
     func testSignedChallengeVerifiesAgainstOwnPublicKey() throws {
