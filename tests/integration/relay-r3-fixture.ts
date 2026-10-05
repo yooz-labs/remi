@@ -1,7 +1,14 @@
 /** Owned real HubRelay/Worker/resumed device, used only for transport fault pins. */
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { createIdentity, relayV2, unlockIdentity } from '@remi/shared';
+import {
+  createHello,
+  createIdentity,
+  deserialize,
+  relayV2,
+  serialize,
+  unlockIdentity,
+} from '@remi/shared';
 import type { AdapterEvents } from '../../packages/daemon/src/adapters/connection-adapter.ts';
 import { IdentityStore } from '../../packages/daemon/src/auth/identity-store.ts';
 import { HubRelay } from '../../packages/daemon/src/remote/hub-relay.ts';
@@ -31,6 +38,7 @@ export async function resumed(events: Partial<AdapterEvents> = {}) {
   const admission = new Promise<void>((resolve) => {
     admitted = resolve;
   });
+  let cid: string | undefined;
   const relay = new HubRelay(
     {
       relayUrl: worker.wsUrl,
@@ -43,7 +51,13 @@ export async function resumed(events: Partial<AdapterEvents> = {}) {
         if (message === 'Relay control admitted') admitted();
       },
     },
-    events,
+    {
+      ...events,
+      onConnect: (id, metadata) => {
+        cid = id;
+        events.onConnect?.(id, metadata);
+      },
+    },
   );
   await relay.start();
   await admission;
@@ -62,6 +76,12 @@ export async function resumed(events: Partial<AdapterEvents> = {}) {
     emit: (bytes) => socket.sendBinary(bytes),
     close: (code) => socket.close(code),
   });
+  const hello = createHello('owned-device', '2.0.0');
+  await channel.send(new TextEncoder().encode(serialize(hello)));
+  const receipt = await channel.receive(await socket.binary());
+  if (!receipt || deserialize(new TextDecoder().decode(receipt))?.type !== 'ack')
+    throw new Error('MACHINE_HELLO_RECEIPT_MISSING');
+  if (!cid) throw new Error('MACHINE_CONNECTION_MISSING');
   const cleanup = async () => {
     socket.close();
     await relay.stop();
@@ -69,5 +89,5 @@ export async function resumed(events: Partial<AdapterEvents> = {}) {
     await worker.stop();
     rmSync(dir, { recursive: true, force: true });
   };
-  return { dir, worker, trust, devices, device, relay, socket, channel, logs, cleanup };
+  return { cid, dir, worker, trust, devices, device, relay, socket, channel, logs, cleanup };
 }
