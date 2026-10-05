@@ -1721,6 +1721,11 @@ function App() {
 
       // Relay outcomes and device responses are explicitly ignored until the
       // R4 connection coordinator is installed (#1199).
+      // R5 secure subscription messages await the native registration consumer (#1200).
+      case 'secure_push_register_request':
+      case 'secure_push_register_response':
+      case 'secure_push_unregister_request':
+      case 'secure_push_unregister_response':
       case 'answer_result':
       case 'relay_devices_response':
       case 'relay_device_revoke_response':

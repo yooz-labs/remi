@@ -19,6 +19,12 @@ import type {
   RelayDevicesResponseMessage,
 } from './relay-messages.ts';
 import type {
+  SecurePushRegisterRequestMessage,
+  SecurePushRegisterResponseMessage,
+  SecurePushUnregisterRequestMessage,
+  SecurePushUnregisterResponseMessage,
+} from './secure-push-messages.ts';
+import type {
   Acknowledgment,
   AgentStatus,
   DiscoverableSession,
@@ -79,6 +85,10 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  secure_push_register_request: SecurePushRegisterRequestMessage;
+  secure_push_register_response: SecurePushRegisterResponseMessage;
+  secure_push_unregister_request: SecurePushUnregisterRequestMessage;
+  secure_push_unregister_response: SecurePushUnregisterResponseMessage;
   hello: HelloMessage;
   hello_ack: HelloAckMessage;
   agent_output: AgentOutputMessage;
@@ -190,6 +200,10 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  secure_push_register_request: 'c2d',
+  secure_push_register_response: 'd2c',
+  secure_push_unregister_request: 'c2d',
+  secure_push_unregister_response: 'd2c',
   hello: 'c2d',
   hello_ack: 'd2c',
   agent_output: 'd2c',

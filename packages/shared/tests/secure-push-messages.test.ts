@@ -2,10 +2,12 @@ import { expect, test } from 'bun:test';
 import * as shared from '../src/index.ts';
 import { MESSAGE_DIRECTION, deserialize, serialize } from '../src/protocol.ts';
 
-function builder(name: string): (...args: unknown[]) => Record<string, unknown> {
+function builder(
+  name: string,
+): (...args: unknown[]) => shared.ProtocolMessage & Record<string, unknown> {
   const fn = (shared as unknown as Record<string, unknown>)[name];
   expect(typeof fn, `actual secure subscription factory ${name} must exist`).toBe('function');
-  return fn as (...args: unknown[]) => Record<string, unknown>;
+  return fn as (...args: unknown[]) => shared.ProtocolMessage & Record<string, unknown>;
 }
 const registration = {
   token: 'ab'.repeat(32),
@@ -53,7 +55,7 @@ test('secure registration factories bind response request ID and omit caller ide
 });
 test('secure unregister factory has no selectors and correlated idempotent typed result', () => {
   const request = builder('createSecurePushUnregisterRequest')();
-  expect(Object.keys(request).sort()).toEqual(['type', 'id', 'timestamp']);
+  expect(Object.keys(request).sort()).toEqual(['id', 'timestamp', 'type']);
   expect(request.type).toBe('secure_push_unregister_request');
   const response = builder('createSecurePushUnregisterResponse')(request.id, { success: true });
   expect(response).toMatchObject({
