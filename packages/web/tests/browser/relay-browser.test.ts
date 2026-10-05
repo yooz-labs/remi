@@ -574,3 +574,59 @@ browserTest(
   },
   20000,
 );
+
+browserTest(
+  'actual App explains invalid and expired tokens without opening a relay connection',
+  async () => {
+    const local = await ownedRelayOffer();
+    const { relayV2 } = await import('@remi/shared');
+    const decoded = await relayV2.decodePairingToken(
+      String(local.offer['token']),
+      Math.floor(Date.now() / 1000),
+    );
+    const expired = relayV2.encodePairingToken({
+      ...decoded,
+      expiresAtSec: Math.floor(Date.now() / 1000) - 120,
+    });
+    decoded.secret.fill(0);
+    for (const [token, message] of [
+      ['remi-pair2:invalid', 'Pairing token is invalid. Copy the complete token from remi pair.'],
+      [expired, 'Pairing token has expired. Run remi pair again on the daemon machine.'],
+    ]) {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      try {
+        await page.addInitScript(() => {
+          const RealWebSocket = window.WebSocket;
+          (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections = 0;
+          window.WebSocket = class extends RealWebSocket {
+            constructor(url: string | URL, protocols?: string | string[]) {
+              super(url, protocols);
+              if (String(url).includes('/v2/client/'))
+                (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections++;
+            }
+          };
+        });
+        await page.goto(origin);
+        await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+        await page.getByLabel('Pairing token').fill(token ?? '');
+        await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+        await page.getByRole('alert').waitFor();
+        expect(await page.getByRole('alert').textContent()).toBe(message ?? '');
+        expect(await page.getByLabel('Pairing token').inputValue()).toBe('');
+        expect(
+          await page.evaluate(
+            () => (window as unknown as { ownedRelayConnections: number }).ownedRelayConnections,
+          ),
+        ).toBe(0);
+        expect(
+          await page.evaluate(() => localStorage.getItem('remi-relay-machines-v2')),
+        ).toBeNull();
+      } finally {
+        await context.close();
+      }
+    }
+  },
+  20000,
+);
