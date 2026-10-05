@@ -34,7 +34,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var documentObserver: NSKeyValueObservation?
 
     init(scheme: String, service: String, account: String,
-         foreground: @escaping @MainActor () -> Bool = NativeForegroundUnlock.isActive,
+         foreground: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() },
          authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
          selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
         self.scheme = scheme
@@ -292,7 +292,7 @@ final class NativeUnlockLifetime {
     deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
     func authenticate(revision: String, currentRevision: () -> String?,
                       authorization: @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
-                      foreground: @MainActor () -> Bool = NativeForegroundUnlock.isActive) async -> Bool {
+                      foreground: @MainActor () -> Bool = { NativeForegroundUnlock.isActive() }) async -> Bool {
         guard foreground() else { return false }
         let attempt = generation
         let authorized = await authorization()
