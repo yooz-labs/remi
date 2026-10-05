@@ -512,7 +512,9 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
 
   /** Start holding live items (or keep holding: one hold covers an attach and the read after it). */
   function startHold(): void {
-    if (hold === null || hold.overflowed) hold = { items: [], overflowed: false };
+    // Overflow abandons history for this entire hold, including follow-up reads and attaches.
+    // Only releaseHold ends the cycle; the next separate attach can then create a fresh hold.
+    if (hold === null) hold = { items: [], overflowed: false };
   }
 
   /** Send a held item live, unless its thread is no longer the session's. */

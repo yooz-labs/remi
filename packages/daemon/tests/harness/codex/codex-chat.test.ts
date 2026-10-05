@@ -1469,6 +1469,44 @@ describe('createCodexChat', () => {
       expect(catchUpLines()[0]).not.toMatch(/live-|prompt|m\d/);
     });
 
+    test('overflow before the resume response abandons history until that hold ends, then a later attach can catch up', async () => {
+      servePages({ '': itemsListPage([{ item: userMessageItem('old-prompt', 'PROMPT') }], null) });
+      const chat = make();
+      chat.attaching();
+      for (let i = 0; i < 257; i++) chat.handleNotification('item/completed', liveFrame(i));
+      const arrived = Array.from({ length: 257 }, (_, i) => `live-${i}`);
+      expect(idsOf()).toEqual(arrived);
+
+      await chat.catchUp();
+      expect(idsOf()).toEqual(arrived);
+      expect(catchUpLines()).toHaveLength(1);
+
+      // The old hold ended. A separate attach starts a new catch-up cycle.
+      chat.attaching();
+      await chat.catchUp();
+      expect(idsOf()).toEqual([...arrived, 'old-prompt']);
+    });
+
+    test('overflow abandonment survives another attach and its follow-up while the same hold is still running', async () => {
+      const list = gates(() =>
+        itemsListPage([{ item: userMessageItem('old-prompt', 'PROMPT') }], null),
+      );
+      const chat = make();
+      chat.attaching();
+      const first = chat.catchUp();
+      await server.waitFor(() => list.asked() === 1, 'the first catch-up to ask');
+      for (let i = 0; i < 257; i++) chat.handleNotification('item/completed', liveFrame(i));
+      const arrived = Array.from({ length: 257 }, (_, i) => `live-${i}`);
+      chat.attaching();
+      const second = chat.catchUp();
+      list.release(0);
+      await server.waitFor(() => list.asked() === 2, 'the follow-up to ask');
+      list.release(1);
+      await Promise.all([first, second]);
+      expect(idsOf()).toEqual(arrived);
+      expect(catchUpLines()).toHaveLength(1);
+    });
+
     test('a failing list is logged without content, delivers nothing, never throws, and the held items still go out', async () => {
       let fail: () => void = () => {};
       server.onRequest('thread/items/list', () => {

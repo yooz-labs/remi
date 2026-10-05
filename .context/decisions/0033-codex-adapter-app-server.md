@@ -801,6 +801,7 @@ After each successful attach (`ThreadTracker.onAttached`: the first attach, a re
 Only a complete thread within that bound is delivered; an oversized page, a continuing cursor or a repeated cursor is skipped with one content-free line and left to an explicit read.
 Catch-up entries go through a MessageAPI of their own as `transcript_content` ONLY: the web client renders the structure inside that message, and an additional structured output would double the replay and fan out one Telegram message per entry.
 Live items are held up to 256. On overflow the held queue is flushed in arrival order, then the overflowing item; the collected history is discarded, logged without content, and left to an explicit read.
+That abandonment lasts until the whole hold ends, including any follow-up read or attach spanning it; a later separate attach can start a fresh catch-up.
 When the tracked thread rotates during a read, its collected history is skipped with one content-free line; held items are filtered by their current role, and a follow-up read catches up the new thread.
 Each read times out after 3 seconds, but another attach may keep the hold for a follow-up read; repeated attaches have no overall hold deadline, and overflow still bounds the held queue.
 A failure never breaks the attach; a reconnect sends nothing twice (the last 1024 delivered ids are remembered); requests during a running catch-up are coalesced into one follow-up; and disposal drops both held and collected items before they can build either transcript or structured output.
@@ -823,7 +824,7 @@ Typed chat stays refused (`acceptsTypedChat: false`): Phase 6 gives Codex a chat
 The plan's mapping of `completed` said "`lastAssistantMessage` from the `agentMessage` with `phase:'final_answer'`": the last one is taken when there are several.
 `TurnFailedEvent` has no `lastAssistantMessage` (the plan's signature had one; nothing set it).
 The plan estimated about 470 source lines.
-Measured against the Phase 5 base `ea25b980`, in `packages/daemon/src`: +1562/-106 lines (1456 net), and +944/-55 (889 net) excluding blank lines and lines whose trimmed text starts with `//`, `/*`, `*` or `*/` from `git diff --unified=0`.
+Measured against the Phase 5 follow-up base `7a2e8c2e`, in `packages/daemon/src`: +1564/-106 lines (1458 net), and +944/-55 (889 net) excluding blank lines and lines whose trimmed text starts with `//`, `/*`, `*` or `*/` from `git diff --unified=0`.
 This is a line-count estimate rather than a parser-based code count; the largest block is `codex-chat.ts` (history, catch-up and read limits), not the parsers.
 11. **Receipts.**
 Pins first, in their own commit, red (the modules did not exist): the sink and the `onTurnStop` and `cli.ts` source pins, the Codex mapping on the real `turn/completed` frames (`expA-accept.jsonl:74`, `expA-decline.jsonl:141`), the chat on real items through the real client and the stand-in app-server, the `chatFor` seam, and the session wiring.
