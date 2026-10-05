@@ -13,6 +13,8 @@
  * - a barrier: `/__barrier` makes the next admissions that present a ticket wait,
  *   just before the window is burned, until that many have arrived, then released
  *   together, so a test races the burn on purpose; a size of zero releases held admissions;
+ * - an enrollment-read barrier: `/__readbarrier` holds a real storage read's result after
+ *   its input gate has completed, to pin cancellation across an asynchronous admission;
  * - `/__legacy`: accepts a socket with the attachment the pre-R2 room kept, as a
  *   deploy over a live legacy room would leave one behind.
  *
@@ -20,7 +22,7 @@
  * to the room named `<rid>`.
  */
 
-import type { RoomSocket } from '../../src/connection-room.ts';
+import type { RoomEnv, RoomSocket, RoomState } from '../../src/connection-room.ts';
 import worker, { ConnectionRoom as RealRoom } from '../../src/index.ts';
 
 interface Seen {
@@ -46,6 +48,42 @@ export class ConnectionRoom extends RealRoom {
   private readonly seen: Seen[] = [];
   private barrierSize = 0;
   private readonly held: (() => void)[] = [];
+  private readonly readBarrier: {
+    key: string | null;
+    reached: boolean;
+    held: (() => void)[];
+  };
+
+  constructor(state: RoomState, env: RoomEnv) {
+    const barrier = { key: null as string | null, reached: false, held: [] as (() => void)[] };
+    // Delegate every operation to real SQLite storage. Only the delivery of a selected read's
+    // result waits: this tests a possible await interleaving, not current workerd scheduling.
+    const storage = new Proxy(state.storage, {
+      get(target, name) {
+        if (name === 'get') {
+          return async (key: string) => {
+            const value = await target.get(key);
+            if (key === barrier.key && value !== undefined) {
+              barrier.reached = true;
+              await new Promise<void>((resolve) => barrier.held.push(resolve));
+            }
+            return value;
+          };
+        }
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const wrapped = new Proxy(state, {
+      get(target, name) {
+        if (name === 'storage') return storage;
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    super(wrapped, env);
+    this.readBarrier = barrier;
+  }
 
   protected override now(): number {
     return Date.now() + this.skewMs;
@@ -96,6 +134,16 @@ export class ConnectionRoom extends RealRoom {
       });
     }
     if (path.endsWith('/__seen')) return Response.json(this.seen);
+    if (path.endsWith('/__readbarrier')) {
+      if (request.method === 'POST') {
+        this.readBarrier.key = ((await request.json()) as { key: string | null }).key;
+        this.readBarrier.reached = false;
+        if (this.readBarrier.key === null) {
+          for (const release of this.readBarrier.held.splice(0)) release();
+        }
+      }
+      return Response.json({ reached: this.readBarrier.reached });
+    }
     if (path.endsWith('/__closes')) return Response.json(this.closes);
     if (path.endsWith('/__legacy')) {
       const Pair = (

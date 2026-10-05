@@ -27,7 +27,7 @@ import {
   roomState,
   runAlarm,
 } from './endpoints.ts';
-import { type TestWorker, startWorker } from './harness.ts';
+import { type TestWorker, get, startWorker } from './harness.ts';
 
 const { admitTag, b64u, signAdmission, systemRandom } = relayV2;
 
@@ -49,6 +49,66 @@ async function enrolled() {
   await host.enroll(device.publicKey);
   return { machine, host, device };
 }
+
+async function enrollmentBarrier(rid: string, key: string | null): Promise<void> {
+  await get(`${worker.url}/__room/${rid}/__readbarrier`, {
+    method: 'POST',
+    body: JSON.stringify({ key }),
+  });
+}
+
+async function waitForEnrollmentBarrier(rid: string): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    const response = await get(`${worker.url}/__room/${rid}/__readbarrier`);
+    const status = (await response.json()) as { reached: boolean };
+    if (status.reached) return;
+    await Bun.sleep(10);
+  }
+  throw new Error('enrollment read did not reach the barrier');
+}
+
+describe('cancellation across an enrollment read', () => {
+  // The seam delays delivery after a REAL storage read. It deliberately inserts a scheduling
+  // window; a pass is not evidence that current workerd exposes that window naturally.
+  test('revocation cancels an admission waiting on an enrollment snapshot', async () => {
+    const { machine, host, device } = await enrolled();
+    const key = `dev:${hex(device.publicKey)}`;
+    await enrollmentBarrier(machine.ridHex, key);
+    const socket = await Socket.open(clientUrl(worker, machine.ridHex));
+    await admit(socket, device, 'client', machine.rid);
+    await waitForEnrollmentBarrier(machine.ridHex);
+    try {
+      expect((await host.revoke(device.publicKey)).ok).toBe(true);
+      expect((await roomState(worker, machine.ridHex)).storage[key]).toBeUndefined();
+    } finally {
+      await enrollmentBarrier(machine.ridHex, null);
+    }
+    expect(await host.quiet()).toBe(true);
+    await refused(socket);
+    expect(
+      (await roomState(worker, machine.ridHex)).sockets.some((s) => s?.k === hex(device.publicKey)),
+    ).toBe(false);
+  });
+
+  test('an unverified snapshot reader does not occupy an admitted device slot', async () => {
+    await worker.stop();
+    worker = await startWorker({ MAX_CLIENTS: '1' });
+    const { machine, host, device } = await enrolled();
+    const other = await newIdentity();
+    await host.enroll(other.publicKey);
+    await enrollmentBarrier(machine.ridHex, `dev:${hex(device.publicKey)}`);
+    const pending = await Socket.open(clientUrl(worker, machine.ridHex));
+    await admit(pending, device, 'client', machine.rid);
+    await waitForEnrollmentBarrier(machine.ridHex);
+    try {
+      const { socket } = await connectClient(worker, machine, other);
+      expect(socket.isClosed).toBe(false);
+    } finally {
+      await enrollmentBarrier(machine.ridHex, null);
+    }
+    await refused(pending);
+  });
+});
 
 describe('who may enter', () => {
   test('a device the host never enrolled is refused, and the host is not told', async () => {
