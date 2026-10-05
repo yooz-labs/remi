@@ -227,3 +227,21 @@ test('secure subscription: cleanup failure is visible after durable grant invali
   expect(trust.isAuthorized(identity.publicKey, identity.fingerprint)).toBe(false);
   expect(fs.readFileSync(path.join(directory, 'secure_push_subscriptions.json'), 'utf8')).toBe('{');
 });
+
+test('secure subscription: corrupt persisted curve point refuses without changing or returning the stored recipient', async () => {
+  const { authority, registration } = await recipient();
+  expect(await subscriptions.register(authority, registration)).toEqual({
+    success: true,
+    keyVersion: 1,
+  });
+  const file = state().file;
+  const row = file.subscriptions[0];
+  if (!row) throw new Error('missing persisted fixture recipient');
+  row['pushPublicKey'] = relayV2.b64u(new Uint8Array(65).fill(4));
+  const bytes = JSON.stringify(file);
+  fs.writeFileSync(path.join(directory, 'secure_push_subscriptions.json'), bytes);
+  expect(() => subscriptions.listCurrent()).toThrow('SECURE_PUSH_STORE_ERROR');
+  expect(fs.readFileSync(path.join(directory, 'secure_push_subscriptions.json'), 'utf8')).toBe(
+    bytes,
+  );
+});
