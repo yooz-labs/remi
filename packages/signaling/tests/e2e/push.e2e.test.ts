@@ -628,3 +628,56 @@ test('actual corrupt enrollment and failed initial sync reveal only fixed proof 
   expect(requests.length).toBe(0);
   expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${signed.nonce}`);
 }, 15000);
+
+test('actual concurrent identical nonce sees durable pending and initiates only one APNs effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const signed = await submission(w, m, d, p);
+  await gate(w, m.ridHex, 'consume-sync');
+  const first = post(w, signed);
+  await reached(w, m.ridHex);
+  const pending = await post(w, signed);
+  expect(pending.outcome).toBe('uncertain');
+  expect(requests.length).toBe(0);
+  await gate(w, m.ridHex, null);
+  const accepted = await first;
+  expect(accepted.outcome).toBe('accepted');
+  expect(accepted.requestDigest).toBe(pending.requestDigest);
+  expect(await post(w, signed)).toEqual(accepted);
+  expect(requests.length).toBe(1);
+}, 15000);
+
+test('actual signed submit expiry during JWT completion delivery refuses before APNs effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const signed = await submission(w, m, d, p);
+  await gate(w, m.ridHex, 'jwt');
+  const result = post(w, signed);
+  await reached(w, m.ridHex);
+  await get(`${w.url}/__room/${m.ridHex}/__clock`, {
+    method: 'POST',
+    body: JSON.stringify({ advanceMs: 60_000 }),
+  });
+  await gate(w, m.ridHex, null);
+  expect(await result).toMatchObject({ outcome: 'rejected', reason: 'EXPIRED', retryable: false });
+  expect(requests.length).toBe(0);
+}, 15000);
+
+test('actual pending nonce ownership replacement during JWT completion prevents APNs effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const signed = await submission(w, m, d, p);
+  await gate(w, m.ridHex, 'jwt');
+  const result = post(w, signed);
+  await reached(w, m.ridHex);
+  const key = `push-nonce:${signed.nonce}`;
+  const record = (await roomState(w, m.ridHex)).storage[key] as {
+    digest: string;
+    epoch: string;
+    until: number;
+  };
+  await get(`${w.url}/__room/${m.ridHex}/__seed`, {
+    method: 'POST',
+    body: JSON.stringify({ [key]: { ...record, digest: '00'.repeat(32) } }),
+  });
+  await gate(w, m.ridHex, null);
+  expect((await result).outcome).toBe('uncertain');
+  expect(requests.length).toBe(0);
+}, 15000);
