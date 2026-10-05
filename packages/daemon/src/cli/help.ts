@@ -135,7 +135,13 @@ const commandHelp: Record<Subcommand, string[]> = {
     ),
     dim("  'Approve for me' Codex approves commands itself and remi sees no request."),
     dim(
-      '  A finished turn and a failed one are pushed to the phone, and the session history is shown',
+      '  A finished turn is pushed when it ran at least `turn_complete_min_seconds` (60 by default),',
+    ),
+    dim(
+      '  ended with a final answer, `notifications.on_turn_complete` is on and a device wants it;',
+    ),
+    dim(
+      '  a failed turn is pushed to a device with failure notices on. The session history is shown',
     ),
     dim('  read-only (turn pushes and history: not run against a real Codex yet).'),
     dim('  A message typed from the phone is refused: type in the terminal.'),

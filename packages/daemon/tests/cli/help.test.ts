@@ -234,8 +234,17 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('show up as a notice to answer in the terminal');
     // Turns are pushed and the history is shown read-only (#1180), both not yet run against a real Codex.
     expect(output).not.toContain('Turn notifications do not reach the phone yet');
-    expect(output).toContain('A finished turn and a failed one are pushed to the phone');
-    expect(output).toContain('the session history is shown');
+    // ... and says WHEN: a finished turn is gated (length, a final answer, the machine switch, a
+    // device that wants it), a failed one only by the device's failure-notice preference.
+    expect(output).not.toContain('A finished turn and a failed one are pushed');
+    expect(output).toContain(
+      'A finished turn is pushed when it ran at least `turn_complete_min_seconds` (60 by default),',
+    );
+    expect(output).toContain('ended with a final answer, `notifications.on_turn_complete` is on');
+    expect(output).toContain('and a device wants it;');
+    expect(output).toContain(
+      'a failed turn is pushed to a device with failure notices on. The session history is shown',
+    );
     expect(output).toContain(
       'read-only (turn pushes and history: not run against a real Codex yet)',
     );
