@@ -276,6 +276,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<ClientSigningIdentity | null>(null);
+  const [relayIdentityRevision, setRelayIdentityRevision] = useState(0);
+  const restoredRelayIdentityRef = useRef<string | null>(null);
 
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
@@ -911,7 +913,8 @@ function App() {
         // answer with no in-app confirmation), flip a still-pending card to a
         // brief "resolved elsewhere" trace, then fade it after the linger window.
         // resolveQuestionCard decides per card: pending => trace+fade, submitting
-        // (#627) => removed here, answered-locally => left to its own timer.
+        // (#627 direct) => removed here, relay receipt => waits for correlation,
+        // answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
         // Compute the next map from the CURRENT committed ref, then drive both
@@ -1610,7 +1613,8 @@ function App() {
           // "Answering..." forever (#800 review). Force-remove it outright by
           // id first, mirroring resolveQuestionCard's submitting-card branch
           // for question_resolved: no trace, no protection.
-          if (staleSessionId && staleQuestionId) {
+          if (staleSessionId && staleQuestionId && !getSessionQuestions(questionsRef.current, staleSessionId)
+            .some(question => question.id === staleQuestionId && question.awaitingRelayOutcome)) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
               staleSessionId,
@@ -1806,17 +1810,18 @@ function App() {
   }, [replyContexts]);
 
   const handleRelayAnswerOutcome = useCallback((_connectionId: ConnectionId, status: RelayAnswerStatus) => {
-    setQuestions(previous => {
-      const next = new Map(previous);
-      for (const [key, question] of previous) {
-        if (question.sessionId !== status.sessionId || question.id !== status.questionId) continue;
-        next.set(key, { ...question, submitting: false, awaitingRelayOutcome: true, deliveryOutcome: status.outcome,
-          ...(status.outcome === 'delivered' ? { answeredWith: question.submittedAnswer ?? 'Submitted' } : {}) });
-      }
-      return next;
-    });
+    const next = new Map(questionsRef.current);
+    for (const [key, question] of next) {
+      if (question.sessionId !== status.sessionId || question.id !== status.questionId) continue;
+      next.set(key, { ...question, submitting: false, awaitingRelayOutcome: true, deliveryOutcome: status.outcome,
+        ...(status.outcome === 'delivered' ? { answeredWith: question.submittedAnswer ?? 'Submitted' } : {}) });
+    }
+    questionsRef.current = next; setQuestions(next);
     if (status.outcome === 'delivered') {
-      setTimeout(() => setQuestions(previous => removeQuestionById(previous, status.sessionId, status.questionId)), RESOLVED_TRACE_LINGER_MS);
+      setTimeout(() => {
+        const remaining = removeQuestionById(questionsRef.current, status.sessionId, status.questionId);
+        questionsRef.current = remaining; setQuestions(remaining);
+      }, RESOLVED_TRACE_LINGER_MS);
     }
   }, []);
 
@@ -1865,7 +1870,7 @@ function App() {
 
   const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
     setUnlockedIdentity(identity);
-    if (!identity) { disconnectAll(); return; }
+    if (!identity) { restoredRelayIdentityRef.current = null; disconnectAll(); return; }
     provideIdentity('' as ConnectionId, identity);
     for (const connection of nativeConnectionsRef.current) {
       if (connection.status === 'error' || connection.status === 'disconnected') reconnectConnection(connection.connectionId);
@@ -1920,9 +1925,9 @@ function App() {
       });
       return changed ? next : prev;
     });
-    // Clear stale questions if all connections are down
+    // Drop actionable stale cards while keeping delivery receipts after close (#1199).
     if (!hasAnyConnected && !isAnyConnecting) {
-      setQuestions(new Map());
+      setQuestions(previous => new Map([...previous].filter(([, question]) => question.awaitingRelayOutcome)));
       setResumingSession(null);
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
@@ -1946,14 +1951,20 @@ function App() {
   }, [connectedIds, requestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
-  const restoredRelayIdentityRef = useRef<string | null>(null);
+  useEffect(() => {
+    const changed = () => { restoredRelayIdentityRef.current = null; setUnlockedIdentity(null); setRelayIdentityRevision(value => value + 1); };
+    window.addEventListener('remi:identity-changed', changed);
+    return () => window.removeEventListener('remi:identity-changed', changed);
+  }, []);
   useEffect(() => {
     const stored = usesNativeIdentity() ? null : loadIdentity();
     const publicKey = unlockedIdentity?.publicKeyRaw ?? (stored && !isIdentityEncrypted() ? stored.publicKey : null);
-    if (!publicKey || restoredRelayIdentityRef.current === publicKey) return;
-    restoredRelayIdentityRef.current = publicKey;
+    if (!publicKey) { restoredRelayIdentityRef.current = null; return; }
+    const context = `${relayIdentityRevision}:${publicKey}`;
+    if (restoredRelayIdentityRef.current === context) return;
+    restoredRelayIdentityRef.current = context;
     for (const pin of loadRelayPins()) void connectRelay(pin).catch(() => { /* Public pin remains available for explicit retry. */ });
-  }, [unlockedIdentity, connectRelay]);
+  }, [unlockedIdentity, connectRelay, relayIdentityRevision]);
 
   const connectDirectRef = useRef(connectDirect);
   useEffect(() => {
@@ -2336,6 +2347,16 @@ function App() {
   // bottom InputArea is no longer hijacked when a question is pending
   // (#401): the user can ask the agent a fresh question without it
   // being treated as an answer to a stale prompt.
+  const recordRelaySubmission = useCallback((question: UIQuestion, answer: string) => {
+    const key = questionKey(question.sessionId, question.agentId);
+    const existing = questionsRef.current.get(key);
+    if (!existing || existing.id !== question.id) return;
+    const next = new Map(questionsRef.current);
+    next.set(key, { ...existing, submitting: true, awaitingRelayOutcome: true, submittedAnswer: answer, deliveryOutcome: undefined });
+    // Publish before any decrypt continuation can process a resolution/result.
+    questionsRef.current = next; setQuestions(next);
+  }, []);
+
   const handleAnswer = useCallback(
     (question: UIQuestion, content: string) => {
       const sid = question.sessionId;
@@ -2376,14 +2397,7 @@ function App() {
         return;
       }
       if (connectionModeRef.current?.(connId) === 'relay') {
-        const key = questionKey(sid, question.agentId);
-        setQuestions(previous => {
-          const existing = previous.get(key);
-          if (!existing || existing.id !== question.id) return previous;
-          const next = new Map(previous);
-          next.set(key, { ...existing, submitting: true, awaitingRelayOutcome: true, submittedAnswer: content, deliveryOutcome: undefined });
-          return next;
-        });
+        recordRelaySubmission(question, content);
         return;
       }
       const key = questionKey(sid, question.agentId);
@@ -2427,7 +2441,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [getActiveConnectionId, sendAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAnswer],
   );
 
   // #627: submit a structured AskUserQuestion answer. The daemon answers it
@@ -2447,6 +2461,7 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Submitted'); return; }
       // The card a refusal naming no question can be about (#1126): a held
       // AskUserQuestion keeps its hold on an answer it refuses (#1127).
       lastAnsweredIdRef.current.set(sid, question.id);
@@ -2455,12 +2470,11 @@ function App() {
         const existing = prev.get(key);
         if (!existing) return prev;
         const next = new Map(prev);
-        next.set(key, { ...existing, submitting: true, autoAnswerFailed: false,
-          ...(connectionModeRef.current?.(connId) === 'relay' ? { awaitingRelayOutcome: true } : {}) });
+        next.set(key, { ...existing, submitting: true, autoAnswerFailed: false });
         return next;
       });
     },
-    [getActiveConnectionId, sendAuqAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAuqAnswer],
   );
 
   // #627: cancel a pending question — the universal unstick. The daemon
@@ -2473,7 +2487,9 @@ function App() {
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
       if (!connId) return;
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
-      sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      const sent = sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Cancelled'); return; }
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
@@ -2483,7 +2499,7 @@ function App() {
         return next;
       });
     },
-    [getActiveConnectionId, sendCancelQuestion],
+    [getActiveConnectionId, recordRelaySubmission, sendCancelQuestion],
   );
 
   // Persistent escape: send a bare Esc to the ACTIVE session at any time — it

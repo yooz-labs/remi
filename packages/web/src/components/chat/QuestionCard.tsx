@@ -522,7 +522,7 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
   }
 
   if (question.awaitingRelayOutcome && (question.submitting || (question.deliveryOutcome && question.deliveryOutcome !== 'delivered'))) {
-    return <output className="mx-3.5 my-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-light)] p-4">
+    return <output className="block mx-3.5 my-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-light)] p-4">
       <p className="text-sm font-medium">{question.prompt}</p>
       <p className="mt-2 text-sm">{question.submitting
         ? 'Waiting for delivery confirmation…'

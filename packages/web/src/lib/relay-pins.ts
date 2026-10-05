@@ -32,6 +32,15 @@ export function loadRelayPins(storage: Storage = localStorage): readonly RelayMa
   }
 }
 export function rememberRelayPin(pin: RelayMachinePin, storage: Storage = localStorage): void {
+  const previous = loadRelayPins(storage);
+  if (
+    previous.length >= 64 &&
+    !previous.some((item) => item.machinePublicKey === pin.machinePublicKey)
+  ) {
+    throw new Error(
+      'Saved machine limit reached. Forget a machine locally before pairing another.',
+    );
+  }
   const publicPin: RelayMachinePin = {
     relayUrl: pin.relayUrl,
     machinePublicKey: pin.machinePublicKey,
@@ -40,7 +49,7 @@ export function rememberRelayPin(pin: RelayMachinePin, storage: Storage = localS
   storage.setItem(
     STORAGE_KEY,
     JSON.stringify([
-      ...loadRelayPins(storage).filter((p) => p.machinePublicKey !== pin.machinePublicKey),
+      ...previous.filter((p) => p.machinePublicKey !== pin.machinePublicKey),
       publicPin,
     ]),
   );

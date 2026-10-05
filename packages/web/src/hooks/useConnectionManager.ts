@@ -114,6 +114,13 @@ interface ManagedConnection {
   staggerSlot: number;
 }
 
+/** Stop a captured identity context and publish that close synchronously. */
+function invalidateIdentityConnection(mc: ManagedConnection, message = 'Identity changed. Reconnect with the current identity.') {
+  mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
+  mc.status = 'disconnected'; mc.helloSent = false; mc.pendingChallenge = null; mc.authAttempt = null;
+  mc.sessionAttachments?.clear(); mc.error = new Error(message);
+}
+
 /** Hook options */
 export interface UseConnectionManagerOptions {
   /** Message handler: receives connectionId and the protocol message */
@@ -303,7 +310,7 @@ export function useConnectionManager(
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
-          if (mc.mode === 'relay') { mc.relayRequests?.closed(); mc.client.disconnect(); }
+          if (mc.mode === 'relay') invalidateIdentityConnection(mc);
         }
       }
       identityRef.current = unlockedIdentity;
@@ -317,7 +324,7 @@ export function useConnectionManager(
       for (const mc of connectionsMapRef.current.values()) {
         mc.approval.reset();
         mc.authAttempt = null;
-        if (usesNativeIdentity() || mc.mode === 'relay') { mc.pendingChallenge = null; mc.relayRequests?.closed(); mc.client.disconnect(); }
+        if (usesNativeIdentity() || mc.mode === 'relay') invalidateIdentityConnection(mc);
       }
       syncState();
     };
@@ -331,9 +338,7 @@ export function useConnectionManager(
       if (!identity || !('kind' in identity) || !identity.requiresAppUnlock) return;
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
-        mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
-        mc.status = 'disconnected'; mc.helloSent = false; mc.pendingChallenge = null; mc.authAttempt = null;
-        mc.error = new Error('Unlock Identity in the foreground before reconnecting.');
+        invalidateIdentityConnection(mc, 'Unlock Identity in the foreground before reconnecting.');
       }
       syncState();
     };
@@ -911,10 +916,12 @@ export function useConnectionManager(
       ) {
         return;
       }
-      if (mc.mode === 'relay') mc.client.forceReconnect();
+      if (mc.mode === 'relay' && mc.relayPin) {
+        void connectRelay(mc.relayPin).catch(error => { mc.error = error instanceof Error ? error : new Error('Relay reconnect failed.'); syncState(); });
+      }
       else void escalateReconnect(mc);
     },
-    [escalateReconnect],
+    [connectRelay, escalateReconnect, syncState],
   );
 
   // Disconnect a specific connection
@@ -1108,7 +1115,7 @@ export function useConnectionManager(
         for (const mc of connectionsMapRef.current.values()) {
           mc.approval.reset();
           mc.authAttempt = null;
-          if (mc.mode === 'relay') { mc.relayRequests?.closed(); mc.client.disconnect(); }
+          if (mc.mode === 'relay') invalidateIdentityConnection(mc);
         }
       }
       identityRef.current = identity;
