@@ -236,6 +236,10 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(response.success).toBe(true);
     expect(response.sessionId).toMatch(UUID_RE);
     expect(response.port).toBeGreaterThan(0);
+    // The child's port is probed from the range this test reserved (the hub's own port and the 19
+    // above it), not from 18765, which every hub on the machine and the owner's own sessions share.
+    expect(response.port).toBeGreaterThan(r.hub.port);
+    expect(response.port).toBeLessThan(r.hub.port + 20);
     // The hub cannot know that Codex reached its prompt: it says so, and what to do.
     expect(noticeOf(response)).toContain('remi attach');
     expect(noticeOf(response)).toContain('Update or Trust');
