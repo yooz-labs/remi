@@ -88,3 +88,82 @@ test('explicit legacy sender preserves actual owned request payload', async () =
     body: 'owned body',
   });
 });
+
+test('legacy sender never treats revoked legacy raw enrollment as eligible', async () => {
+  const identity = await createIdentity();
+  // Pre-R5 on-disk legacy row: no activation latch or enrollment epoch yet.
+  writeFileSync(
+    join(directory, 'relay_devices.json'),
+    JSON.stringify([
+      {
+        publicKey: identity.publicKey,
+        fingerprint: identity.fingerprint,
+        label: 'owned legacy',
+        createdAt: new Date().toISOString(),
+        lastUsedAt: null,
+      },
+    ]),
+    { mode: 0o600 },
+  );
+  await expect(sendPushTrigger(server.url.origin, 'owned-token', options())).rejects.toThrow(
+    'LEGACY_PUSH_NOT_ELIGIBLE',
+  );
+  expect(requests).toHaveLength(0);
+  expect(JSON.parse(readFileSync(join(directory, 'secure_push_activation.json'), 'utf8'))).toEqual({
+    version: 1,
+    activated: true,
+  });
+});
+test('legacy sender refuses corrupt raw enrollment instead of assuming an empty store', async () => {
+  writeFileSync(join(directory, 'relay_devices.json'), 'PRIVATE_LEGACY_PARSE_SENTINEL', {
+    mode: 0o600,
+  });
+  await expect(sendPushTrigger(server.url.origin, 'owned-token', options())).rejects.toThrow(
+    'LEGACY_PUSH_NOT_ELIGIBLE',
+  );
+  expect(requests).toHaveLength(0);
+});
+test('legacy sender serializes payload before final locked activation check', async () => {
+  const { activateSecurePushLocked } = await import('../../src/storage/secure-push-activation.ts');
+  const { withInterprocessFileLock } = await import('../../src/storage/interprocess-file-lock.ts');
+  const values = ['owned-option'];
+  // Controlled serialization delivery boundary; actual file lock/latch remain intact.
+  Object.defineProperty(values, 'toJSON', {
+    value() {
+      withInterprocessFileLock(join(directory, 'authorized_keys.json'), () =>
+        activateSecurePushLocked(directory),
+      );
+      return ['owned-option'];
+    },
+  });
+  await expect(
+    sendPushTrigger(server.url.origin, 'owned-token', { ...options(), options: values }),
+  ).rejects.toThrow('LEGACY_PUSH_NOT_ELIGIBLE');
+  expect(requests).toHaveLength(0);
+});
+test('legacy sender actual child diagnostics omit token, content and arbitrary receiver body', async () => {
+  await server.stop(true);
+  server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch() {
+      return new Response('PRIVATE_RESPONSE_SENTINEL', { status: 400 });
+    },
+  });
+  const module = new URL('../../src/notifications/push-client.ts', import.meta.url).href;
+  const script = `import {sendPushTrigger} from ${JSON.stringify(module)};try { await sendPushTrigger(${JSON.stringify(server.url.origin)}, 'PRIVATE_TOKEN_SENTINEL', ${JSON.stringify({ ...options(), title: 'PRIVATE_TITLE_SENTINEL', body: 'PRIVATE_BODY_SENTINEL' })}); } catch(e) { console.log(e instanceof Error ? e.message : 'UNKNOWN'); }`;
+  const child = Bun.spawn([process.execPath, '-e', script], {
+    env: { HOME: directory, REMI_HOME: directory, PATH: process.env['PATH'] ?? '' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  expect(code).toBe(0);
+  expect(stdout).toBe('LEGACY_PUSH_REJECTED\n');
+  expect(`${stdout}${stderr}`).not.toContain('PRIVATE_');
+  expect(child.exitCode).toBe(0);
+});
