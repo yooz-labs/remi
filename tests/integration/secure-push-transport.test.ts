@@ -164,10 +164,16 @@ test('secure transport binds actual signer, signs exactly once and reuses immuta
   const opened = await r.openPushContent(
     f.recipient,
     result.prepared.carrier,
-    f.metadata,
+    {
+      machinePublicKey: f.metadata.machinePublicKey,
+      devicePublicKey: f.metadata.devicePublicKey,
+      pushPublicKey: f.metadata.pushPublicKey,
+      keyVersion: f.metadata.keyVersion,
+    },
     Math.floor(Date.now() / 1000),
   );
   expect(opened.payload).toEqual(f.payload);
+  expect(opened.contentDigest).toBe(result.prepared.contentDigest);
   expect(await transport.sendPrepared(result.prepared)).toMatchObject({
     outcome: 'accepted',
     attempts: 2,

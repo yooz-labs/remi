@@ -37,9 +37,10 @@ const options = () =>
     legacyEnabled: true,
   }) as PushTriggerOptions;
 test('legacy sender defaults OFF before any authority read or owned network effect', async () => {
-  const opts = {
-    ...options(),
-    legacyEnabled: undefined,
+  const opts: PushTriggerOptions = {
+    title: 'owned title',
+    body: 'owned body',
+    pushSecret: 'owned-secret',
     authorityDirectory: join(directory, 'untouched'),
   };
   await expect(sendPushTrigger(server.url.origin, 'owned-token', opts)).rejects.toThrow(

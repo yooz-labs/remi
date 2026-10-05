@@ -4,6 +4,9 @@
  * which forwards it to Apple's APNS.
  */
 
+import { remiHome } from '../config/remi-home.ts';
+import { withLegacyPushEligibility } from '../storage/secure-push-activation.ts';
+
 const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
 
 /**
@@ -32,6 +35,10 @@ export type PushKind =
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {
+  /** Explicit plaintext compatibility only, default OFF (#1200). */
+  legacyEnabled?: boolean;
+  /** Authority state directory; tests must supply their owned disposable directory. */
+  authorityDirectory?: string;
   /**
    * Which class of push this is. Forwarded to the Worker, which passes it
    * through into the APNS payload's custom data as `kind`.
@@ -88,15 +95,6 @@ export async function sendPushTrigger(
   deviceToken: string,
   opts: PushTriggerOptions,
 ): Promise<void> {
-  // Normalize wss:// → https:// and ws:// → http:// so fetch works
-  const rawUrl = signalingUrl || DEFAULT_SIGNALING_URL;
-  const baseUrl = rawUrl.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
-  // Strip any path (e.g. /connect) from the signaling URL since we need the root
-  const url = `${new URL(baseUrl).origin}/push`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (opts.pushSecret) {
-    headers['Authorization'] = `Bearer ${opts.pushSecret}`;
-  }
   const payload: Record<string, unknown> = {
     token: deviceToken,
     // Omitted for a dismiss push (#585, P7): silent, no user-visible text.
@@ -124,24 +122,60 @@ export async function sendPushTrigger(
   if (opts.kind) {
     payload['kind'] = opts.kind;
   }
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => 'unknown');
-    throw new Error(`Push trigger failed: ${response.status} ${text}`);
-  }
-
-  // Read response body for diagnostics; body not consumed earlier on the success path
+  let body: string;
   try {
-    const resultText = await response.text();
-    console.log(`[Push] Sent for token ${deviceToken.slice(0, 20)}...: ${resultText}`);
-  } catch (err) {
-    console.log(
-      `[Push] Sent for token ${deviceToken.slice(0, 20)}... (could not read response: ${err})`,
-    );
+    body = JSON.stringify(payload);
+  } catch {
+    throw new Error('LEGACY_PUSH_INVALID_CONTENT');
+  }
+  if (opts.legacyEnabled !== true) throw new Error('LEGACY_PUSH_DISABLED');
+  if (typeof opts.pushSecret !== 'string' || opts.pushSecret.trim().length === 0)
+    throw new Error('LEGACY_PUSH_SECRET_REQUIRED');
+  let url: string;
+  try {
+    const base = (signalingUrl || DEFAULT_SIGNALING_URL)
+      .replace(/^wss:\/\//i, 'https://')
+      .replace(/^ws:\/\//i, 'http://');
+    url = `${new URL(base).origin}/push`;
+  } catch {
+    throw new Error('LEGACY_PUSH_INVALID_URL');
+  }
+  const directory = opts.authorityDirectory ?? remiHome();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
+  try {
+    const invoked = withLegacyPushEligibility(directory, () => {
+      // Fetch is invoked under the authorization lock; await only after releasing it.
+      timer = setTimeout(() => controller.abort(), 12000);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.pushSecret}` },
+        body,
+        signal: controller.signal,
+        redirect: 'error',
+      });
+    });
+    if (!invoked.allowed) throw new Error('LEGACY_PUSH_NOT_ELIGIBLE');
+    let response: Response;
+    try {
+      response = await invoked.result;
+    } catch {
+      throw new Error('LEGACY_PUSH_UNCERTAIN');
+    }
+    // Arbitrary response bodies and tokens never enter diagnostics.
+    void response.body?.cancel().catch(() => {});
+    if (!response.ok) throw new Error('LEGACY_PUSH_REJECTED');
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ['LEGACY_PUSH_NOT_ELIGIBLE', 'LEGACY_PUSH_REJECTED', 'LEGACY_PUSH_UNCERTAIN'].includes(
+        error.message,
+      )
+    )
+      throw error;
+    throw new Error('LEGACY_PUSH_UNCERTAIN');
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
   }
 }
