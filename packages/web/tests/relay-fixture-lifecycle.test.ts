@@ -164,6 +164,23 @@ test('owned relay teardown runs in each importing test file', async () => {
 }, 20000);
 
 test('cleanup invalidates an actual hub setup awaiting Worker readiness', async () => {
+  const initial = await ownedRelayHub();
+  const prototype = Object.getPrototypeOf(initial.worker.mf) as object;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'ready');
+  if (!descriptor?.get) throw new Error('Actual Miniflare ready getter unavailable');
+  await cleanupOwnedRelayFixtures();
+  let workerURL: string | undefined;
+  // Observe the original real ready result; do not replace Miniflare evaluation.
+  Object.defineProperty(prototype, 'ready', {
+    ...descriptor,
+    get(this: unknown) {
+      const ready: Promise<unknown> = Promise.resolve(descriptor.get?.call(this));
+      return ready.then((url) => {
+        workerURL = String(url);
+        return url;
+      });
+    },
+  });
   const pending = ownedRelayHub().then(
     () => 'unexpected setup success',
     (error) => String(error.message),
@@ -171,7 +188,17 @@ test('cleanup invalidates an actual hub setup awaiting Worker readiness', async 
   try {
     await cleanupOwnedRelayFixtures();
     expect(await pending).toBe('Owned relay fixture lifetime ended');
+    if (!workerURL) throw new Error('Actual late Worker ready URL missing');
+    let reachable = false;
+    try {
+      await fetch(workerURL, { signal: AbortSignal.timeout(200) });
+      reachable = true;
+    } catch {
+      /* late Worker was disposed before setup rejection */
+    }
+    expect(reachable).toBe(false);
   } finally {
+    Object.defineProperty(prototype, 'ready', descriptor);
     await cleanupOwnedRelayFixtures();
   }
 }, 15000);
