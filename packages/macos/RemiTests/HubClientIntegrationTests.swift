@@ -332,6 +332,48 @@ final class HubClientIntegrationTests: XCTestCase {
         await MainActor.run { client.stopForTesting() }
     }
 
+    /// Real hub with deliberately inconsistent public identity metadata; no fake gateway.
+    func testRejectsRealHubWhoseClaimedFingerprintDoesNotMatchItsKey() async throws {
+        let binary = try requireBinary()
+        let port = 18789
+        try spawnHub(binary: binary, port: port)
+        let home = try XCTUnwrap(homeDir)
+        let identityFile = home.appendingPathComponent(".remi/identity.json")
+        for _ in 0..<60 {
+            if FileManager.default.fileExists(atPath: identityFile.path) { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let previous = try XCTUnwrap(process)
+        previous.terminate()
+        previous.waitUntilExit()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: identityFile)) as? [String: Any])
+        object["fingerprint"] = "ffffffffffffffff"
+        try JSONSerialization.data(withJSONObject: object).write(to: identityFile, options: .atomic)
+        let restarted = Process()
+        restarted.executableURL = previous.executableURL
+        restarted.arguments = previous.arguments
+        restarted.environment = previous.environment
+        restarted.standardOutput = Pipe()
+        restarted.standardError = Pipe()
+        try restarted.run()
+        process = restarted
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
+        await MainActor.run { client.start() }
+        for _ in 0..<60 {
+            let phase = await MainActor.run { client.phase }
+            if case .rejected(_, let reason) = phase {
+                let code = await MainActor.run { client.approvalErrorCode }
+                XCTAssertNil(code, "A false server fingerprint must never register pending client approval")
+                XCTAssertTrue(reason.contains("fingerprint"), reason)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".remi/pending_keys.json").path))
+                await MainActor.run { client.stopForTesting() }
+                return
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTFail("Client never rejected the server's inconsistent key/fingerprint")
+    }
+
     private func localCLI(_ binary: String, _ arguments: [String]) throws -> String {
         let home = try XCTUnwrap(homeDir)
         let proc = Process()
