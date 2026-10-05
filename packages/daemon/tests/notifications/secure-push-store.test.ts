@@ -12,13 +12,20 @@ let directory: string;
 let trust: IdentityStore;
 let devices: RelayDeviceStore;
 let subscriptions: SecurePushStore;
+const children: ReturnType<typeof Bun.spawn>[] = [];
 beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-secure-subscriptions-'));
   trust = new IdentityStore(directory);
   devices = new RelayDeviceStore(directory, trust);
   subscriptions = new SecurePushStore(directory, trust);
 });
-afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
+afterEach(async () => {
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+  }
+  fs.rmSync(directory, { recursive: true, force: true });
+});
 async function recipient() {
   const identity = await createIdentity();
   await trust.addAuthorizedKey(identity.publicKey, 'synthetic secure recipient');
@@ -245,3 +252,83 @@ test('secure subscription: corrupt persisted curve point refuses without changin
     bytes,
   );
 });
+
+test('secure subscription: caller field replacement during real preparation cannot replace the captured registration', async () => {
+  const { authority, registration } = await recipient();
+  const mutable = { ...registration, pushPrefs: { questions: true } };
+  const captured = { ...authority };
+  const pending = subscriptions.register(captured, mutable);
+  mutable.token = 'ef'.repeat(32);
+  mutable.environment = 'production';
+  mutable.pushPrefs.questions = false;
+  captured.authorizationEpoch = 'A'.repeat(43);
+  expect(await pending).toEqual({ success: true, keyVersion: 1 });
+  expect(subscriptions.listCurrent()[0]?.token).toBe(registration.token);
+  expect(subscriptions.listCurrent()[0]?.environment).toBe('sandbox');
+  expect(subscriptions.listCurrent()[0]?.pushPrefs?.questions).toBe(true);
+});
+
+test('secure subscription: a snapshot with changed delivery fields cannot enter the actual invocation boundary', async () => {
+  const { authority, registration } = await recipient();
+  expect(await subscriptions.register(authority, registration)).toEqual({
+    success: true,
+    keyVersion: 1,
+  });
+  const snapshot = subscriptions.listCurrent()[0];
+  if (!snapshot) throw new Error('missing captured subscription');
+  const another = await relayV2.generateEcPair();
+  let effects = 0;
+  for (const changed of [
+    { ...snapshot, token: 'ef'.repeat(32) },
+    { ...snapshot, environment: 'production' as const },
+    { ...snapshot, keyVersion: 2 },
+    { ...snapshot, pushPublicKey: relayV2.b64u(another.publicKey) },
+    { ...snapshot, pushPrefs: { ...snapshot.pushPrefs, questions: false } },
+  ])
+    expect(subscriptions.withCurrentSubscription(changed, () => ++effects)).toBeNull();
+  expect(effects).toBe(0);
+});
+
+test('secure subscription: actual revoke in another process cannot interleave with a current send invocation', async () => {
+  const { identity, authority, registration } = await recipient();
+  expect(await subscriptions.register(authority, registration)).toEqual({
+    success: true,
+    keyVersion: 1,
+  });
+  const snapshot = subscriptions.listCurrent()[0];
+  if (!snapshot) throw new Error('missing captured subscription');
+  const attempted = path.join(directory, 'revoke-attempted');
+  const finished = path.join(directory, 'revoke-finished');
+  const module = new URL('../../src/auth/identity-store.ts', import.meta.url).href;
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  const actual = subscriptions.withCurrentSubscription(snapshot, () => {
+    const script = `import { writeFileSync } from 'node:fs';
+      import { IdentityStore } from ${JSON.stringify(module)};
+      writeFileSync(${JSON.stringify(attempted)}, 'attempted');
+      new IdentityStore(${JSON.stringify(directory)}).removeAuthorizedKey(${JSON.stringify(identity.fingerprint)});
+      writeFileSync(${JSON.stringify(finished)}, 'finished');`;
+    child = Bun.spawn([process.execPath, '-e', script], {
+      cwd: directory,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    children.push(child);
+    const sleep = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 1000;
+    while (!fs.existsSync(attempted)) {
+      if (Date.now() >= deadline) throw new Error('owned secure revoker did not start');
+      Atomics.wait(sleep, 0, 0, 5);
+    }
+    Atomics.wait(sleep, 0, 0, 100);
+    expect(fs.existsSync(finished)).toBe(false);
+    expect(trust.isAuthorized(identity.publicKey, identity.fingerprint)).toBe(true);
+    return 'invoked-before-revoke';
+  });
+  expect(actual).toBe('invoked-before-revoke');
+  if (!child || !(child.stderr instanceof ReadableStream))
+    throw new Error('missing owned secure revoker');
+  expect(await child.exited).toBe(0);
+  expect(await new Response(child.stderr).text()).toBe('');
+  expect(fs.existsSync(finished)).toBe(true);
+  expect(subscriptions.withCurrentSubscription(snapshot, () => 'late')).toBeNull();
+}, 10000);
