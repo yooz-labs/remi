@@ -307,6 +307,44 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
     expect(ids).toEqual([0, 1, 2]);
   });
 
+  test('withNextResume writes the frames in the same chunk as the resume response, once, to the resuming client only', async () => {
+    const threadId = placeholderUuid(70);
+    server.createRollout(threadId);
+    const extra = { method: 'item/completed', params: { threadId, item: { id: 'i1' } } };
+    server.withNextResume(threadId, [extra]);
+
+    // What a client sees when it reads one chunk: every frame of the chunk is handed over in one
+    // synchronous loop, and only then does a microtask (a `.then` on the response) run.
+    const order: string[] = [];
+    const conn = await connectUnixWebSocket(server.socketPath, {
+      onMessage: (text) => {
+        const frame = JSON.parse(text) as Record<string, unknown>;
+        order.push(frame['method'] === undefined ? 'response' : String(frame['method']));
+        if (frame['method'] === undefined) queueMicrotask(() => order.push('microtask'));
+      },
+      onClose: () => {},
+    });
+    clients.push(conn);
+    const bystander = await connect();
+    conn.send(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'thread/resume', params: { threadId } }),
+    );
+    await server.waitFor(() => order.includes('microtask'), 'the response');
+    await settle();
+
+    expect(order).toEqual(['response', 'item/completed', 'microtask']);
+    expect(bystander.frames).toEqual([]);
+
+    // Only the next resume: a second one is the plain response.
+    order.length = 0;
+    conn.send(
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'thread/resume', params: { threadId } }),
+    );
+    await server.waitFor(() => order.includes('microtask'), 'the second response');
+    await settle();
+    expect(order).toEqual(['response', 'microtask']);
+  });
+
   test('generic JSON-RPC behavior, not Codex frames: -32601 for an unknown method, -32603 for a handler that throws, silence for ignore()', async () => {
     const c = await connect();
     c.send({ jsonrpc: '2.0', id: 1, method: 'no/such/method' });
