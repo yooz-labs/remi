@@ -857,7 +857,7 @@ export function useConnectionManager(
         if (!alive()) return;
         mc.relayConfirmation = phase === 'confirmation' ? fingerprint : undefined; syncState();
       },
-      onReady: verifiedPin => { if (alive()) { mc.relayCancel?.(); mc.relayPin = verifiedPin; rememberRelayPin(verifiedPin); } },
+      onReady: verifiedPin => { if (alive()) { rememberRelayPin(verifiedPin); mc.relayCancel?.(); mc.relayPin = verifiedPin; } },
       onError: error => { if (alive()) { mc.error = error; syncState(); } },
       onClose: () => { if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
       onStatus: status => {

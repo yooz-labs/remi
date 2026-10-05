@@ -12,7 +12,11 @@ Compare the client's displayed fingerprint on the daemon machine and approve
 there. The client cannot approve itself. Close/Cancel ends the pending attempt.
 Tokens live in the open form and one handshake, and are never saved. After the
 verified ready exchange, only the Worker endpoint and machine public keys are
-saved. Reconnecting uses the enrolled identity and a fresh handshake.
+saved. Reconnecting uses the enrolled identity and a fresh handshake. If saving the
+verified public pin fails because storage is full or the 64-machine limit is
+reached, the client shows the error and disconnects without automatic resume.
+Existing public pins remain. Resolve storage or forget a saved machine locally
+before retrying explicitly.
 
 `App → ConnectModal → RelayPairingForm → useConnectionManager.connectRelay →
 RelayTransport → RelayMachineChannel` calls the shared v2 signer, handshake,

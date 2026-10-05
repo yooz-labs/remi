@@ -81,9 +81,20 @@ export class RelayTransport implements ConnectionTransport {
           },
           onReady: (pin: RelayMachinePin) => {
             if (generation !== this.generation || this.stopped) return;
+            try {
+              this.events.onReady?.(pin);
+            } catch (cause) {
+              // A verified handshake is not a durable saved connection. Keep this
+              // storage/capacity failure visible and never enter the resume loop.
+              this.resumeSuspended = true;
+              this.events.onError?.(
+                cause instanceof Error ? cause : new Error('Saving the paired machine failed.'),
+              );
+              this.events.onStatus('disconnected');
+              throw cause;
+            }
             this.enrolled = true;
             this.attempts = 0;
-            this.events.onReady?.(pin);
             this.events.onStatus('connected');
           },
           onMessage: (message) => {
