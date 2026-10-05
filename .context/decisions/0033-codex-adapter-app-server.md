@@ -140,7 +140,7 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
   `item/tool/requestUserInput` at `expC.jsonl:31` (`isBlocking: true`, `autoResolutionMs: null`), answered at `:34` with `{answers: {q1: {answers: ["Blue"]}}}`, resolved at `:35`.
 - **Not captured, labeled as such.**
   The `-32600 no rollout found for thread id <id>` error (the spike report, not a log); file-change, permissions and elicitation requests (generated schema only).
-  At the Phase 1 spike date these remained unverified: `cancel` from a second client, what a mid-approval subscriber disconnect does to a pending request (plan risk R1), `/new` rotation, `optOutNotificationMethods`, failed-turn `turn/completed`, and keepalive on an idle connection. The later LV-5 fixture covers a failed turn event; the other approval/transport gaps remain.
+  These were gaps at the Phase 1 spike date: `cancel` from a second client, what a mid-approval subscriber disconnect does to a pending request (plan risk R1), `/new` rotation, `optOutNotificationMethods`, failed-turn `turn/completed`, and keepalive on an idle connection. Later LV-1–LV-3 results and the idle-keepalive amendment below record which were resolved; LV-5 results and `lv5.jsonl` add the failed-turn frame.
 - **What the Phase 1 tests prove, by mutation.**
   Each of these fails a named test when applied: a flipped mask bit, a dropped pong, a skipped accept-key check, no request timeout, correlating a response by the wrong id, the client sending an error frame to an unknown server request.
   A summary of the roughly 100 mutants is in the PR description.
