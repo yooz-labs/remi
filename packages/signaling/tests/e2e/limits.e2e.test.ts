@@ -20,11 +20,13 @@ import {
   advanceClock,
   clientUrl,
   connectClient,
+  holdBurns,
   hostUrl,
   newIdentity,
   newMachine,
   pipeUrl,
   readNonce,
+  roomState,
   runAlarm,
   upgradeStatus,
 } from './endpoints.ts';
@@ -40,6 +42,25 @@ const start = async (vars: Record<string, string> = {}): Promise<TestWorker> => 
 afterEach(() => worker?.stop());
 
 describe('per-address and per-room limits (the global limiter object)', () => {
+  test('a supported high limit reaches the room and a small second budget still counts', async () => {
+    const w = await start({ LIMIT_IP_CLIENT: '100001', LIMIT_RID: '1' });
+    const machine = await newMachine();
+    const first = await Socket.open(clientUrl(w, machine.ridHex));
+    await readNonce(first);
+    expect(await upgradeStatus(clientUrl(w, machine.ridHex))).toBe(429);
+  });
+
+  test('a supported subsecond window counts and renews at the front door', async () => {
+    const w = await start({ LIMIT_IP_CLIENT: '1', LIMIT_WINDOW_MS: '400' });
+    const machine = await newMachine();
+    const first = await Socket.open(clientUrl(w, machine.ridHex));
+    await readNonce(first);
+    expect(await upgradeStatus(clientUrl(w, machine.ridHex))).toBe(429);
+    await Bun.sleep(500);
+    const retry = await Socket.open(clientUrl(w, machine.ridHex));
+    await readNonce(retry);
+  });
+
   test('past the per-address budget an upgrade is refused with 429, and each route class has its own', async () => {
     const w = await start({ LIMIT_IP_CLIENT: '2' });
     const machine = await newMachine();
@@ -172,6 +193,131 @@ describe('the per-device admission budget', () => {
 });
 
 describe('the cap on admitted clients', () => {
+  test('an in-flight pairing reserves capacity against distinct tickets and resume', async () => {
+    const w = await start({ MAX_CLIENTS: '1' });
+    const machine = await newMachine();
+    const host = await FakeHost.start(w, machine);
+    const resumedDevice = await newIdentity();
+    await host.enroll(resumedDevice.publicKey);
+    const secrets = [relayV2.systemRandom(32), relayV2.systemRandom(32)];
+    const tickets = await Promise.all(secrets.map((secret) => relayV2.admitTag(secret)));
+    for (const secret of secrets) await host.openWindow(secret);
+    const firstDevice = await newIdentity();
+    const secondDevice = await newIdentity();
+    await holdBurns(w, machine.ridHex, 2);
+    const first = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(first, firstDevice, 'client', machine.rid, tickets[0]);
+    // No notice arrives while the real admission handler waits at the burn barrier.
+    expect(await first.quiet(50)).toBe(true);
+    const second = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(second, secondDevice, 'client', machine.rid, tickets[1]);
+    const secondOutcome = await Promise.race([
+      second.json().then((m) => m['t']),
+      second.closed.then(() => 'closed'),
+    ]);
+    expect(secondOutcome).toBe('closed');
+    const resume = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(resume, resumedDevice, 'client', machine.rid);
+    expect(await resume.closed).toEqual(REFUSED);
+    await holdBurns(w, machine.ridHex, 0);
+    expect((await first.json())['t']).toBe('admitted');
+    expect((await roomState(w, machine.ridHex)).sockets.filter((a) => a?.k)).toHaveLength(1);
+    first.close();
+    await first.closed;
+    // The refused second ticket is still valid, and completed reservations do not hold a slot.
+    const retry = await connectClient(w, machine, secondDevice, tickets[1]);
+    expect(retry.socket.isClosed).toBe(false);
+  });
+
+  test('closing during a held burn frees capacity and preserves the ticket', async () => {
+    const w = await start({ MAX_CLIENTS: '1' });
+    const machine = await newMachine();
+    const host = await FakeHost.start(w, machine);
+    const secret = relayV2.systemRandom(32);
+    await host.openWindow(secret);
+    const ticket = await relayV2.admitTag(secret);
+    const device = await newIdentity();
+    await holdBurns(w, machine.ridHex, 2);
+    const abandoned = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(abandoned, device, 'client', machine.rid, ticket);
+    expect(await abandoned.quiet(50)).toBe(true);
+    abandoned.close();
+    await abandoned.closed;
+    await holdBurns(w, machine.ridHex, 0);
+    const state = await roomState(w, machine.ridHex);
+    expect(state.storage['pw']).toHaveLength(1);
+    expect(state.sockets.filter((a) => a?.k)).toHaveLength(0);
+    const retry = await connectClient(w, machine, device, ticket);
+    expect(retry.socket.isClosed).toBe(false);
+  });
+
+  test('losing a concurrent ticket burn releases its reservation', async () => {
+    const w = await start({ MAX_CLIENTS: '2' });
+    const machine = await newMachine();
+    const host = await FakeHost.start(w, machine);
+    const secret = relayV2.systemRandom(32);
+    await host.openWindow(secret);
+    const ticket = await relayV2.admitTag(secret);
+    await holdBurns(w, machine.ridHex, 2);
+    const devices = [await newIdentity(), await newIdentity()];
+    const sockets = await Promise.all(devices.map(() => Socket.open(clientUrl(w, machine.ridHex))));
+    await Promise.all(
+      sockets.map((socket, i) =>
+        admit(socket, devices[i] as Identity, 'client', machine.rid, ticket),
+      ),
+    );
+    const outcomes = await Promise.all(
+      sockets.map((socket) =>
+        Promise.race([socket.json().then((m) => m['t']), socket.closed.then(() => 'closed')]),
+      ),
+    );
+    expect(outcomes.filter((outcome) => outcome === 'admitted')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === 'closed')).toHaveLength(1);
+    const newcomer = await newIdentity();
+    await host.enroll(newcomer.publicKey);
+    const resumed = await connectClient(w, machine, newcomer);
+    expect(resumed.socket.isClosed).toBe(false);
+  });
+
+  test('the same device reconnects at capacity and replaces its incumbent', async () => {
+    const w = await start({ MAX_CLIENTS: '1' });
+    const machine = await newMachine();
+    const host = await FakeHost.start(w, machine);
+    const device = await newIdentity();
+    await host.enroll(device.publicKey);
+    const incumbent = await connectClient(w, machine, device);
+    const replacement = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(replacement, device, 'client', machine.rid);
+    const outcome = await Promise.race([
+      replacement.json().then((m) => m['t']),
+      replacement.closed.then(() => 'closed'),
+    ]);
+    expect(outcome).toBe('admitted');
+    expect(replacement.isClosed).toBe(false);
+    expect(await incumbent.socket.closed).toEqual(REFUSED);
+  });
+
+  test('a capacity refusal leaves a pairing ticket available to retry', async () => {
+    const w = await start({ MAX_CLIENTS: '1' });
+    const machine = await newMachine();
+    const host = await FakeHost.start(w, machine);
+    const incumbentDevice = await newIdentity();
+    await host.enroll(incumbentDevice.publicKey);
+    const incumbent = await connectClient(w, machine, incumbentDevice);
+    const secret = relayV2.systemRandom(32);
+    await host.openWindow(secret);
+    const ticket = await relayV2.admitTag(secret);
+    const newcomer = await newIdentity();
+    const refused = await Socket.open(clientUrl(w, machine.ridHex));
+    await admit(refused, newcomer, 'client', machine.rid, ticket);
+    expect(await refused.closed).toEqual(REFUSED);
+    expect((await roomState(w, machine.ridHex)).storage['pw']).toHaveLength(1);
+    incumbent.socket.close();
+    await incumbent.socket.closed;
+    const retry = await connectClient(w, machine, newcomer, ticket);
+    expect(retry.socket.isClosed).toBe(false);
+  });
+
   test('a room admits only so many clients at once, and a departure makes room', async () => {
     const w = await start({ MAX_CLIENTS: '2' });
     const machine = await newMachine();
@@ -203,6 +349,23 @@ describe('the frame ceiling', () => {
   }
 
   const frame = (length: number): Uint8Array => new Uint8Array(length).fill(0xab);
+
+  for (const sender of ['client', 'host'] as const) {
+    test(`multibyte text is bounded by UTF-8 bytes from the ${sender}`, async () => {
+      const w = await start();
+      const { client, pipe } = await openPipe(w, await newMachine());
+      const [source, peer] = sender === 'client' ? [client, pipe] : [pipe, client];
+      const fits = `${'€'.repeat(170)}xx`;
+      expect(new TextEncoder().encode(fits)).toHaveLength(MAX_CONTROL_TEXT);
+      source.sendText(fits);
+      expect(await peer.text()).toBe(fits);
+      source.sendText(`${fits}x`);
+      const outcome = await Promise.race([source.closed, peer.text().then(() => 'forwarded')]);
+      expect(outcome).toEqual(REFUSED);
+      expect(await peer.closed).toEqual(REFUSED);
+      expect(await peer.quiet(50)).toBe(true);
+    });
+  }
 
   test('a binary message of MAX_FRAME bytes crosses in both directions, byte for byte', async () => {
     const w = await start();

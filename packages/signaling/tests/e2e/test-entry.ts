@@ -12,7 +12,7 @@
  *   raw bytes), which is how a test asserts what the Worker could see;
  * - a barrier: `/__barrier` makes the next admissions that present a ticket wait,
  *   just before the window is burned, until that many have arrived, then released
- *   together, so a test races the burn on purpose;
+ *   together, so a test races the burn on purpose; a size of zero releases held admissions;
  * - `/__legacy`: accepts a socket with the attachment the pre-R2 room kept, as a
  *   deploy over a live legacy room would leave one behind.
  *
@@ -115,6 +115,9 @@ export class ConnectionRoom extends RealRoom {
     }
     if (path.endsWith('/__barrier') && request.method === 'POST') {
       this.barrierSize = ((await request.json()) as { size: number }).size;
+      if (this.barrierSize === 0) {
+        for (const release of this.held.splice(0)) release();
+      }
       return new Response('barrier set');
     }
     if (path.endsWith('/__clock') && request.method === 'POST') {

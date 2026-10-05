@@ -217,6 +217,26 @@ describe('what a socket may say before it is admitted', () => {
     await refused(socket);
   });
 
+  test('the runtime alarm closes an idle stranger without the clock or alarm seam', async () => {
+    await worker.stop();
+    worker = await startWorker({ ADMIT_TIMEOUT_MS: '400' });
+    const machine = await newMachine();
+    const socket = await Socket.open(hostUrl(worker, machine.ridHex));
+    await readNonce(socket);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const closed = await Promise.race([
+        socket.closed,
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => resolve('still open'), 4000);
+        }),
+      ]);
+      expect(closed).toEqual(REFUSED);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   test('a socket still inside its deadline is not closed by the alarm', async () => {
     const machine = await newMachine();
     const socket = await Socket.open(hostUrl(worker, machine.ridHex));
