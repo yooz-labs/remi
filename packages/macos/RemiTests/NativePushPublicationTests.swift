@@ -173,6 +173,30 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertFalse(consumer.allowsPresentation(forged), "An unverified static category cannot grant native foreground actions")
 
     }
+    func testActualNSEForegroundRejectsUnsignedSubtitleOnVerifiedAndFallbackContent() throws {
+        let (service, probe) = try begin()
+        defer { service.serviceExtensionTimeWillExpire() }
+        guard probe.installedCategory() != nil else { XCTFail("Signed capsule must reach actual NSE category boundary"); return }
+        probe.release(true); wait(for: [probe.completed], timeout: 3)
+        let content = try XCTUnwrap(probe.snapshot().first)
+        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock })
+        XCTAssertTrue(consumer.allowsPresentation(content), "Unaltered actual NSE result remains presentable")
+        let altered = try XCTUnwrap(content.mutableCopy() as? UNMutableNotificationContent)
+        altered.subtitle = "Unsigned instruction outside the original capsule"
+        XCTAssertFalse(consumer.allowsPresentation(altered), "Foreground signed content must not admit unsigned subtitle text")
+
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
+        let (fallbackService, fallbackProbe) = try begin()
+        defer { fallbackService.serviceExtensionTimeWillExpire() }
+        wait(for: [fallbackProbe.completed], timeout: 3)
+        let fallback = try XCTUnwrap(fallbackProbe.snapshot().first)
+        XCTAssertTrue(NativePushNotificationConsumer.isGenericFallback(fallback))
+        XCTAssertTrue(consumer.allowsPresentation(fallback), "Actual missing-key fallback remains generic and presentable")
+        let alteredFallback = try XCTUnwrap(fallback.mutableCopy() as? UNMutableNotificationContent)
+        alteredFallback.subtitle = "Unsigned instruction beside the generic fallback"
+        XCTAssertFalse(NativePushNotificationConsumer.isGenericFallback(alteredFallback), "Generic fallback must contain only its fixed text")
+        XCTAssertFalse(consumer.allowsPresentation(alteredFallback), "Missing keys cannot authenticate an extra subtitle")
+    }
     func testActualNSECategoryRefusalPreservesVerifiedTextWithoutActions() throws {
         let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
         guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
