@@ -4,10 +4,11 @@
  * authentication. They are green before and after R2; if R2 breaks one, the
  * break is a decision and not an accident.
  *
- * The legacy `/push` stays until push privacy (R5) ships: a daemon built before
- * then still POSTs a plaintext push with `Authorization: Bearer <PUSH_SECRET>`.
- * What stays exactly: the route, the bearer check (only when `PUSH_SECRET` is
- * set), the body shape, the per-isolate rate limiters and the APNS forwarding.
+ * The legacy `/push` stays until push privacy ships end to end (the default flips at the R7
+ * gate): a daemon built before then still POSTs a plaintext push with
+ * `Authorization: Bearer <PUSH_SECRET>`. What stays exactly: the route, the bearer check (an
+ * unset or blank `PUSH_SECRET` refuses everything), the body shape, the per-isolate rate limiters
+ * and the APNS forwarding. It is on unless `LEGACY_PUSH_ENABLED` is explicitly false (#1200).
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -83,11 +84,22 @@ describe('legacy /push authentication', () => {
     expect(res.status).toBe(401);
     expect(((await res.json()) as { error: string }).error).toBe('UNAUTHORIZED');
   });
-  test('legacy bearer alone cannot opt in to the plaintext route', async () => {
+  // #1200 (owner decision): the route is ON by default until the R7 gate, so a deployment that
+  // sets only PUSH_SECRET keeps working; an explicit false value is what turns it off.
+  test('a deployment that sets only PUSH_SECRET keeps the plaintext route', async () => {
     const res = await call(
       '/push',
       { method: 'POST', headers: { Authorization: 'Bearer owned' }, body },
       { ...ENV, PUSH_SECRET: 'owned' },
+    );
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe('APNS_NOT_CONFIGURED');
+  });
+  test('an explicit false LEGACY_PUSH_ENABLED turns the plaintext route off even with the bearer', async () => {
+    const res = await call(
+      '/push',
+      { method: 'POST', headers: { Authorization: 'Bearer owned' }, body },
+      { ...ENV, PUSH_SECRET: 'owned', LEGACY_PUSH_ENABLED: 'false' },
     );
     expect(res.status).toBe(403);
     expect((await res.json()) as { error: string }).toEqual({ error: 'LEGACY_PUSH_DISABLED' });
