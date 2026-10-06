@@ -224,7 +224,7 @@ Its rate limits go through one global Durable Object (`GlobalLimiter`), and its 
 What it sees and what it does not, its routes and messages, its limits and the known gaps are in `docs/relay-worker-v2.md`; the deploy steps for the owner are in `docs/relay-worker-deploy-runbook.md`.
 `/connect/<code>` and `/answer/<code>` are deleted. R3 tests construct the real source hub and capability-verified controlled children against this Worker; shipped R4 clients and deployed acceptance remain pending.
 Those tests run the real Durable Object in workerd under Miniflare (`bun test packages/signaling`); that is not the deployed Cloudflare runtime, and the hibernation threshold, alarm precision and billing there are unverified.
-The legacy `POST /push` is unchanged and stays until push privacy (R5) ships.
+The legacy `POST /push` is unchanged and stays, off by default on the Worker (`LEGACY_PUSH_ENABLED`) and behind the push secret, until the R7 gate flips the daemon's default; the sealed `POST /v2/push/<rid>` route (R5) sits beside it.
 
 **Authentication and local first-connect approval (#873).**
 `auth.enabled = "auto"` now enables authentication on every bind. Unknown keys
@@ -615,9 +615,23 @@ on stderr with its reason.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 
-- Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).
+- Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen), by one of two paths (#1200).
+- **Legacy plaintext push is ON by default.**
+  `notifications.legacy_push_enabled` defaults to `true` until secure push ships end to end; the default flips at the R7 gate (owner decision).
+  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `LEGACY_PUSH_ENABLED=true` and `PUSH_SECRET` to forward it to APNS.
+  Its recipients are the device tokens a phone registered with `register_device_token`, counted only while the path is enabled and has a secret (`legacyChannelOpen`): `legacy_push_enabled = false`, or no push secret, makes old tokens no recipients and the event `no_channel`, not an error-level "legacy failed" per token.
+  The sender throws `LegacyPushError`, whose message is one fixed code and whose `status` and `tokenInvalid` fields drive the classifiers: a 429 or a 5xx the Worker did not mark `tokenInvalid` is retried (2 retries, 400 ms then 800 ms), `tokenInvalid` prunes the token, a lost response (`LEGACY_PUSH_UNCERTAIN`) is never retried.
+- **The activation latch is machine-wide and one-way.**
+  `secure_push_activation.json` is written when a device is enrolled over the relay (pairing), when a relay peer's authority is captured, when a secure subscription registers, when an enrollment is removed while any exists, and when a legacy send finds an enrolled device (`withLegacyPushEligibility`).
+  From then on the legacy sender refuses for good (`LEGACY_PUSH_NOT_ELIGIBLE`, reported as `no_channel`) whatever `legacy_push_enabled` says, for EVERY device token on the machine, including a phone connected directly that never touched the relay; a corrupt latch or enrollment file refuses too.
+  **A relay-paired machine therefore gets no lock-screen push at all until the secure path is wired in the app (the web subscription step is pending) and a signed build exists.**
+- **The secure path** seals each push to a per-device key and sends it through the signed `POST /v2/push/<rid>` route (`notifications/secure-push-*.ts`).
+  It exists only when the daemon opts into the relay (`--relay` or `network.relay = true`) with an unlocked machine identity and a `signaling_url` that is a bare `https`/`wss` origin (no path, query or fragment).
+  Otherwise `cli.ts` builds no service (it logs why, with the failure class and no message text) and the hub answers `secure_push_register_request` with `UNSUPPORTED` instead of acknowledging a subscription nothing could serve (#1200).
+  The registration's `pushPrefs` pass `sanitizePushPreferences` at the store and in the hub branch, so a malformed or unknown preference registers and delivers.
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. A permission card with `detail` gets no category and no `dynOptions` either (`hasUnseenDetail`, #1178: a Codex command cut for the lock screen, or one that runs in another directory): its Yes needs the app, where the whole card is, and its push shows the ask, not the start of the detail. Every other 2-4 option card gets `REMI_MULTI`, except by kind (`pushCategoryFor`, #1127): an AskUserQuestion card gets `REMI_MULTI` (with `dynOptions`) only when it is one single-select question, whose tap (the option's label) answers that option through the held hook, and none otherwise; a plan approval never gets a category (approving a plan is not a lock-screen tap). When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
+- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. A permission card with `detail` gets no category and no `dynOptions` either (`hasUnseenDetail`, #1178): a Codex command cut for the lock screen or one that runs in another directory, and, since #1200, every Claude tool input whose summary was shortened (a Bash command or a `command`, `path`, `url` or `description` field over `SUMMARY_MAX`, 120 characters, which `hook-event-bridge.ts` keeps whole in `detail`), on the legacy and the secure path alike.
+Its Yes needs the app, where the whole card is, and its push shows the ask, not the start of the detail. Every other 2-4 option card gets `REMI_MULTI`, except by kind (`pushCategoryFor`, #1127): an AskUserQuestion card gets `REMI_MULTI` (with `dynOptions`) only when it is one single-select question, whose tap (the option's label) answers that option through the held hook, and none otherwise; a plan approval never gets a category (approving a plan is not a lock-screen tap). When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
 
 **Push classes and who can mute them** (#968):
 
@@ -628,9 +642,9 @@ those two are both exactly `{token, title, body}`.
 
 | `kind` | Fires on | Mutable per device |
 |---|---|---|
-| `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
-| `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914); for Codex a `turn/completed` with status `completed` of the same length (#1180) | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
+| `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key `notice-<questionId>`; a repeat pushes again) | yes, `pushPrefs.questions` |
+| `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914); for Codex a `turn/completed` with status `completed` of the same length (#1180); no collapse key, each turn stacks on the lock screen, on the secure path too | yes, `pushPrefs.turnComplete` |
+| `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155); no collapse key, each alert stacks | no — the pattern list IS the control |
 | `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
 | `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153), or a Codex `turn/completed` with status `failed` (the title says "Codex stopped", #1180); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message` (Codex: its error message); one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
@@ -647,17 +661,39 @@ those two are both exactly `{token, title, body}`.
   `UserPromptSubmit` after a `turn_failed` push sends one (same collapse key,
   only while a `turn_failed` push is outstanding), so a stale "Claude stopped"
   does not outlive a turn that succeeded.
-- **Push text is plaintext to the Worker and APNS.** `turn_failed` carries up
+  A session closing, a failed launch and process cleanup retire the secure runtime FIRST (no
+  new or actionable push), let the disposal emit the dismissals of the cards it pushed, wait up
+  to 3 s for them (`SecurePushService.drain`) and only then finish the runtime
+  (`retireSecurePushRuntime` / `closeSecurePushRuntime` in `cli.ts`); a dismissal that went out
+  uncertain or failed is sent again with a fresh nonce by the next dismissal.
+- **Legacy push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
   in its body, the same posture as `turn_complete` (the first 200 characters
   of Claude's last message) and a question's text: the daemon POSTs it to the signaling
   Worker's `/push`, which forwards it to APNS, outside the relay data channel
-  and its encryption. Tracked by the relay and push privacy work
-  (`.context/strategy-2026-10.md` section 9); the relay channel has its own
-  state (#543, #881).
+  and its encryption. This is what ships by default today (see the first bullets of this
+  section). The secure path seals the content to the device's push key, so the Worker and
+  APNS receive sealed bytes plus delivery metadata (the device token, the collapse key, the
+  push kind, timing and size); it is not reachable from a shipped client yet. Tracked by the
+  relay and push privacy work (`.context/strategy-2026-10.md` section 9); the relay channel
+  has its own state (#543, #881).
+- **Secure collapse keys and repeats (#1200).** One lock-screen slot per notification:
+  a question's own id, `notice-<questionId>`, one per session for `harness_denied`, one per
+  episode for `turn_failed`; `turn_complete` and `subagent_alert` get a slot per occurrence, as
+  legacy never collapsed them. A collapse key decides whether a notification REPLACES the
+  earlier one, never whether it is sent: an identical `harness_denied`, `turn_failed` or notice
+  repeat advances the revision and pushes again, while a question or an explicit occurrence id
+  (a prompt or turn id) coalesces its duplicate frames. Only slots that can still deliver
+  count against the 32 per session: a dismissed, expired or no-longer-registered entry is
+  retained for dismissal and replay correctness but holds no slot. A question whose meaning
+  exceeds 64 KiB is pushed as bounded information without actions, never dropped.
 - **A muted fan-out reports `no_channel`, not `pushed`.** Claiming delivery
   for a fan-out of zero says a card reached a lock screen it never appears on.
-- Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A
+  The same holds for a legacy channel that is disabled, has no secret or is latched off, and
+  for a dismissal with nothing to clear (`skipped:no_prior_push`); a secure refusal logs its
+  class (`refused:capacity`, `refused:stale`, `refused:invalid`, ...), never content or ids.
+- Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`), for a secure
+  registration as well as the legacy one. A
   wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
   product failing at its only job.
 - `notifications.on_turn_complete = false` in `config.toml` stays the
@@ -786,7 +822,7 @@ hand.
 
 1. **Local pairing** — a short-lived token and exact fingerprint confirmation in the machine owner's terminal, without an account.
 2. **Reliable messaging** — receipt acknowledgments and actual answer outcomes are distinct; an uncertain result is never reported delivered.
-3. **Cloud privacy** — R3 sends encrypted semantic frames through the Worker and refuses raw PTY. The Worker still observes routing metadata. The legacy push path still sends plaintext prompt/excerpt text to the Worker and APNS; R5/R6 and deployed/hardware acceptance remain pending. Direct connections do not use the Worker. Historical v1 privacy claims and failures are preserved in ADR 0011 and ADR 0034; do not describe that retired transport as current.
+3. **Cloud privacy** — R3 sends encrypted semantic frames through the Worker and refuses raw PTY. The Worker still observes routing metadata. The legacy push path, ON by default until the R7 gate, still sends plaintext prompt/excerpt text to the Worker and APNS, and enrolling a device over the relay turns it off for the whole machine for good; the sealed secure path (R5) exists but no shipped client subscribes to it yet, so a relay-paired machine gets no lock-screen push until the app wires it and a signed build exists; R5/R6 and deployed/hardware acceptance remain pending. Direct connections do not use the Worker. Historical v1 privacy claims and failures are preserved in ADR 0011 and ADR 0034; do not describe that retired transport as current.
 4. **Graceful degradation** — direct terminal clients may show raw output. Relay semantic failure reports uncertainty or an explicit refusal, without a raw PTY fallback.
 
 ## Branch Strategy

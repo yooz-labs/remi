@@ -133,12 +133,15 @@ function isOneTapAskUserQuestion(question: Question): boolean {
 }
 
 /**
- * A card that carries more than its push can show (#1178): a permission card with `detail`, which
- * only a Codex command longer than the push budget has (the text is cut head and tail, the whole
- * command is in `detail`). Its Yes must not be one tap on a locked phone, because the person has
- * not seen what the command does in between, so it gets no category and no dynamic buttons and
- * is answered in the app, where `detail` is shown in full. A plan approval has `detail` too and
- * already gets neither (`pushCategoryFor`).
+ * A card that carries more than its push can show (#1178, #1200): a permission card with `detail`.
+ * Two sources fill it. A Codex command longer than the push budget is cut head and tail and the
+ * whole command is in `detail`. A Claude tool input whose summary was shortened to `SUMMARY_MAX`
+ * (120 characters: a long Bash command, or a long `command`, `path`, `url` or `description`
+ * field) keeps the complete text in `detail` (`hook-event-bridge.ts`), so every such Claude card
+ * has it too, on the legacy and the secure path alike. Its Yes must not be one tap on a locked
+ * phone, because the person has not seen what the command does in between, so it gets no
+ * category and no dynamic buttons and is answered in the app, where `detail` is shown in full. A
+ * plan approval has `detail` too and already gets neither (`pushCategoryFor`).
  */
 function hasUnseenDetail(question: Question): boolean {
   return question.kind !== 'plan_approval' && (question.detail?.length ?? 0) > 0;
@@ -268,8 +271,9 @@ export function buildPushText(
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   // #1127: a card about a long text (a plan) shows the start of that text;
   // the app shows all of it, and the options are chosen there.
-  // A plan's push shows the start of the plan; a permission card's `detail` (a long Codex command)
-  // is not shown from its start, because the cut text above already shows both of its ends.
+  // A plan's push shows the start of the plan; a permission card's `detail` (a long Codex command,
+  // or a Claude tool input shortened to 120 characters) is not shown from its start, because the
+  // cut text above already shows both of its ends.
   const detail =
     question.kind === 'plan_approval' && question.detail !== undefined
       ? normalizeNotificationText(question.detail)
@@ -326,7 +330,9 @@ export type PushFn = typeof sendPushTrigger;
  *   - `pushed`     at least one APNS push returned 2xx.
  *   - `deduped`    the push was suppressed because an identical one already went
  *                  out (the earlier push is the delivery).
- *   - `no_channel` no client attached AND no device tokens — nobody can be told.
+ *   - `no_channel` no client attached AND no device tokens — nobody can be told. A legacy
+ *                  channel that is disabled, has no push secret or is latched off by secure
+ *                  enrollment counts as no tokens (#1200).
  *   - `failed`     tokens exist but every push failed (e.g. BadDeviceToken).
  *   - `uncertain`  no push was accepted and at least one result is unknown;
  *                  a lost response is never permission to send a fresh event.
@@ -391,7 +397,7 @@ export interface NotificationDispatcherDeps {
   deviceTokens: Map<string, DeviceTokenEntry>;
   /**
    * Prune a permanently-invalid device token (epic #603 Phase 6). Called when a
-   * push fails with `isTokenInvalidError` (BadDeviceToken / Unregistered), so the
+   * push fails with `isTokenInvalidError` (the Worker flagged the token permanently invalid), so the
    * daemon stops retrying a dead token on every future escalation. Wired to
    * `DeviceTokenStore.prune` (removes + persists). Absent => no pruning (the
    * token stays in the map; tests / old callers). */

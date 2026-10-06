@@ -1094,7 +1094,8 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
-// Created before the message API or harness can emit; removed before teardown (#1200).
+// Created before the message API or harness can emit; retired before teardown, finished after the
+// disposal's dismissals are out (#1200).
 const securePushContexts = new SecurePushContexts({
   questionFor: (sessionId, questionId) => sessionRegistry.getQuestion(sessionId, questionId),
   validityFor: (sessionId, questionId) =>
