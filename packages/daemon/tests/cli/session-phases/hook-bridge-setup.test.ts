@@ -31,7 +31,9 @@ import {
   setupHookBridge,
   terminalNoticeReason,
 } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import type { AnswerCommit } from '../../../src/harness/decision.ts';
 import { ClaudeHarness } from '../../../src/harness/index.ts';
+import type { DecisionChannel } from '../../../src/harness/types.ts';
 import { HookServer } from '../../../src/hooks/hook-server.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { PermissionDecision, StopFailureHookInput } from '../../../src/hooks/index.ts';
@@ -2166,6 +2168,29 @@ describe('setupHookBridge', () => {
       expect(await hook).toBe('deny');
       expect(ptySubmits).toEqual([]);
       expect(cards()).toHaveLength(0);
+    });
+
+    test('the bridge handle forwards the final authority commit to the gate (#1201)', async () => {
+      const { card, hook, handle } = held('claude-held-commit');
+      // Read the handle the way its consumers do: through the channel's wider signature.
+      const answerHeld: DecisionChannel['answerHeld'] = handle.gate.answerHeld;
+      let refusals = 0;
+      const refusing: AnswerCommit = () => {
+        refusals++;
+        return { kind: 'refused' };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, refusing)).toBe('authority-refused');
+      expect(refusals).toBe(1);
+      expect(handle.gate.isHeld(card.id)).toBe(true);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      let commits = 0;
+      const committing: AnswerCommit = <T>(effect: () => T) => {
+        commits++;
+        return { kind: 'committed', value: effect() };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, committing)).toBe('resolved');
+      expect(commits).toBe(1);
+      expect(await hook).toBe('deny');
     });
 
     test('a duplicate delivery of the same tap resolves once and reports delivered (#752)', async () => {

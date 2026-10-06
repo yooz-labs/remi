@@ -34,6 +34,7 @@ import {
   setWrapperDetached,
 } from '../../src/cli/wrapper-state.ts';
 import type { ClaudeLaunchDeps } from '../../src/harness/claude-session.ts';
+import type { AnswerCommit } from '../../src/harness/decision.ts';
 import { ClaudeHarness } from '../../src/harness/index.ts';
 import type { HarnessSession } from '../../src/harness/index.ts';
 import type { StopHookInput } from '../../src/hooks/hook-types.ts';
@@ -443,6 +444,28 @@ describe('ClaudeHarness.createSession', () => {
       decisions.answerHeld(card.id, { kind: 'cancel' });
       await response;
     }
+  });
+
+  test('the final authority commit reaches the real gate through the launched session (#1201)', async () => {
+    const { decisions, card, response, sessionId } = await holdPrompt(false);
+    let refusals = 0;
+    const refusing: AnswerCommit = () => {
+      refusals++;
+      return { kind: 'refused' };
+    };
+    // The production chain: decisions (what `gateAnswerDeps` reads) -> the bridge's gate handle -> the gate.
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' }, refusing)).toBe('authority-refused');
+    expect(refusals).toBe(1);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(sessionRegistry.getQuestion(sessionId, card.id)).not.toBeNull();
+    let commits = 0;
+    const committing: AnswerCommit = <T>(effect: () => T) => {
+      commits++;
+      return { kind: 'committed', value: effect() };
+    };
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' }, committing)).toBe('resolved');
+    expect(commits).toBe(1);
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
   });
 
   test('secure push context floors the actual held deadline, keeps identical event authority and never settles its hook', async () => {
