@@ -184,6 +184,43 @@ test('secure transport binds actual signer, signs each tuple once and reuses imm
   expect(received.bodies[1]).toBe(received.bodies[0]);
   expect(received.bodies[0]).not.toContain('PRIVATE_BODY_SENTINEL');
 });
+// #1200 A4: the submit is valid for at most 60 s, but APNs keeps the notification until the
+// content expires, so a phone that is offline for longer still gets the question or its dismissal.
+test('secure transport signs an APNs storage deadline that follows the content expiry', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  const long = { ...f.metadata, issuedAt: now, expiresAt: now + 600 };
+  const prepared = await transport.prepare(f.snapshot, long, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });
+  const sent = JSON.parse(received.bodies[0] ?? '');
+  expect(sent.expiresAt - sent.issuedAt).toBeLessThanOrEqual(60);
+  expect(sent.storeUntil).toBe(long.expiresAt);
+  // A content lifetime shorter than the acceptance window is never stored past itself.
+  const short = { ...f.metadata, issuedAt: now, expiresAt: now + 20 };
+  const second = await transport.prepare(f.snapshot, short, f.payload, () => true);
+  if (second.outcome !== 'prepared') throw new Error('expected prepared capability');
+  await transport.sendPrepared(second.prepared);
+  const sentShort = JSON.parse(received.bodies[1] ?? '');
+  expect(sentShort.expiresAt).toBe(short.expiresAt);
+  expect(sentShort.storeUntil).toBe(short.expiresAt);
+});
+
 test('secure transport classifies a dismissal as background and every other event as alert', async () => {
   const f = await fixture();
   const received = receiver(async (req, body) => {

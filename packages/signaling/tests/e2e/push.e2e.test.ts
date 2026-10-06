@@ -222,6 +222,24 @@ test('real gateway accepts exact machine proof without legacy secret and sends o
   ).toBe(true);
 }, 15000);
 
+// #1200 A4: Apple stores the notification until `apns-expiration`; it follows the signed storage
+// deadline (the content expiry), not the 60 second acceptance window of the submit.
+test('apns-expiration follows the signed storage deadline while acceptance stays 60 seconds', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const now = Math.floor(Date.now() / 1000);
+  const s = await submission(w, m, d, p, {
+    issuedAt: now,
+    expiresAt: now + 50,
+    storeUntil: now + 900,
+  });
+  expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+  expect(requests[0]?.headers['apns-expiration']).toBe(String(now + 900));
+  const row = (await roomState(w, m.ridHex)).storage[`push-nonce:${s.nonce}`] as { until: number };
+  expect(row.until, 'the nonce is retained for the submit window, not the storage deadline').toBe(
+    now + 50 + 60,
+  );
+}, 15000);
+
 test('real durable nonce same digest returns retained outcome; different signed content never sends twice', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const s = await submission(w, m, d, p);

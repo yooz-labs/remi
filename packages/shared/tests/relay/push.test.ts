@@ -407,6 +407,35 @@ test('actual outer machine proof binds every submission field and distinguishes 
   expect(codeOfSync(() => decode(' '.repeat(8193)))).toBe('OVERSIZE');
 });
 
+// #1200 A4: APNs stores a notification until `apns-expiration`. The submit's own acceptance
+// window stays 60 s, but a phone that is offline longer must still get the question or its
+// dismissal, so a separate signed storage deadline follows the content expiry (never beyond the
+// content TTL, never before the submit's own expiry).
+test('the signed storage deadline is bounded by the content TTL and bound by the proof', async () => {
+  const { unsigned, machine } = await signedSubmission();
+  const withStore = (storeUntil: number) => ({ ...unsigned, storeUntil });
+  const sign = async (u: object) =>
+    r.b64u(await machine.sign(await r.buildPushSubmitSigningInput(u as r.UnsignedPushSubmit)));
+  const accepted = withStore(unsigned.issuedAt + 3600);
+  expect(await sign(accepted), 'content TTL is the inclusive ceiling').toMatch(/^[A-Za-z0-9_-]+$/);
+  expect(await codeOf(sign(withStore(unsigned.issuedAt + 3601)))).toBe('MALFORMED');
+  expect(await codeOf(sign(withStore(unsigned.expiresAt - 1)))).toBe('MALFORMED');
+  const signed = { ...accepted, signature: await sign(accepted) };
+  const expected = { rid: signed.rid, audience: signed.audience };
+  const baseline = await r.verifyPushSubmit(
+    r.decodePushSubmit(r.encodePushSubmit(signed)),
+    expected,
+    1001,
+  );
+  expect(baseline.requestDigest).toMatch(/^[0-9a-f]{64}$/);
+  await expect(
+    r.verifyPushSubmit({ ...signed, storeUntil: signed.storeUntil - 1 }, expected, 1001),
+    'the storage deadline is part of the signed tuple',
+  ).rejects.toThrow();
+  // The acceptance window itself is unchanged: expiry is still at most 60 s after issue.
+  expect(await codeOf(sign({ ...accepted, expiresAt: unsigned.issuedAt + 61 }))).toBe('MALFORMED');
+});
+
 test('push content and submit TTLs and future clock skew enforce exact finite boundaries', async () => {
   const { machine, recipient, content } = await context();
   const dismiss: r.SecurePushPayload = { type: 'dismiss', actionable: false };
