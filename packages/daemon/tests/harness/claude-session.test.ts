@@ -632,6 +632,7 @@ describe('ClaudeHarness.createSession', () => {
             APNS_PRIVATE_KEY: pem,
             APNS_BUNDLE_ID: 'owned.synthetic.topic',
             TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+            PUSH_SECRET: 'owned-cross-track-push-secret',
           },
           true,
         );
@@ -685,6 +686,7 @@ describe('ClaudeHarness.createSession', () => {
               signer: observedSigner,
               audience: worker.url,
               ownedOrigin: worker.url,
+              pushSecret: 'owned-cross-track-push-secret',
             }),
             machinePublicKey: relayV2.b64u(signer.publicKey),
             rid,
@@ -939,8 +941,6 @@ describe('ClaudeHarness.createSession', () => {
           v: 2,
           rid,
           collapseId: submit.collapseId,
-          keyVersion: submit.keyVersion,
-          kind: submit.kind,
           sealed: submit.sealed,
         },
         {
@@ -1046,8 +1046,6 @@ describe('ClaudeHarness.createSession', () => {
           v: 2,
           rid,
           collapseId: submit.collapseId,
-          keyVersion: submit.keyVersion,
-          kind: submit.kind,
           sealed: submit.sealed,
         },
         {
@@ -1122,7 +1120,7 @@ describe('ClaudeHarness.createSession', () => {
     hookServer.start();
     const harness = newHarness();
     const { sessionId, session } = launch(harness, { register: true });
-    const { store, trust } = await pushRecipient();
+    const { store, trust, snapshot, pair } = await pushRecipient();
     const machine = await trust.unlock();
     const signer = await relayV2.signerFromKey(
       machine.privateKey,
@@ -1130,7 +1128,8 @@ describe('ClaudeHarness.createSession', () => {
     );
     const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
     const { createServer } = await import('node:http');
-    const submitted: ReturnType<typeof relayV2.decodePushSubmit>[] = [];
+    // The revision is sealed (#1200): read it from the opened content, not the cleartext submit.
+    const submitted: (ReturnType<typeof relayV2.decodePushSubmit> & { revision: number })[] = [];
     const receiver = createServer(async (request, reply) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -1141,7 +1140,18 @@ describe('ClaudeHarness.createSession', () => {
         { rid, audience: origin },
         Math.floor(Date.now() / 1000),
       );
-      submitted.push(submit);
+      const content = await relayV2.openPushContent(
+        pair,
+        { v: 2, rid, collapseId: submit.collapseId, sealed: submit.sealed },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      submitted.push({ ...submit, revision: content.content.revision });
       reply.end(
         relayV2.encodePushSubmitResult({
           v: 2,

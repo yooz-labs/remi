@@ -98,6 +98,7 @@ async function fixture(muted = false, loseApnsResponse = false) {
       APNS_PRIVATE_KEY: pem,
       APNS_BUNDLE_ID: 'owned.synthetic.topic',
       TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      PUSH_SECRET: 'owned-cross-track-push-secret',
     },
     true,
   );
@@ -128,6 +129,7 @@ async function fixture(muted = false, loseApnsResponse = false) {
       signer,
       audience: worker.url,
       ownedOrigin: worker.url,
+      pushSecret: 'owned-cross-track-push-secret',
     }),
     machinePublicKey: r.b64u(signer.publicKey),
     rid: ridHex,

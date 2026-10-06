@@ -65,7 +65,7 @@ final class NativePushPublicationTests: XCTestCase {
     private func carrier(_ vector: [String: Any]) throws -> [String: Any] {
         let submit = try XCTUnwrap(vector["submit"] as? [String: Any])
         return ["v": 2, "rid": try XCTUnwrap(submit["rid"]), "collapseId": try XCTUnwrap(submit["collapseId"]),
-                "keyVersion": try XCTUnwrap(submit["keyVersion"]), "kind": try XCTUnwrap(submit["kind"]), "sealed": try XCTUnwrap(submit["sealed"])]
+                "sealed": try XCTUnwrap(submit["sealed"])]
     }
     private func b64url(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")

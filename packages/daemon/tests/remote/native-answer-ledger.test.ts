@@ -218,8 +218,6 @@ async function fixture(options: { beforeApply?: () => void } = {}) {
         v: 2,
         rid,
         collapseId: metadata.collapseId,
-        keyVersion: metadata.keyVersion,
-        kind: metadata.kind,
         sealed: relayV2.b64u(sealed),
       },
       {

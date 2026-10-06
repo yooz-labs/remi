@@ -225,7 +225,12 @@ try {
         if (!request.method) throw new Error('gateway-method-missing');
         const reply = await fetch(worker.url + request.url, {
           method: request.method,
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(request.headers.authorization
+              ? { authorization: request.headers.authorization }
+              : {}),
+          },
           body,
           redirect: 'error',
         });
@@ -289,6 +294,7 @@ try {
       APNS_PRIVATE_KEY: pem,
       APNS_BUNDLE_ID: 'owned.synthetic.topic',
       TEST_APNS_ENDPOINT: `http://127.0.0.1:${aa.port}`,
+      PUSH_SECRET: 'owned-cross-track-push-secret',
     },
     false,
     { path: path.join(own, 'worker-sqlite') },
@@ -326,6 +332,7 @@ try {
     TERM: 'xterm-256color',
     FAKE_CLAUDE_DIR: fake,
     NODE_EXTRA_CA_CERTS: path.join(own, 'tls-ca.pem'),
+    REMI_PUSH_SECRET: 'owned-cross-track-push-secret',
   };
   cli = Bun.spawn(
     [
