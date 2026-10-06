@@ -7,6 +7,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
     var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var secureNotificationConsumer: NativePushNotificationConsumer?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
@@ -153,6 +154,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        // Quiet v2 dismissal has no alert/NSE. Verify and commit its terminal
+        // before any OS deletion; it never trusts outer question IDs or flags.
+        if userInfo["remiPush"] != nil {
+            do {
+                if secureNotificationConsumer == nil { secureNotificationConsumer = try NativePushNotificationConsumer.configured() }
+                guard let consumer = secureNotificationConsumer else { completionHandler(.failed); return }
+                consumer.receiveDismiss(userInfo: userInfo) { outcome in
+                    switch outcome {
+                    case .removed: completionHandler(.newData)
+                    case .ignored: completionHandler(.noData)
+                    case .unavailable: completionHandler(.failed)
+                    }
+                }
+            } catch { completionHandler(.failed) }
+            return
+        }
         let js = """
         (function() {
           try {
@@ -160,7 +177,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             document.dispatchEvent(new CustomEvent('app-force-reconnect'));
             console.debug('[remi] background pre-wake: dispatched app-force-reconnect');
           } catch (e) {
-            console.warn('[remi] background pre-wake failed', e);
+            console.warn('[remi] background pre-wake unavailable');
           }
         })();
         """

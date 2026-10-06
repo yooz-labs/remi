@@ -93,12 +93,39 @@ final class NativePushNotificationConsumer {
             finish(id, outcome: .removed(identifiers.count))
         } catch { finish(id, outcome: .unavailable) }
     }
-    /// Constructible fail-closed routing/presentation scaffold; adapters remain
-    /// unwired until their actual capsule/caller pins pass.
+    /// A v2 marker is never permission to fall back to a second answer owner.
+    /// Even malformed capsules or unavailable native stores are consumed here.
     static func routeAction(userInfo: [AnyHashable: Any], identifier: String,
                             consumerFactory: () throws -> NativePushNotificationConsumer = configured,
-                            legacy: () -> Void) -> Bool { false }
-    func allowsPresentation(_ content: UNNotificationContent) -> Bool { false }
+                            legacy: () -> Void) -> Bool {
+        guard userInfo["remiPush"] != nil else { legacy(); return false }
+        if let consumer = try? consumerFactory() { _ = consumer.receiveAction(userInfo: userInfo, identifier: identifier) }
+        return true
+    }
+    static func isGenericFallback(_ content: UNNotificationContent) -> Bool {
+        content.title == "Remi needs your attention" && content.body == "Open Remi to view this notification." && content.categoryIdentifier.isEmpty
+    }
+    /// The foreground adapter independently verifies original bytes and exact
+    /// displayed text/category. The fixed generic no-action fallback grants no
+    /// authentication, route or option authority.
+    func allowsPresentation(_ content: UNNotificationContent) -> Bool {
+        if Self.isGenericFallback(content) { return true }
+        do {
+            let effect = try effectFactory()
+            let prepared = try effect.prepare(userInfo: content.userInfo)
+            let title: String; let body: String
+            switch prepared.push.payload {
+            case .question(let question): title = question.title; body = question.body
+            case .informational(let information): title = information.title; body = information.body
+            case .dismiss: return false
+            }
+            guard content.title == title, content.body == body else { return false }
+            let category = "REMI_SECURE_\(prepared.push.originalCarrier.rid)_\(prepared.push.record.collapseId)_\(prepared.push.record.revision)"
+            guard content.categoryIdentifier.isEmpty || (!prepared.actions.isEmpty && content.categoryIdentifier == category) else { return false }
+            try effect.recheck(prepared)
+            return true
+        } catch { return false }
+    }
     func receiveAction(userInfo: [AnyHashable: Any], identifier: String) -> ActionOutcome {
         do {
             _ = try effectFactory().action(userInfo: userInfo, identifier: identifier)

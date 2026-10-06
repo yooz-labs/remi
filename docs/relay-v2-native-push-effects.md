@@ -60,5 +60,18 @@ consumer independently verifies the original option and latest lifecycle, then
 returns only a verified open-app result. It has no answer transport. Its owned
 OS callback tests cover actual second-connection authority changes, recipient
 replacement, scan bounds, absorbing dismissal and repeated late callback
-histories. The platform adapters and secure registration still require their
-own caller wiring and tests.
+histories. The iOS `AppDelegate` calls this consumer for v2 quiet wakes before the
+legacy JavaScript pre-wake. `RemiAnswerRelay` routes v2 actions before reading
+outer IDs/options; the legacy and wrapped JavaScript senders run only for the
+explicit old path. Foreground presentation independently verifies the original
+capsule and exact text/category. The fixed generic no-action fallback grants no
+route or authentication. Secure registration and the verified JS notification
+consumer remain separate work.
+
+The adapter pins construct the actual native router and consume a result from
+the shipping notification extension, including missing-key/malformed routing
+refusal and altered text/category. SDK 27 unsigned iOS `App` and its notification
+extension build with the real frozen Capacitor modules. The private build
+extracts the installed CLI's SPM template, runs its actual sync, and uses
+`CODE_SIGNING_ALLOWED=NO`; no shipping app is launched. This compile/build result
+is not old-SDK, signed extension or real-device runtime acceptance.
