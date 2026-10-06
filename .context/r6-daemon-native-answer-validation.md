@@ -75,8 +75,7 @@ one explicit identical-proof query over a fresh encrypted peer receives the
 retained delivered result. Holding one real socket result demonstrates pending
 coalescing and same-id conflict refusal. All three scenarios pass 112 checks per
 Bun version, with six named independent causal controls, restored source and
-natural child exits with no owned-process residuals. Root is repeating those
-scenarios on the integrated branch.
+natural child exits with no owned-process residuals.
 
 The separate source supervisor fixture boots `serve` itself, observes its
 session-less status and PID, sends an encrypted create request and checks the
@@ -103,13 +102,27 @@ conversion from ambient clock reads. Five independent actual-source controls
 fail the appropriate guard on both runtimes and pass after restoration; the
 focused baseline/restored set is 27 / 662. Emitted codec JavaScript is unchanged.
 This failed full suite is retained as diagnostic evidence; no Bun 1.3.11 full
-suite ran at that head. A new corrected-head full gate remains required.
+suite ran at that head.
+
+The corrected frozen full suite at `3aab77a4` finished 7,222 pass / 22 skip /
+1 fail on Bun 1.4.2. The one failure was an existing attach status test's fixed
+mid-question observation. Its original full-run cause remains unproven. A real
+600 ms response delay independently demonstrated that the observation could
+occur before the production heartbeat deadline, with unchanged render code.
+`0e9edf6a` changes only the test: it observes the actual initial paint, sends the
+status change, then checks the heartbeat while the question and busy PTY remain
+live. Restoring the old held-question freeze fails that named assertion on both
+runtimes; restored controls and the full attach file pass 23 / 58 on both.
+No production change, test suppression or overall timeout increase was made.
+The failed full run had no owned-process or broader clone-path residuals;
+Bun 1.3.11 full execution did not start. A fresh corrected-head full gate is
+still required.
 
 ## Remaining acceptance
 
 The 32-pending-per-session bound is not saturated by these tests: the actual
 guarded core constrains simultaneous decisions on one session's screen. The
 shipping Swift signing and background transport, final combined full suites,
-final shipping-client soak, signed
-hardware and deployed Worker acceptance remain outstanding. Component tests
+final shipping-client soak, signed hardware and deployed Worker acceptance
+remain outstanding. Component tests
 and unsigned builds do not substitute for those gates.
