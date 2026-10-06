@@ -21,10 +21,14 @@ Callers must recheck before transmission.
 The OS delegates (`AppDelegate` on iOS and on macOS record the token or its
 failure) and the guarded WebKit operations `enableSecurePush`,
 `preparePushRegistration` and `validatePushRegistration` in `NativeIdentityBridge`
-are wired. The web client's relay subscription request and the visible enable
-control are not: `SettingsPanel` renders the control only when a caller supplies
-`onEnableSecurePush`, and `App` supplies none, so no shipped screen reaches these
-operations yet.
+are wired, and so is the web client (#1200). `App` passes `onEnableSecurePush`
+to `SettingsPanel` when a native identity and at least one relay machine exist;
+the control asks for permission and APNs registration. `SecurePushSubscriptions`
+then registers each connected, natively paired relay machine (prepare, validate
+the one-use ticket, send `secure_push_register_request` at once) when it
+connects, on `remi:native-push-token-changed` and on a preference change, and a
+forgotten machine is sent a best-effort unregister first. Not verified on a
+signed device.
 
 A new P256 recipient carries its creation time in milliseconds as its key
 version. The daemon refuses an equal version with a different key

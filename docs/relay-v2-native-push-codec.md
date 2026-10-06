@@ -37,12 +37,12 @@ The final existing-key OS read precedes the final current trust/authority and
 generation checks. Another process can still mutate state after this synchronous
 function returns. The receiving consumer must commit
 `state.recordVerifiedContent(record, trust:trust, now:)` before any publication or
-deletion, then recheck current authority at its final effect. Actions must invoke
-the actual codec again on the original capsule and use
-`state.reverifyLatestContent(record, trust:trust, now:)`; a persisted verified flag
-or a result supplied by JavaScript never substitutes for verification. Category
-and display eligibility belong to the independently guarded presentation/action
-consumer. An authenticated question with category `none` does not grant a tap.
+deletion, then recheck current authority at its final effect. A persisted
+verified flag or a result supplied by JavaScript never substitutes for
+verification. Until R6's native answer transport ships, a v2 card registers no
+notification category and offers no answer action: a tap opens the app (#1200,
+#1201). An answer action, when R6 adds it, must invoke the actual codec again on
+the original capsule and use `state.reverifyLatestContent(record, trust:trust, now:)`.
 
 Those two state methods accept only `ContentRecord` and `MachineTrust`; they do
 not consume the captured `VerifiedPush.authorityGeneration`,

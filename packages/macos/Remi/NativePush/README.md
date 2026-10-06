@@ -34,11 +34,10 @@ That path keeps its documented arbitrary eviction of old dynamic categories.
 
 The registration coordinator and the guarded bundled-WebKit operations
 (`enableSecurePush`, `preparePushRegistration`, `validatePushRegistration`) are
-connected to the actual OS token callbacks of both app delegates. The web
-client's subscription request and its visible enable control are not wired into
-the app: `SettingsPanel` renders the control only when a caller supplies
-`onEnableSecurePush`, and `App` supplies none, so no shipped screen reaches
-these operations yet.
+connected to the actual OS token callbacks of both app delegates, and the web
+client uses them: the Settings enable control and `SecurePushSubscriptions`
+(see `docs/relay-v2-native-push-registration.md`). Not verified on a signed
+device.
 
 The P256 sealing key carries a version that is its creation time in milliseconds.
 The daemon refuses an equal version with a different key, so a key recreated
