@@ -107,9 +107,12 @@ const hasExactly = (o: Record<string, unknown>, required: string[]) =>
  * Field validation of the two `secure_push_*` RESPONSES (#1200). Nothing but `isValidMessage`
  * guards them on their way to a client, so they must be a correlated typed success or typed error
  * with an exact shape. The caller has already checked that `type`, `id` and `timestamp` are
- * strings. The REQUESTS stay envelope-checked on purpose: the daemon validates them with
- * `normalizeSecureRegistration` and answers a typed INVALID_SUBSCRIPTION, which a stricter parse
- * would turn into a dropped message and a closed channel (owner decision, see the #1200 report).
+ * strings.
+ *
+ * The REQUESTS (`secure_push_register_request`, `secure_push_unregister_request`) stay
+ * envelope-only on purpose (#1200): the hub is their only consumer and validates them strictly
+ * with `normalizeSecureRegistration`, and the typed INVALID_SUBSCRIPTION it answers with is better
+ * than the closed channel a stricter parse here would cause.
  */
 export function isValidSecurePushResponse(o: Record<string, unknown>): boolean {
   const withKeyVersion = o['type'] === 'secure_push_register_response';
