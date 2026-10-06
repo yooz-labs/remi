@@ -128,6 +128,7 @@ test('real relay transport waits for durable READY continuation before connectin
     local.ws.send(JSON.stringify({ t: 'confirm', id: local.offer['id'], offerId: local.offer['offerId'],
       connectionId: compare['connectionId'], fingerprint: compare['fingerprint'], accept: true }));
     expect(await entered.next()).toBe(true);
+    expect(await connected.quiet(25)).toBe(true);
     expect(statuses).not.toContain('connected');
     expect(client.isConnected).toBe(false);
     finish?.();
