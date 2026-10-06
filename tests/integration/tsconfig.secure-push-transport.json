@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["secure-push-transport.test.ts"],
+  "include": ["secure-push-transport.test.ts", "cli-secure-push-route.ts"],
   "exclude": []
 }

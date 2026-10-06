@@ -28,7 +28,7 @@ const state = path.join(own, 'state');
 const fake = path.join(own, 'fake');
 const bin = path.join(own, 'bin');
 for (const dir of [home, work, state, fake, bin]) fs.mkdirSync(dir, { mode: 0o700 });
-process.env.REMI_HOME = state;
+process.env['REMI_HOME'] = state;
 const { relayV2, createIdentity, unlockIdentity } = await import(
   '../../packages/shared/src/index.ts'
 );
@@ -154,6 +154,7 @@ try {
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const body = Buffer.concat(chunks);
         if (body.length > 8192) throw new Error('gateway-byte-bound');
+        if (!request.method) throw new Error('gateway-method-missing');
         const reply = await fetch(worker.url + request.url, {
           method: request.method,
           headers: { 'content-type': 'application/json' },
@@ -231,7 +232,7 @@ try {
     ridHex: Buffer.from(rid).toString('hex'),
   });
   assert(
-    (await host.enroll(new Uint8Array(Buffer.from(snapshot.publicKey, 'base64')))).ok === true,
+    (await host.enroll(new Uint8Array(Buffer.from(snapshot.publicKey, 'base64'))))['ok'] === true,
     'actual-worker-enrollment',
   );
   const listener = createNetServer();
@@ -291,22 +292,22 @@ try {
       const first = files[0];
       if (files.length !== 1 || !first) return false;
       entry = JSON.parse(fs.readFileSync(path.join(dir, first), 'utf8'));
-      return typeof entry?.claudeChildPid === 'number' && fs.existsSync(path.join(fake, 'pid'));
+      return typeof entry?.['claudeChildPid'] === 'number' && fs.existsSync(path.join(fake, 'pid'));
     },
     'actual-cli-launch',
     25000,
   );
-  assert(entry && entry.pid === cli.pid, 'actual-source-child-owned');
+  assert(entry && entry['pid'] === cli.pid, 'actual-source-child-owned');
   assert(requireOwnedCli(), 'actual-source-command-birth-cwd-owned');
   const records = JSON.parse(fs.readFileSync(path.join(state, 'sessions.json'), 'utf8')).sessions;
   const launchedEntry = entry;
   const record = records.find(
-    (r: { remiSessionId: string }) => r.remiSessionId === launchedEntry.sessionId,
+    (r: { remiSessionId: string }) => r.remiSessionId === launchedEntry['sessionId'],
   );
   assert(record && typeof record.claudeSessionId === 'string', 'actual-launch-binding');
   hookAbort = new AbortController();
   let settled = false;
-  hook = fetch(`http://127.0.0.1:${entry.hookPort}/hooks`, {
+  hook = fetch(`http://127.0.0.1:${entry['hookPort']}/hooks`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -356,9 +357,9 @@ try {
       opened.payload.type === 'question' && opened.payload.actionable === true,
       'real-verified-actionable-question',
     );
-    assert(opened.payload.sessionId === entry.sessionId, 'actual-child-signed-session-binding');
+    assert(opened.payload.sessionId === entry['sessionId'], 'actual-child-signed-session-binding');
     assert(
-      !firstBody.includes(String(entry.sessionId)) &&
+      !firstBody.includes(String(entry['sessionId'])) &&
         !firstBody.includes(opened.payload.questionId),
       'no-plaintext-local-identifiers',
     );
