@@ -211,6 +211,34 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertEqual(try reopened.machineTrust(rid: trust.rid), trust)
     }
 
+    func testCompletedMachineTrustRequiresCanonicalInRangeEndpointPort() throws {
+        let file = directory.appendingPathComponent("canonical-port.sqlite")
+        let state = try NativePushState(file: file)
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let original = try machine(state)
+        let generation = try state.authorityGeneration()
+        for endpoint in ["https://relay.example.invalid", "https://relay.example.invalid:0",
+                         "https://relay.example.invalid:1", "https://relay.example.invalid:444",
+                         "https://relay.example.invalid:65535"] {
+            let trust = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+                endpoint: endpoint, authority: original.authority)
+            XCTAssertNoThrow(try state.installMachineTrust(trust, generation: generation),
+                             "Canonical shared-compatible HTTPS origin must persist: \(endpoint)")
+            XCTAssertEqual(try NativePushState(file: file).machineTrust(rid: trust.rid), trust)
+        }
+        let saved = try XCTUnwrap(state.machineTrust(rid: original.rid))
+        for endpoint in ["https://relay.example.invalid:65536", "https://relay.example.invalid:999999",
+                         "https://relay.example.invalid:00444", "https://relay.example.invalid:0443",
+                         "https://relay.example.invalid:443", "https://relay.example.invalid:"] {
+            let refused = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+                endpoint: endpoint, authority: original.authority)
+            XCTAssertThrowsError(try state.installMachineTrust(refused, generation: generation),
+                                 "Noncanonical or out-of-range endpoint port must be refused: \(endpoint)")
+            XCTAssertEqual(try NativePushState(file: file).machineTrust(rid: saved.rid), saved,
+                           "Refused endpoint must preserve the durable completed pair")
+        }
+    }
+
     func testIdentityMutationClosesCompletedMachineTrustAndWriterCannotRestoreIt() throws {
         let state = try NativePushState(file: directory.appendingPathComponent("trust-close.sqlite"))
         try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
