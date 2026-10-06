@@ -66,6 +66,45 @@ final class NativePushCodecTests: XCTestCase {
         return ["v": 2, "rid": try XCTUnwrap(submit["rid"]), "collapseId": try XCTUnwrap(submit["collapseId"]),
                 "keyVersion": try XCTUnwrap(submit["keyVersion"]), "kind": try XCTUnwrap(submit["kind"]), "sealed": try XCTUnwrap(submit["sealed"])]
     }
+    private func b64url(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+    private func parts(_ data: Data) -> [Data] {
+        var out: [Data] = []; var at = 0
+        while at < data.count {
+            let size = Int(data[at]) * 256 + Int(data[at + 1]); at += 2
+            out.append(data.subdata(in: at..<(at + size))); at += size
+        }
+        return out
+    }
+    private func lps(_ data: [Data]) -> Data {
+        data.reduce(into: Data()) { out, p in out.append(contentsOf: [UInt8(p.count >> 8), UInt8(p.count & 255)]); out.append(p) }
+    }
+    private func be64(_ n: UInt64) -> Data { Data((0..<8).map { UInt8((n >> (56 - $0 * 8)) & 255) }) }
+    /// Real CryptoKit producer at the independent test boundary, using only the
+    /// committed synthetic scalars/seeds. No codec or policy implementation is replaced.
+    private func reseal(_ vector: [String: Any], label: String = "remi-relay-v2 push content", resign: Bool = true,
+                        change: (inout [Data]) -> Void) throws -> [String: Any] {
+        let original = try hex(XCTUnwrap(vector["innerHex"] as? String))
+        let signed = parts(original); var fields = parts(signed[0]); change(&fields)
+        let body = lps(fields)
+        let machine = try Curve25519.Signing.PrivateKey(rawRepresentation: hex(XCTUnwrap(vectors["machineSeedHex"] as? String)))
+        let signature = resign ? try machine.signature(for: lps([Data(label.utf8), Data(SHA256.hash(data: body))])) : signed[1]
+        let inner = lps([body, signature])
+        let ephemeral = try P256.KeyAgreement.PrivateKey(rawRepresentation: hex(XCTUnwrap(vector["ephemeralScalarHex"] as? String)))
+        let recipient = try XCTUnwrap(keys.load())
+        let shared = try ephemeral.sharedSecretFromKeyAgreement(with: recipient.privateKey.publicKey)
+        let key = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: ephemeral.publicKey.x963Representation,
+            sharedInfo: lps([Data("remi-relay-v2 seal".utf8), recipient.publicKey]), outputByteCount: 32)
+        var outer = try carrier(vector)
+        let aad = try hex(XCTUnwrap(outer["rid"] as? String)) + Data(XCTUnwrap(outer["collapseId"] as? String).utf8)
+        let box = try AES.GCM.seal(inner, using: key, nonce: AES.GCM.Nonce(data: hex(XCTUnwrap(vector["sealNonceHex"] as? String))), authenticating: aad)
+        outer["sealed"] = b64url(ephemeral.publicKey.x963Representation + box.nonce.withUnsafeBytes { Data($0) } + box.ciphertext + box.tag)
+        return outer
+    }
+    private func open(_ outer: [String: Any], now: Int64 = 1_700_000_000) throws -> NativePushCodec.VerifiedPush {
+        try NativePushCodec.open(userInfo: ["remiPush": outer], state: state, keys: keys, now: now)
+    }
     func testActualCryptoKitOpensAllSharedOriginalSignedVectors() throws {
         XCTAssertEqual(cases.count, 10)
         for vector in cases {
@@ -97,5 +136,106 @@ final class NativePushCodecTests: XCTestCase {
         try state.forgetMachine(rid: rid)
         XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": object], state: state, keys: keys, now: 1_700_000_000))
         XCTAssertNil(try state.machineTrust(rid: rid), "Unsigned carrier must never install completed machine trust")
+    }
+    func testForgottenTrustRefusesWithActualRecipientStillPresent() throws {
+        let object = try carrier(XCTUnwrap(cases.first))
+        XCTAssertNoThrow(try open(object), "Trust-removal pin requires a verified original capsule")
+        XCTAssertNotNil(try keys.load())
+        try state.forgetMachine(rid: hex(XCTUnwrap(object["rid"] as? String)))
+        XCTAssertThrowsError(try open(object), "A present private P256 key never substitutes for completed machine trust")
+        XCTAssertNotNil(try keys.load())
+    }
+    func testFinalActualKeychainReadCannotReturnInvalidatedAuthority() throws {
+        let object = try carrier(XCTUnwrap(cases.first))
+        XCTAssertNoThrow(try open(object))
+        var operations = NativeKeychainOperations.system; var reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            if reads == 2 {
+                // Controlled OS-call boundary: actual Keychain reads continue;
+                // another real SQLite connection commits invalidation during the
+                // final key read. No codec/store/business policy is substituted.
+                do {
+                    let other = try NativePushState(file: self.directory.appendingPathComponent("public.sqlite"))
+                    let lease = try other.acquireIdentityMutation(); defer { lease.release() }
+                    _ = try lease.invalidateIdentityAuthority()
+                } catch { XCTFail("Owned authority invalidation setup failed"); return errSecNotAvailable }
+            }
+            return SecItemCopyMatching(request, result)
+        }
+        let observed = NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+        XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": object], state: state, keys: observed, now: 1_700_000_000),
+                             "Final OS read must not publish a verified result after durable authority invalidation")
+        XCTAssertEqual(reads, 2)
+        XCTAssertNil(try state.currentAuthority())
+    }
+    func testRealResealingProducerMatchesFixtureAndEveryTupleBindingRefuses() throws {
+        let vector = try XCTUnwrap(cases.first)
+        // Retain the original shared signature for byte-for-byte encryption
+        // parity; newly generated signatures need only verify, not repeat bytes.
+        let unchanged = try reseal(vector, resign: false) { _ in }
+        XCTAssertEqual(try XCTUnwrap(unchanged["sealed"] as? String), try XCTUnwrap(carrier(vector)["sealed"] as? String),
+                       "Independent real CryptoKit producer must exactly reproduce the shared capsule before mutations")
+        XCTAssertNoThrow(try open(unchanged))
+        let replacements: [(Int, Data)] = [
+            (0, Curve25519.Signing.PrivateKey().publicKey.rawRepresentation), (1, Data(repeating: 1, count: 16)),
+            (2, Curve25519.Signing.PrivateKey().publicKey.rawRepresentation), (3, P256.KeyAgreement.PrivateKey().publicKey.x963Representation),
+            (4, be64(4)), (5, Data("AgICAgICAgICAgICAgICAg".utf8)), (6, be64(0)), (7, Data([6])), (8, Data(repeating: 0, count: 31))]
+        for (index, bytes) in replacements {
+            let changed = try reseal(vector) { $0[index] = bytes }
+            XCTAssertThrowsError(try open(changed), "Exact tuple field \(index) must refuse despite valid machine signing and real recipient sealing")
+        }
+    }
+    func testExactOriginalBytesAndDomainSignatureAreMandatory() throws {
+        let vector = try XCTUnwrap(cases.first)
+        let changed = try reseal(vector, resign: false) { $0[11].append(32) }
+        XCTAssertThrowsError(try open(changed), "Appending legal JSON whitespace still changes the authenticated ORIGINAL bytes")
+        for label in ["remi-relay-v2 push submit", "remi-relay-v2 host", "remi-relay-v2 client"] {
+            XCTAssertThrowsError(try open(reseal(vector, label: label) { _ in }), "Cross-purpose signature \(label) must refuse")
+        }
+        var corrupted = try carrier(vector)
+        var sealed = try b64(XCTUnwrap(corrupted["sealed"] as? String)); sealed[sealed.count - 1] ^= 1
+        corrupted["sealed"] = b64url(sealed)
+        XCTAssertThrowsError(try open(corrupted), "Actual GCM tag tampering must refuse")
+        corrupted = try carrier(vector); corrupted["collapseId"] = "AgICAgICAgICAgICAgICAg"
+        XCTAssertThrowsError(try open(corrupted), "Outer collapse id is authenticated AAD, never a routing authority")
+    }
+    func testSignedPayloadStrictSchemaDuplicateAliasesAndFatalUTF8Refuse() throws {
+        let vector = try XCTUnwrap(cases.first)
+        let original = try XCTUnwrap(vector["payloadUtf8"] as? String)
+        let payloads = [Data(("{\"unknown\":1," + original.dropFirst()).utf8),
+            Data(("{\"type\":\"question\"," + original.dropFirst()).utf8),
+            Data(("{\"\\u0074ype\":\"question\"," + original.dropFirst()).utf8),
+            Data(original.replacingOccurrences(of: "\"actionable\":true", with: "\"actionable\":1").utf8),
+            Data(original.replacingOccurrences(of: "\"standingGrant\":null", with: "\"standingGrant\":\"all\"").utf8),
+            Data([0xff, 0xfe]), Data("{\"type\":\"dismiss\",\"actionable\":false}".utf8)]
+        for (index, payload) in payloads.enumerated() {
+            XCTAssertThrowsError(try open(reseal(vector) { $0[11] = payload }), "Actually signed invalid payload case \(index) must refuse")
+        }
+    }
+    func testExactTimeAndWholeInnerMultibyteBoundaries() throws {
+        let vector = try XCTUnwrap(cases.first)
+        XCTAssertNoThrow(try open(try carrier(vector), now: 1_699_999_940), "Future issue at exactly60 seconds is valid")
+        XCTAssertThrowsError(try open(try carrier(vector), now: 1_699_999_939), "Future issue beyond60 seconds refuses")
+        XCTAssertNoThrow(try open(try carrier(vector), now: 1_700_000_119), "Expiry has no early cutoff")
+        XCTAssertThrowsError(try open(try carrier(vector), now: 1_700_000_120), "Expiry has no grace")
+        XCTAssertNoThrow(try open(reseal(vector) { $0[10] = self.be64(1_700_003_600) }), "Question TTL exactly3600 is valid")
+        XCTAssertThrowsError(try open(reseal(vector) { $0[10] = self.be64(1_700_003_601) }), "Question TTL cannot extend beyond3600")
+        let fields = parts(parts(try hex(XCTUnwrap(vector["innerHex"] as? String)))[0])
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: fields[11]) as? [String: Any])
+        var options = try XCTUnwrap(payload["options"] as? [[String: Any]])
+        func resized(_ size: Int) throws -> [String: Any] {
+            options[0]["description"] = ""; payload["options"] = options
+            let empty = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
+            let envelope = lps([lps(fields.dropLast() + [empty]), Data(repeating: 0, count: 64)]).count
+            let room = size - envelope
+            options[0]["description"] = String(repeating: "é", count: room / 2) + (room % 2 == 1 ? "a" : "")
+            payload["options"] = options
+            let bytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
+            XCTAssertEqual(lps([lps(fields.dropLast() + [bytes]), Data(repeating: 0, count: 64)]).count, size)
+            return try reseal(vector) { $0[11] = bytes }
+        }
+        XCTAssertNoThrow(try open(resized(2048)), "The WHOLE multibyte signed inner envelope exactly2048 bytes is valid")
+        XCTAssertThrowsError(try open(resized(2049)), "The WHOLE envelope cap includes metadata, signature and multibyte text")
     }
 }
