@@ -266,6 +266,20 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(result.title, ""); XCTAssertEqual(result.body, ""); XCTAssertEqual(result.categoryIdentifier, "")
         XCTAssertNil(probe.installedCategory())
     }
+    // #1200 D3: no native owner answers a v2 action until R6, and iOS dismisses the
+    // card after an action tap, so a Yes/No button would silently drop the choice.
+    func testSecurePushOffersNoAnswerActionsAndOpensTheApp() throws {
+        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
+        XCTAssertNil(probe.installedCategory(), "A secure push must not register answer-labeled actions before R6")
+        wait(for: [probe.completed], timeout: 3)
+        let result = try XCTUnwrap(probe.snapshot().first)
+        let opened = try NativePushCodec.open(userInfo: info("question-yn"), state: state, keys: keys, now: clock)
+        guard case .question(let question) = opened.payload else { XCTFail("Shared fixture must be a real question"); return }
+        XCTAssertEqual(result.title, question.title); XCTAssertEqual(result.body, question.body)
+        XCTAssertEqual(result.categoryIdentifier, "", "The signed text opens the app; it carries no action buttons")
+        XCTAssertEqual(Set(result.userInfo.keys.compactMap { $0 as? String }), ["remiPush"])
+    }
+
     // MARK: Legacy plaintext pushes (no remiPush carrier), #1200 D1
     private func legacyInfo(dynamic: Bool = true) -> [AnyHashable: Any] {
         var info: [AnyHashable: Any] = ["sessionId": "s-1", "questionId": "q-123", "claudeSessionId": "c-1",

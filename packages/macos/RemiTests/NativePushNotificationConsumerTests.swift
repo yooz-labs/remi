@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import UserNotifications
 import XCTest
 
 final class NativePushNotificationConsumerTests: XCTestCase {
@@ -261,6 +262,21 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         XCTAssertTrue(NativePushNotificationConsumer.routeAction(userInfo: ["remiPush": NSNull(), "opt_0": "forged", "verified": true], identifier: "OPT_0",
             consumerFactory: { consumer }, legacy: { legacySends += 1 }), "Malformed capsule cannot select legacy routing")
         XCTAssertEqual(legacySends, 0)
+    }
+    func testForegroundRefusesAnyCategoryOnASignedCard() throws {
+        let prepared = try effect().prepare(userInfo: info("question-yn"))
+        guard case .question(let question) = prepared.push.payload else { XCTFail("Shared fixture must be a real question"); return }
+        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock })
+        let content = UNMutableNotificationContent()
+        content.title = question.title; content.body = question.body; content.userInfo = try info("question-yn")
+        XCTAssertTrue(consumer.allowsPresentation(content), "The signed text without actions is presentable")
+        // The category a v2 card used to carry. No v2 card has actions before R6.
+        let rid = try XCTUnwrap(carrierRid()), record = prepared.push.record
+        content.categoryIdentifier = "REMI_SECURE_\(rid)_\(record.collapseId)_\(record.revision)"
+        XCTAssertFalse(consumer.allowsPresentation(content), "A category on a signed card grants an action no native owner answers")
+    }
+    private func carrierRid() throws -> String? {
+        (try info("question-yn")["remiPush"] as? [String: Any])?["rid"] as? String
     }
     func testActualLegacyNotificationRouteRemainsExplicitlySeparate() {
         var legacySends = 0
