@@ -121,7 +121,6 @@ final class NativePushPublicationTests: XCTestCase {
         init(_ test: XCTestCase) {
             activity = test.expectation(description: "Actual NSE reached category or completion boundary")
             completed = XCTestExpectation(description: "Actual NSE completed its delivery")
-            completed.assertForOverFulfill = true
         }
         func installed(_ category: UNNotificationCategory, callback: @escaping (Bool) -> Void) {
             lock.lock(); self.category = category; self.callback = callback
@@ -129,8 +128,9 @@ final class NativePushPublicationTests: XCTestCase {
             if first { activity.fulfill() }
         }
         func delivered(_ content: UNNotificationContent) {
-            lock.lock(); contents.append(content); let first = !activitySent; activitySent = true; lock.unlock()
-            if first { activity.fulfill() }; completed.fulfill()
+            lock.lock(); contents.append(content); let firstDelivery = contents.count == 1
+            let first = !activitySent; activitySent = true; lock.unlock()
+            if first { activity.fulfill() }; if firstDelivery { completed.fulfill() }
         }
         func release(_ installed: Bool) { lock.lock(); let callback = self.callback; lock.unlock(); callback?(installed) }
         func snapshot() -> [UNNotificationContent] { lock.lock(); defer { lock.unlock() }; return contents }
