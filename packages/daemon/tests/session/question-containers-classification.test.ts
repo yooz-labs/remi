@@ -237,8 +237,8 @@ const EXCLUSIONS: readonly ExcludedEntry[] = [
   },
   {
     file: 'notifications/notification-dispatcher.ts',
-    field: 'turnFailedReasons',
-    note: 'NEW (#1226). The turn_failed reasons (describeTurnFailure phrases) already alerted since the last successful turn. A failed turn is never a card (#1153): no Question exists, and the set is keyed by the failure reason, never by a question id.',
+    field: 'turnFailedKeys',
+    note: 'NEW (#1226). The turn_failed failures (turnFailureKey: who failed, and why) already alerted since the notice was last cleared. A failed turn is never a card (#1153): no Question exists, and the set is keyed by the failure, never by a question id.',
   },
   {
     file: 'parser/output-processor.ts',

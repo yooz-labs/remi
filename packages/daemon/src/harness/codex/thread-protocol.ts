@@ -171,6 +171,31 @@ export function parseTurnCompleted(v: unknown): TurnCompletedInfo | null {
 }
 
 /**
+ * The item types that show Codex itself working: the model answered, reasoned, or ran or changed
+ * something. A `userMessage` is the person's own input, and any other type (a newer Codex's, a hook
+ * prompt) is not taken as proof that the model ran.
+ */
+const AGENT_WORK_ITEM_TYPES: ReadonlySet<string> = new Set([
+  'agentMessage',
+  'reasoning',
+  'commandExecution',
+  'fileChange',
+  'mcpToolCall',
+  'webSearch',
+]);
+
+/**
+ * The thread of an `item/completed` notification whose item is Codex's own work
+ * (`AGENT_WORK_ITEM_TYPES`), or null for any other item or params that do not parse.
+ */
+export function agentWorkThreadOf(v: unknown): string | null {
+  if (!isRecord(v) || typeof v['threadId'] !== 'string' || v['threadId'] === '') return null;
+  const item = v['item'];
+  if (!isRecord(item) || typeof item['type'] !== 'string') return null;
+  return AGENT_WORK_ITEM_TYPES.has(item['type']) ? v['threadId'] : null;
+}
+
+/**
  * The items of a thread that are chat (`ThreadItem`, `item/completed` and the entries of
  * `thread/items/list`), reduced to what the chat shows. Anything else (reasoning, plans, hook
  * prompts, file changes, tool calls, an item type a newer Codex adds) is null: it is not a message.

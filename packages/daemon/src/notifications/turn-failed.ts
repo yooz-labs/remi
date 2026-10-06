@@ -10,10 +10,13 @@
  *
  * What this module owns: the readable text and the per-session collapse key.
  * Who is pushed, and how, is `NotificationDispatcher.pushTurnFailed`, which
- * alerts once per failure reason until a turn finishes well (#1226): before
- * that, at a usage limit, every failed turn (a subagent's too) alerted the
- * phone again under the same collapse key, and a new prompt cleared the
- * notice first, so a retry loop alerted on every cycle.
+ * alerts once per failure (`turnFailureKey`: who failed, and why) until the
+ * notice is cleared (#1226): by a turn that finished, a Codex turn that was
+ * interrupted, or the main agent working again (a main-agent tool call, or an
+ * item Codex produced). Before that, at a usage limit, every failed turn (a
+ * subagent's too) alerted the phone again under the same collapse key, and a
+ * new prompt cleared the notice first, so a retry loop alerted on every cycle.
+ * A new prompt no longer clears it: at a usage limit that prompt fails too.
  *
  * Mutable per device through `pushPrefs.turnFailed` (default on) and by
  * nothing else: `notifications.on_turn_complete = false` does NOT silence it,
@@ -118,8 +121,31 @@ function failureExcerpt(
 /** The slice of the hook payload the push reads. */
 export type TurnFailedInput = Pick<
   StopFailureHookInput,
-  'error' | 'error_details' | 'last_assistant_message' | 'agent_type'
+  'error' | 'error_details' | 'last_assistant_message' | 'agent_type' | 'agent_id'
 >;
+
+/** How much of a failure's details tells two uncoded failures apart (`turnFailureKey`). */
+const DETAILS_KEY_MAX = 120;
+
+/**
+ * What makes two failures the same failure for the one-alert rule (#1226): who
+ * failed (the main agent, or a subagent, so a subagent's failure never uses up
+ * the main agent's alert) and the reason phrase. A failure with no recognized
+ * code adds its details, so two different uncoded failures (a Codex error whose
+ * `codexErrorInfo` is an object carries no string code) are not taken for one.
+ * The excerpt of what the agent said is never part of it: it changes on every
+ * attempt of one failure.
+ */
+export function turnFailureKey(input: TurnFailedInput): string {
+  const who = typeof input.agent_id === 'string' && input.agent_id !== '' ? 'subagent' : 'main';
+  const reason = describeTurnFailure(input.error);
+  if (reason !== NO_CODE_PHRASE) return `${who}:${reason}`;
+  const details =
+    typeof input.error_details === 'string'
+      ? truncate(oneLine(input.error_details), DETAILS_KEY_MAX)
+      : '';
+  return `${who}:${reason}:${details}`;
+}
 
 /**
  * Title and body for one failed turn. The title names the session the way
