@@ -34,7 +34,7 @@ test('an unreadable authority store closes the peer and is logged as a store fau
     expect((await owned.socket.closed).code).toBeGreaterThan(0);
     const authority = owned.logs.filter((line) => line.startsWith('Relay authority'));
     expect(authority).toEqual([
-      'Relay authority store unreadable (InterprocessFileLockError); peer closed, not a revocation',
+      'Relay authority store unreadable (InterprocessFileLockError); failing closed, not a revocation',
     ]);
     expect(owned.logs.some((line) => line.includes('no longer current'))).toBe(false);
   } finally {
@@ -50,7 +50,7 @@ test('a revoked grant closes the peer and is logged as a revocation (#1201)', as
     owned.relay.broadcast(createSessionUpdate('owned-session', 'idle'));
     expect((await owned.socket.closed).code).toBeGreaterThan(0);
     expect(owned.logs.filter((line) => line.startsWith('Relay authority'))).toEqual([
-      'Relay authority no longer current; peer closed',
+      'Relay authority no longer current; failing closed',
     ]);
     expect(owned.logs.some((line) => line.includes('unreadable'))).toBe(false);
   } finally {

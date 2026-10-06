@@ -78,6 +78,7 @@ type Peer = {
   proxy?: ChildProxy;
   key?: string;
   pushAuthority?: SecurePushAuthority;
+  authorityVerdict?: 'fault' | 'revoked' | undefined;
   pushMutation?: number;
   revision?: number;
   timer: ReturnType<typeof setTimeout>;
@@ -243,10 +244,38 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       !!peer.key &&
       peer.revision === (this.revisions.get(peer.key) ?? 0) &&
       (peer.pushAuthority
-        ? this.subscriptions.isCurrentAuthority(peer.pushAuthority)
+        ? this.authorityCurrent(peer, peer.pushAuthority)
         : peer.stage !== 'ready') &&
       (peer.stage !== 'ready' || this.enrolled(peer))
     );
+  }
+  /**
+   * Whether the peer's captured authority is still current (#1201). A revoked grant and an
+   * unreadable store (a lock timeout, a damaged file) both answer false, and both close the
+   * peer at their callers (`sendRaw`, `route`). That is deliberate for the store fault too:
+   * the channel is ordered and complete, so refusing one frame and staying open would drop it
+   * silently and leave the client's state diverged, while a close makes the client reconnect
+   * and resync. A reconnect re-captures authority under the same lock, so a persistent fault
+   * keeps the peer out and a transient one recovers. Only the log tells them apart, once per
+   * change of verdict, so the check that runs on every outbound frame cannot flood it.
+   */
+  private authorityCurrent(peer: Peer, authority: SecurePushAuthority): boolean {
+    let fault: unknown;
+    let faulted = false;
+    const current = this.subscriptions.isCurrentAuthority(authority, (error) => {
+      faulted = true;
+      fault = error;
+    });
+    const verdict = current ? undefined : faulted ? 'fault' : 'revoked';
+    if (verdict !== peer.authorityVerdict) {
+      peer.authorityVerdict = verdict;
+      if (verdict === 'fault')
+        this.log(
+          `Relay authority store unreadable (${fault instanceof Error ? fault.name : typeof fault}); failing closed, not a revocation`,
+        );
+      else if (verdict === 'revoked') this.log('Relay authority no longer current; failing closed');
+    }
+    return current;
   }
   private openPeer(cid: string): void {
     if (!this.running || !this.machine || this.peers.has(cid)) return;

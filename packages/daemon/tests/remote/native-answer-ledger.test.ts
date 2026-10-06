@@ -564,6 +564,8 @@ function holdForeignLock(directory: string): () => void {
   return release;
 }
 
+const ledgerLines = (logs: string[]) => logs.filter((line) => line.includes('[NativeAnswer]'));
+
 test('native ledger tells a storage lock fault from a refusal before anything is claimed (#1201)', async () => {
   const f = await fixture();
   const held = await f.hold();
@@ -571,12 +573,9 @@ test('native ledger tells a storage lock fault from a refusal before anything is
   const release = holdForeignLock(f.directory);
   expect(await f.ledger.answer(proof)).toBe('stale');
   release();
-  expect(
-    f.logs.some((line) =>
-      /\[NativeAnswer\] storage unavailable \(InterprocessFileLockError\)/.test(line),
-    ),
-  ).toBe(true);
-  expect(f.logs.some((line) => line.includes('[NativeAnswer] refused'))).toBe(false);
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while verifying; nothing applied',
+  ]);
   // Nothing was claimed or applied, so the same proof still delivers once the store is readable.
   expect(f.gate.isHeld(held.question.id)).toBe(true);
   expect(await f.ledger.answer(proof)).toBe('delivered');
@@ -591,14 +590,9 @@ test('native ledger tells a storage lock fault from a refusal while claiming (#1
   const release = holdForeignLock(f.directory);
   expect(await pending).toBe('stale');
   release();
-  expect(
-    f.logs.some((line) =>
-      line.includes(
-        '[NativeAnswer] storage unavailable (InterprocessFileLockError) while claiming',
-      ),
-    ),
-  ).toBe(true);
-  expect(f.logs.some((line) => line.includes('[NativeAnswer] refused'))).toBe(false);
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while claiming; nothing applied',
+  ]);
   expect(f.gate.isHeld(held.question.id)).toBe(true);
   expect(await f.ledger.answer(proof)).toBe('delivered');
 }, 10000);
@@ -614,18 +608,12 @@ test('native ledger tells a storage lock fault from a refusal at the final commi
   const proof = await f.proof(held.question);
   expect(await f.ledger.answer(proof)).toBe('stale');
   release?.();
-  expect(
-    f.logs.some((line) =>
-      line.includes(
-        '[NativeAnswer] storage unavailable (InterprocessFileLockError) while committing',
-      ),
-    ),
-  ).toBe(true);
-  expect(f.logs.some((line) => line.includes('[NativeAnswer] refused'))).toBe(false);
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while committing; nothing applied',
+  ]);
   // Fail closed: the hold stays live for the terminal or a later proof.
   expect(f.gate.isHeld(held.question.id)).toBe(true);
   expect(f.resolved).toEqual([]);
-  expect(f.logs.filter((line) => line.includes('authority-revoked'))).toEqual([]);
 }, 10000);
 
 test('native ledger names the reason of each refusal without any answer content (#1201)', async () => {

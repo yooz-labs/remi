@@ -5,6 +5,7 @@ import {
   type NativeAnswerMessage,
   relayV2,
 } from '@remi/shared';
+import { log, logError } from '../cli/logger.ts';
 import type { AnswerCommit, AnswerCommitResult } from '../harness/decision.ts';
 import type {
   SecurePushContext,
@@ -27,7 +28,12 @@ type RecordEntry = {
   outcome?: AnswerResultOutcome;
 };
 type Claim =
-  | { readonly kind: 'result'; readonly outcome: AnswerResultOutcome }
+  | {
+      readonly kind: 'result';
+      readonly outcome: AnswerResultOutcome;
+      /** Why a new answer was refused; logged after the subscription lock is released. */
+      readonly reason?: string;
+    }
   | { readonly kind: 'new'; readonly record: RecordEntry; readonly context: SecurePushContext };
 export interface NativeAnswerLedgerOptions {
   readonly machinePublicKey: string;
@@ -55,6 +61,27 @@ function sameSnapshot(a: SecurePushSnapshot, b: SecurePushSnapshot): boolean {
     a.keyVersion === b.keyVersion &&
     JSON.stringify(a.pushPrefs) === JSON.stringify(b.pushPrefs)
   );
+}
+
+/** A refusal is a decision (#1201): the log names the reason, never an id, nonce, key or answer. */
+function refusal(reason: string): 'stale' {
+  log(`[NativeAnswer] refused (${reason})`);
+  return 'stale';
+}
+/** The claim result for a refused new answer: its reason is logged once the lock is released. */
+const refused = (reason: string): Claim => ({ kind: 'result', outcome: 'stale', reason });
+/** A fault is a thrown error (#1201): a store or lock error, which is not a revocation, or an
+ * unexpected exception. The outcome still fails closed, but the log says it was not a refusal. */
+function fault(error: unknown, phase: 'verifying' | 'claiming' | 'committing'): void {
+  logError(
+    `[NativeAnswer] fault (${error instanceof Error ? error.name : typeof error}) while ${phase}; nothing applied`,
+  );
+}
+/** The shared verifier's refusals carry a content-free code; anything else thrown is a fault. */
+function failed(error: unknown, phase: 'verifying' | 'claiming'): 'stale' {
+  if (error instanceof relayV2.RelayError) return refusal(error.code);
+  fault(error, phase);
+  return 'stale';
 }
 
 /** Background choices preserve the complete signed options; unsupported forms open the app. */
@@ -121,15 +148,16 @@ export class NativeAnswerLedger {
           Object.hasOwn(message, key),
         )
       )
-        return 'stale';
+        return refusal('unexpected-field');
       const capturedRuntime = this.options.runtimeFor(message.sessionId);
-      if (!capturedRuntime || capturedRuntime.instance !== message.runtimeInstance) return 'stale';
+      if (!capturedRuntime || capturedRuntime.instance !== message.runtimeInstance)
+        return refusal('runtime-not-current');
       runtime = capturedRuntime;
       const publicKey = Buffer.from(relayV2.fromB64u(message.devicePublicKey)).toString('base64');
       const captured = this.options.store
         .listCurrent()
         .find((entry) => entry.publicKey === publicKey);
-      if (!captured) return 'stale';
+      if (!captured) return refusal('device-not-current');
       snapshot = captured;
       digest = (
         await relayV2.verifyNativeAnswer(
@@ -142,96 +170,114 @@ export class NativeAnswerLedger {
           seconds(),
         )
       ).requestDigest;
-    } catch {
-      return 'stale';
+    } catch (error) {
+      return failed(error, 'verifying');
     }
 
     let claim: Claim;
     try {
-      claim = this.options.store.withCurrentSubscription(snapshot, (): Claim => {
-        if (!this.currentProof(message, runtime)) return { kind: 'result', outcome: 'stale' };
-        this.prune();
-        const idKey = JSON.stringify([message.devicePublicKey, message.id]);
-        const nonceKey = JSON.stringify([message.devicePublicKey, message.nonce]);
-        const id = this.byId.get(idKey);
-        const nonce = this.byNonce.get(nonceKey);
-        // Historical epochs are checked before any retained outcome is read.
-        for (const previous of [id, nonce]) {
+      claim =
+        this.options.store.withCurrentSubscription(snapshot, (): Claim => {
+          if (!this.currentProof(message, runtime)) return refused('proof-not-current');
+          this.prune();
+          const idKey = JSON.stringify([message.devicePublicKey, message.id]);
+          const nonceKey = JSON.stringify([message.devicePublicKey, message.nonce]);
+          const id = this.byId.get(idKey);
+          const nonce = this.byNonce.get(nonceKey);
+          // Historical epochs are checked before any retained outcome is read.
+          for (const previous of [id, nonce]) {
+            if (
+              previous &&
+              (previous.runtime !== runtime || !sameSnapshot(previous.snapshot, snapshot))
+            )
+              return refused('epoch-changed');
+          }
+          if (id || nonce) {
+            if (!id || id !== nonce || id.digest !== digest)
+              return { kind: 'result', outcome: 'conflict', reason: 'conflict' };
+            return { kind: 'result', outcome: id.outcome ?? 'uncertain' };
+          }
+          const latest = this.options.contexts.latestAction(
+            runtime,
+            message.questionId,
+            snapshot.publicKey,
+          );
           if (
-            previous &&
-            (previous.runtime !== runtime || !sameSnapshot(previous.snapshot, snapshot))
+            !latest ||
+            !sameSnapshot(latest.context.snapshot, snapshot) ||
+            !this.matchesAction(message, latest.context, latest.contentDigest)
           )
-            return { kind: 'result', outcome: 'stale' };
-        }
-        if (id || nonce) {
-          if (!id || id !== nonce || id.digest !== digest)
-            return { kind: 'result', outcome: 'conflict' };
-          return { kind: 'result', outcome: id.outcome ?? 'uncertain' };
-        }
-        const latest = this.options.contexts.latestAction(
-          runtime,
-          message.questionId,
-          snapshot.publicKey,
-        );
-        if (
-          !latest ||
-          !sameSnapshot(latest.context.snapshot, snapshot) ||
-          !this.matchesAction(message, latest.context, latest.contentDigest)
-        )
-          return { kind: 'result', outcome: 'stale' };
-        if (
-          this.records.size >= MAX_RETAINED ||
-          [...this.records].filter(
-            (entry) => entry.runtime.sessionId === message.sessionId && entry.outcome === undefined,
-          ).length >= MAX_PENDING_PER_SESSION
-        )
-          return { kind: 'result', outcome: 'busy' };
-        const record: RecordEntry = {
-          idKey,
-          nonceKey,
-          digest,
-          snapshot,
-          runtime,
-          retainUntil: message.expiresAt + RETAIN_SECONDS,
-        };
-        // Claim both identities synchronously, before invoking the real core.
-        this.records.add(record);
-        this.byId.set(idKey, record);
-        this.byNonce.set(nonceKey, record);
-        return { kind: 'new', record, context: latest.context };
-      }) ?? { kind: 'result', outcome: 'stale' };
-    } catch {
-      return 'stale';
+            return refused('action-not-current');
+          if (
+            this.records.size >= MAX_RETAINED ||
+            [...this.records].filter(
+              (entry) =>
+                entry.runtime.sessionId === message.sessionId && entry.outcome === undefined,
+            ).length >= MAX_PENDING_PER_SESSION
+          )
+            return { kind: 'result', outcome: 'busy', reason: 'busy' };
+          const record: RecordEntry = {
+            idKey,
+            nonceKey,
+            digest,
+            snapshot,
+            runtime,
+            retainUntil: message.expiresAt + RETAIN_SECONDS,
+          };
+          // Claim both identities synchronously, before invoking the real core.
+          this.records.add(record);
+          this.byId.set(idKey, record);
+          this.byNonce.set(nonceKey, record);
+          return { kind: 'new', record, context: latest.context };
+        }) ?? refused('authority-revoked');
+    } catch (error) {
+      return failed(error, 'claiming');
     }
-    if (claim.kind === 'result') return claim.outcome;
+    if (claim.kind === 'result') {
+      if (claim.reason !== undefined) log(`[NativeAnswer] refused (${claim.reason})`);
+      return claim.outcome;
+    }
     const { record, context } = claim;
     const commit: AnswerCommit = <T>(effect: () => T): AnswerCommitResult<T> => {
       let invoked = false;
+      let reason = 'authority-revoked';
+      let result: AnswerCommitResult<T> | null;
       try {
-        return (
-          this.options.store.withCurrentSubscription(snapshot, (): AnswerCommitResult<T> => {
-            const latest = this.options.contexts.latestAction(
-              runtime,
-              message.questionId,
-              snapshot.publicKey,
-            );
-            if (
-              !this.currentProof(message, runtime) ||
-              !latest ||
-              latest.context !== context ||
-              !this.matchesAction(message, context, latest.contentDigest)
-            )
-              return { kind: 'refused' };
-            invoked = true;
-            return { kind: 'committed', value: effect() };
-          }) ?? { kind: 'refused' }
-        );
+        result = this.options.store.withCurrentSubscription(snapshot, (): AnswerCommitResult<T> => {
+          const latest = this.options.contexts.latestAction(
+            runtime,
+            message.questionId,
+            snapshot.publicKey,
+          );
+          if (!this.currentProof(message, runtime)) {
+            reason = 'proof-not-current';
+            return { kind: 'refused' };
+          }
+          if (
+            !latest ||
+            latest.context !== context ||
+            !this.matchesAction(message, context, latest.contentDigest)
+          ) {
+            reason = 'action-not-current';
+            return { kind: 'refused' };
+          }
+          invoked = true;
+          return { kind: 'committed', value: effect() };
+        });
       } catch (error) {
         // Actual synchronous effect failures keep the harness's error behavior.
         // Only pre-effect storage/authority failure is a refusal, never a throw.
         if (invoked) throw error;
+        fault(error, 'committing');
         return { kind: 'refused' };
       }
+      // Logged here, after the subscription lock is released. A null result means the
+      // captured grant, enrollment or subscription epoch is no longer current.
+      if (result === null || result.kind === 'refused') {
+        log(`[NativeAnswer] refused (${reason})`);
+        return { kind: 'refused' };
+      }
+      return result;
     };
     try {
       record.outcome = await this.options.apply(
