@@ -328,7 +328,9 @@ try {
     });
   void hook.catch(() => {});
   await until(
-    () => apnsBodies.length > 0 || out.includes('[QuestionPush] no recipient'),
+    () =>
+      (apnsBodies.length > 0 && gatewayReplies.length > 0) ||
+      out.includes('[QuestionPush] no recipient'),
     'actual-hook-delivery-decision',
     20000,
   );
