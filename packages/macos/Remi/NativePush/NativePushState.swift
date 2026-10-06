@@ -344,7 +344,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
               trust.rid == Data(SHA256.hash(data: trust.machinePublicKey).prefix(16)),
               trust.endpoint.utf8.count <= 2048,
               let url = URLComponents(string: trust.endpoint), url.scheme == "https", let host = url.host, !host.isEmpty,
-              host == host.lowercased(), url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              host == host.lowercased(), canonicalHost(host), !trust.endpoint.contains("%"), url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
               url.path.isEmpty, url.port != 443, url.string == trust.endpoint else { throw NativePushStateError.invalid }
         if let port = url.port, !(0...65535).contains(port) { throw NativePushStateError.invalid }
         // Re-emit the parsed port to reject zero prefixes and an empty port, as the shared URL origin does.
@@ -352,6 +352,44 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         canonical.port = url.port
         guard canonical.string == trust.endpoint else { throw NativePushStateError.invalid }
     }
+    private static func canonicalHost(_ host: String) -> Bool {
+        if host.hasPrefix("[") {
+            guard host.hasSuffix("]") else { return false }
+            var address = in6_addr()
+            guard String(host.dropFirst().dropLast()).withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else { return false }
+            let bytes = withUnsafeBytes(of: address) { Array($0) }
+            let words = stride(from: 0, to: 16, by: 2).map { UInt16(bytes[$0]) << 8 | UInt16(bytes[$0 + 1]) }
+            var longestStart = 0, longestCount = 0, index = 0
+            while index < words.count {
+                let start = index
+                while index < words.count && words[index] == 0 { index += 1 }
+                if index - start > longestCount { longestStart = start; longestCount = index - start }
+                if index == start { index += 1 }
+            }
+            let formatted: String
+            if longestCount >= 2 {
+                let before = words[..<longestStart].map { String($0, radix: 16) }.joined(separator: ":")
+                let after = words[(longestStart + longestCount)...].map { String($0, radix: 16) }.joined(separator: ":")
+                formatted = before + "::" + after
+            } else { formatted = words.map { String($0, radix: 16) }.joined(separator: ":") }
+            return host == "[" + formatted + "]"
+        }
+        // WHATWG interprets a numeric final label as IPv4, rather than a DNS name.
+        // Only the parser's exact four decimal octets are a canonical stored origin.
+        let final = host.split(separator: ".", omittingEmptySubsequences: true).last.map(String.init) ?? ""
+        let decimal = !final.isEmpty && final.utf8.allSatisfy { (48...57).contains($0) }
+        let hexadecimal = final.hasPrefix("0x") && final.dropFirst(2).utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+        if decimal || hexadecimal {
+            var address = in_addr()
+            guard host.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else { return false }
+            let formatted = withUnsafeBytes(of: address) { $0.map { String($0) }.joined(separator: ".") }
+            return host == formatted
+        }
+        return true
+    }
+
     private func bind(_ value: Data, to stmt: OpaquePointer, at index: Int32) throws {
         let status = value.withUnsafeBytes { sqlite3_bind_blob(stmt, index, $0.baseAddress, Int32(value.count), Self.transient) }
         guard status == SQLITE_OK else { throw NativePushStateError.unavailable }

@@ -31,6 +31,10 @@ Tests explicitly inject nil groups with disposable UUID service/account pairs.
 Production resolves only the configured shared container and groups; missing
 configuration does not create a temporary or app-local substitute.
 
+Completed machine trust pins a canonical HTTPS origin: ports are bounded and
+re-emitted without zero prefixes; public IP parsers verify exact dotted IPv4 and
+lowercase IPv6 with the longest first zero run. The actual shared submission
+validator is checked against the native store for the same origin corpus.
 Completed machine trust is limited to 32 saved machines. Replay state has 2048
 rows total across nonce and collapse tables; it never evicts live rows. The
 preverified tuple/digest storage boundary commits before publication or deletion.

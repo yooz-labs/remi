@@ -246,7 +246,8 @@ final class NativePushStateTests: XCTestCase {
         let original = try machine(state)
         let generation = try state.authorityGeneration()
         for endpoint in ["https://127.0.0.1", "https://[::1]", "https://[2001:db8::1]",
-                         "https://[::ffff:7f00:1]", "https://xn--bcher-kva.example"] {
+                         "https://[::ffff:7f00:1]", "https://[1::2:0:0:3:4]",
+                         "https://[2001:db8:1:2:3:4:5:6]", "https://xn--bcher-kva.example"] {
             let trust = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
                 endpoint: endpoint, authority: original.authority)
             XCTAssertNoThrow(try state.installMachineTrust(trust, generation: generation),
@@ -256,7 +257,7 @@ final class NativePushStateTests: XCTestCase {
         let saved = try XCTUnwrap(state.machineTrust(rid: original.rid))
         for endpoint in ["https://127.1", "https://0127.0.0.1", "https://0x7f.0.0.1",
                          "https://[0:0:0:0:0:0:0:1]", "https://[2001:0db8::1]",
-                         "https://[::ffff:127.0.0.1]", "https://example.123"] {
+                         "https://[::ffff:127.0.0.1]", "https://[1:0:0:2::3:4]", "https://example.123"] {
             let refused = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
                 endpoint: endpoint, authority: original.authority)
             XCTAssertThrowsError(try state.installMachineTrust(refused, generation: generation),
