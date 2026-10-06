@@ -668,7 +668,7 @@ test('secure transport refuses a deployment secret fetch could not send as a hea
   const f = await fixture();
   const received = receiver(() => Response.json({}));
   const Transport = await transportClass();
-  for (const pushSecret of ['', '   ', 'line\nbreak', 'caf\u00e9', 'tab\there'])
+  for (const pushSecret of ['', '   ', 'line\nbreak', 'secret\u00e9', 'tab\there'])
     expect(() =>
       Transport.forOwnedLoopbackTest({
         store: f.store,
