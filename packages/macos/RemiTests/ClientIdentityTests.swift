@@ -761,12 +761,25 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(result["keys"] as? [String], ["fingerprint", "kind", "publicKeyRaw", "requiresAppUnlock", "revision", "sign"])
         let reopened = try NativePushState(file: authorityDirectory.appendingPathComponent("push.sqlite"))
         XCTAssertEqual(try reopened.machineTrust(rid: rid)?.authority.publicKey, native.publicKeyRaw)
+        let pendingReconnect = try await web.callAsyncJavaScript("""
+            window.pendingReconnect = await window.nativeProviderTest.beginNativePairingTrust(window.nativeSigner);
+            return true;
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(pendingReconnect as? Bool, true)
         let forgotten = try await web.callAsyncJavaScript("""
             await window.nativeProviderTest.forgetNativeRelayPin(window.nativeSigner, window.publicPin.machinePublicKey);
             return (await window.nativeProviderTest.loadNativeRelayPins(window.nativeSigner)).length;
             """, arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(forgotten as? Int, 0, "Actual native forget must remove the durable completed trust")
         XCTAssertNil(try reopened.machineTrust(rid: rid))
+        let resurrected = try await web.callAsyncJavaScript("""
+            try {
+              await window.nativeProviderTest.commitNativePairingTrust(window.pendingReconnect, window.publicPin);
+              return true;
+            } catch { return false; }
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(resurrected as? Bool, false, "Forgetting a machine must invalidate a previously pending READY continuation")
+        XCTAssertNil(try reopened.machineTrust(rid: rid), "Pending reconnect must not resurrect forgotten durable native trust")
         XCTAssertEqual(try reopened.currentAuthority()?.publicKey, native.publicKeyRaw, "Forgetting a machine must retain the current public identity")
     }
 
