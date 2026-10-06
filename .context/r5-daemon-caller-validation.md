@@ -262,5 +262,15 @@ the independent receipt is `/private/tmp/remi-r5-route-review.tGXQ8q/final-recei
 The previous frozen cfd91fd8 static checks and full Bun 1.4.2 run passed 7,151
 cases with 22 skips, zero failures and zero tracked residuals. The waiting runner
 was stopped only after verifying its PID, birth, command and cwd, before starting
-Bun 1.3.11, because this new finding superseded that checkpoint. Fresh full gates
-after this correction and native/owner acceptance remain separate.
+Bun 1.3.11, because this new finding superseded that checkpoint.
+
+Fresh frozen ac4e2d3d then passes all four package typechecks, both scoped
+integration typechecks, Biome (52 existing warnings, zero errors), typos and diff
+checks. Full Bun 1.4.2 and 1.3.11 each pass 7,173 cases, with 22 skips and zero
+failures across 364 files (351.91 and 360.98 seconds respectively). Line coverage
+is 91.68% and 91.69%. Tracked descendant audits observe 505 and 525 processes,
+end with zero residuals, and separate exact-checkout command/cwd censuses find
+none. The frozen checkout remains clean. Receipts use
+`/private/tmp/remi-r5-daemon-route-gates-path`, including `audit-142.json` and
+`audit-1311.json`. These complete the daemon component's local gates; native R5,
+whole-phase integration and owner R7 acceptance remain separate.
