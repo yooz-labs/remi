@@ -204,6 +204,9 @@ final class NativePushStateTests: XCTestCase {
         let wrongRid = NativePushState.MachineTrust(rid: Data(repeating: 0, count: 16), machinePublicKey: trust.machinePublicKey,
             endpoint: trust.endpoint, authority: trust.authority)
         XCTAssertThrowsError(try state.installMachineTrust(wrongRid, generation: generation), "Stored rid must derive from actual Mpk")
+        let insecureEndpoint = NativePushState.MachineTrust(rid: trust.rid, machinePublicKey: trust.machinePublicKey,
+            endpoint: "http://relay.example.invalid", authority: trust.authority)
+        XCTAssertThrowsError(try state.installMachineTrust(insecureEndpoint, generation: generation), "Completed trust pins a canonical HTTPS origin")
         XCTAssertThrowsError(try state.installMachineTrust(trust, generation: generation - 1), "Stale generation cannot install trust")
         XCTAssertEqual(try reopened.machineTrust(rid: trust.rid), trust)
     }
