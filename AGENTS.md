@@ -662,10 +662,13 @@ those two are both exactly `{token, title, body}`.
   only while a `turn_failed` push is outstanding), so a stale "Claude stopped"
   does not outlive a turn that succeeded.
   A session closing, a failed launch and process cleanup retire the secure runtime FIRST (no
-  new or actionable push), let the disposal emit the dismissals of the cards it pushed, wait up
-  to 3 s for them (`SecurePushService.drain`) and only then finish the runtime
-  (`retireSecurePushRuntime` / `closeSecurePushRuntime` in `cli.ts`); a dismissal that went out
-  uncertain or failed is sent again with a fresh nonce by the next dismissal.
+  new or actionable push), let the disposal run, then dismiss every pushed question card nothing
+  dismissed (`dismissUndismissedQuestions`: `closeSession` clears the session before it announces
+  the close, and the gate announces a held card only while it is still registered, so a real close
+  dismissed nothing before), wait up to 3 s for the dismissals (`SecurePushService.drain`) and
+  only then finish the runtime (`retireSecurePushRuntime` / `closeSecurePushRuntime` in
+  `cli.ts`); a dismissal that went out uncertain or failed is sent again with a fresh nonce by
+  the next dismissal. The legacy path has the same gap at a real close and is not changed here.
 - **Legacy push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
   in its body, the same posture as `turn_complete` (the first 200 characters
