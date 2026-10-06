@@ -384,4 +384,20 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertNoThrow(try state.reverifyLatestContent(first, trust: trust, now: 1000))
     }
 
+    func testPositiveOldGenerationCannotInstallTrustAfterSameIdentityRecovery() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("trust-recovery.sqlite"))
+        let trust = try paired(state)
+        let oldGeneration = try state.authorityGeneration()
+        XCTAssertGreaterThan(oldGeneration, 0)
+        // A verified recovery may restore the same public record. Its completed
+        // pairing still belongs to the NEW durable invalidation generation.
+        try install(state, publicKey: trust.authority.publicKey, revision: trust.authority.revision)
+        XCTAssertGreaterThan(try state.authorityGeneration(), oldGeneration)
+        XCTAssertThrowsError(try state.installMachineTrust(trust, generation: oldGeneration),
+                             "A positive old generation cannot commit completed trust after recovery")
+        XCTAssertNil(try state.machineTrust(rid: trust.rid))
+        XCTAssertNoThrow(try state.installMachineTrust(trust, generation: state.authorityGeneration()))
+        XCTAssertEqual(try state.machineTrust(rid: trust.rid), trust)
+    }
+
 }
