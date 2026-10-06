@@ -18,12 +18,17 @@ import { MessageAPI } from '../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
-import { createInputHandlers, gateAnswerDeps } from '../../src/cli/handlers/input-events.ts';
+import {
+  createInputHandlers,
+  gateAnswerDeps,
+  trackerScreenDeps,
+} from '../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
 import { NativeAnswerLedger } from '../../src/remote/native-answer-ledger.ts';
 import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
@@ -72,7 +77,15 @@ async function fixture() {
   const rid = Buffer.from(await relayV2.ridOf(machineSigner.publicKey)).toString('hex');
   const sessionId = generateId();
   const registry = new SessionRegistry({ orphanTimeoutMs: 60_000, redactQuestionLogs: true });
-  const pty = new PTYSession({ command: '/usr/bin/false', cwd: directory });
+  let output = '';
+  const pty = new PTYSession(
+    { command: '/bin/cat', cwd: directory },
+    {
+      onData: (data) => {
+        output += data;
+      },
+    },
+  );
   const questions: Question[] = [];
   const resolved: string[] = [];
   const cleanupAuthorityReads: number[] = [];
@@ -117,7 +130,9 @@ async function fixture() {
   const responses: Promise<Response>[] = [];
   const contexts = new SecurePushContexts({
     questionFor: (sid, qid) => registry.getQuestion(sid, qid),
-    validityFor: (_sid, qid) => gate.answerValidity(qid) ?? { kind: 'closed' },
+    validityFor: (_sid, qid) =>
+      gate.answerValidity(qid) ??
+      (tracker.isPromptCurrent(qid) ? { kind: 'current-prompt' } : { kind: 'closed' }),
   });
   let runtime = contexts.begin(sessionId);
   const handlers = createInputHandlers({
@@ -125,6 +140,7 @@ async function fixture() {
     bindingStore: new SessionBindingStore(new SessionStore(join(directory, 'sessions.json'))),
     send: () => true,
     ...gateAnswerDeps(() => gate),
+    ...trackerScreenDeps(() => tracker),
     onQuestionResolved: (_sid, qid) => {
       resolved.push(qid);
       // Actual file-lock acquisition after held resolution. A lock held through
@@ -144,6 +160,8 @@ async function fixture() {
     gate.forceRelease('owned ledger cleanup');
     await Promise.allSettled(responses);
     hooks.stop();
+    tracker.clearPending();
+    await pty.close(2000);
     await registry.shutdown();
     rmSync(directory, { recursive: true, force: true });
   });
@@ -264,6 +282,21 @@ async function fixture() {
       runtime = contexts.begin(sessionId);
     },
     currentRuntime: () => runtime,
+    output: () => output,
+    terminal: async () => {
+      await pty.start();
+      await pty.write('Continue? (y/n)\n');
+      const deadline = Date.now() + 2000;
+      while (!output.includes('Continue? (y/n)') && Date.now() < deadline) await Bun.sleep(2);
+      const question = parseQuestion(output).question;
+      if (!question) throw new Error('actual owned PTY prompt setup failed');
+      tracker.onOrphanPTYPrompt(question);
+      while (!registry.getQuestion(sessionId, question.id) && Date.now() < deadline)
+        await Bun.sleep(2);
+      if (!registry.getQuestion(sessionId, question.id))
+        throw new Error('actual PTY tracker setup failed');
+      return question;
+    },
   };
 }
 
@@ -459,4 +492,48 @@ test('native ledger retains all 1024 actual outcomes across runtime replacement 
   expect(f.gate.isHeld(overflow.question.id)).toBe(true);
   expect(f.resolved).toHaveLength(1024);
   expect(f.pty.sessionState).toBe('created');
+}, 30000);
+
+test('native ledger never evicts a real queued PTY answer after proof retention expires', async () => {
+  const f = await fixture();
+  for (let index = 0; index < 1023; index++) {
+    if (index > 0 && index % 32 === 0) f.restart();
+    const held = await f.hold();
+    expect(await f.ledger.answer(await f.proof(held.question))).toBe('delivered');
+    await held.response;
+  }
+  f.restart();
+  const question = await f.terminal();
+  const completeProof = await f.proof(question, 'y');
+  const proof = await f.sign({ ...completeProof, expiresAt: completeProof.issuedAt + 2 });
+  // The real FIFO's 50ms-per-input sequence keeps the accepted answer pending
+  // past expiresAt+5 without substituting an apply function or a fake clock.
+  const queue = Array.from({ length: 180 }, (_, index) =>
+    f.pty.submitInput(`owned-ahead-${index}`),
+  );
+  const pending = f.ledger.answer(proof);
+  cleanups.push(async () => {
+    await Promise.allSettled([...queue, pending]);
+  });
+  expect(await f.ledger.answer(proof)).toBe('uncertain');
+  expect(f.output()).not.toContain('y\r');
+  const held = await f.hold();
+  const excess = await f.proof(held.question);
+  while (Math.floor(Date.now() / 1000) <= proof.expiresAt + 5) await Bun.sleep(20);
+  expect(f.output()).not.toContain('y\r');
+  expect(await f.ledger.answer(excess)).toBe('busy');
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(await pending).toBe('delivered');
+  await Promise.all(queue);
+  const outputDeadline = Date.now() + 2000;
+  while (!f.output().includes('y\r') && Date.now() < outputDeadline) await Bun.sleep(2);
+  expect(f.output()).toContain('y\r');
+  // Only actual completion permits pruning the expired record and accepting
+  // the separate live hook, never a fresh nonce for the expired answer.
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  expect(await f.ledger.answer(excess)).toBe('delivered');
+  expect(await (await held.response).json()).toMatchObject({
+    hookSpecificOutput: { decision: { behavior: 'allow' } },
+  });
+  expect(f.resolved).toHaveLength(1025);
 }, 30000);
