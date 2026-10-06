@@ -239,4 +239,99 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertNoThrow(try state.installMachineTrust(second, generation: state.authorityGeneration()))
     }
 
+    // These are public metadata fixtures at the durable-state boundary. The
+    // original-byte signature/sealed decoder receives separate conformance pins.
+    private func content(_ trust: NativePushState.MachineTrust, nonce: UInt8 = 1, revision: Int64 = 1,
+                         collapse: String = "opaque-card", kind: Int = 1, issued: Int64 = 1000,
+                         expiry: Int64 = 1100) -> NativePushState.ContentRecord {
+        let bytes = Data(repeating: nonce, count: 32)
+        let digest = Data(SHA256.hash(data: bytes + Data("\(revision)|\(kind)|\(collapse)|\(issued)|\(expiry)".utf8)))
+        return .init(rid: trust.rid, collapseId: collapse, revision: revision, kind: kind, nonce: bytes,
+                     digest: digest, issuedAt: issued, expiresAt: expiry)
+    }
+    private func paired(_ state: NativePushState) throws -> NativePushState.MachineTrust {
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let trust = try machine(state)
+        try state.installMachineTrust(trust, generation: state.authorityGeneration())
+        return trust
+    }
+
+    func testActualReplayPersistenceRejectsChangedNonceAndObsoleteActionContent() throws {
+        let file = directory.appendingPathComponent("replay.sqlite")
+        let state = try NativePushState(file: file)
+        let trust = try paired(state)
+        let first = content(trust)
+        var outcome: NativePushState.ContentOutcome?
+        XCTAssertNoThrow(outcome = try state.recordVerifiedContent(first, trust: trust, now: 1000),
+                         "Actual SQLite must persist verified content BEFORE a notification is published")
+        guard outcome != nil else { return }
+        XCTAssertEqual(outcome, .publish)
+        let reopened = try NativePushState(file: file)
+        XCTAssertEqual(try reopened.recordVerifiedContent(first, trust: trust, now: 1000), .duplicate,
+                       "An identical accepted capsule cannot redisplay after a process/store restart")
+        XCTAssertNoThrow(try reopened.reverifyLatestContent(first, trust: trust, now: 1000))
+        let conflict = content(trust, nonce: 1, revision: 2)
+        XCTAssertThrowsError(try reopened.recordVerifiedContent(conflict, trust: trust, now: 1000), "Changed-content nonce reuse must refuse")
+        let newer = content(trust, nonce: 2, revision: 2)
+        XCTAssertEqual(try state.recordVerifiedContent(newer, trust: trust, now: 1000), .publish)
+        XCTAssertThrowsError(try reopened.reverifyLatestContent(first, trust: trust, now: 1000), "An obsolete option capsule cannot grant action authority")
+        XCTAssertNoThrow(try reopened.reverifyLatestContent(newer, trust: trust, now: 1000))
+        XCTAssertEqual(try reopened.recordVerifiedContent(first, trust: trust, now: 1000), .duplicate)
+    }
+
+    func testAbsorbingDismissSurvivesForgetRepairAndMaximumRetentionHorizon() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("dismiss.sqlite"))
+        let trust = try paired(state)
+        let first = content(trust, issued: 1060, expiry: 4660)
+        var outcome: NativePushState.ContentOutcome?
+        XCTAssertNoThrow(outcome = try state.recordVerifiedContent(first, trust: trust, now: 1000),
+                         "Actual lifecycle storage must accept a current capsule before its signed dismiss")
+        guard outcome != nil else { return }
+        let dismiss = content(trust, nonce: 2, revision: 2, kind: 6, issued: 900, expiry: 1100)
+        XCTAssertEqual(try state.recordVerifiedContent(dismiss, trust: trust, now: 1000), .dismiss)
+        XCTAssertThrowsError(try state.reverifyLatestContent(first, trust: trust, now: 1000), "Terminal dismiss cannot leave action authority")
+        try state.forgetMachine(rid: trust.rid)
+        XCTAssertThrowsError(try state.recordVerifiedContent(first, trust: trust, now: 1000))
+        try state.installMachineTrust(trust, generation: state.authorityGeneration())
+        let resurrection = content(trust, nonce: 3, revision: 3, issued: 4621, expiry: 4721)
+        XCTAssertThrowsError(try state.recordVerifiedContent(resurrection, trust: trust, now: 4621),
+                             "Forget/re-pair cannot erase an absorbing tombstone before MAX seen expiry plus skew")
+        let afterRetention = content(trust, nonce: 4, revision: 3, issued: 4721, expiry: 4731)
+        XCTAssertEqual(try state.recordVerifiedContent(afterRetention, trust: trust, now: 4721), .publish)
+    }
+
+    func testCombinedNonceAndCollapseCapacityNeverEvictsLiveState() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("replay-cap.sqlite"), maximumEntries: 4)
+        let trust = try paired(state)
+        let first = content(trust)
+        var outcome: NativePushState.ContentOutcome?
+        XCTAssertNoThrow(outcome = try state.recordVerifiedContent(first, trust: trust, now: 1000),
+                         "Actual combined quota must accept the first nonce AND collapse record")
+        guard outcome != nil else { return }
+        let update = content(trust, nonce: 2, revision: 2, expiry: 2000)
+        XCTAssertEqual(try state.recordVerifiedContent(update, trust: trust, now: 1000), .publish)
+        let second = content(trust, nonce: 3, collapse: "second-card", expiry: 2000)
+        XCTAssertThrowsError(try state.recordVerifiedContent(second, trust: trust, now: 1000),
+                             "2048 policy is TOTAL nonce plus collapse rows, never a per-table allowance")
+        XCTAssertNoThrow(try state.reverifyLatestContent(update, trust: trust, now: 1000), "Capacity refusal cannot evict existing live state")
+        XCTAssertEqual(try state.recordVerifiedContent(first, trust: trust, now: 1000), .duplicate)
+        XCTAssertEqual(try state.recordVerifiedContent(second, trust: trust, now: 1161), .publish,
+                       "Only expired replay records may free capacity")
+    }
+
+    func testContentCannotCommitOrGrantActionsAfterNativeAuthorityChanges() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("replay-authority.sqlite"))
+        let trust = try paired(state)
+        let first = content(trust)
+        var outcome: NativePushState.ContentOutcome?
+        XCTAssertNoThrow(outcome = try state.recordVerifiedContent(first, trust: trust, now: 1000),
+                         "Actual content acceptance requires installed public authority and completed trust")
+        guard outcome != nil else { return }
+        try invalidate(state)
+        XCTAssertThrowsError(try state.reverifyLatestContent(first, trust: trust, now: 1000))
+        XCTAssertThrowsError(try state.recordVerifiedContent(content(trust, nonce: 2, revision: 2), trust: trust, now: 1000))
+        try install(state, publicKey: trust.authority.publicKey, revision: trust.authority.revision)
+        XCTAssertThrowsError(try state.reverifyLatestContent(first, trust: trust, now: 1000), "Identity authority installation cannot recreate completed trust")
+    }
+
 }
