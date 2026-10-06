@@ -1,5 +1,16 @@
 # R5 daemon caller validation
 
+> **Superseded in part by the PR #1222 review fixes (2026-10-06).** Read the code over these
+> statements where they differ: only live contexts (not dismissed, not expired, question still
+> registered) count toward the 32 per runtime; an identical informational repeat pushes again
+> (on its session's one collapse key where AGENTS.md says so), and `turn_complete` and
+> `subagent_alert` get one slot per occurrence; a dismissal that ended uncertain or failed is
+> retried with a fresh nonce, and a teardown dismisses every pushed, undismissed card before it
+> finishes; a question over 64 KiB goes out as bounded information with no actions; plaintext
+> push defaults ON until the R7 gate (owner decision), and the activation latch's refusal is not
+> reported as a failure; registration is refused (`UNSUPPORTED`) when no secure sender exists,
+> and the sender needs the push secret, sent as the Worker's bearer.
+
 This record describes source and local evidence for #1200. It does not establish
 shipping native notification verification, signed-device delivery, a deployed
 Worker, or complete R5/R7 acceptance. The relay remains opt-in.

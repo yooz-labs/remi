@@ -224,7 +224,7 @@ Its rate limits go through one global Durable Object (`GlobalLimiter`), and its 
 What it sees and what it does not, its routes and messages, its limits and the known gaps are in `docs/relay-worker-v2.md`; the deploy steps for the owner are in `docs/relay-worker-deploy-runbook.md`.
 `/connect/<code>` and `/answer/<code>` are deleted. R3 tests construct the real source hub and capability-verified controlled children against this Worker; shipped R4 clients and deployed acceptance remain pending.
 Those tests run the real Durable Object in workerd under Miniflare (`bun test packages/signaling`); that is not the deployed Cloudflare runtime, and the hibernation threshold, alarm precision and billing there are unverified.
-The legacy `POST /push` is unchanged and stays, off by default on the Worker (`LEGACY_PUSH_ENABLED`) and behind the push secret, until the R7 gate flips the daemon's default; the sealed `POST /v2/push/<rid>` route (R5) sits beside it.
+The legacy `POST /push` stays on by default on the Worker (only `LEGACY_PUSH_ENABLED` set to a false value turns it off) and behind the push secret, until the R7 gate flips the daemon's default; the sealed `POST /v2/push/<rid>` route (R5) sits beside it and needs both the machine signature and that bearer secret.
 
 **Authentication and local first-connect approval (#873).**
 `auth.enabled = "auto"` now enables authentication on every bind. Unknown keys
@@ -618,7 +618,7 @@ on stderr with its reason.
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen), by one of two paths (#1200).
 - **Legacy plaintext push is ON by default.**
   `notifications.legacy_push_enabled` defaults to `true` until secure push ships end to end; the default flips at the R7 gate (owner decision).
-  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `LEGACY_PUSH_ENABLED=true` and `PUSH_SECRET` to forward it to APNS.
+  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `PUSH_SECRET` (and `LEGACY_PUSH_ENABLED` not set to a false value) to forward it to APNS. A hub hands its push secret to the session daemons it spawns through their environment, never their argv.
   Its recipients are the device tokens a phone registered with `register_device_token`, counted only while the path is enabled and has a secret (`legacyChannelOpen`): `legacy_push_enabled = false`, or no push secret, makes old tokens no recipients and the event `no_channel`, not an error-level "legacy failed" per token.
   The sender throws `LegacyPushError`, whose message is one fixed code and whose `status` and `tokenInvalid` fields drive the classifiers: a 429 or a 5xx the Worker did not mark `tokenInvalid` is retried (2 retries, 400 ms then 800 ms), `tokenInvalid` prunes the token, a lost response (`LEGACY_PUSH_UNCERTAIN`) is never retried.
 - **The activation latch is machine-wide and one-way.**
@@ -677,7 +677,9 @@ those two are both exactly `{token, title, body}`.
   and its encryption. This is what ships by default today (see the first bullets of this
   section). The secure path seals the content to the device's push key, so the Worker and
   APNS receive sealed bytes plus delivery metadata (the device token, the collapse key, the
-  push kind, timing and size); it is not reachable from a shipped client yet. Tracked by the
+  push class alert or background, timing and size; the event kind is sealed). The app
+  subscribes through Settings and `SecurePushSubscriptions` when it has a native identity and a
+  relay machine; no signed build has been verified yet. Tracked by the
   relay and push privacy work (`.context/strategy-2026-10.md` section 9); the relay channel
   has its own state (#543, #881).
 - **Secure collapse keys and repeats (#1200).** One lock-screen slot per notification:
@@ -825,7 +827,7 @@ hand.
 
 1. **Local pairing** — a short-lived token and exact fingerprint confirmation in the machine owner's terminal, without an account.
 2. **Reliable messaging** — receipt acknowledgments and actual answer outcomes are distinct; an uncertain result is never reported delivered.
-3. **Cloud privacy** — R3 sends encrypted semantic frames through the Worker and refuses raw PTY. The Worker still observes routing metadata. The legacy push path, ON by default until the R7 gate, still sends plaintext prompt/excerpt text to the Worker and APNS, and enrolling a device over the relay turns it off for the whole machine for good; the sealed secure path (R5) exists but no shipped client subscribes to it yet, so a relay-paired machine gets no lock-screen push until the app wires it and a signed build exists; R5/R6 and deployed/hardware acceptance remain pending. Direct connections do not use the Worker. Historical v1 privacy claims and failures are preserved in ADR 0011 and ADR 0034; do not describe that retired transport as current.
+3. **Cloud privacy** — R3 sends encrypted semantic frames through the Worker and refuses raw PTY. The Worker still observes routing metadata. The legacy push path, ON by default until the R7 gate, still sends plaintext prompt/excerpt text to the Worker and APNS, and enrolling a device over the relay turns it off for the whole machine for good; the sealed secure path (R5) is wired in the app (Settings enable control and `SecurePushSubscriptions`), but no signed build with the Notification Service Extension has been verified, so a relay-paired machine has no verified lock-screen push yet; R5/R6 and deployed/hardware acceptance remain pending. Direct connections do not use the Worker. Historical v1 privacy claims and failures are preserved in ADR 0011 and ADR 0034; do not describe that retired transport as current.
 4. **Graceful degradation** — direct terminal clients may show raw output. Relay semantic failure reports uncertainty or an explicit refusal, without a raw PTY fallback.
 
 ## Branch Strategy

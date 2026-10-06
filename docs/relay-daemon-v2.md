@@ -5,9 +5,16 @@ runs only in the session-less hub. R4 web/native client integration, R5/R6 push
 privacy, deployment and owner hardware acceptance are separate gates. This is
 not a claim that a released phone app or the deployed Worker supports this path.
 R5 adds signed, sealed push content through `/v2/push/<rid>`; native verification
-and the background answer path still have separate acceptance gates. Plaintext
-`/push` compatibility defaults off and requires explicit opt-in, a secret and the
-durable secure-activation guard. Direct transport behavior remains separate.
+and the background answer path still have separate acceptance gates. The daemon
+builds the sealed-push sender only with a push secret (`--push-secret` or
+`REMI_PUSH_SECRET`; a hub hands it to the session daemons it spawns through their
+environment), which it sends as the Worker's bearer; without one the hub answers
+`secure_push_register_request` with `UNSUPPORTED`. Plaintext `/push` stays on by
+default (`notifications.legacy_push_enabled = true`) until the R7 gate, and still
+needs a push secret. A durable, machine-wide activation latch retires it the first
+time any device enrolls over the relay: from then on the machine sends no plaintext
+push to any device, directly connected phones included (#1200). Direct transport
+behavior remains separate.
 
 ## Opt-in and local authority
 
