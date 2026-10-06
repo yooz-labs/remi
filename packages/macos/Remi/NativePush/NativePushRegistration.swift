@@ -25,9 +25,9 @@ final class NativePushRegistration {
     private let state: NativePushState
     private let keys: NativePushKeyStore
     private let tokens: NativePushTokenOwner
-    private let environment: NativeAPNsEnvironment
+    private let environment: @MainActor () -> NativeAPNsEnvironment
     init(state: NativePushState, keys: NativePushKeyStore, tokens: NativePushTokenOwner,
-         environment: NativeAPNsEnvironment) {
+         environment: @escaping @MainActor () -> NativeAPNsEnvironment = { NativeAPNsEnvironment() }) {
         self.state = state; self.keys = keys; self.tokens = tokens; self.environment = environment
     }
     func prepare(rid: Data, authority: NativePushState.Authority,
