@@ -13,6 +13,16 @@ type Entry = {
   dismissed: boolean;
   digest?: string;
 };
+/**
+ * Kinds whose legacy push carried no collapse key, so every occurrence stacks on the lock screen
+ * (#1200, B2). The other informational kinds keep one slot per logical id, as legacy: one
+ * `harness_denied` and one `turn_failed` per session. Questions and their notices are keyed by
+ * their own ids.
+ */
+const OWN_SLOT_KINDS: ReadonlySet<relayV2.SecurePushKind> = new Set([
+  'turn_complete',
+  'subagent_alert',
+]);
 const seconds = (): number => Math.floor(Date.now() / 1000);
 /** In-flight deliveries may still read a context this long after its expiry. */
 const DELIVERY_GRACE_SECONDS = 120;
@@ -76,6 +86,8 @@ export interface SecurePushContext {
   readonly runtime: SecurePushRuntime;
   readonly snapshot: SecurePushSnapshot;
   readonly logicalId: string;
+  /** Distinguishes occurrences that share a logical id and must not share a lock-screen slot. */
+  readonly occurrence: string;
   readonly content: Omit<relayV2.PushContentMetadata, 'machinePublicKey' | 'rid'>;
   readonly payload: relayV2.SecurePushPayload;
 }
@@ -83,6 +95,8 @@ export interface SecurePushContextDeps {
   readonly questionFor: (sessionId: UUID, questionId: UUID) => Question | null;
   readonly validityFor: (sessionId: UUID, questionId: UUID) => AnswerValidity;
 }
+const slotOf = (context: SecurePushContext): string =>
+  `${context.logicalId}\0${context.occurrence}`;
 export class SecurePushContexts {
   private readonly runtimes = new Map<UUID, SecurePushRuntime>();
   private readonly entries = new Map<string, Entry>();
@@ -132,7 +146,12 @@ export class SecurePushContexts {
       )
         return null;
       this.prune();
-      const key = this.key(runtime, event.logicalId, snapshot.publicKey);
+      // An explicit occurrence id names one occurrence (a duplicate frame of it coalesces);
+      // without one, a kind that legacy never collapsed gets a slot of its own per capture.
+      const occurrence =
+        event.eventId ??
+        (OWN_SLOT_KINDS.has(event.kind) ? relayV2.b64u(relayV2.systemRandom(16)) : '');
+      const key = this.key(runtime, event.logicalId, occurrence, snapshot.publicKey);
       const previous = this.entries.get(key);
       if (previous?.dismissed)
         return event.kind === 'dismiss' && this.isCurrent(previous.context)
@@ -215,7 +234,11 @@ export class SecurePushContexts {
         questionMeaning: qMeaning ?? null,
         subscription: captured,
       });
-      if (previous?.meaning === meaning)
+      // A question and an explicit occurrence id have an identity, so an identical repeat is the
+      // same event and keeps its object, nonce and expiry. Any other identical informational
+      // event is a LATER occurrence of something that happened again: it advances the revision
+      // and pushes, as legacy did, instead of being coalesced and then dropped (B2).
+      if (previous?.meaning === meaning && (event.question || event.eventId !== undefined))
         return this.isCurrent(previous.context) ? previous.context : null;
       // Capacity refuses new live work; it never evicts a live entry (#1200). Only a LIVE slot
       // (not dismissed, not expired) counts against the per-session cap: a resolved or expired
@@ -229,8 +252,11 @@ export class SecurePushContexts {
         const liveSlots = new Set<string>();
         for (const e of this.entries.values())
           if (e.context.runtime === runtime && this.isLive(e, now))
-            liveSlots.add(e.context.logicalId);
-        if (!liveSlots.has(event.logicalId) && liveSlots.size >= this.perSessionCapacity)
+            liveSlots.add(slotOf(e.context));
+        if (
+          !liveSlots.has(`${event.logicalId}\0${occurrence}`) &&
+          liveSlots.size >= this.perSessionCapacity
+        )
           return null;
       }
       const revision = (previous?.context.content.revision ?? 0) + 1;
@@ -239,6 +265,7 @@ export class SecurePushContexts {
         runtime,
         snapshot: captured,
         logicalId: event.logicalId,
+        occurrence,
         content: Object.freeze({
           devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
           pushPublicKey: snapshot.pushPublicKey,
@@ -274,7 +301,12 @@ export class SecurePushContexts {
       )
         return false;
       const entry = this.entries.get(
-        this.key(context.runtime, context.logicalId, context.snapshot.publicKey),
+        this.key(
+          context.runtime,
+          context.logicalId,
+          context.occurrence,
+          context.snapshot.publicKey,
+        ),
       );
       if (!entry || entry.context !== context) return false;
       if (entry.questionId) {
@@ -299,7 +331,7 @@ export class SecurePushContexts {
   bindDigest(context: SecurePushContext, digest: string): boolean {
     if (!/^[0-9a-f]{64}$/.test(digest) || !this.isCurrent(context)) return false;
     const entry = this.entries.get(
-      this.key(context.runtime, context.logicalId, context.snapshot.publicKey),
+      this.key(context.runtime, context.logicalId, context.occurrence, context.snapshot.publicKey),
     );
     if (!entry || (entry.digest && entry.digest !== digest)) return false;
     entry.digest = digest;
@@ -310,7 +342,7 @@ export class SecurePushContexts {
     questionId: UUID,
     devicePublicKey: string,
   ): { readonly context: SecurePushContext; readonly contentDigest: string } | null {
-    const entry = this.entries.get(this.key(runtime, questionId, devicePublicKey));
+    const entry = this.entries.get(this.key(runtime, questionId, '', devicePublicKey));
     return entry?.digest && entry.context.payload.actionable && this.isCurrent(entry.context)
       ? Object.freeze({ context: entry.context, contentDigest: entry.digest })
       : null;
@@ -337,8 +369,13 @@ export class SecurePushContexts {
       if (!entry.questionId && entry.context.content.expiresAt + DELIVERY_GRACE_SECONDS <= now)
         this.entries.delete(key);
   }
-  private key(runtime: SecurePushRuntime, logicalId: string, devicePublicKey: string): string {
-    return JSON.stringify([runtime.instance, logicalId, devicePublicKey]);
+  private key(
+    runtime: SecurePushRuntime,
+    logicalId: string,
+    occurrence: string,
+    devicePublicKey: string,
+  ): string {
+    return JSON.stringify([runtime.instance, logicalId, occurrence, devicePublicKey]);
   }
   private prune(): void {
     const now = seconds();
