@@ -95,6 +95,37 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         XCTAssertEqual(reply["reused"] as? Bool, false)
         XCTAssertEqual(registrations, 1)
     }
+    @MainActor func testActualWebRegistrationCannotPublishAfterIdentityChangesDuringPublicKeyImport() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let web = try await web(tokens: tokens)
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"])
+        let script = try String(contentsOfFile: path, encoding: .utf8)
+        let evaluated = try await web.callAsyncJavaScript(script + ";return true;", arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(evaluated as? Bool, true)
+        let result = try await web.callAsyncJavaScript("""
+            const provider = window.nativeProviderTest;
+            const current = await provider.inspectNativeIdentity();
+            const original = crypto.subtle.importKey.bind(crypto.subtle);
+            let changed = false;
+            crypto.subtle.importKey = async (...args) => {
+              const key = await original(...args);
+              if (args[2]?.name === 'ECDH' && !changed) {
+                changed = true;
+                await provider.storeLegacy();
+              }
+              return key;
+            };
+            try {
+              await provider.prepareNativePushRegistration(current.identity, machine);
+              return {accepted:true,changed};
+            } catch {return {accepted:false,changed};}
+            finally {crypto.subtle.importKey = original;}
+            """, arguments: ["machine": machine.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")], in: nil, contentWorld: .page)
+        let reply = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(reply["changed"] as? Bool, true, "The real engine import completes before a real storage identity change")
+        XCTAssertEqual(reply["accepted"] as? Bool, false, "The old web continuation cannot publish registration metadata")
+        XCTAssertEqual(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: "owned-dpk")?.publicKeyRaw, identity.publicKeyRaw)
+    }
     @MainActor func testActualBundledIngressReturnsOnlyNativeSecureMetadata() async throws {
         let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([0, 15, 255]))
         let web = try await web(tokens: tokens)
