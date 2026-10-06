@@ -55,6 +55,17 @@ Private receipts are under
 `cli-https-8vUBzr/receipt.json`. These local artifacts are not durable release
 receipts. This exact source checkpoint precedes the corrections below.
 
+After those corrections, exact f6e4a6d7 repeated the production-HTTPS fixture on
+both actual runner and child runtimes. Each run passed 21 checks, adding an
+assertion that the whole bounded actual command appears in the authenticated
+signed body. The earlier hook, identity, ciphertext, unstick, natural-exit and
+zero-owned-residual checks also pass. Receipts are `cli-https-d4BBJX/receipt.json`
+and `cli-https-U1O8el/receipt.json` under the same private review directory.
+The independent corrective source review found no remaining actionable finding
+in its scope and produced 12 named assertion mutation kills across both runtimes,
+with exact production bytes restored. Its fixed-source review receipt separately
+records one excluded executable-path typo that ran no tests.
+
 ## Causal corrections after independent review
 
 The reviewer used actual held hooks, durable stores, shared crypto and owned
@@ -122,3 +133,22 @@ not a crypto, authority, hook or transport implementation.
 Signed hardware, the production Apple HTTP/2 path, native verified action routing,
 R6 sealed answers, deployed acceptance and the final shipping-client soak remain
 pending. An APNs receiver acceptance is not evidence of device presentation.
+
+## Fresh dependency declarations
+
+The first fresh, frozen f6e4a6d7 checkout stopped at root typechecking, before any
+full tests: the Worker test harness's `net.Server.once` declaration was missing.
+The locked graph contains Node 24.10.6 and a nested Node 25.0.5 type package.
+Their merged ambient declarations left the selected server's event base
+unresolved. The original worktree's successful static check instead loaded an
+ancestor type package outside the repository, so it is not fresh acceptance.
+
+Declaring the already locked exact Node 24.10.6 types directly at the root makes
+the compiler resolve all Node references to the repository's own Node 24
+declarations. An independent clean counterfactual passes all four package type
+checks and confirms only those declarations are loaded. Only the root manifest
+and matching lock workspace declaration change; no package version or integrity
+record changes, no cast bypasses the server's error handler, and no runtime code
+changes. The failed fresh receipt remains at
+`/private/tmp/remi-r5-daemon-combined-gates-path`; subsequent exact-head gates
+must start from a new frozen checkout.
