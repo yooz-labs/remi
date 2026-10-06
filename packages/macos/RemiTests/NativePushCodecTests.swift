@@ -349,4 +349,16 @@ final class NativePushCodecTests: XCTestCase {
         XCTAssertThrowsError(try open(original), "A nullable legacy route is not completed native pairing authority")
         XCTAssertEqual(try state.machineTrust(rid: legacy.rid), legacy, "Refusal cannot repair or delete old public state")
     }
+    func testBooleanCannotAliasActualRecipientVersionOne() throws {
+        let key = try XCTUnwrap(keys.load())
+        struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
+        let record = try JSONEncoder().encode(Record(version: 1, privateDER: key.privateKey.derRepresentation, publicKey: key.publicKey, keyVersion: 1))
+        XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: record] as CFDictionary), errSecSuccess)
+        let vector = try XCTUnwrap(cases.first)
+        var original = try reseal(vector) { $0[4] = self.be64(1) }
+        original["keyVersion"] = 1
+        XCTAssertNoThrow(try open(original), "Actual version-one recipient and signed tuple must have a passing baseline")
+        original["keyVersion"] = true
+        XCTAssertThrowsError(try open(original), "JSON true cannot alias the actual numeric recipient version1")
+    }
 }
