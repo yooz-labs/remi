@@ -1742,7 +1742,8 @@ function App() {
       case 'auth_result':
         break;
 
-      // R5 secure subscription messages await the native registration consumer (#1200).
+      // R5 secure subscription responses are settled by RelayRequests in the
+      // connection manager for SecurePushSubscriptions; nothing more to do here (#1200).
       case 'secure_push_register_request':
       case 'secure_push_register_response':
       case 'secure_push_unregister_request':
