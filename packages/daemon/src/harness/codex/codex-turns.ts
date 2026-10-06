@@ -23,6 +23,10 @@
  *   LV-5 capture showed this status after phone No (`cancel`), TUI Esc and
  *   `turn/interrupt`; the earlier decline run answered `decline` and reported
  *   `completed`, so it is not evidence for those stop paths.
+ * - An `item/completed` of Codex's own work on the main thread (an answer,
+ *   reasoning, a command, a file change, a tool call; not the person's own
+ *   message): `turnSucceeded` too (#1226). Codex is working again, so a failure
+ *   notice is stale, and the next failure, even for the same reason, alerts.
  *
  * Only the session's own thread counts (`threadRole` is `main`): a subagent's
  * turn ends many times inside the main turn, and another window's thread is not
@@ -48,7 +52,8 @@
  * stay out of the log, and a status remi does not know is logged without its
  * value. A turn that ended while remi was not attached (before the first attach,
  * or while the link was down) is never seen, so it pushes nothing, and a stale
- * "Codex stopped" stays until the next completed or interrupted turn.
+ * "Codex stopped" stays until the next completed or interrupted turn, or until
+ * Codex works again.
  *
  * Real completed, interrupted and failed frames from the bounded Codex 0.160.0
  * LV-5 capture are pinned in `fixtures/codex-app-server/lv5.jsonl`. Synthetic
@@ -60,7 +65,7 @@ import type { UUID } from '@remi/shared';
 import type { TurnEventSink } from '../../notifications/turn-events.ts';
 import { describeError } from './describe-error.ts';
 import { boundedEscape, hasVisibleText, pushProse } from './safe-text.ts';
-import { parseTurnCompleted } from './thread-protocol.ts';
+import { agentWorkThreadOf, parseTurnCompleted } from './thread-protocol.ts';
 
 /** Who the failure notice says stopped. */
 const AGENT_NAME = 'Codex';
@@ -80,7 +85,8 @@ export interface CodexTurnsDeps {
 }
 
 export interface CodexTurns {
-  /** Feed every notification of the app-server; only a `turn/completed` of the main thread does anything. */
+  /** Feed every notification of the app-server; only a `turn/completed` of the main thread, or an
+   *  `item/completed` of Codex's own work there, does anything. */
   handleNotification(method: string, params: unknown): void;
 }
 
@@ -109,6 +115,16 @@ export function createCodexTurns(deps: CodexTurnsDeps): CodexTurns {
 
   return {
     handleNotification: (method, params) => {
+      if (method === 'item/completed') {
+        // Codex working again on the main thread (#1226): a "Codex stopped" notice is stale, and the
+        // next failure, even for the same reason, is news. The person's own message is not work: at
+        // a usage limit it is followed by a failed turn and nothing else.
+        const threadId = agentWorkThreadOf(params);
+        if (threadId !== null && deps.threadRole(threadId) === 'main') {
+          guarded('turnSucceeded', () => sink.turnSucceeded(sessionId));
+        }
+        return;
+      }
       if (method !== 'turn/completed') return;
       const turn = parseTurnCompleted(params);
       if (turn === null) {

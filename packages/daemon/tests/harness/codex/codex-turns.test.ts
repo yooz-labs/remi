@@ -31,8 +31,11 @@ import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.
 import {
   type Json,
   agentMessageItem,
+  itemCompletedFrame,
+  realItem,
   turnCompletedFrame,
   turnError,
+  userMessageItem,
 } from '../../helpers/codex-threads.ts';
 
 const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
@@ -1252,6 +1255,77 @@ describe('Codex turns through the real sink and dispatcher', () => {
     turns().handleNotification('turn/completed', longTurn());
     await flush();
     expect(dismissals()).toHaveLength(2);
+  });
+
+  describe('one alert per failure reason until Codex works again (#1226)', () => {
+    let turnNumber = 0;
+    const failed = () =>
+      longTurn({
+        turnId: `failed-${++turnNumber}`,
+        status: 'failed',
+        items: [],
+        error: turnError('You have hit your usage limit.', 'usageLimitExceeded'),
+      });
+    const kinds = () => sent.map((s) => s.opts['kind']);
+
+    test('a failed turn repeated at the limit alerts once', async () => {
+      deviceTokens.set('a', device('a'));
+      const t = turns();
+
+      for (let i = 0; i < 4; i++) t.handleNotification('turn/completed', failed());
+      await flush();
+
+      expect(kinds()).toEqual(['turn_failed']);
+    });
+
+    test('an interrupted turn re-arms it', async () => {
+      deviceTokens.set('a', device('a'));
+      const t = turns();
+
+      t.handleNotification('turn/completed', failed());
+      t.handleNotification(
+        'turn/completed',
+        longTurn({ turnId: 'stopped', status: 'interrupted', items: [] }),
+      );
+      t.handleNotification('turn/completed', failed());
+      await flush();
+
+      expect(kinds()).toEqual(['turn_failed', 'dismiss', 'turn_failed']);
+    });
+
+    test('an item Codex produced on the main thread re-arms it, so a long turn that fails again is heard', async () => {
+      deviceTokens.set('a', device('a'));
+      const t = turns();
+
+      t.handleNotification('turn/completed', failed());
+      t.handleNotification(
+        'item/completed',
+        params(itemCompletedFrame(MAIN, realItem('commandExecution'))),
+      );
+      t.handleNotification('turn/completed', failed());
+      await flush();
+
+      expect(kinds()).toEqual(['turn_failed', 'dismiss', 'turn_failed']);
+    });
+
+    test("the person's own message, and a subagent's item, do not re-arm it", async () => {
+      deviceTokens.set('a', device('a'));
+      const t = turns();
+
+      t.handleNotification('turn/completed', failed());
+      t.handleNotification(
+        'item/completed',
+        params(itemCompletedFrame(MAIN, userMessageItem('u1', 'try again'))),
+      );
+      t.handleNotification(
+        'item/completed',
+        params(itemCompletedFrame(SUB, agentMessageItem('m1', 'working', 'commentary'))),
+      );
+      t.handleNotification('turn/completed', failed());
+      await flush();
+
+      expect(kinds()).toEqual(['turn_failed']);
+    });
   });
 
   test('an interrupted turn pushes nothing by itself', async () => {

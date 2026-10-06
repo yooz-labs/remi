@@ -21,7 +21,8 @@
 > A fifth, independent preference rather than a share of `turnComplete`: the machine-wide `notifications.on_turn_complete = false` and the per-device `turnComplete` mute silence only the "done" notice, because a failed turn is the one turn end a user must not miss by default (the agent is stopped until something is done).
 > Its notices carry one collapse key per session (`turn-failed-<sessionId>`), so a usage limit that fails every following prompt keeps one notice on the lock screen.
 > A fan-out where every device muted it resolves `no_channel`, as for a question.
-> A later main-agent `Stop` or `UserPromptSubmit` sends a quiet `dismiss` on the same collapse key (only when a `turn_failed` push is outstanding), so a stale "Claude stopped" does not outlive a turn that succeeded; like every `dismiss`, it is never filtered.
+> A later main-agent `Stop` or main-agent tool call (`PreToolUse`) sends a quiet `dismiss` on the same collapse key (only when a `turn_failed` push is outstanding), so a stale "Claude stopped" does not outlive the agent working again; like every `dismiss`, it is never filtered.
+> Amended by #1226: a new prompt (`UserPromptSubmit`) no longer dismisses it, since at a usage limit that prompt fails too and the dismiss-then-alert cycle alerted the phone on every retry; and a failure alerts once per `turnFailureKey` (who failed, and why) until the notice is cleared.
 > Privacy, unchanged and stated plainly: its text, including an excerpt of up to 140 characters of `last_assistant_message` (or a string `error_details`), goes in plaintext to the signaling Worker's `/push` and on to APNS, the same posture as `turn_complete`. Tracked by the relay and push privacy work (`.context/strategy-2026-10.md` section 9); the relay data channel has its own state (#543, #881).
 
 ## Context
