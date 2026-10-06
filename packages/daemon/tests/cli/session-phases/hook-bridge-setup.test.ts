@@ -563,6 +563,8 @@ describe('setupHookBridge', () => {
     });
 
     test('an admitted StopFailure reaches pushTurnFailed once, with this session id and the payload (#1153)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
       const pushed: Array<{ sessionId: UUID; input: StopFailureHookInput }> = [];
       build({ pushTurnFailed: (sessionId, input) => pushed.push({ sessionId, input }) });
       lock('claude-A');
@@ -571,6 +573,7 @@ describe('setupHookBridge', () => {
       expect(pushed[0]?.sessionId).toBe(SID);
       expect(pushed[0]?.input.error).toBe('rate_limit');
       expect(pushed[0]?.input.last_assistant_message).toBe("You've hit your session limit");
+      expect(logs.filter((line) => line.includes('Turn failed'))).toEqual(['[Hooks] Turn failed']);
     });
 
     test('a throwing pushTurnFailed never escapes into the hook dispatch loop (#1153)', () => {
@@ -4374,7 +4377,7 @@ describe('setupHookBridge', () => {
       expect(subagentViews.resolvePath('sub-1')).toBe(derived);
     });
 
-    test('Stop logs the truncated last_assistant_message (turn genuinely complete)', () => {
+    test('Stop logs only the operation when the turn genuinely completes', () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       build();
@@ -4388,15 +4391,13 @@ describe('setupHookBridge', () => {
       });
       const turnCompleteLines = logs.filter((l) => l.includes('Turn complete'));
       expect(turnCompleteLines.length).toBe(1);
-      // The log line is keyed by remi's daemon-side session id (SID), not the
-      // raw Claude session_id from the hook payload -- same convention every
-      // other [Hooks] log line in this file uses.
-      expect(turnCompleteLines[0]).toContain(SID);
-      // Truncated: the 300+ char filler must not appear in full, and whitespace
-      // (including the embedded newlines) is collapsed to single spaces.
+      expect(turnCompleteLines[0]).toBe('[Hooks] Turn complete');
+      expect(turnCompleteLines[0]).not.toContain(SID);
+      expect(turnCompleteLines[0]).not.toContain('claude-891-stop');
       expect(turnCompleteLines[0]?.includes('x'.repeat(300))).toBe(false);
       expect(turnCompleteLines[0]).not.toContain('\n');
-      expect(turnCompleteLines[0]).toContain('Line one. Line two with lots of detail.');
+      expect(turnCompleteLines[0]).not.toContain('Line one.');
+      expect(turnCompleteLines[0]).not.toContain('Line two with lots of detail.');
     });
 
     test('Stop does NOT log when stop_hook_active is true (turn is not actually done)', () => {
