@@ -20,6 +20,9 @@ machine before passing it to `ChildProxy.nativeAnswer`. The proxy uses the
 actual capability-authenticated child WebSocket and correlated result handling;
 an identical pending body coalesces, while a different body with the same id
 is refused before its waiter can replace the original.
+Every coalesced waiter is settled with the first caller's outcome on every exit path of that caller.
+That includes a send that fails before the child returns any result (a closed or replaced child socket, an unknown session).
+Before fix track C such a waiter waited forever, and its peer application slot (32 per peer) stayed taken for the peer's lifetime.
 
 The ledger owns the tuple before its first cryptographic await. It checks
 current grant, enrollment and subscription epochs and runtime identity before
@@ -30,11 +33,43 @@ or message field. Both `(device, id)` and `(device, nonce)` index each claim.
 There are at most 1,024 retained records and 32 pending records per session;
 pending records keep their capacity claim until the real core completes.
 
-The final authority callback holds the actual subscription lock around only
+A retained result is served only while the proof itself is unexpired, which is at most 30 seconds from issue.
+After expiry the exact proof reads `stale` even if its answer was delivered, and nothing is applied twice.
+The five seconds of retention past expiry keep the `(device, id)` and `(device, nonce)` claims, so a different tuple that reuses either is a `conflict`.
+They are not a result window.
+Serving an expired proof's result was decided against.
+The hub, the proxy, the ledger and the shared verifier each refuse an expired proof by design (the plan requires a late answer to be refused), and a longer retention horizon is an owner decision.
+
+The final authority callback (`commit`) holds the actual subscription lock around only
 the synchronous effect: held-hook completion, Codex response write or PTY enqueue.
 Network completion, question cleanup and downstream notification callbacks run
 after that lock is released. An already accepted effect may finish after
 revocation; revocation that completes before the effect prevents it.
+For Claude the callback reaches the gate through `ClaudeDecisions.answerHeld` and the hook bridge's `SessionGateHandle.answerHeld`.
+Before fix track C that handle re-declared the method with two parameters, so TypeScript accepted it and the callback was silently dropped: held-hook completion ran without the lock and a refusing callback was ignored.
+The handle is now typed as the gate's own method and forwards `(...args)`, and `ClaudeDecisions` reads its type from the handle, so a gate that stops taking `commit` fails to compile at the forwarding call.
+TypeScript still accepts a hand-written forwarder with fewer parameters, so two pins catch that regression at run time: one through the launched Claude session and one through `setupHookBridge`.
+`CodexDecisions` is itself the session's decision channel, so its callback needs no forwarder.
+A pin through `gateAnswerDeps` with a revoked store covers that composition.
+
+## Diagnostics
+
+Each refusal and each fault is logged without an id, nonce, key, signature, answer or path.
+A refusal is a decision: `[NativeAnswer] refused (<reason>)`.
+The reason is a code the shared verifier names (for example `EXPIRED` or `BAD_SIGNATURE`) or one of `unexpected-field`, `runtime-not-current`, `device-not-current`, `proof-not-current`, `epoch-changed`, `action-not-current`, `authority-revoked`, `conflict` and `busy`.
+A fault is a thrown error, usually a store or lock error such as `InterprocessFileLockError` after the 2 second lock wait: `[NativeAnswer] fault (<error name>) while verifying|claiming|committing; nothing applied`, written through `logError`.
+The outcome sent to the client is unchanged for both: `stale` (or `conflict` and `busy` for those two reasons), and a final-commit refusal or fault keeps the live hold and card.
+Only the log tells a lock fault from a revocation.
+Refusal reasons found inside the subscription lock are logged after it is released.
+
+`HubRelay` re-reads a ready peer's authority on every frame in both directions.
+An unreadable authority store logs `Relay authority store unreadable (<error name>); failing closed, not a revocation`, and a revoked or replaced grant logs `Relay authority no longer current; failing closed`.
+Each is logged once per change of verdict for a peer.
+Both close the peer at their callers (`sendRaw` for outbound frames, `route` for inbound ones).
+That is deliberate for the store fault.
+The channel is ordered and complete, so refusing one frame and staying open would drop it silently and leave the client's state diverged.
+A close makes the client reconnect and resync, and a reconnect re-captures authority under the same lock: a persistent fault keeps the peer out, and a transient one recovers.
+A peer can therefore be closed during lock contention; the log line now says so.
 
 ## Component evidence
 
@@ -51,13 +86,16 @@ the default fatal decoder stripped the BOM. Both ingress decoders now use
 `ignoreBOM: true` to retain it for JSON refusal.
 
 Actual held HTTP, Codex Unix WebSocket and queued PTY effect tests passed
-7 tests / 70 assertions on both versions. Six independent causal mutation
+7 tests / 70 assertions on both versions at that checkpoint; the file now has 8
+tests / 79 assertions on both versions. Six independent causal mutation
 families verify the exact effect boundary, refusal preservation and notification
 callbacks after lock release.
+Those tests hand the answer handlers the raw `AutoApproveGate`, so they did not exercise the Claude bridge handle (see fix track C below).
 
-The ledger tests passed 13 tests / 5,232 assertions on both versions, including
-real held-hook decisions at the 1,024-record cap and a real PTY answer still
-queued after proof retention expires. Eight independent causal families cover
+The ledger tests passed 13 tests / 5,232 assertions on both versions at that
+checkpoint, including real held-hook decisions at the 1,024-record cap and a
+real PTY answer still queued after proof retention expires.
+With fix track C's six added tests the file has 19 tests / 5,286 assertions on both versions. Eight independent causal families cover
 captured epochs, optional fields, digest, pre-await ownership, nonce conflicts,
 capacity, complete action titles and pending retention. Removing only the live
 pending retention guard made the overflow decision incorrectly execute, failing
@@ -71,8 +109,8 @@ deny, and a fresh encrypted peer receives the retained delivered outcome for
 the identical proof. This fixture boots the source child directly; it does not
 prove the source CLI hub supervisor's boot/spawn path. An actual lost child
 socket result returns correlated uncertain and produces no automatic resend;
-one explicit identical-proof query over a fresh encrypted peer receives the
-retained delivered result. Holding one real socket result demonstrates pending
+one explicit identical-proof query over a fresh encrypted peer, made inside the
+proof's lifetime, receives the retained delivered result. Holding one real socket result demonstrates pending
 coalescing and same-id conflict refusal. All three scenarios pass 112 checks per
 Bun version, with six named independent causal controls, restored source and
 natural child exits with no owned-process residuals.
@@ -117,6 +155,23 @@ No production change, test suppression or overall timeout increase was made.
 The failed full run had no owned-process or broader clone-path residuals;
 Bun 1.3.11 full execution did not start. A fresh corrected-head full gate is
 still required.
+
+## Fix track C evidence (#1222 review)
+
+An independent review reproduced two defects and raised three more; each was confirmed against the code first.
+Every fix has a pin test in its own commit that failed on the unfixed code at the named assertion, and the pins fail again when the fix is reversed.
+No pin replaces a decision, crypto or storage component.
+The lock faults use a real lock file owned by a live foreign process, which the store waits out for its real 2 second timeout.
+
+- Claude dropped the final authority callback: both pins (through the launched Claude session and through `setupHookBridge`) saw `resolved` instead of `authority-refused`. A third test confirms the Codex composition through `gateAnswerDeps` already forwarded it.
+- A coalesced identical proof hung when the first caller's send failed: the second waiter was still pending after the first returned `uncertain`, against a real child WebSocket server that closes before its hello acknowledgment and against a registry entry replaced during the wait. A guard test keeps one wire frame for one shared child result.
+- Result retention past expiry: documented as a limit and pinned (see above), no behavior change.
+- Silent failures: seven pins cover the three ledger phases with a real lock fault, the reason of each refusal with no id, nonce, question id or signature in any line, a revoked grant at the final commit, and the hub's two verdicts for a real peer.
+
+The scoped suites pass on Bun 1.4.2 and Bun 1.3.11: 1,617 pass / 3 skip / 0 fail across 55 files.
+They cover the daemon `remote`, `harness`, `auto-approve` and hook bridge tests, the answer-effect authority test, the secure push store test, and the relay R3, R5 subscription, R6 ingress and secure push transport integration tests.
+Per file on both versions: the ledger 19 tests / 5,286 assertions, the child proxy file 3 / 10, the hub authority fault file 2 / 7.
+The source CLI route fixture passes its three scenarios (34, 36 and 42 checks) on both versions, and the supervisor fixture passes 40 checks on Bun 1.4.2.
 
 ## Remaining acceptance
 
