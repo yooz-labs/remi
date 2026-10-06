@@ -500,6 +500,49 @@ test('secure transport sends the deployment secret as a bearer on every attempt 
   expect(JSON.stringify(delivery)).not.toContain(secret);
   expect(JSON.stringify(prepared.prepared)).not.toContain(secret);
 });
+// #1200 A3: a budget refusal cannot succeed again inside its fixed window, so the transport waits
+// for the Worker's Retry-After (bounded by the submit's own validity) instead of retrying at once.
+test('secure transport waits for the Worker Retry-After before it retries the same bytes', async () => {
+  const f = await fixture();
+  const times: number[] = [];
+  const received = receiver(async (req, body, count) => {
+    times.push(Date.now());
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return count === 1
+      ? new Response(
+          r.encodePushSubmitResult({
+            v: 2,
+            outcome: 'rejected',
+            requestDigest,
+            reason: 'RATE_LIMITED',
+            retryable: true,
+          }),
+          { status: 429, headers: { 'retry-after': '1' } },
+        )
+      : new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 1,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'accepted',
+    attempts: 2,
+  });
+  expect((times[1] ?? 0) - (times[0] ?? 0)).toBeGreaterThanOrEqual(1000);
+  expect(received.bodies[1]).toBe(received.bodies[0]);
+}, 10000);
+
 test('secure transport refuses a deployment secret fetch could not send as a header', async () => {
   const f = await fixture();
   const received = receiver(() => Response.json({}));

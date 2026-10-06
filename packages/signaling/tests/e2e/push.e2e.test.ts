@@ -511,6 +511,101 @@ test('real APNs rejection is final fixed invalid-token outcome with no environme
   expect(requests.length).toBe(1);
 }, 15000);
 
+// #1200 A3: a failure before APNs must be reported as what it is, and a transient one must leave
+// the same signed bytes able to succeed on a retry. Before the fix an unusable APNs key threw after
+// the nonce was consumed (HTTP 200 uncertain, nonce pending forever, never retried), and every
+// non-2xx from Apple, a 429 or 503 included, became a final non-retryable APNS_REJECTED.
+test('an unusable APNs key is a retryable unavailable outcome and strands no nonce', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ APNS_PRIVATE_KEY: 'x' });
+  const s = await submission(w, m, d, p);
+  const first = await post(w, s);
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_UNAVAILABLE', retryable: true });
+  expect(first.requestDigest).toMatch(/^[0-9a-f]{64}$/);
+  expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+  expect(await post(w, s)).toEqual(first);
+  expect(requests.length).toBe(0);
+}, 15000);
+
+for (const [httpStatus, reason] of [
+  [429, 'TooManyRequests'],
+  [500, 'InternalServerError'],
+  [503, 'ServiceUnavailable'],
+] as const)
+  test(`APNs ${httpStatus} ${reason} is retryable and the same signed bytes succeed once APNs recovers`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup();
+    const s = await submission(w, m, d, p);
+    status = httpStatus;
+    responseBody = JSON.stringify({ reason });
+    expect(await post(w, s)).toMatchObject({
+      outcome: 'rejected',
+      reason: 'APNS_UNAVAILABLE',
+      retryable: true,
+    });
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+    status = 200;
+    responseBody = '';
+    expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+    expect(requests.length).toBe(2);
+    expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+    expect(requests.length).toBe(2);
+  }, 15000);
+
+test('an expired provider token is retryable and the retry signs a fresh JWT', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  status = 403;
+  responseBody = '{"reason":"ExpiredProviderToken"}';
+  expect(await post(w, s)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'APNS_UNAVAILABLE',
+    retryable: true,
+  });
+  status = 200;
+  responseBody = '';
+  expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+  expect(requests.length).toBe(2);
+  expect(requests[1]?.headers['authorization']).not.toBe(requests[0]?.headers['authorization']);
+}, 15000);
+
+test('a permanent APNs rejection stays final and is retained for the same nonce', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  status = 400;
+  responseBody = '{"reason":"BadTopic"}';
+  const first = await post(w, s);
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_REJECTED', retryable: false });
+  status = 200;
+  responseBody = '';
+  expect(await post(w, s)).toEqual(first);
+  expect(requests.length).toBe(1);
+}, 15000);
+
+// A fixed-window refusal cannot succeed again inside its window, so the Worker says when the next
+// one starts and the daemon waits for it instead of retrying within the same minute.
+for (const [name, vars] of [
+  ['send', { PUSH_SEND_TOKEN: '1' }],
+  ['attempt', { PUSH_ATTEMPT_IP: '1' }],
+] as const)
+  test(`a ${name} budget refusal carries the seconds until the next window as Retry-After`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup(vars);
+    const submit = async () => {
+      const s = await submission(w, m, d, p);
+      return get(`${w.url}/v2/push/${s.rid}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer },
+        body: r.encodePushSubmit(s),
+      });
+    };
+    expect((await submit()).status).toBe(200);
+    const refused = await submit();
+    expect(r.decodePushSubmitResult(await refused.text())).toMatchObject({
+      reason: 'RATE_LIMITED',
+      retryable: true,
+    });
+    const seconds = Number(refused.headers.get('retry-after'));
+    expect(Number.isInteger(seconds) && seconds >= 1 && seconds <= 60).toBe(true);
+  }, 15000);
+
 test('actual production configured audience refuses HTTP even when owned test scheme seam admits it', async () => {
   const { worker: w, machine: m } = await setup();
   const res = await get(`${w.url}/__room/${m.ridHex}/__productionaudience`);
