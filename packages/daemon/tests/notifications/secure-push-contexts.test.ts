@@ -191,9 +191,10 @@ test('a question over 64 KiB gets a bounded informational push without actions, 
   });
   expect(context).not.toBeNull();
   if (!context) return;
-  expect(context.payload.type).toBe('informational');
   expect(context.payload.actionable).toBe(false);
-  expect(new TextEncoder().encode(context.payload.body ?? '').length).toBeLessThanOrEqual(512);
+  expect(context.payload.type).toBe('informational');
+  if (context.payload.type !== 'informational') return;
+  expect(new TextEncoder().encode(context.payload.body).length).toBeLessThanOrEqual(512);
   expect(contexts.isCurrent(context)).toBe(true);
   // It is still tied to its question: once the question is gone the push is no longer current.
   questions.remove(huge.id);

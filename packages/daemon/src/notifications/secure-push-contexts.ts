@@ -1,4 +1,5 @@
 /** Per-launch, bounded push authority; no delivery extends a prompt's real hold (#1200). */
+import { createHash } from 'node:crypto';
 import { type Question, type UUID, relayV2 } from '@remi/shared';
 import type { AnswerValidity } from '../harness/decision.ts';
 import { pushCategoryFor } from './notification-dispatcher.ts';
@@ -37,6 +38,14 @@ function boundedText(text: string, max: number): string {
   }
   return result;
 }
+/** A question's full meaning is held verbatim up to this size, and by digest beyond it. */
+const MEANING_MAX_BYTES = 65536;
+/**
+ * The identity of what a question asks, complete: its text, detail, kind and every option.
+ * Beyond 64 KiB (a long command in `detail`) the stored value is the SHA-256 of the same text,
+ * so a change still invalidates the context while per-context memory stays bounded; such a
+ * question is offered as information only (`oversizeMeaning`), never with actions (#1200, B4).
+ */
 function questionMeaning(question: Question): string {
   const meaning = JSON.stringify({
     text: question.text,
@@ -57,9 +66,12 @@ function questionMeaning(question: Question): string {
       sessionGrant: option.sessionGrant ?? null,
     })),
   });
-  if (new TextEncoder().encode(meaning).length > 65536) throw new Error('CONTEXT_OVERSIZE');
-  return meaning;
+  return new TextEncoder().encode(meaning).length > MEANING_MAX_BYTES
+    ? `${OVERSIZE_PREFIX}${createHash('sha256').update(meaning).digest('hex')}`
+    : meaning;
 }
+const OVERSIZE_PREFIX = 'oversize:';
+const oversizeMeaning = (meaning: string): boolean => meaning.startsWith(OVERSIZE_PREFIX);
 function freezePayload(payload: relayV2.SecurePushPayload): relayV2.SecurePushPayload {
   if (payload.type === 'question')
     return Object.freeze({
@@ -178,6 +190,7 @@ export class SecurePushContexts {
         const validity = this.deps.validityFor(runtime.sessionId, current.id);
         const category = pushCategoryFor(current);
         if (
+          !oversizeMeaning(qMeaning) &&
           validity.kind !== 'closed' &&
           category &&
           !current.questions &&
