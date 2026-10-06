@@ -243,7 +243,12 @@ describe('ClaudeHarness.createSession', () => {
   }
 
   /** POST a PermissionRequest the way Claude Code does; the response waits on the hold. */
-  function postPermissionRequest(server: HookServer, claudeSessionId: string): Promise<Response> {
+  function postPermissionRequest(
+    server: HookServer,
+    claudeSessionId: string,
+    toolName = 'Bash',
+    toolInput: Record<string, unknown> = { command: 'ls' },
+  ): Promise<Response> {
     return fetch(`http://127.0.0.1:${server.port}/hooks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -252,8 +257,8 @@ describe('ClaudeHarness.createSession', () => {
         session_id: claudeSessionId,
         cwd: tmpDir,
         permission_mode: 'default',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
+        tool_name: toolName,
+        tool_input: toolInput,
         permission_suggestions: [],
       }),
     }).catch(() => new Response(null, { status: 499 }));
@@ -264,7 +269,11 @@ describe('ClaudeHarness.createSession', () => {
    * PermissionRequest, and wait until the session holds it. Returns the held
    * card and the pending hook response.
    */
-  async function holdPrompt(passThrough: boolean) {
+  async function holdPrompt(
+    passThrough: boolean,
+    toolName = 'Bash',
+    toolInput: Record<string, unknown> = { command: 'ls' },
+  ) {
     hookServer = newHookServer();
     hookServer.start();
     freshRegistry();
@@ -272,7 +281,12 @@ describe('ClaudeHarness.createSession', () => {
       passThrough,
       register: true,
     });
-    const response = postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
+    const response = postPermissionRequest(
+      hookServer,
+      claudeSessionIdOf(sessionId),
+      toolName,
+      toolInput,
+    );
     await until(() => session.decisions.hasMainHold(), 'the prompt to be held');
     const card = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])][0];
     if (!card) throw new Error('the held prompt did not reach the registry as a card');
@@ -746,6 +760,121 @@ describe('ClaudeHarness.createSession', () => {
       }
     }, 10000);
   }
+
+  test('secure-only dispatcher actions require the complete actual held Read ask', async () => {
+    const meaningfulTail = 'ACTUAL_TARGET_AT_END.txt';
+    const file = path.join(
+      tmpDir,
+      'owned-directory-'.repeat(5),
+      'another-directory-'.repeat(5),
+      meaningfulTail,
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'owned private fixture');
+    const { decisions, card, sessionId, response } = await holdPrompt(false, 'Read', {
+      file_path: file,
+    });
+    const { store, trust, pair, snapshot } = await pushRecipient();
+    const { createServer } = await import('node:http');
+    let opened: Awaited<ReturnType<typeof relayV2.openPushContent>> | undefined;
+    let effects = 0;
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      opened = await relayV2.openPushContent(
+        pair,
+        {
+          v: 2,
+          rid,
+          collapseId: submit.collapseId,
+          keyVersion: submit.keyVersion,
+          kind: submit.kind,
+          sealed: submit.sealed,
+        },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      effects++;
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const secure = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const dispatcher = new ActualNotificationDispatcher(
+        {
+          sessionRegistry,
+          deviceTokens: new Map(),
+          pushConfig: () => ({ signalingUrl: origin }),
+          getPrimarySessionId: () => sessionId,
+          securePush: secure,
+        },
+        sessionId,
+      );
+      expect(card.text).toContain(meaningfulTail);
+      expect(new TextEncoder().encode(card.text).length).toBeGreaterThan(200);
+      expect(new TextEncoder().encode(card.text).length).toBeLessThanOrEqual(512);
+      expect(card.detail).toBeUndefined();
+      await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe('pushed');
+      expect(effects).toBe(1);
+      expect(decisions.isHeld(card.id)).toBe(true);
+      if (!opened || opened.payload.type === 'dismiss')
+        throw new Error('missing question delivery');
+      expect(buildPushText('Agent', card).body).not.toContain(meaningfulTail);
+      expect(
+        !opened.payload.actionable ||
+          opened.payload.body.includes(card.text.replace(/\s+/g, ' ').trim()),
+      ).toBe(true);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
 
   test('secure push context real held slot fans out without eviction and dismissal remains absorbing', async () => {
     const { decisions, card, sessionId, response } = await holdPrompt(false);
