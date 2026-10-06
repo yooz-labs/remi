@@ -813,13 +813,14 @@ describe('ClaudeHarness.createSession', () => {
               actionable: false,
             });
           }
-          // A repeated notice or failed turn is a later occurrence and pushes again (#1200, B2); a
-          // repeated dismissal or question is the same event and does not.
-          const repeats =
-            deliveryPath === 'terminal-notice' ||
-            deliveryPath === 'turn-failed' ||
-            deliveryPath === 'turn-failed-recovery';
-          await deliver();
+          // A repeated notice is a later occurrence and pushes again (#1200, B2). A repeated failed
+          // turn for the same reason alerts once until the notice is cleared, on the secure channel
+          // as on the legacy one (#1226). A repeated dismissal or question is the same event and
+          // does not push again either.
+          const repeats = deliveryPath === 'terminal-notice';
+          const repeated = await deliver();
+          if (deliveryPath === 'turn-failed' || deliveryPath === 'turn-failed-recovery')
+            expect(repeated).toBe('deduped');
           if (repeats) await until(() => bodies.length === expectedCount + 1, 'the repeated push');
           expect(bodies).toHaveLength(repeats ? expectedCount + 1 : expectedCount);
         } finally {
