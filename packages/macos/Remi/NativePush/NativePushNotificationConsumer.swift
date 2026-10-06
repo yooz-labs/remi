@@ -103,7 +103,8 @@ final class NativePushNotificationConsumer {
         return true
     }
     static func isGenericFallback(_ content: UNNotificationContent) -> Bool {
-        content.title == "Remi needs your attention" && content.body == "Open Remi to view this notification." && content.categoryIdentifier.isEmpty
+        content.title == "Remi needs your attention" && content.subtitle.isEmpty &&
+            content.body == "Open Remi to view this notification." && content.categoryIdentifier.isEmpty
     }
     /// The foreground adapter independently verifies original bytes and exact
     /// displayed text/category. The fixed generic no-action fallback grants no
@@ -119,7 +120,7 @@ final class NativePushNotificationConsumer {
             case .informational(let information): title = information.title; body = information.body
             case .dismiss: return false
             }
-            guard content.title == title, content.body == body else { return false }
+            guard content.title == title, content.subtitle.isEmpty, content.body == body else { return false }
             let category = "REMI_SECURE_\(prepared.push.originalCarrier.rid)_\(prepared.push.record.collapseId)_\(prepared.push.record.revision)"
             guard content.categoryIdentifier.isEmpty || (!prepared.actions.isEmpty && content.categoryIdentifier == category) else { return false }
             try effect.recheck(prepared)
