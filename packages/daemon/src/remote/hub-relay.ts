@@ -30,6 +30,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
@@ -681,7 +682,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           environment: message.environment,
           pushPublicKey: message.pushPublicKey,
           keyVersion: message.keyVersion,
-          ...(message.pushPrefs === undefined ? {} : { pushPrefs: message.pushPrefs }),
+          // Malformed preferences fail toward delivering, never refuse (#1200, B7).
+          pushPrefs: sanitizePushPreferences(message.pushPrefs),
         });
       } catch {
         this.sendRaw(

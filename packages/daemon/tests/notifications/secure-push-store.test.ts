@@ -175,7 +175,6 @@ test('secure subscription: strict token/environment/point/preferences refuse wit
     { ...registration, keyVersion: 0 },
     { ...registration, keyVersion: Number.MAX_SAFE_INTEGER + 1 },
     { ...registration, pushPublicKey: relayV2.b64u(new Uint8Array(65).fill(4)) },
-    { ...registration, pushPrefs: { questions: 'false' } },
     { ...registration, devicePublicKey: authority.publicKey },
   ]) {
     expect(await subscriptions.register(authority, invalid as SecurePushRegistration)).toEqual({

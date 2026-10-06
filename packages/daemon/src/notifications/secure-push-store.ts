@@ -18,6 +18,7 @@ import {
   readSecurePushSubscriptions,
   writeSecurePushSubscriptions,
 } from '../storage/secure-push-subscriptions.ts';
+import { sanitizePushPreferences } from './push-preferences.ts';
 
 export interface SecurePushAuthority {
   readonly publicKey: string;
@@ -89,7 +90,13 @@ export class SecurePushStore {
     const captured = Object.freeze({ ...authority });
     let prepared: ReturnType<typeof normalizeSecureRegistration>;
     try {
-      prepared = normalizeSecureRegistration(registration);
+      // Preferences cross a trust boundary and fail toward delivering, as everywhere else
+      // (`sanitizePushPreferences`, #968): a non-boolean field or an unknown key never refuses
+      // the registration, it resolves to "deliver" (#1200, B7).
+      prepared = normalizeSecureRegistration({
+        ...registration,
+        pushPrefs: sanitizePushPreferences(registration.pushPrefs),
+      });
       const point = relayV2.fromB64u(prepared.pushPublicKey);
       await crypto.subtle.importKey('raw', point, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     } catch {
