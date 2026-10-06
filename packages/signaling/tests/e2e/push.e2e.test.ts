@@ -381,14 +381,67 @@ test('a correct bearer is accepted and the secret never appears in the APNs requ
   expect(JSON.stringify(req)).not.toContain(PUSH_SECRET);
 }, 15000);
 
-test('legacy plaintext route is default off and explicit compatibility still requires a secret', async () => {
-  const { worker: w } = await setup({ APNS_KEY_ID: '' });
-  const res = await get(`${w.url}/push`, {
+// #1200 A10 (owner decision): the legacy plaintext /push stays ON by default until secure push
+// ships end to end (the default flips at the R7 gate), so a deployment that sets only PUSH_SECRET,
+// as every existing one does, keeps working. It is disabled only by an explicit false value, and
+// it still needs the bearer. APNs credentials are left unset here so a request that passes both
+// gates stops at APNS_NOT_CONFIGURED instead of reaching Apple.
+async function legacyPush(w: TestWorker, headers: Record<string, string> = bearer) {
+  return get(`${w.url}/push`, {
     method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({ token: 'owned', title: 'owned', body: 'owned' }),
   });
-  expect(res.status).toBe(403);
+}
+test('legacy plaintext route is on by default and still requires the bearer', async () => {
+  const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: undefined });
+  expect((await legacyPush(w)).status).toBe(500);
+  expect(((await (await legacyPush(w)).json()) as { error: string }).error).toBe(
+    'APNS_NOT_CONFIGURED',
+  );
+  for (const headers of [
+    {},
+    { authorization: 'Bearer wrong' },
+    { authorization: `Bearer ${PUSH_SECRET}x` },
+    { authorization: `Bearer ${PUSH_SECRET.slice(0, -1)}` },
+    { authorization: `bearer ${PUSH_SECRET}` },
+  ])
+    expect((await legacyPush(w, headers)).status).toBe(401);
   expect(requests.length).toBe(0);
+}, 15000);
+
+// The configured flag is trimmed and only an explicit false value disables the route: a secret set
+// through `echo true | wrangler secret put` carries a newline that used to switch it off.
+for (const [value, enabled] of [
+  [undefined, true],
+  ['', true],
+  ['true', true],
+  ['true\n', true],
+  [' TRUE ', true],
+  ['yes', true],
+  ['garbage', true],
+  ['false', false],
+  ['false\n', false],
+  [' False ', false],
+  ['FALSE', false],
+  ['0', false],
+  ['no', false],
+  ['off', false],
+] as const)
+  test(`LEGACY_PUSH_ENABLED=${JSON.stringify(value)} ${enabled ? 'leaves' : 'turns off'} the legacy route`, async () => {
+    const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: value });
+    const res = await legacyPush(w);
+    if (enabled) expect(res.status).toBe(500);
+    else {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe('LEGACY_PUSH_DISABLED');
+    }
+    expect(requests.length).toBe(0);
+  }, 15000);
+
+test('legacy route accepts the secret as configured with surrounding whitespace', async () => {
+  const { worker: w } = await setup({ APNS_KEY_ID: '', PUSH_SECRET: `  ${PUSH_SECRET}\n` });
+  expect((await legacyPush(w)).status).toBe(500);
 }, 15000);
 
 async function gate(w: TestWorker, rid: string, stage: string | null) {
