@@ -5,16 +5,42 @@ const session = (id: string, connectionId: string | null = null) => ({ id, conne
 const conn = (
   connectionId: string,
   url: string,
-  status:
-    | 'connected'
-    | 'connecting'
-    | 'authenticating'
-    | 'reconnecting'
-    | 'disconnected'
-    | 'error',
-) => ({ connectionId, url, status }) as const;
+  status: 'connected' | 'connecting' | 'authenticating' | 'reconnecting' | 'disconnected' | 'error',
+  mode: 'direct' | 'relay' = 'direct',
+) => ({ connectionId, url, status, mode }) as const;
 
 describe('resolvePushAnswerTarget (#278)', () => {
+  test.each([
+    'connected',
+    'connecting',
+    'authenticating',
+    'reconnecting',
+    'disconnected',
+    'error',
+  ] as const)('legacy push answer never targets a %s relay connection', (status) => {
+    expect(
+      resolvePushAnswerTarget({
+        sessionId: 's1',
+        sessions: [session('s1', 'relay')],
+        connections: [conn('relay', 'wss://worker/', status, 'relay')],
+        storedUrls: ['ws://daemon-a/ws'],
+        sessionUrlMap: { s1: 'ws://daemon-b/ws' },
+      }),
+    ).toEqual({ kind: 'unreachable' });
+  });
+
+  test('a cold stored route cannot borrow a known relay URL or reconnect attempt', () => {
+    expect(
+      resolvePushAnswerTarget({
+        sessionId: 's1',
+        sessions: [],
+        connections: [conn('relay', 'wss://worker/', 'reconnecting', 'relay')],
+        storedUrls: ['wss://worker/'],
+        sessionUrlMap: { s1: 'wss://worker/' },
+      }),
+    ).toEqual({ kind: 'unreachable' });
+  });
+
   test('live connection — answer goes straight through', () => {
     expect(
       resolvePushAnswerTarget({
