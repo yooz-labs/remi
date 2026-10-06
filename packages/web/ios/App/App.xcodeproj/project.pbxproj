@@ -11,12 +11,14 @@
         120000010000000000000131 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
         120000010000000000000125 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000025; };
         120000040000000000000003 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000040000000000000001; };
+        120000060000000000000003 /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000001; };
         120000010000000000000123 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000023; };
         120000010000000000000121 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000021; };
         120000010000000000000035 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
         120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
         120000010000000000000026 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000025; };
         120000040000000000000002 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000040000000000000001; };
+        120000060000000000000002 /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000001; };
         120000010000000000000024 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000023; };
         120000010000000000000022 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000021; };
 		120000030000000000000011 /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000010 /* NativeAPNsEnvironment.swift */; };
@@ -39,6 +41,7 @@
         120000010000000000000031 /* NativeEd25519PublicKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeEd25519PublicKey.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000025 /* NativePushKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushKeyStore.swift; sourceTree = SOURCE_ROOT; };
         120000040000000000000001 /* NativePushCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushCodec.swift; sourceTree = SOURCE_ROOT; };
+        120000060000000000000001 /* NativePushEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushEffect.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000023 /* NativePushConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushConfiguration.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000021 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushState.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000010 /* NativeAPNsEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeAPNsEnvironment.swift; sourceTree = SOURCE_ROOT; };
@@ -137,6 +140,7 @@
                 120000010000000000000031 /* NativeEd25519PublicKey.swift */,
                 120000010000000000000025 /* NativePushKeyStore.swift */,
                 120000040000000000000001 /* NativePushCodec.swift */,
+                120000060000000000000001 /* NativePushEffect.swift */,
                 120000010000000000000023 /* NativePushConfiguration.swift */,
                 120000010000000000000021 /* NativePushState.swift */,
 				120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */,
@@ -262,6 +266,7 @@
                 120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */,
                 120000010000000000000026 /* NativePushKeyStore.swift in Sources */,
                 120000040000000000000002 /* NativePushCodec.swift in Sources */,
+                120000060000000000000002 /* NativePushEffect.swift in Sources */,
                 120000010000000000000024 /* NativePushConfiguration.swift in Sources */,
                 120000010000000000000022 /* NativePushState.swift in Sources */,
 				120000030000000000000013 /* NativeAPNsEnvironmentQuery.m in Sources */,
@@ -276,6 +281,7 @@
                 120000010000000000000131 /* NativeEd25519PublicKey.swift in Sources */,
                 120000010000000000000125 /* NativePushKeyStore.swift in Sources */,
                 120000040000000000000003 /* NativePushCodec.swift in Sources */,
+                120000060000000000000003 /* NativePushEffect.swift in Sources */,
                 120000010000000000000123 /* NativePushConfiguration.swift in Sources */,
                 120000010000000000000121 /* NativePushState.swift in Sources */,
 				719E2CB655107FC68F199158 /* NotificationService.swift in Sources */,
