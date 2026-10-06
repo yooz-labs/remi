@@ -155,6 +155,22 @@ final class NativePushRegistrationTests: XCTestCase {
     @MainActor func testOSTokenCallbackDuringEnvironmentAwaitRefuses() async throws {
         try await pendingMutation { tokens, _ in tokens.recordFromOS(Data([2])) }
     }
+    @MainActor func testRepeatedIdenticalOSTokenDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { tokens, _ in tokens.recordFromOS(Data([1])) }
+    }
+    @MainActor func testOSRegistrationFailureDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { tokens, _ in tokens.clearFromOS() }
+    }
+    @MainActor func testRepeatedIdenticalTokenAndOSFailureInvalidatePreparedMetadata() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let r = registration(tokens)
+        guard let first = await prepare(r) else { return }
+        tokens.recordFromOS(Data([1]))
+        XCTAssertThrowsError(try r.recheck(first, stillCurrent: { true }), "An identical OS token value still replaces its captured callback epoch")
+        guard let fresh = await prepare(r) else { return }
+        tokens.clearFromOS()
+        XCTAssertThrowsError(try r.recheck(fresh, stillCurrent: { true }), "OS registration failure invalidates prepared metadata")
+    }
     @MainActor func testDocumentLossDuringEnvironmentAwaitRefuses() async throws {
         try await pendingMutation { _, current in current = false }
     }
@@ -179,6 +195,25 @@ final class NativePushRegistrationTests: XCTestCase {
         let data = try JSONEncoder().encode(Record(version: 1, privateDER: key.derRepresentation,
             publicKey: key.publicKey.x963Representation, keyVersion: 1))
         XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary), errSecSuccess)
+    }
+    private func advanceRecipientVersion() throws {
+        let key = try XCTUnwrap(keys.load())
+        struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
+        let bytes = try JSONEncoder().encode(Record(version: 1, privateDER: key.privateKey.derRepresentation,
+            publicKey: key.publicKey, keyVersion: key.keyVersion + 1))
+        XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: bytes] as CFDictionary), errSecSuccess)
+        XCTAssertEqual(try keys.load()?.publicKey, key.publicKey)
+        XCTAssertEqual(try keys.load()?.keyVersion, key.keyVersion + 1)
+    }
+    @MainActor func testSameRecipientNewVersionDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { _, _ in try self.advanceRecipientVersion() }
+    }
+    @MainActor func testSameRecipientNewVersionRefusesPreparedRegistration() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let r = registration(tokens)
+        guard let p = await prepare(r) else { return }
+        try advanceRecipientVersion()
+        XCTAssertThrowsError(try r.recheck(p, stillCurrent: { true }), "Equal public recipient bytes do not restore an earlier key version")
     }
     @MainActor func testActualRecipientRotationDuringEnvironmentAwaitRefuses() async throws {
         try await pendingMutation { _, _ in try self.replaceRecipient() }

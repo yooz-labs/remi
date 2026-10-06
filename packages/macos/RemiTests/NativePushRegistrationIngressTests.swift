@@ -1,4 +1,5 @@
 import CryptoKit
+import AppKit
 import Foundation
 import Security
 import WebKit
@@ -18,7 +19,14 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         service = "live.yooz.remi.tests.registration-wk-" + UUID().uuidString
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi1200-registration-wk-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        try "<html><body>Private registration fixture</body></html>".write(to: directory.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try """
+            <html><body>Private registration fixture<script>
+            if(window!==top) addEventListener('message',async event=>{
+              try {await window.webkit.messageHandlers.remiIdentity.postMessage(event.data);parent.postMessage(false,'*')}
+              catch {parent.postMessage(true,'*')}
+            });
+            </script></body></html>
+            """.write(to: directory.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         state = try NativePushState(file: directory.appendingPathComponent("public.sqlite"))
         keys = NativePushKeyStore(service: service + ".push", account: "owned", accessGroup: nil)
         identity = try ClientIdentityStore.loadOrCreate(authority: state, accessGroup: nil, service: service, account: "owned-dpk")
@@ -92,7 +100,8 @@ final class NativePushRegistrationIngressTests: XCTestCase {
             return await new Promise(resolve => {
               window.addEventListener('message', event => resolve(event.data), {once:true});
               const iframe = document.createElement('iframe');
-              iframe.srcdoc = `<script>(async()=>{try {await window.webkit.messageHandlers.remiIdentity.postMessage(${JSON.stringify(request)});parent.postMessage(false,'*')}catch{parent.postMessage(true,'*')}})()</script>`;
+              iframe.src = 'remi-app://localhost/index.html';
+              iframe.onload = () => iframe.contentWindow.postMessage(request,'*');
               document.body.append(iframe);
             });
             """, arguments: ["request": ["op": "enableSecurePush", "publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision]],
@@ -102,5 +111,76 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         XCTAssertNil(try keys.load())
         let allowed = try await call(web, op: "enableSecurePush")
         XCTAssertEqual(allowed["requested"] as? Bool, true, "The matching actual main frame remains supported")
+    }
+    @MainActor func testActualNativeTicketRechecksTokenAndIsOneUse() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let web = try await web(tokens: tokens)
+        let first = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+        let ticket = try XCTUnwrap(first["ticket"] as? String)
+        let valid = try await call(web, op: "validatePushRegistration", extra: ["ticket": ticket])
+        XCTAssertEqual(valid["current"] as? Bool, true)
+        let again = try await call(web, op: "validatePushRegistration", extra: ["ticket": ticket])
+        XCTAssertEqual(again["refused"] as? Bool, true, "Only one transmission can consume native registration authority")
+        let second = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+        tokens.recordFromOS(Data([2]))
+        let changed = try await call(web, op: "validatePushRegistration", extra: ["ticket": XCTUnwrap(second["ticket"] as? String)])
+        XCTAssertEqual(changed["refused"] as? Bool, true)
+    }
+    @MainActor func testActualForgetClosesOutstandingRegistrationTicket() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let web = try await web(tokens: tokens)
+        let result = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+        let ticket = try XCTUnwrap(result["ticket"] as? String)
+        let forgotten = try await call(web, op: "forgetPushMachine", extra: ["rid": rid.base64EncodedString()])
+        XCTAssertEqual(forgotten["forgotten"] as? Bool, true)
+        let stale = try await call(web, op: "validatePushRegistration", extra: ["ticket": ticket])
+        XCTAssertEqual(stale["refused"] as? Bool, true)
+        XCTAssertNil(try state.machineTrust(rid: rid))
+    }
+    @MainActor func testActualPermissionCompletionAfterForegroundLossCannotRegister() async throws {
+        var held: CheckedContinuation<Bool, Never>?
+        var registrations = 0
+        var requests = 0
+        let web = try await web(tokens: NativePushTokenOwner(), authorization: {
+            requests += 1
+            if requests > 1 { return true }
+            return await withCheckedContinuation { held = $0 }
+        }, register: { registrations += 1 })
+        let pending = Task { try await self.call(web, op: "enableSecurePush") }
+        for _ in 0..<100 where held == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(requests, 1, "The actual bundled request must reach the OS permission wait")
+        NotificationCenter.default.post(name: NativeForegroundUnlock.inactiveNotification, object: nil)
+        held?.resume(returning: true); held = nil
+        let stale = try await pending.value
+        XCTAssertEqual(stale["refused"] as? Bool, true)
+        XCTAssertEqual(registrations, 0, "An inactive lifetime cannot be restored by successful OS permission completion")
+        let fresh = try await call(web, op: "enableSecurePush")
+        XCTAssertEqual(fresh["requested"] as? Bool, true, "A new explicit active request remains available")
+        XCTAssertEqual(registrations, 1)
+    }
+    @MainActor func testActualNativeTicketCapacityDoesNotEvictLiveRequests() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let web = try await web(tokens: tokens)
+        var tickets: [String] = []
+        for _ in 0..<32 {
+            let reply = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+            tickets.append(try XCTUnwrap(reply["ticket"] as? String))
+        }
+        XCTAssertEqual(Set(tickets).count, 32)
+        let full = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+        XCTAssertEqual(full["refused"] as? Bool, true)
+        let original = try await call(web, op: "validatePushRegistration", extra: ["ticket": tickets[0]])
+        XCTAssertEqual(original["current"] as? Bool, true, "Capacity refusal cannot evict the first live ticket")
+        let resumed = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString()])
+        XCTAssertNotNil(resumed["ticket"] as? String)
+    }
+    @MainActor func testActualMacOSDelegateCapturesOnlyOSTokenAndFailureClosesIt() throws {
+        let tokens = NativePushTokenOwner()
+        let delegate = AppDelegate(pushTokens: tokens)
+        XCTAssertNil(tokens.snapshot())
+        delegate.application(NSApplication.shared, didRegisterForRemoteNotificationsWithDeviceToken: Data([0, 15, 255]))
+        XCTAssertEqual(tokens.snapshot()?.token, Data([0, 15, 255]), "The actual app OS delegate must own token capture")
+        delegate.application(NSApplication.shared, didFailToRegisterForRemoteNotificationsWithError: NSError(domain: "owned-OS-boundary", code: 1))
+        XCTAssertNil(tokens.snapshot(), "An actual OS registration failure closes token authority")
     }
 }

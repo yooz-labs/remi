@@ -1,4 +1,62 @@
 import Foundation
+import UserNotifications
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+extension Notification.Name {
+    static let nativePushTokenChanged = Notification.Name("remi.native-push-token-changed")
+}
+
+/// A user initiated OS prompt owns one bounded continuation. Cancellation does
+/// not pretend to dismiss the system prompt; its eventual callback has no reply
+/// authority after the thirty-second lifetime ends.
+@MainActor
+final class NativePushPermission {
+    typealias Request = (@escaping (Bool) -> Void) -> Void
+    private let osRequest: Request
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var timeout: Task<Void, Never>?
+    init(osRequest: @escaping Request = { completion in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, error in
+            completion(allowed && error == nil)
+        }
+    }) { self.osRequest = osRequest }
+    static func request() async -> Bool {
+        await NativePushPermission().resolve()
+    }
+    func resolve() async -> Bool {
+        let result = await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: false); return }
+                self.continuation = continuation
+                timeout = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+                    self?.finish(false)
+                }
+                osRequest { [weak self] accepted in
+                    Task { @MainActor in self?.finish(accepted) }
+                }
+            }
+        }, onCancel: { [weak self] in Task { @MainActor in self?.finish(false) } })
+        return !Task.isCancelled && result
+    }
+    private func finish(_ result: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeout?.cancel(); timeout = nil
+        continuation.resume(returning: result)
+    }
+    static func register() {
+        #if os(macOS)
+        NSApplication.shared.registerForRemoteNotifications()
+        #else
+        UIApplication.shared.registerForRemoteNotifications()
+        #endif
+    }
+}
 
 /// #1200: only actual OS delegate callbacks publish a bounded token snapshot.
 /// Every callback changes its epoch, including a repeated token or failure.

@@ -113,6 +113,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NativePushTokenOwner.shared.recordFromOS(deviceToken)
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
         NotificationCenter.default.post(
             name: .capacitorDidRegisterForRemoteNotifications,
             object: deviceToken
@@ -120,6 +122,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NativePushTokenOwner.shared.clearFromOS()
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
         NotificationCenter.default.post(
             name: .capacitorDidFailToRegisterForRemoteNotifications,
             object: error
