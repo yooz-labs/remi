@@ -38,6 +38,14 @@ or a result supplied by JavaScript never substitutes for verification. Category
 and display eligibility belong to the independently guarded presentation/action
 consumer. An authenticated question with category `none` does not grant a tap.
 
+Those two state methods accept only `ContentRecord` and `MachineTrust`; they do
+not consume the captured `VerifiedPush.authorityGeneration`,
+`recipientPublicKey` or `keyVersion`. The consumer must compare all three with
+current native authority and the existing recipient key after waits, at commit
+and at its final effect, alongside current completed trust and expiry. Identical
+public trust can survive a same-identity recovery with a fresh durable generation,
+so trust equality alone cannot validate an earlier result.
+
 Failures use fixed `NativePushCodecError` cases. The module has no logger and
 returns no private key. Its direct tests use the ten committed shared vectors,
 actual CryptoKit, UUID-owned Keychain namespaces and private SQLite files.
