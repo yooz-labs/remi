@@ -474,75 +474,88 @@ test('native ledger current content revision and full-title policy constrain the
   expect(await f.ledger.answer(await f.proof(changed))).toBe('delivered');
 });
 
-test('native ledger retains all 1024 actual outcomes across runtime replacement and refuses overflow without applying', async () => {
-  const f = await fixture();
-  let latest: NativeAnswerMessage | undefined;
-  for (let index = 0; index < 1024; index++) {
-    // Real per-runtime push slots are bounded at 32. Replacing the runtime
-    // clears those slots, but must not release child-global ledger capacity.
-    if (index > 0 && index % 32 === 0) f.restart();
-    const held = await f.hold();
-    latest = await f.proof(held.question);
+// The two 1024-record tests answer 1,023 real held hooks, each under the real subscription lock
+// (#1201: the final authority commit now reaches Claude's held decision). Measured about 21 ms per
+// answer on Bun 1.3.11 (22 s for the loop) and 18 ms on Bun 1.4.2; the queued-PTY test then waits
+// out proof expiry for about 9 s. 30 s left no margin, so these two get 60 s.
+const CAPACITY_TEST_TIMEOUT_MS = 60_000;
+test(
+  'native ledger retains all 1024 actual outcomes across runtime replacement and refuses overflow without applying',
+  async () => {
+    const f = await fixture();
+    let latest: NativeAnswerMessage | undefined;
+    for (let index = 0; index < 1024; index++) {
+      // Real per-runtime push slots are bounded at 32. Replacing the runtime
+      // clears those slots, but must not release child-global ledger capacity.
+      if (index > 0 && index % 32 === 0) f.restart();
+      const held = await f.hold();
+      latest = await f.proof(held.question);
+      expect(await f.ledger.answer(latest)).toBe('delivered');
+      expect(await (await held.response).json()).toMatchObject({
+        hookSpecificOutput: { decision: { behavior: 'allow' } },
+      });
+    }
+    if (!latest) throw new Error('missing last real delivery');
     expect(await f.ledger.answer(latest)).toBe('delivered');
+    const overflow = await f.hold();
+    // Start a fresh runtime so the push-context cap does not cause the refusal.
+    f.restart();
+    const excess = await f.proof(overflow.question);
+    expect(await f.ledger.answer(excess)).toBe('busy');
+    expect(f.gate.isHeld(overflow.question.id)).toBe(true);
+    expect(f.resolved).toHaveLength(1024);
+    expect(f.pty.sessionState).toBe('created');
+  },
+  CAPACITY_TEST_TIMEOUT_MS,
+);
+
+test(
+  'native ledger never evicts a real queued PTY answer after proof retention expires',
+  async () => {
+    const f = await fixture();
+    for (let index = 0; index < 1023; index++) {
+      if (index > 0 && index % 32 === 0) f.restart();
+      const held = await f.hold();
+      expect(await f.ledger.answer(await f.proof(held.question))).toBe('delivered');
+      await held.response;
+    }
+    f.restart();
+    const question = await f.terminal();
+    const completeProof = await f.proof(question, 'y');
+    const proof = await f.sign({ ...completeProof, expiresAt: completeProof.issuedAt + 2 });
+    // The real FIFO's 50ms-per-input sequence keeps the accepted answer pending
+    // past expiresAt+5 without substituting an apply function or a fake clock.
+    const queue = Array.from({ length: 180 }, (_, index) =>
+      f.pty.submitInput(`owned-ahead-${index}`),
+    );
+    const pending = f.ledger.answer(proof);
+    cleanups.push(async () => {
+      await Promise.allSettled([...queue, pending]);
+    });
+    expect(await f.ledger.answer(proof)).toBe('uncertain');
+    expect(f.output()).not.toContain('y\r');
+    const held = await f.hold();
+    const excess = await f.proof(held.question);
+    while (Math.floor(Date.now() / 1000) <= proof.expiresAt + 5) await Bun.sleep(20);
+    expect(f.output()).not.toContain('y\r');
+    expect(await f.ledger.answer(excess)).toBe('busy');
+    expect(f.gate.isHeld(held.question.id)).toBe(true);
+    expect(await pending).toBe('delivered');
+    await Promise.all(queue);
+    const outputDeadline = Date.now() + 2000;
+    while (!f.output().includes('y\r') && Date.now() < outputDeadline) await Bun.sleep(2);
+    expect(f.output()).toContain('y\r');
+    // Only actual completion permits pruning the expired record and accepting
+    // the separate live hook, never a fresh nonce for the expired answer.
+    expect(await f.ledger.answer(proof)).toBe('stale');
+    expect(await f.ledger.answer(excess)).toBe('delivered');
     expect(await (await held.response).json()).toMatchObject({
       hookSpecificOutput: { decision: { behavior: 'allow' } },
     });
-  }
-  if (!latest) throw new Error('missing last real delivery');
-  expect(await f.ledger.answer(latest)).toBe('delivered');
-  const overflow = await f.hold();
-  // Start a fresh runtime so the push-context cap does not cause the refusal.
-  f.restart();
-  const excess = await f.proof(overflow.question);
-  expect(await f.ledger.answer(excess)).toBe('busy');
-  expect(f.gate.isHeld(overflow.question.id)).toBe(true);
-  expect(f.resolved).toHaveLength(1024);
-  expect(f.pty.sessionState).toBe('created');
-}, 30000);
-
-test('native ledger never evicts a real queued PTY answer after proof retention expires', async () => {
-  const f = await fixture();
-  for (let index = 0; index < 1023; index++) {
-    if (index > 0 && index % 32 === 0) f.restart();
-    const held = await f.hold();
-    expect(await f.ledger.answer(await f.proof(held.question))).toBe('delivered');
-    await held.response;
-  }
-  f.restart();
-  const question = await f.terminal();
-  const completeProof = await f.proof(question, 'y');
-  const proof = await f.sign({ ...completeProof, expiresAt: completeProof.issuedAt + 2 });
-  // The real FIFO's 50ms-per-input sequence keeps the accepted answer pending
-  // past expiresAt+5 without substituting an apply function or a fake clock.
-  const queue = Array.from({ length: 180 }, (_, index) =>
-    f.pty.submitInput(`owned-ahead-${index}`),
-  );
-  const pending = f.ledger.answer(proof);
-  cleanups.push(async () => {
-    await Promise.allSettled([...queue, pending]);
-  });
-  expect(await f.ledger.answer(proof)).toBe('uncertain');
-  expect(f.output()).not.toContain('y\r');
-  const held = await f.hold();
-  const excess = await f.proof(held.question);
-  while (Math.floor(Date.now() / 1000) <= proof.expiresAt + 5) await Bun.sleep(20);
-  expect(f.output()).not.toContain('y\r');
-  expect(await f.ledger.answer(excess)).toBe('busy');
-  expect(f.gate.isHeld(held.question.id)).toBe(true);
-  expect(await pending).toBe('delivered');
-  await Promise.all(queue);
-  const outputDeadline = Date.now() + 2000;
-  while (!f.output().includes('y\r') && Date.now() < outputDeadline) await Bun.sleep(2);
-  expect(f.output()).toContain('y\r');
-  // Only actual completion permits pruning the expired record and accepting
-  // the separate live hook, never a fresh nonce for the expired answer.
-  expect(await f.ledger.answer(proof)).toBe('stale');
-  expect(await f.ledger.answer(excess)).toBe('delivered');
-  expect(await (await held.response).json()).toMatchObject({
-    hookSpecificOutput: { decision: { behavior: 'allow' } },
-  });
-  expect(f.resolved).toHaveLength(1025);
-}, 30000);
+    expect(f.resolved).toHaveLength(1025);
+  },
+  CAPACITY_TEST_TIMEOUT_MS,
+);
 
 test('native ledger serves a retained result only while its proof is unexpired (#1201)', async () => {
   const f = await fixture();

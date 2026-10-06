@@ -91,6 +91,12 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+/** The dispatcher's own error lines. The logger is process-wide, so in a full run other files'
+ *  timers (transcript watchers) can log errors into this capture. */
+const pushErrors = () =>
+  logs.filter((line) =>
+    /^\[error\] \[(QuestionPush|TerminalNoticePush|TurnFailedPush|DismissPush)\]/.test(line),
+  );
 const policy = (over: Partial<PushConfig> = {}): PushConfig => ({
   signalingUrl: server.url.origin,
   legacyEnabled: true,
@@ -169,14 +175,14 @@ describe('a disabled legacy channel is no channel', () => {
     d.dismiss(SID, QID);
     await Bun.sleep(50);
     expect(requests).toEqual([]);
-    expect(logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+    expect(pushErrors()).toEqual([]);
   });
 
   test('legacy enabled but no push secret: no_channel, no error log', async () => {
     const { pushSecret: _omitted, ...withoutSecret } = policy();
     expect(await dispatcher(withoutSecret).maybePush(SID, question)).toBe('no_channel');
     expect(requests).toEqual([]);
-    expect(logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+    expect(pushErrors()).toEqual([]);
   });
 
   test('the secure activation latch refuses the sender: no_channel, not an error-level failure', async () => {
@@ -187,6 +193,6 @@ describe('a disabled legacy channel is no channel', () => {
     );
     expect(await dispatcher(policy()).maybePush(SID, question)).toBe('no_channel');
     expect(requests).toEqual([]);
-    expect(logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+    expect(pushErrors()).toEqual([]);
   });
 });
