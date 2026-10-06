@@ -16,8 +16,8 @@ final class NativePushKeyStoreTests: XCTestCase {
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
-    private func store(operations: NativeKeychainOperations = .system) -> NativePushKeyStore {
-        NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+    private func store(operations: NativeKeychainOperations = .system, now: @escaping () -> Date = Date.init) -> NativePushKeyStore {
+        NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations, now: now)
     }
     private func bytes() throws -> Data {
         var q = query
@@ -33,7 +33,7 @@ final class NativePushKeyStoreTests: XCTestCase {
         guard let key else { XCTFail("The actual native provider did not return its durable key"); return }
         let second = try store().loadOrCreate()
         XCTAssertEqual(second.publicKey, key.publicKey)
-        XCTAssertEqual(second.keyVersion, 1)
+        XCTAssertEqual(second.keyVersion, key.keyVersion, "Loading an existing key never changes its version")
         XCTAssertEqual(second.publicKey.count, 65)
         let record = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes()) as? [String: Any])
         XCTAssertEqual(Set(record.keys), Set(["version", "privateDER", "publicKey", "keyVersion"]))
@@ -112,5 +112,10 @@ final class NativePushKeyStoreTests: XCTestCase {
     func testNewPushKeyOutranksVersionOneFromEarlierBuilds() throws {
         let key = try store().loadOrCreate()
         XCTAssertGreaterThan(key.keyVersion, 1, "A device that registered version 1 must be able to register the new key")
+    }
+    func testPushKeyVersionIsTheCreationTimeInMilliseconds() throws {
+        let key = try store(now: { Date(timeIntervalSince1970: 1_790_000_000.5) }).loadOrCreate()
+        XCTAssertEqual(key.keyVersion, 1_790_000_000_500)
+        XCTAssertEqual(try store().load()?.keyVersion, 1_790_000_000_500, "A later load never changes the stored version")
     }
 }
