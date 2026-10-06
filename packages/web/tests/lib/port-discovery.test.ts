@@ -40,26 +40,74 @@ function authInfoServer() {
   );
 }
 
+const MAX_PORT = 65535;
+
 /**
  * Bind a server adjacent to `anchorPort`. Walks +1, +2, ... until it finds
- * a free port (most attempts succeed in 1–3 tries). Used by tests that need
- * a tight scan range; CI runners allocate random ports thousands apart, so
- * we cannot rely on `Bun.serve({ port: 0 })` placing two servers near each
- * other. Returns the bound server.
+ * a free port (most attempts succeed in 1–3 tries), or -1, -2, ... when
+ * fewer than 49 ports remain above the anchor: the OS can hand a port-0
+ * server 65535 itself (#1228). The direction is chosen up front; there is no
+ * fallback to the other side when every port tried is busy. Used by tests
+ * that need a tight scan range; CI runners allocate random ports thousands
+ * apart, so we cannot rely on `Bun.serve({ port: 0 })` placing two servers
+ * near each other. Returns the bound server, which may sit BELOW the anchor:
+ * scan with `scanRange`.
  */
 function bindNear(
   anchorPort: number,
   fetch: (req: Request) => Response | Promise<Response>,
 ): { port: number; stop(): void } {
+  const step = anchorPort + 49 <= MAX_PORT ? 1 : -1;
   for (let offset = 1; offset < 50; offset++) {
     try {
-      return requirePort(Bun.serve({ port: anchorPort + offset, fetch }));
+      return requirePort(Bun.serve({ port: anchorPort + step * offset, fetch }));
     } catch {
       // Port in use; try next.
     }
   }
-  throw new Error(`bindNear: could not bind any port in [${anchorPort + 1}, ${anchorPort + 49}]`);
+  throw new Error(`bindNear: could not bind any port within 49 of ${anchorPort}`);
 }
+
+/** The scan range covering two ports, whichever is lower. */
+function scanRange(a: number, b: number): { basePort: number; portRange: number } {
+  return { basePort: Math.min(a, b), portRange: Math.abs(a - b) + 1 };
+}
+
+describe('bindNear (test helper)', () => {
+  test('stays in the valid range when the anchor is the last port (#1228)', () => {
+    // The OS can hand a port-0 server 65535 itself; the helper used to walk
+    // only upward from it and throw.
+    const server = bindNear(MAX_PORT, () => new Response('ok'));
+    try {
+      expect(server.port).toBeLessThan(MAX_PORT);
+      expect(MAX_PORT - server.port).toBeLessThan(50);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+describe('discoverDaemonPort from the top of the port range (#1228)', () => {
+  test('finds a daemon that bindNear placed below its anchor', async () => {
+    // The case the fix exists for: the second server sits BELOW the first,
+    // so the scan must start from the lower port. Anchoring at the last port
+    // forces it every run instead of once in a few hundred.
+    const daemon = bindNear(MAX_PORT, (req) =>
+      new URL(req.url).pathname === '/auth-info'
+        ? Response.json({ authRequired: false, fingerprint: null })
+        : new Response('Not found', { status: 404 }),
+    );
+    try {
+      const found = await discoverDaemonPort('127.0.0.1', {
+        ...scanRange(MAX_PORT, daemon.port),
+        timeoutMs: 800,
+      });
+      expect(found).toBe(daemon.port);
+    } finally {
+      daemon.stop();
+    }
+  });
+});
 
 describe('parseHostInput', () => {
   test('plain hostname has no explicit port', () => {
@@ -212,8 +260,7 @@ describe('discoverDaemonPort', () => {
     });
     try {
       const found = await discoverDaemonPort('127.0.0.1', {
-        basePort: a.port,
-        portRange: b.port - a.port + 1,
+        ...scanRange(a.port, b.port),
         timeoutMs: 800,
       });
       if (found === null) throw new Error('expected one of the two daemons to answer');
@@ -295,8 +342,7 @@ describe('discoverDaemonPort', () => {
     });
     try {
       const found = await discoverDaemonPort('127.0.0.1', {
-        basePort: fast.port,
-        portRange: slow.port - fast.port + 1,
+        ...scanRange(fast.port, slow.port),
         timeoutMs: 2000,
       });
       expect(found).toBe(fast.port);
