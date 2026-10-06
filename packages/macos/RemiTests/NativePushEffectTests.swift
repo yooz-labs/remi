@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import SQLite3
 import XCTest
 
 final class NativePushEffectTests: XCTestCase {
@@ -285,6 +286,82 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertTrue(p.actions.isEmpty, "Original addRules scope must not be truncated or hidden to fit a native title")
         for id in ["OPT_0", "OPT_1", "OPT_2"] {
             XCTAssertThrowsError(try e.action(userInfo: info("question"), identifier: id), "A native action cannot bypass a complete standing scope that requires opening the app")
+        }
+    }
+
+    func testActualSQLiteDigestOnlyChangeInvalidatesPreparedEffect() throws {
+        let e = effect()
+        guard let p = prepared(e, "question-yn") else { return }
+        XCTAssertNoThrow(try e.recheck(p))
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(directory.appendingPathComponent("public.sqlite").path, &db,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil), SQLITE_OK)
+        guard let db else { return }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "UPDATE push_collapse SET digest=? WHERE rid=? AND collapse_id=? AND revision=?", -1, &stmt, nil), SQLITE_OK)
+        guard let stmt else { return }
+        defer { sqlite3_finalize(stmt) }
+        let replacement = Data(repeating: 0x5a, count: 32)
+        XCTAssertNotEqual(replacement, p.push.record.digest)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        XCTAssertEqual(replacement.withUnsafeBytes { sqlite3_bind_blob(stmt, 1, $0.baseAddress, Int32($0.count), transient) }, SQLITE_OK)
+        XCTAssertEqual(p.push.record.rid.withUnsafeBytes { sqlite3_bind_blob(stmt, 2, $0.baseAddress, Int32($0.count), transient) }, SQLITE_OK)
+        XCTAssertEqual(p.push.record.collapseId.withCString { sqlite3_bind_text(stmt, 3, $0, -1, transient) }, SQLITE_OK)
+        XCTAssertEqual(sqlite3_bind_int64(stmt, 4, p.push.record.revision), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(stmt), SQLITE_DONE)
+        XCTAssertEqual(sqlite3_changes(db), 1, "Owned real SQLite mutation must change exactly the selected latest digest")
+        XCTAssertEqual(try state.authorityGeneration(), p.push.authorityGeneration)
+        XCTAssertEqual(try state.currentAuthority(), p.push.trust.authority)
+        XCTAssertEqual(try state.machineTrust(rid:p.push.record.rid), p.push.trust)
+        XCTAssertEqual(try keys.load()?.publicKey, p.push.recipientPublicKey)
+        XCTAssertEqual(try keys.load()?.keyVersion, p.push.keyVersion)
+        XCTAssertThrowsError(try e.recheck(p), "Only latest digest changed: revision, nonce, generation and both public keys cannot mask the digest guard")
+    }
+    private func shortStandingCapsule(grant: String = "addRules", scope: Any = "*", namespace: UInt8 = 80) throws -> [String:Any] {
+        let v = try vector("question")
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: hex(XCTUnwrap(v["payloadHex"] as? String))) as? [String:Any])
+        var options = try XCTUnwrap(payload["options"] as? [[String:Any]])
+        options[1]["label"] = "Read"
+        options[1]["description"] = scope
+        options[1]["standingGrant"] = grant
+        payload["options"] = options
+        let bytes = try JSONSerialization.data(withJSONObject:payload, options:[.sortedKeys])
+        return try reseal(v) {
+            $0[5] = Data(b64url(Data(repeating:namespace,count:16)).utf8)
+            $0[6] = be64(UInt64(namespace))
+            $0[8] = Data(repeating:namespace,count:32)
+            $0[11] = bytes
+        }
+    }
+    func testShortCompleteSignedStandingScopeRemainsVisibleAndActionable() throws {
+        let e = effect()
+        let capsule = try shortStandingCapsule()
+        var p: NativePushEffect.Prepared?
+        XCTAssertNoThrow(p = try e.prepare(userInfo:["remiPush":capsule]))
+        guard let p else { return }
+        XCTAssertEqual(p.actions.map(\.value), ["allow","session","deny"])
+        XCTAssertEqual(p.actions.count, 3)
+        guard p.actions.count == 3 else { return }
+        let title = NativePushEffect.actionTitle(p.actions[1])
+        XCTAssertEqual(title, "Read — * · This session", "Every ORIGINAL signed scope byte and session lifetime must remain visible")
+        XCTAssertLessThanOrEqual(title.count, 24)
+        var action: NativePushEffect.Action?
+        XCTAssertNoThrow(action = try e.action(userInfo:["remiPush":capsule],identifier:"OPT_1"))
+        XCTAssertEqual(action?.option.value,"session")
+        XCTAssertEqual(action?.option.description,"*")
+        XCTAssertEqual(action?.option.standingGrant,.addRules)
+    }
+    func testOtherOrMissingSignedStandingScopeRequiresOpeningApp() throws {
+        let e = effect()
+        let variants: [(String,Any)] = [("setMode","*"),("session","*"),("addRules",NSNull()),("addRules"," ")]
+        for (index, variant) in variants.enumerated() {
+            let capsule = try shortStandingCapsule(grant:variant.0,scope:variant.1,namespace:UInt8(90+index))
+            var p: NativePushEffect.Prepared?
+            XCTAssertNoThrow(p = try e.prepare(userInfo:["remiPush":capsule]))
+            guard let p else { continue }
+            XCTAssertTrue(p.actions.isEmpty, "Only a complete explicit addRules scope may grant the whole native YNA set")
+            XCTAssertThrowsError(try e.action(userInfo:["remiPush":capsule],identifier:"OPT_1"))
         }
     }
 
