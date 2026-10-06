@@ -406,3 +406,16 @@ test('foreign actual socket-loss delivery remains uncertain without resend or fa
   expect(f.logs.join('\n')).not.toContain('[ForeignSession] informational push failed');
   expect(f.logs.join('\n')).toContain('[ForeignSession] informational push uncertain');
 }, 15000);
+
+test('an identical harness_denied repeat is a new occurrence and reaches the receiver again, on one collapse key (#1200, B2)', async () => {
+  const f = await fixture();
+  f.denied();
+  await f.flush();
+  f.denied();
+  await f.flush();
+  expect(f.events).toHaveLength(2);
+  expect(f.received).toHaveLength(2);
+  expect(f.outcomes).toEqual(['accepted', 'accepted']);
+  const carriers = f.received.map((rec) => JSON.parse(rec.body)['remiPush'] as r.PushCarrier);
+  expect(carriers[1]?.collapseId).toBe(carriers[0]?.collapseId);
+}, 20000);

@@ -124,3 +124,56 @@ test('a question that left the registry without a dismissal holds no slot either
     questions.remove(q.id);
   }
 });
+
+test('an identical informational event is a new occurrence: it is captured again within and after 300 s, on its own collapse key (#1200, B2)', () => {
+  const event = info('harness_denied', 'harness-denied-session');
+  const first = contexts.capture(runtime, snapshot, event);
+  expect(first).not.toBeNull();
+  if (!first) return;
+  const again = contexts.capture(runtime, snapshot, event);
+  expect(again).not.toBeNull();
+  if (!again) return;
+  expect(again).not.toBe(first);
+  expect(again.content.nonce).not.toBe(first.content.nonce);
+  expect(again.content.revision).toBe(first.content.revision + 1);
+  // One collapse key per session: the later notice replaces the earlier on the lock screen.
+  expect(again.content.collapseId).toBe(first.content.collapseId);
+  setSystemTime(new Date(Date.now() + 400_000));
+  const late = contexts.capture(runtime, snapshot, event);
+  expect(late).not.toBeNull();
+  expect(late?.content.revision).toBe(first.content.revision + 2);
+  expect(late?.content.collapseId).toBe(first.content.collapseId);
+});
+
+test('one occurrence id is one occurrence: a duplicate frame coalesces and a stale duplicate is dropped (#1200, B2)', () => {
+  const event = info('turn_complete', 'turn-complete-session', { eventId: 'claude:prompt-1' });
+  const first = contexts.capture(runtime, snapshot, event);
+  expect(first).not.toBeNull();
+  expect(contexts.capture(runtime, snapshot, event)).toBe(first);
+  setSystemTime(new Date(Date.now() + 400_000));
+  expect(contexts.capture(runtime, snapshot, event)).toBeNull();
+});
+
+test('turn_complete and subagent_alert occurrences keep their own lock-screen slot, as legacy; a repeated turn_failed keeps one (#1200, B2)', () => {
+  const turnA = contexts.capture(
+    runtime,
+    snapshot,
+    info('turn_complete', 'turn-complete-session', { eventId: 'claude:a' }),
+  );
+  const turnB = contexts.capture(
+    runtime,
+    snapshot,
+    info('turn_complete', 'turn-complete-session', { eventId: 'claude:b' }),
+  );
+  expect(turnA?.content.collapseId).not.toBe(turnB?.content.collapseId);
+  expect(turnA && contexts.isCurrent(turnA)).toBe(true);
+  expect(turnB && contexts.isCurrent(turnB)).toBe(true);
+  const alertA = contexts.capture(runtime, snapshot, info('subagent_alert', 'subagent-alert'));
+  const alertB = contexts.capture(runtime, snapshot, info('subagent_alert', 'subagent-alert'));
+  expect(alertA?.content.collapseId).not.toBe(alertB?.content.collapseId);
+  expect(alertA && contexts.isCurrent(alertA)).toBe(true);
+  expect(alertB && contexts.isCurrent(alertB)).toBe(true);
+  const failedA = contexts.capture(runtime, snapshot, info('turn_failed', 'turn-failed-episode'));
+  const failedB = contexts.capture(runtime, snapshot, info('turn_failed', 'turn-failed-episode'));
+  expect(failedB?.content.collapseId).toBe(failedA?.content.collapseId);
+});
