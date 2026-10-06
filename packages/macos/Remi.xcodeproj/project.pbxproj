@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000006; };
         120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000004; };
         120000090000000000000002 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
         120000090000000000000003 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
@@ -84,6 +85,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000090000000000000006 /* NativePushRegistrationIngressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushRegistrationIngressTests.swift; sourceTree = SOURCE_ROOT; };
         120000090000000000000004 /* NativePushRegistrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushRegistrationTests.swift; sourceTree = SOURCE_ROOT; };
         120000090000000000000001 /* NativePushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushRegistration.swift; sourceTree = SOURCE_ROOT; };
         120000080000000000000003 /* NativePushNotificationConsumerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushNotificationConsumerTests.swift; sourceTree = SOURCE_ROOT; };
@@ -201,6 +203,7 @@
                 120000070000000000000001 /* NativePushPublicationTests.swift */,
                 120000080000000000000003 /* NativePushNotificationConsumerTests.swift */,
                 120000090000000000000004 /* NativePushRegistrationTests.swift */,
+                120000090000000000000006 /* NativePushRegistrationIngressTests.swift */,
 				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
@@ -408,6 +411,7 @@
                 120000070000000000000002 /* NativePushPublicationTests.swift in Sources */,
                 120000080000000000000004 /* NativePushNotificationConsumerTests.swift in Sources */,
                 120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */,
+                120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */,
                 120000010000000000000005 /* NativePushStateTests.swift in Sources */,
                 120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */,
 				120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */,

@@ -22,6 +22,11 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let accessGroup: String?
     private let authority: NativeIdentityAuthorityBarrier
     private let pushState: () throws -> NativePushState
+    private let pushKeys: () throws -> NativePushKeyStore
+    private let pushTokens: NativePushTokenOwner
+    private let pushEnvironment: @MainActor () -> NativeAPNsEnvironment
+    private let notificationAuthorization: @MainActor () async throws -> Bool
+    private let remoteRegistration: @MainActor () -> Void
     private struct PairingAttempt {
         let id: String
         let identity: NativePushState.Authority
@@ -47,6 +52,11 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     init(authority: NativeIdentityAuthorityBarrier, accessGroup: String?, scheme: String, service: String, account: String,
          pushState: @escaping () throws -> NativePushState = NativePushConfiguration.sharedState,
+         pushKeys: @escaping () throws -> NativePushKeyStore = NativePushConfiguration.sharedKeyStore,
+         pushTokens: NativePushTokenOwner = .shared,
+         pushEnvironment: @escaping @MainActor () -> NativeAPNsEnvironment = { NativeAPNsEnvironment() },
+         notificationAuthorization: @escaping @MainActor () async throws -> Bool = { throw NativePushStateError.unavailable },
+         remoteRegistration: @escaping @MainActor () -> Void = {},
          foreground: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() },
          authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
          selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
@@ -55,6 +65,11 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         self.account = account
         self.authority = authority
         self.pushState = pushState
+        self.pushKeys = pushKeys
+        self.pushTokens = pushTokens
+        self.pushEnvironment = pushEnvironment
+        self.notificationAuthorization = notificationAuthorization
+        self.remoteRegistration = remoteRegistration
         self.accessGroup = accessGroup
         self.foreground = foreground
         self.authorization = authorization
