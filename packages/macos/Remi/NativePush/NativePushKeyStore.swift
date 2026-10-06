@@ -6,7 +6,9 @@ enum NativePushKeyError: Error { case keychain(OSStatus) }
 
 /// The separate native P256 sealing key uses CryptoKit's DER export/import.
 /// Exact not-found permits creation; other read errors/corruption preserve the
-/// existing item. Only this key is shared with the NSE; Ed25519 stays app-only.
+/// existing item unless the user explicitly asks for repair (`repairCorruptItem`),
+/// which replaces only an item that is corrupt. Only this key is shared with the
+/// NSE; Ed25519 stays app-only.
 ///
 /// Key versions (#1200): the daemon refuses an equal version with a different key
 /// (`STALE_KEY_VERSION`), so a key created after the earlier one was lost must
@@ -14,7 +16,8 @@ enum NativePushKeyError: Error { case keychain(OSStatus) }
 /// carries the creation time in milliseconds since the epoch, which exceeds the 1
 /// that earlier builds registered and any earlier creation on this device even
 /// when the lost record cannot be read. It assumes a device clock that has not
-/// run backward past an earlier creation.
+/// run backward past an earlier creation; a repair also outranks the corrupt
+/// record's own version when that is still readable.
 final class NativePushKeyStore {
     struct Key {
         let privateKey: P256.KeyAgreement.PrivateKey
@@ -78,8 +81,12 @@ final class NativePushKeyStore {
               key.publicKey.x963Representation == record.publicKey else { throw NativePushStateError.corrupt }
         return Key(privateKey: key, keyVersion: record.keyVersion)
     }
-    /// The version for a key created now: the clock in milliseconds.
-    private func nextVersion() -> Int { min(Int(now().timeIntervalSince1970 * 1000), Self.maximumVersion) }
+    /// The version for a key created now, above `floor` (the highest version known
+    /// to have existed on this device, or 0).
+    private func nextVersion(after floor: Int) -> Int {
+        let clock = Int(now().timeIntervalSince1970 * 1000)
+        return min(max(clock, floor + 1), Self.maximumVersion)
+    }
     private func encoded(_ key: P256.KeyAgreement.PrivateKey, version: Int) throws -> Data {
         try JSONEncoder().encode(Record(version: 1, privateDER: key.derRepresentation,
                                         publicKey: key.publicKey.x963Representation, keyVersion: version))
@@ -87,7 +94,7 @@ final class NativePushKeyStore {
     func loadOrCreate() throws -> Key {
         if let existing = try load() { return existing }
         let key = P256.KeyAgreement.PrivateKey()
-        let data = try encoded(key, version: nextVersion())
+        let data = try encoded(key, version: nextVersion(after: 0))
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -100,5 +107,30 @@ final class NativePushKeyStore {
         guard try read() == data, let verified = try load(),
               verified.publicKey == key.publicKey.x963Representation else { throw NativePushStateError.changed }
         return verified
+    }
+    /// Explicit, user-initiated repair (#1200): replaces an item that is CORRUPT
+    /// with a new key whose version outranks the corrupt record's own when that is
+    /// still readable. It never creates (a missing item is `loadOrCreate`'s) and
+    /// never replaces a valid key, an unreadable item or a read error: only the
+    /// corruption `load` reports. The old key is unrecoverable by definition, so
+    /// pushes sealed to it stay unreadable until the new key registers.
+    func repairCorruptItem() throws {
+        guard let corrupt = try read() else { return }
+        do { _ = try Self.parse(corrupt); return } catch NativePushStateError.corrupt {}
+        let key = P256.KeyAgreement.PrivateKey()
+        let replacement = try encoded(key, version: nextVersion(after: Self.recordedVersion(in: corrupt)))
+        // The Keychain has no compare-and-swap: read again immediately before the
+        // update so a record another process repaired or replaced is never overwritten.
+        guard try read() == corrupt else { throw NativePushStateError.changed }
+        let status = operations.update(query as CFDictionary, [kSecValueData as String: replacement] as CFDictionary)
+        guard status == errSecSuccess else { throw NativePushKeyError.keychain(status) }
+        guard try read() == replacement, let verified = try load(),
+              verified.publicKey == key.publicKey.x963Representation else { throw NativePushStateError.changed }
+    }
+    /// The keyVersion a corrupt record still states, or 0 when it states none.
+    private static func recordedVersion(in data: Data) -> Int {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let version = object["keyVersion"] as? Int, (1..<maximumVersion).contains(version) else { return 0 }
+        return version
     }
 }

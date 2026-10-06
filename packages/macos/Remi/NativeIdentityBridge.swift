@@ -181,6 +181,9 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                             guard environment != .unavailable, current(), try await notificationAuthorization(), current() else {
                                 throw NativePushStateError.unavailable
                             }
+                            // This explicit user action is the only repair request for a
+                            // corrupt sealing key; a valid key is never replaced (#1200).
+                            try pushKeys().repairCorruptItem()
                             remoteRegistration()
                             replyHandler(["requested": true], nil)
                         } else {
