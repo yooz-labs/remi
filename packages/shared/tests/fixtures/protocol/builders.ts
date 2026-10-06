@@ -16,6 +16,7 @@
  *   checked-in JSON fixtures from these same builders)
  */
 
+import { readFileSync } from 'node:fs';
 import { identityFromClaudeId } from '../../../src/harness.ts';
 import {
   createAck,
@@ -71,6 +72,7 @@ import type {
   SessionViewMeta,
   TranscriptContentBlock,
 } from '../../../src/protocol.ts';
+import { decodeNativeAnswer } from '../../../src/relay/native-answer.ts';
 import {
   createSecurePushRegisterRequest,
   createSecurePushRegisterResponse,
@@ -218,6 +220,14 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * `MessageHandlers` totality property from #896).
  */
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  // Signed native answers have no unsigned create* factory. Parse the
+  // independently signed codec vector through the shipping strict decoder.
+  native_answer: () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL('../relay-v2/native-answer-vectors.json', import.meta.url), 'utf8'),
+    ) as { cases: { message: unknown }[] };
+    return decodeNativeAnswer(JSON.stringify(vectors.cases[0]?.message));
+  },
   secure_push_register_request: () =>
     createSecurePushRegisterRequest({
       token: 'ab'.repeat(32),

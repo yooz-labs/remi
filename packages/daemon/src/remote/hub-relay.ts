@@ -10,6 +10,7 @@ import {
   type SessionListResponseMessage,
   type UnlockedIdentity,
   createAgentOutput,
+  createAnswerResult,
   createError,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
@@ -650,6 +651,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
+    if (message.type === 'native_answer') {
+      // Until the child-owned signed-proof ledger is wired (#1201), refuse
+      // explicitly. Never forward this through the ordinary answer path.
+      this.sendRaw(
+        peer.cid,
+        createAnswerResult(message.id, message.sessionId, message.questionId, 'stale'),
+      );
+      return;
+    }
     if (message.type === 'secure_push_register_request') {
       const authority = peer.pushAuthority;
       if (!authority) throw new Error('RELAY_REVOKED');

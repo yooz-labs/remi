@@ -1709,6 +1709,7 @@ function App() {
       case 'hello':
       case 'user_input':
       case 'answer':
+      case 'native_answer':
       case 'bullet_expand_request':
       case 'session_list_request':
       case 'transcript_load_request':

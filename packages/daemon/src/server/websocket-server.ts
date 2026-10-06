@@ -5,7 +5,7 @@
  * Handles connection lifecycle, message routing, and broadcasting.
  */
 
-import { generateId } from '@remi/shared';
+import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
 import {
@@ -661,7 +661,16 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
-      const data = typeof message === 'string' ? message : new TextDecoder().decode(message);
+      let data: string;
+      try {
+        data =
+          typeof message === 'string'
+            ? message
+            : new TextDecoder('utf-8', { fatal: true }).decode(message);
+      } catch {
+        connection.send(createError('INVALID_MESSAGE', 'Failed to parse message'));
+        return;
+      }
       connection.handleMessage(data);
     }
   }

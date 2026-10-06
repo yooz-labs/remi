@@ -78,6 +78,7 @@ const C2D_TYPES = (Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[
  *  setup, liveness, or acknowledgment) -- covered by dedicated tests below
  *  instead of the generic per-type loop. */
 const NO_EVENT_TYPES = new Set([
+  'native_answer',
   'hello',
   'auth_response',
   'ping',
@@ -171,7 +172,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 22 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 23 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -179,7 +180,30 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(22);
+    expect(C2D_TYPES.length).toBe(23);
+  });
+
+  test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
+    const fixture = loadFixture('native_answer');
+    if (fixture.type !== 'native_answer') throw new Error('invalid native fixture');
+    const before = eventCalls.length;
+    const results = () =>
+      received.filter((m) => m.type === 'answer_result' && m.requestId === fixture.id);
+    for (let count = 1; count <= 2; count++) {
+      client.send(fixture);
+      await waitFor(() => results().length === count);
+    }
+    for (const result of results()) {
+      expect(result).toMatchObject({
+        type: 'answer_result',
+        requestId: fixture.id,
+        sessionId: fixture.sessionId,
+        questionId: fixture.questionId,
+        outcome: 'stale',
+      });
+    }
+    expect(eventCalls.length).toBe(before);
+    expect(received.some((m) => m.type === 'ack' && m.ack.messageId === fixture.id)).toBe(false);
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
@@ -257,7 +281,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     }
   });
 
-  // --- Dedicated tests for the 9 no-app-event types ---
+  // --- Dedicated tests for the 10 no-app-event types ---
 
   test.each(['register', 'unregister'] as const)(
     'secure push %s from the real direct client returns a correlated UNSUPPORTED response and no application event',

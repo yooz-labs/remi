@@ -16,6 +16,7 @@
 import {
   MessageIdTracker,
   createAck,
+  createAnswerResult,
   createAuthResult,
   createError,
   createHelloAck,
@@ -275,7 +276,7 @@ export class Connection {
     this.missedPongs = 0;
 
     // Check for duplicate
-    if (this.messageTracker.checkAndMark(message.id)) {
+    if (message.type !== 'native_answer' && this.messageTracker.checkAndMark(message.id)) {
       if (message.type === 'answer') {
         void this.handleAnswer(message, true);
         return;
@@ -329,6 +330,10 @@ export class Connection {
           ),
         user_input: (m) => this.handleUserInput(m),
         answer: (m) => this.handleAnswer(m),
+        // Native proofs require the child-owned authority/replay ledger (#1201).
+        // Direct connections cannot infer enrolled relay authority.
+        native_answer: (m) =>
+          this.send(createAnswerResult(m.id, m.sessionId, m.questionId, 'stale')),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
