@@ -20,6 +20,10 @@ import { ownedRelayOffer, registerOwnedRelayFixtureCleanup } from './helpers/rel
 registerOwnedRelayFixtureCleanup();
 
 const PREFS: PushPreferences = { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true };
+// The source hub fixture has no secure push sender, so it answers every registration it
+// receives with UNSUPPORTED (#1200). The manager settles any answered outcome the same way;
+// a successful registration over a real hub is covered by the daemon's hub relay tests.
+const ANSWERED: SecurePushOutcome = { kind: 'refused', error: 'UNSUPPORTED' };
 
 async function pairedRequests(sent: SecurePushRegisterRequestMessage[]) {
   const local = await ownedRelayOffer();
@@ -66,7 +70,7 @@ test('registers each connected machine once per token generation and preference 
   const target = { connectionId: 'relay:m', machinePublicKey: 'm' };
   try {
     subscriptions.sync([target], PREFS);
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.pushPrefs).toEqual(PREFS);
     subscriptions.sync([target], PREFS);
@@ -74,14 +78,14 @@ test('registers each connected machine once per token generation and preference 
     expect(prepared, 'An unchanged generation and preference set registers once').toBe(1);
     subscriptions.tokenChanged();
     subscriptions.sync([target], PREFS);
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     const muted = { ...PREFS, turnComplete: false };
     subscriptions.sync([target], muted);
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     expect(sent[2]?.pushPrefs).toEqual(muted);
     subscriptions.sync([], muted);
     subscriptions.sync([target], muted);
-    expect(await outcomes.next(), 'A reconnect registers again').toEqual({ kind: 'registered' });
+    expect(await outcomes.next(), 'A reconnect registers again').toEqual(ANSWERED);
     expect(prepared).toBe(4);
   } finally { requests.closed(); await client.close(); }
 }, 30000);
@@ -114,7 +118,7 @@ test('a missing native token is retried only on the next token change', async ()
     tokenPresent = true;
     subscriptions.tokenChanged();
     subscriptions.sync([target], PREFS);
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     expect(sent).toHaveLength(1);
   } finally { requests.closed(); await client.close(); }
 }, 30000);
@@ -144,7 +148,7 @@ test('a token change during preparation discards the stale ticket and sends only
     subscriptions.tokenChanged();
     subscriptions.sync([target], PREFS);
     release.push({ metadata: first, validate: async () => { validated.push(first.token); } });
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     await Bun.sleep(50);
     expect(sent.map((message) => message.token), 'The stale ticket is never sent').toEqual([second.token]);
     expect(validated, 'Only the sent ticket is validated').toEqual([second.token]);
@@ -173,7 +177,7 @@ test('a token change while the ticket is validated sends nothing for that ticket
     const finishValidation = await validating.next();
     subscriptions.tokenChanged();
     finishValidation();
-    expect(await outcomes.next()).toEqual({ kind: 'registered' });
+    expect(await outcomes.next()).toEqual(ANSWERED);
     await Bun.sleep(50);
     expect(sent.map((message) => message.token), 'A ticket validated for an old token is never sent').toEqual([second.token]);
   } finally { requests.closed(); await client.close(); }
