@@ -6,6 +6,12 @@ export interface SecurePushTransportOptions {
   readonly store: SecurePushStore;
   readonly signer: r.Signer;
   readonly audience: string;
+  /**
+   * The Worker's per-deployment `PUSH_SECRET` (#1200), sent as `Authorization: Bearer`. The Worker
+   * refuses a submit without it before it reads the body. The daemon builds a transport only when
+   * one is configured; it is never logged or placed in a result.
+   */
+  readonly pushSecret?: string;
   readonly maxAttempts?: 1 | 2 | 3;
   readonly retryDelayMs?: number;
 }
@@ -101,6 +107,7 @@ export class SecurePushTransport {
   private readonly store: SecurePushStore;
   private readonly signer: r.Signer;
   private readonly audience: string;
+  private readonly authorization: string | undefined;
   private readonly maxAttempts: number;
   private readonly retryDelayMs: number;
   private readonly prepared = new WeakMap<PreparedSecurePush, PrivatePreparation>();
@@ -121,6 +128,12 @@ export class SecurePushTransport {
         ))
     )
       throw new Error('SECURE_PUSH_AUDIENCE');
+    // A value fetch cannot carry as a header would throw after the attempt was counted, which
+    // reads as an uncertain delivery: refuse it here instead. The Worker trims its own secret.
+    const secret = options.pushSecret?.trim();
+    if (options.pushSecret !== undefined && (!secret || !/^[\x21-\x7e ]+$/.test(secret)))
+      throw new Error('SECURE_PUSH_SECRET');
+    this.authorization = secret ? `Bearer ${secret}` : undefined;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.retryDelayMs = options.retryDelayMs ?? 100;
     if (
@@ -318,7 +331,10 @@ export class SecurePushTransport {
             // This invocation and every eligibility check above share the SAME synchronous lock.
             const response = fetch(captured.url, {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: {
+                'content-type': 'application/json',
+                ...(this.authorization ? { authorization: this.authorization } : {}),
+              },
               body: captured.body,
               signal: controller.signal,
               redirect: 'error',

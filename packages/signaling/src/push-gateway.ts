@@ -30,11 +30,13 @@ export function rejected(
 export function pushResponse(result: PushSubmitResult): Response {
   const status =
     result.outcome === 'rejected'
-      ? result.reason === 'RATE_LIMITED' || result.reason === 'CAPACITY'
-        ? 429
-        : result.reason === 'STORE_ERROR'
-          ? 503
-          : 400
+      ? result.reason === 'UNAUTHORIZED'
+        ? 401
+        : result.reason === 'RATE_LIMITED' || result.reason === 'CAPACITY'
+          ? 429
+          : result.reason === 'STORE_ERROR'
+            ? 503
+            : 400
       : 200;
   return new Response(encodePushSubmitResult(result), {
     status,

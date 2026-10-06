@@ -128,6 +128,7 @@ export type PushRejectReason =
   | 'MALFORMED'
   | 'OVERSIZE'
   | 'BAD_SIGNATURE'
+  | 'UNAUTHORIZED'
   | 'WRONG_AUDIENCE'
   | 'NOT_ENROLLED'
   | 'EXPIRED'
@@ -183,6 +184,7 @@ const REASONS: readonly PushRejectReason[] = [
   'MALFORMED',
   'OVERSIZE',
   'BAD_SIGNATURE',
+  'UNAUTHORIZED',
   'WRONG_AUDIENCE',
   'NOT_ENROLLED',
   'EXPIRED',

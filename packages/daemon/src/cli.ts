@@ -2404,14 +2404,23 @@ if (relayWanted && relayIdentity) {
         new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
       );
       const store = new SecurePushStore(REMI_DIR, relayTrust);
-      securePushService = new SecurePushService({
-        store,
-        transport: new SecurePushTransport({ store, signer, audience }),
-        contexts: securePushContexts,
-        machinePublicKey: relayV2.b64u(signer.publicKey),
-        rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
-        log: (outcome) => log(`[SecurePush] ${outcome}`),
-      });
+      // #1200: the Worker refuses a /v2/push submit without its per-deployment secret, so without
+      // one there is no service to build; say so once, never print the value.
+      const pushSecret = cliPushSecret?.trim();
+      if (pushSecret) {
+        securePushService = new SecurePushService({
+          store,
+          transport: new SecurePushTransport({ store, signer, audience, pushSecret }),
+          contexts: securePushContexts,
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+          log: (outcome) => log(`[SecurePush] ${outcome}`),
+        });
+      } else {
+        logError(
+          '[SecurePush] disabled: set --push-secret or REMI_PUSH_SECRET to the Worker PUSH_SECRET',
+        );
+      }
       nativeAnswerLedger = new NativeAnswerLedger({
         store,
         contexts: securePushContexts,
