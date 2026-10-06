@@ -17,7 +17,13 @@ import {
 } from '@/lib/identity-client';
 import { ConnectionApproval } from '@/lib/connection-approval';
 import { DAEMON_BASE_PORT, errorToString, type relayV2 } from '@remi/shared';
-import type { RelayDevicesResponseMessage, RelayDeviceRevokeResponseMessage } from '@remi/shared';
+import type {
+  RelayDevicesResponseMessage,
+  RelayDeviceRevokeResponseMessage,
+  SecurePushRegisterResponseMessage,
+  SecurePushRegistration,
+  SecurePushUnregisterResponseMessage,
+} from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
@@ -148,6 +154,8 @@ export interface UseConnectionManagerReturn {
   requestSessionAttach: (connectionId: ConnectionId, sessionId: string) => boolean;
   listRelayDevices: (connectionId: ConnectionId) => Promise<RelayDevicesResponseMessage>;
   revokeRelayDevice: (connectionId: ConnectionId, fingerprint: string) => Promise<RelayDeviceRevokeResponseMessage>;
+  registerRelayPush: (connectionId: ConnectionId, registration: SecurePushRegistration) => Promise<SecurePushRegisterResponseMessage>;
+  unregisterRelayPush: (connectionId: ConnectionId) => Promise<SecurePushUnregisterResponseMessage>;
   /** Disconnect a specific connection */
   disconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection by re-running port discovery against its host (#435). */
@@ -929,6 +937,15 @@ export function useConnectionManager(
     if (mc && identityRef.current?.fingerprint === fingerprint) (mc.client as RelayTransport).suspendResume();
     return requests ? requests.revoke(fingerprint) : Promise.reject(new Error('Relay connection unavailable.'));
   }, []);
+  // Secure push subscription for this device on one relay machine (#1200).
+  const registerRelayPush = useCallback((connectionId: ConnectionId, registration: SecurePushRegistration) => {
+    const requests = connectionsMapRef.current.get(connectionId)?.relayRequests;
+    return requests ? requests.registerPush(registration) : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
+  const unregisterRelayPush = useCallback((connectionId: ConnectionId) => {
+    const requests = connectionsMapRef.current.get(connectionId)?.relayRequests;
+    return requests ? requests.unregisterPush() : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
 
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
   // re-running port discovery against its host. Ignored while a connection is
@@ -1267,6 +1284,8 @@ export function useConnectionManager(
     requestSessionAttach,
     listRelayDevices,
     revokeRelayDevice,
+    registerRelayPush,
+    unregisterRelayPush,
     disconnect,
     reconnect,
     disconnectAll,
