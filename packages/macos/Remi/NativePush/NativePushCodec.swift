@@ -121,10 +121,12 @@ enum NativePushCodec {
         // Crypto is synchronous, but another process can mutate either durable
         // authority while it runs. Consumers also recheck at their final effect.
         do {
-            guard try state.authorityGeneration() == generation, try state.currentAuthority() == trust.authority,
-                  try state.machineTrust(rid: rid) == trust,
-                  let latestKey = try keys.load(), latestKey.keyVersion == recipient.keyVersion,
-                  latestKey.publicKey == recipient.publicKey else { throw NativePushCodecError.changed }
+            // The OS read itself can block while another process invalidates
+            // authority. Perform it BEFORE the final public-ledger checks.
+            guard let latestKey = try keys.load(), latestKey.keyVersion == recipient.keyVersion,
+                  latestKey.publicKey == recipient.publicKey,
+                  try state.currentAuthority() == trust.authority, try state.machineTrust(rid: rid) == trust,
+                  try state.authorityGeneration() == generation else { throw NativePushCodecError.changed }
         } catch let error as NativePushCodecError { throw error }
         catch { throw NativePushCodecError.unavailable }
         return VerifiedPush(originalCarrier: c, originalBody: body, payloadBytes: fields[11],
