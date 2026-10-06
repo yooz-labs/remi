@@ -92,8 +92,6 @@ import type { QuestionPresenceTracker } from '../../api/question-presence-tracke
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate, subagentCall } from '../../auto-approve/index.ts';
 import type {
-  HeldAnswer,
-  HeldAnswerOutcome,
   SubagentAlert,
   SubagentAlertSink,
   TerminalReleaseCause,
@@ -283,8 +281,12 @@ export interface SessionGateHandle {
    *  `retireQuestion`. */
   retireQuestion: (questionId: UUID) => void;
   /** Apply a phone answer to a held prompt (#1126). Forwards to
-   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
-  answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. Typed as the gate's
+   *  own method and never re-declared here: TypeScript accepts a function with
+   *  fewer parameters wherever one with more is expected, so a hand-written
+   *  signature once dropped the final authority `commit` and the answer ran
+   *  without the subscription lock (#1201). Forward with `(...args)`. */
+  answerHeld: AutoApproveGate['answerHeld'];
   /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
    *  Forwards to `AutoApproveGate.hasMainHold`. */
   hasMainHold: () => boolean;
@@ -1285,7 +1287,7 @@ export function setupHookBridge(
     gate: {
       answerValidity: (questionId) => autoApproveGate.answerValidity(questionId),
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
-      answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
+      answerHeld: (...args) => autoApproveGate.answerHeld(...args),
       hasMainHold: () => autoApproveGate.hasMainHold(),
       hasOpenHookPrompt: () => autoApproveGate.hasOpenHookPrompt(),
       noteTerminalEscape: () => autoApproveGate.noteTerminalEscape(),

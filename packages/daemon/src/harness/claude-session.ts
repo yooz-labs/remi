@@ -121,9 +121,12 @@ export interface ClaudeLaunchDeps {
  * answer, chat and Stop handlers already read a session whose gate was never
  * registered (the hook server failed to start).
  */
-type ClaudeGate = Omit<DecisionChannel, 'screen' | 'answerValidity'> & {
-  answerValidity(questionId: UUID): AnswerValidity | null;
-};
+type ClaudeGate = Omit<DecisionChannel, 'screen' | 'answerValidity' | 'answerHeld'> &
+  // The bridge handle's own `answerHeld`, so `ClaudeDecisions.answerHeld` below is checked
+  // against the parameters the gate really takes, `commit` included (#1201).
+  Pick<SessionGateHandle, 'answerHeld'> & {
+    answerValidity(questionId: UUID): AnswerValidity | null;
+  };
 
 const NO_GATE: ClaudeGate = {
   answerValidity: () => null,
