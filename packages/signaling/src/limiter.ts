@@ -85,11 +85,13 @@ export class GlobalLimiter {
           ]
         : [
             [`ip:${body['ip']}`, pushLimit(this.env, 'PUSH_SEND_IP')],
-            // Dismissals are counted per room apart from alerts (#1200, #723).
+            // Dismissals are counted per room and per token apart from alerts (#1200, #723).
             body['pushClass'] === 'background'
               ? [`ridbg:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID_BACKGROUND')]
               : [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
-            [`token:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN')],
+            body['pushClass'] === 'background'
+              ? [`tokenbg:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN_BACKGROUND')]
+              : [`token:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN')],
             ['all', pushLimit(this.env, 'PUSH_SEND_AGGREGATE')],
           ];
     const storage = this.state.storage;
