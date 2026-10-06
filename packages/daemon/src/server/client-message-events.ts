@@ -40,6 +40,7 @@
 import type {
   AnswerExtras,
   CreateSessionRequestMessage,
+  NativeAnswerMessage,
   PushPreferences,
   UUID,
 } from '@remi/shared';
@@ -73,6 +74,8 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  /** Signed native proof; its child-owned ledger is separate from ordinary answer aliases (#1201). */
+  onNativeAnswer: [message: NativeAnswerMessage];
   /** User input received. `messageId` is the wire message's own id (#681),
    *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
    *  specific bubble that was dropped. */
@@ -147,6 +150,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onNativeAnswer',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
@@ -197,15 +201,19 @@ void _allKeysCovered;
 export type ClientMessageEvents = {
   [K in keyof ClientMessageEventArgs]: (
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onAnswer'
+  ) => K extends 'onNativeAnswer'
     ?
-        | void
-        | import('@remi/shared').AnswerOutcome
-        | Promise<void>
-        | Promise<import('@remi/shared').AnswerOutcome>
-    : K extends 'onUserInput'
-      ? void | Promise<void>
-      : void;
+        | import('@remi/shared').AnswerResultOutcome
+        | Promise<import('@remi/shared').AnswerResultOutcome>
+    : K extends 'onAnswer'
+      ?
+          | void
+          | import('@remi/shared').AnswerOutcome
+          | Promise<void>
+          | Promise<import('@remi/shared').AnswerOutcome>
+      : K extends 'onUserInput'
+        ? void | Promise<void>
+        : void;
 };
 
 /** `ClientMessageEvents` with `connectionId` prepended -- what a fan-out
@@ -215,15 +223,19 @@ export type ClientMessageEventsWithConnectionId = {
   [K in keyof ClientMessageEventArgs]: (
     connectionId: UUID,
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onAnswer'
+  ) => K extends 'onNativeAnswer'
     ?
-        | void
-        | import('@remi/shared').AnswerOutcome
-        | Promise<void>
-        | Promise<import('@remi/shared').AnswerOutcome>
-    : K extends 'onUserInput'
-      ? void | Promise<void>
-      : void;
+        | import('@remi/shared').AnswerResultOutcome
+        | Promise<import('@remi/shared').AnswerResultOutcome>
+    : K extends 'onAnswer'
+      ?
+          | void
+          | import('@remi/shared').AnswerOutcome
+          | Promise<void>
+          | Promise<import('@remi/shared').AnswerOutcome>
+      : K extends 'onUserInput'
+        ? void | Promise<void>
+        : void;
 };
 
 /**

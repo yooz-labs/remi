@@ -236,6 +236,7 @@ import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
+import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
 import { legacyRelayUrlNotice, relaySecurePushAudience } from './remote/relay-url.ts';
 import {
   AmbiguousSessionIdentityError,
@@ -1093,6 +1094,7 @@ const securePushContexts = new SecurePushContexts({
 });
 const securePushRuntimes = new Map<UUID, SecurePushRuntime>();
 let securePushService: SecurePushService | undefined;
+let nativeAnswerLedger: NativeAnswerLedger | undefined;
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);
   return runtime ? securePushService?.forRuntime(runtime) : undefined;
@@ -2178,6 +2180,8 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
 const sharedEvents = {
   ...trivialHandlers,
   ...inputHandlers,
+  onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>
+    nativeAnswerLedger?.answer(message) ?? Promise.resolve('stale' as const),
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
@@ -2407,6 +2411,14 @@ if (relayWanted && relayIdentity) {
         machinePublicKey: relayV2.b64u(signer.publicKey),
         rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
         log: (outcome) => log(`[SecurePush] ${outcome}`),
+      });
+      nativeAnswerLedger = new NativeAnswerLedger({
+        store,
+        contexts: securePushContexts,
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+        runtimeFor: (sessionId) => securePushRuntimes.get(sessionId),
+        apply: inputHandlers.guardedAnswer,
       });
     } catch {
       logError('[SecurePush] initialization refused');

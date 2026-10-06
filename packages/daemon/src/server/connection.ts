@@ -39,6 +39,7 @@ import type {
   DetachSessionMessage,
   HelloMessage,
   KillSessionRequestMessage,
+  NativeAnswerMessage,
   PingMessage,
   ProtocolMessage,
   RegisterDeviceTokenMessage,
@@ -330,10 +331,7 @@ export class Connection {
           ),
         user_input: (m) => this.handleUserInput(m),
         answer: (m) => this.handleAnswer(m),
-        // Native proofs require the child-owned authority/replay ledger (#1201).
-        // Direct connections cannot infer enrolled relay authority.
-        native_answer: (m) =>
-          this.send(createAnswerResult(m.id, m.sessionId, m.questionId, 'stale')),
+        native_answer: (m) => this.handleNativeAnswer(m),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
@@ -529,6 +527,23 @@ export class Connection {
       message.claudeSessionId,
       message.id,
     );
+  }
+
+  private async handleNativeAnswer(message: NativeAnswerMessage): Promise<void> {
+    if (this.state !== 'connected') {
+      this.sendError('NOT_CONNECTED', 'Connection not established');
+      return;
+    }
+    let outcome: import('@remi/shared').AnswerResultOutcome = 'stale';
+    try {
+      // The proof is itself verified against current child authority. A local
+      // capability/connection does not grant an unsigned choice or cache alias.
+      outcome = (await this.events.onNativeAnswer?.(message)) ?? 'stale';
+    } catch {
+      outcome = 'uncertain';
+    }
+    if (this.state === 'connected')
+      this.send(createAnswerResult(message.id, message.sessionId, message.questionId, outcome));
   }
 
   private async handleAnswer(message: AnswerMessage, recognizedDuplicate = false): Promise<void> {
