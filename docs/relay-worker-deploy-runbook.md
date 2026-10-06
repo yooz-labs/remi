@@ -73,6 +73,8 @@ bunx wrangler deploy
   To turn it off now, set `LEGACY_PUSH_ENABLED = "false"` in `[vars]`.
 - Optional limit variables (`src/limits.ts` documents each default): set one in `wrangler.toml` `[vars]`, for example `LIMIT_IP_CLIENT = "10"`.
   The push budgets (`PUSH_SEND_*`, `PUSH_ATTEMPT_*`, `PUSH_NONCES`) can only be lowered, never raised past their defaults.
+  Dismissals (background pushes) are counted apart from alerts so a burst of alerts cannot leave answered cards on lock screens (#723): per room 300 per minute (`PUSH_SEND_RID_BACKGROUND`, alerts 30) and per device token 100 per minute (`PUSH_SEND_TOKEN_BACKGROUND`, alerts 10), about ten times the alert budget as in the legacy route.
+  The per-address and aggregate budgets are shared by both classes.
   The defaults are unmeasured.
 
 ## Smoke test after deploy

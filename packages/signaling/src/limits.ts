@@ -45,6 +45,12 @@ export const LIMIT_DEFAULTS = {
    */
   PUSH_SEND_RID_BACKGROUND: 300,
   PUSH_SEND_TOKEN: 10,
+  /**
+   * Background (dismissal) pushes per device token (#723): every resolved question fans one
+   * dismissal out per token, so a burst of them must not be throttled by the token's alert budget.
+   * Separate counters, sized about ten times PUSH_SEND_TOKEN like the per-room split above.
+   */
+  PUSH_SEND_TOKEN_BACKGROUND: 100,
   PUSH_SEND_AGGREGATE: 600,
   PUSH_SEND_RECORDS: 4096,
   PUSH_NONCES: 4096,

@@ -149,8 +149,10 @@ fetch and is cleared afterward. Expiry is not extended while waiting. Raw APNs
 response bodies and exceptions are never returned as push errors or logged here.
 
 Separate durable fixed 60 second send policies are address 120, room 30 (alerts), room
-300 (background pushes, counted apart so a burst of alerts cannot leave answered cards on
-lock screens, #723), token-hash 10 and aggregate 600; the address, token and aggregate
+300 (background pushes), token-hash 10 (alerts), token-hash 100 (background pushes) and
+aggregate 600. Background pushes (dismissals) are counted apart per room and per token so a
+burst of alerts or of resolved questions cannot leave answered cards on lock screens (#723);
+the values are about ten times the alert budget, the legacy ratio. The address and aggregate
 policies are shared by both classes. Separate precrypto attempts are address 120 and
 aggregate 600. Each mode retains at most 4096 current/previous-window records, refuses
 capacity without partial increments, and reclaims only expired records. A rate-limit or
