@@ -164,6 +164,7 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertEqual(first.push.record.collapseId, later.push.record.collapseId)
         XCTAssertNotEqual(first.push.record.digest, later.push.record.digest)
         XCTAssertThrowsError(try e.recheck(first), "An accepted older nonce cannot publish after a newer signed meaning")
+        XCTAssertThrowsError(try e.prepare(userInfo: info("question")), "A retained old nonce is not an eligible duplicate once another digest is latest")
         XCTAssertNoThrow(try e.recheck(later))
     }
     func testActualSignedDismissIsAbsorbingAndCarriesNoActions() throws {
