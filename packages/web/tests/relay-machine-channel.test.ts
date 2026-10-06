@@ -35,7 +35,7 @@ test('client awaits exact local confirmation, uses one semantic channel and resu
     signer,
     () => current,
     {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: (message) => messages.push(message),
       onError: (error) => failures.push(error),
       onClose: (end) => endings.push(end),
@@ -84,7 +84,7 @@ test('client awaits exact local confirmation, uses one semantic channel and resu
     await client.close();
     expect(await endings.next()).toBe('clean');
     const resumed = RelayMachineChannel.resume(client.pin, signer, () => current, {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: (message) => messages.push(message),
       onError: (error) => failures.push(error),
     });
@@ -102,5 +102,39 @@ test('client awaits exact local confirmation, uses one semantic channel and resu
   } finally {
     current = false;
     await client.close();
+  }
+}, 20000);
+
+test('real relay transport waits for durable READY continuation before connecting', async () => {
+  const { RelayTransport } = await import('../src/lib/relay-transport');
+  const local = await ownedRelayOffer();
+  const { signer } = await relayV2.generateIdentity();
+  const entered = new Mailbox<boolean>();
+  const connected = new Mailbox<boolean>();
+  const statuses: string[] = [];
+  let finish: (() => void) | undefined;
+  const persistence = new Promise<void>(resolve => { finish = resolve; });
+  let current = true;
+  const client = new RelayTransport(async events => RelayMachineChannel.pair(
+    String(local.offer['token']), signer, () => current, events,
+  ), () => current, false, {
+    onReady: async () => { entered.push(true); await persistence; },
+    onStatus: status => { statuses.push(status); if (status === 'connected') connected.push(true); },
+  });
+  try {
+    await client.connect();
+    const compare = await local.inbox.next();
+    expect(compare['t']).toBe('compare');
+    local.ws.send(JSON.stringify({ t: 'confirm', id: local.offer['id'], offerId: local.offer['offerId'],
+      connectionId: compare['connectionId'], fingerprint: compare['fingerprint'], accept: true }));
+    expect(await entered.next()).toBe(true);
+    expect(await connected.quiet(25)).toBe(true);
+    expect(statuses).not.toContain('connected');
+    expect(client.isConnected).toBe(false);
+    finish?.();
+    expect(await connected.next()).toBe(true);
+    expect(client.isConnected).toBe(true);
+  } finally {
+    finish?.(); current = false; client.disconnect();
   }
 }, 20000);

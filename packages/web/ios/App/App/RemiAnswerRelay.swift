@@ -4,12 +4,14 @@ import CryptoKit
 import UIKit
 import Capacitor
 
-/// #591 P2 — native silent lock-screen answer relay (Duo-style).
+/// #1200 v2 actions are consumed by the independent native verifier and open
+/// the app until R6 supplies its sole native submission owner. #591's direct
+/// signed relay remains only for explicitly legacy notifications.
 ///
-/// Wraps Capacitor's push `NotificationHandlerProtocol` (the handler the router
-/// invokes on a notification action) so a lock-screen Yes/No/Always tap is signed
+/// For legacy notifications, wraps Capacitor's push `NotificationHandlerProtocol`
+/// so a direct lock-screen Yes/No/Always tap is signed
 /// and POSTed to the daemon's direct `/answer` endpoint WITHOUT opening the app.
-/// The captured Capacitor handler is still invoked, so the JS path keeps working
+/// Only the legacy branch invokes the captured Capacitor handler, so its JS path keeps working
 /// when the app is alive (foreground).
 ///
 /// Gotchas handled (from Capacitor/NotificationRouter.swift):
@@ -42,13 +44,19 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         wrapped = existing
         router.pushNotificationHandler = self
         installed = true
-        NSLog("[remi] RemiAnswerRelay installed (wrapped=\(existing.map { String(describing: type(of: $0)) } ?? "nil"))")
+        NSLog("[remi] answer relay installed")
     }
 
     // MARK: NotificationHandlerProtocol
 
     func willPresent(notification: UNNotification) -> UNNotificationPresentationOptions {
-        // #734: while the app is FOREGROUNDED, iOS presents a push only with
+        let content = notification.request.content
+        if content.userInfo["remiPush"] != nil {
+            guard NativePushNotificationConsumer.isGenericFallback(content) ||
+                    (try? NativePushNotificationConsumer.configured().allowsPresentation(content)) == true else { return [] }
+            return [.banner, .list, .sound]
+        }
+        // Legacy direct behavior (#734): while FOREGROUNDED, iOS presents only with
         // the options returned here — and `wrapped ?? []` meant every Remi
         // push showed NOTHING (no banner, no sound) whenever the app happened
         // to be open (session list, another session, or the phone driven via
@@ -68,9 +76,14 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     }
 
     func didReceive(response: UNNotificationResponse) {
-        relay(response: response)
-        // Keep Capacitor's JS path alive for the foreground/app-open case.
-        wrapped?.didReceive(response: response)
+        // The v2 router runs before ANY outer IDs/options are read. Its legacy
+        // closure is never called for v2, including malformed or unavailable.
+        _ = NativePushNotificationConsumer.routeAction(
+            userInfo: response.notification.request.content.userInfo, identifier: response.actionIdentifier,
+            legacy: { [self] in
+                relay(response: response)
+                wrapped?.didReceive(response: response)
+            })
     }
 
     // MARK: Relay
@@ -114,7 +127,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             answer = nil  // tap / dismiss -> let Capacitor's JS handler open the app
         }
         guard let answerValue = answer, !answerValue.isEmpty else {
-            NSLog("[remi] relay: no actionable answer (action=\(response.actionIdentifier)); deferring to app")
+            NSLog("[remi] legacy answer action deferred to app")
             endTask()
             return
         }
@@ -126,7 +139,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         // daemon URL is a Tailscale/public host; a LAN-only daemon is not, the
         // same limit the in-app reconnect has.
         guard let route = RemiNativeStore.route(forSession: sessionId), !route.wsUrl.isEmpty else {
-            NSLog("[remi] relay: no stored daemon URL for session \(sessionId); cannot relay")
+            NSLog("[remi] legacy answer route unavailable")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -134,7 +147,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
 
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
-        guard let auth = RemiNativeStore.sign(message: message) else {
+        guard let accessGroup = try? NativePushConfiguration.identityAccessGroup(),
+              let auth = RemiNativeStore.sign(message: message, accessGroup: accessGroup) else {
             NSLog("[remi] relay: no signing identity stored; cannot relay")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
@@ -154,7 +168,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             .replacingOccurrences(of: "wss://", with: "https://")
             .replacingOccurrences(of: "ws://", with: "http://")
         guard var comps = URLComponents(string: base) else {
-            NSLog("[remi] relay: bad daemon URL \(base)")
+            NSLog("[remi] legacy answer route refused")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -163,7 +177,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         comps.query = nil
         comps.fragment = nil
         guard let url = comps.url else {
-            NSLog("[remi] relay: cannot build /answer URL from \(base)")
+            NSLog("[remi] legacy answer route refused")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -193,18 +207,17 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         req.httpBody = payload
         req.timeoutInterval = 20
 
-        NSLog("[remi] relay: POST \(url.absoluteString) answer=\(answer)")
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+        NSLog("[remi] legacy answer submission started")
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, err in
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            let result = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            if let err = err {
-                NSLog("[remi] relay: POST failed: \(err.localizedDescription)")
+            if err != nil {
+                NSLog("[remi] legacy answer submission unavailable")
                 self?.notifyDeliveryFailure(questionId: questionId)
             } else if !(200...299).contains(status) {
-                NSLog("[remi] relay: POST status=\(status) result=\(result)")
+                NSLog("[remi] legacy answer submission status=\(status)")
                 self?.notifyDeliveryFailure(questionId: questionId)
             } else {
-                NSLog("[remi] relay: POST status=\(status) result=\(result)")
+                NSLog("[remi] legacy answer submission status=\(status)")
             }
             endTask()
         }.resume()
@@ -229,8 +242,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let identifier = "remi-answer-failure-\(questionId ?? "unknown")"
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                NSLog("[remi] relay: failed to schedule delivery-failure notification: \(error.localizedDescription)")
+            if error != nil {
+                NSLog("[remi] legacy answer failure notice unavailable")
             }
         }
     }

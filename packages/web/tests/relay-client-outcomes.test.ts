@@ -47,7 +47,7 @@ async function pair(
     signer,
     identityCurrent,
     {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: receive,
       onClose,
       onError: (error) => errors.push(error),

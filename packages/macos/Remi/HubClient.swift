@@ -58,7 +58,7 @@ final class HubClient: ObservableObject {
         self.scanPorts = scanPorts
         if let identity { self.identity = identity }
         else {
-            do { self.identity = try ClientIdentityStore.loadOrCreate() }
+            do { self.identity = try ClientIdentityStore.loadOrCreate(authority: NativePushConfiguration.identityAuthority, accessGroup: NativePushConfiguration.identityAccessGroup()) }
             catch {
                 self.identity = nil
                 self.phase = .identityUnavailable(reason: "The durable native identity could not be loaded. Its Keychain entry was preserved.")
