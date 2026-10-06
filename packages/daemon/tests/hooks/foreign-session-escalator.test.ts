@@ -76,7 +76,11 @@ describe('ForeignSessionEscalator (#672)', () => {
       liveSessionsRegistry,
       bindingStore,
       deviceTokens,
-      pushConfig: () => ({ signalingUrl: 'https://example.test' }),
+      pushConfig: () => ({
+        signalingUrl: 'https://example.test',
+        legacyEnabled: true,
+        pushSecret: 'owned-test-secret',
+      }),
       currentPort: () => 8765,
       pushFn: async (_signalingUrl, token, opts) => {
         pushCalls.push({ token, opts });

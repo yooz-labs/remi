@@ -221,7 +221,11 @@ import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decisi
 import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
-import { type LegacyPushPolicy, legacyPushFields } from './notifications/legacy-push-policy.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './notifications/legacy-push-policy.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import {
@@ -1335,13 +1339,15 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
   if (secure)
     void secure.send({ kind: 'subagent_alert', logicalId: 'subagent-alert', title, body });
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of deviceTokens.values()) {
+  const legacyPolicy = legacyPushPolicy();
+  // A disabled or secretless legacy channel has no recipients (#1200, B6).
+  for (const dt of legacyChannelOpen(legacyPolicy) ? deviceTokens.values() : []) {
     // Deliberately no `category` / `options` / `questionId`: this is
     // dismiss-only and answers nothing (see subagent-alert.ts module doc).
     void sendPushTrigger(signalingUrl, dt.token, {
       title,
       body,
-      ...legacyPushFields(legacyPushPolicy()),
+      ...legacyPushFields(legacyPolicy),
       kind: 'subagent_alert',
     }).catch(() => {
       logError('[SubagentAlert] push failed');

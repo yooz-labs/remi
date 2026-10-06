@@ -17,6 +17,7 @@ import {
   NotificationDispatcher,
   type PushFn,
 } from '../../src/notifications/notification-dispatcher.ts';
+import { LegacyPushError } from '../../src/notifications/push-client.ts';
 import {
   buildTurnFailedText,
   createTurnFailedRoutes,
@@ -279,7 +280,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
   let refreshes: number;
 
   const pushFn: PushFn = async (_url, token, opts) => {
-    if (failFor.has(token)) throw new Error('BadDeviceToken');
+    if (failFor.has(token)) throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     sent.push({ token, opts: opts as unknown as Record<string, unknown> });
   };
 
@@ -309,7 +310,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret' }),
+        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret', legacyEnabled: true }),
         refreshDeviceTokens: () => {
           refreshes += 1;
         },
@@ -607,7 +608,11 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
         {
           sessionRegistry: registry,
           deviceTokens,
-          pushConfig: () => ({ signalingUrl: 'ws://x' }),
+          pushConfig: () => ({
+            signalingUrl: 'ws://x',
+            legacyEnabled: true,
+            pushSecret: 'owned-test-secret',
+          }),
           getPrimarySessionId: () => null,
           pushFn,
         },

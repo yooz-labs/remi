@@ -18,8 +18,12 @@ import { type Question, type QuestionOption, type UUID, generateId } from '@remi
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
-import { type LegacyPushPolicy, legacyPushFields } from './legacy-push-policy.ts';
-import { sendPushTrigger } from './push-client.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
+import { LegacyPushError, sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
@@ -337,7 +341,9 @@ export type DeliveryOutcome =
 
 function fanoutOutcome(results: readonly (boolean | DeliveryOutcome)[]): DeliveryOutcome {
   if (results.some((result) => result === true || result === 'pushed')) return 'pushed';
-  return results.includes('uncertain') ? 'uncertain' : 'failed';
+  if (results.includes('uncertain')) return 'uncertain';
+  // A channel that refused on policy (`no_channel`) is not a failed delivery.
+  return results.every((result) => result === 'no_channel') ? 'no_channel' : 'failed';
 }
 
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
@@ -353,46 +359,29 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 /**
- * Whether a failed push is worth retrying (epic #603 Phase 1). The signaling
- * Worker wraps a permanent APNS token rejection (BadDeviceToken / Unregistered /
- * DeviceTokenNotForTopic) as an HTTP 502, so a naive "retry all 5xx" would spin
- * on a dead token. Treat those historical reasons as permanent (no retry);
- * retry only a genuine rate-limit (429) or a transient 5xx with no
- * permanent reason.
+ * Whether a failed legacy push is worth retrying (epic #603 Phase 1, #1200). It reads the
+ * `LegacyPushError` the sender actually throws, never its message: the client keeps the HTTP
+ * status of a refusal and the Worker's `tokenInvalid` flag as fields. The Worker wraps a permanent
+ * APNS token rejection as an HTTP 502 with `tokenInvalid: true`, so "retry all 5xx" would spin on
+ * a dead token: that flag wins. Retry a rate limit (429) or a 5xx with no permanent reason.
+ * `LEGACY_PUSH_UNCERTAIN` (the request may or may not have been accepted) is deliberately not
+ * retried, since a repeat could deliver the same notification twice; the policy, secret and
+ * latch refusals are not transient either.
  */
 export function isRetriablePushError(err: unknown): boolean {
-  const msg = String(err instanceof Error ? err.message : err);
-  // Permanent APNS token rejections (the Worker wraps these as HTTP 502): never
-  // retry. `Unregistered` is word-boundaried so a generic 5xx body that happens
-  // to contain the word is not misclassified as a permanent token failure.
-  if (/BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)) return false;
-  // Network-level failures (no HTTP response received at all) are transient —
-  // a Worker cold-start, a brief flap, DNS hiccup — so retry them.
-  if (
-    err instanceof TypeError ||
-    /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|Failed to fetch/i.test(msg)
-  ) {
-    return true;
-  }
-  const m = msg.match(/failed: (\d{3})/);
-  if (!m) return false;
-  const status = Number(m[1]);
-  return status === 429 || (status >= 500 && status < 600);
+  if (!(err instanceof LegacyPushError) || err.code !== 'LEGACY_PUSH_REJECTED') return false;
+  if (err.tokenInvalid || err.status === undefined) return false;
+  return err.status === 429 || (err.status >= 500 && err.status < 600);
 }
 
 /**
- * Whether a push error means the DEVICE TOKEN itself is permanently invalid
- * (epic #603 Phase 6) — so the daemon should PRUNE it, not just stop retrying.
- * Matches the Worker's structured `tokenInvalid` flag (#603 Phase 2) and the raw
- * APNS reasons. Distinct from `isRetriablePushError`: a 401/auth error or an
+ * Whether a legacy push error means the DEVICE TOKEN itself is permanently invalid (epic #603
+ * Phase 6), so the daemon should PRUNE it, not just stop retrying: the Worker's structured
+ * `tokenInvalid` verdict, kept by the sender. Distinct from `isRetriablePushError`: a 401 or an
  * exhausted transient failure is non-retriable but does NOT invalidate the token.
  */
 export function isTokenInvalidError(err: unknown): boolean {
-  const msg = String(err instanceof Error ? err.message : err);
-  return (
-    /"tokenInvalid"\s*:\s*true/.test(msg) ||
-    /BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)
-  );
+  return err instanceof LegacyPushError && err.tokenInvalid;
 }
 
 export interface NotificationDispatcherDeps {
@@ -507,7 +496,11 @@ export class NotificationDispatcher {
     //
     // Reporting `pushed` for a fan-out of zero would claim a card reached a
     // lock screen it never appears on; `no_channel` is the honest outcome.
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    //
+    // A legacy channel that is off or has no secret is not a channel at all (#1200, B6): its old
+    // device tokens are not recipients.
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
     const secure = this.deps.securePush;
     // No reachable device: nobody can be pushed. If a client is attached the
     // user is still reachable in-app (held case); otherwise there is no channel.
@@ -526,7 +519,6 @@ export class NotificationDispatcher {
 
     const session = sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     // #626, #1127: an AskUserQuestion with several questions or a
     // multi-select, and a plan approval, get no category at all: none can be
@@ -581,11 +573,12 @@ export class NotificationDispatcher {
   }
 
   /**
-   * Push to one device token, retrying a TRANSIENT failure (429 / transient
-   * 5xx) with short backoff (epic #603 Phase 1). A permanent token rejection
-   * (BadDeviceToken etc., which the Worker wraps as 502) is NOT retried — it
-   * fails fast. Delivery never resolves a held hook (#1200).
-   * A 2xx means acceptance, not handset delivery.
+   * Push to one device token, retrying a TRANSIENT failure (a 429 or a 5xx the Worker did not
+   * mark as a dead token) with short backoff (epic #603 Phase 1). A permanent token rejection
+   * (`tokenInvalid`, which the Worker wraps as 502) is NOT retried: it fails fast and prunes the
+   * token. Delivery never resolves a held hook (#1200). A 2xx means acceptance, not handset
+   * delivery. The sender refusing on the secure activation latch (`LEGACY_PUSH_NOT_ELIGIBLE`) is
+   * policy, not a failure: it resolves `no_channel` and logs without an error level.
    *
    * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
    * `logCtx` carries fixed operation/result messages, never personal selectors.
@@ -595,7 +588,7 @@ export class NotificationDispatcher {
     token: string,
     opts: Parameters<PushFn>[2],
     logCtx: { sent: string; failed: string },
-  ): Promise<boolean> {
+  ): Promise<boolean | DeliveryOutcome> {
     for (let attempt = 0; ; attempt++) {
       try {
         await this.pushFn(signalingUrl, token, opts);
@@ -608,15 +601,19 @@ export class NotificationDispatcher {
           await sleep(delay);
           continue;
         }
+        if (err instanceof LegacyPushError && err.code === 'LEGACY_PUSH_NOT_ELIGIBLE') {
+          log('Legacy push not eligible; secure push is active on this machine');
+          return 'no_channel';
+        }
         // Loud: a real push attempt failed (permanent token rejection, network
         // error, or exhausted retries). This is the root cause behind a card
         // that never reached the phone, so it must be visible at error level,
         // not buried.
         logError(logCtx.failed);
-        // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
-        // unregistered / wrong-app) is pruned so it is never retried again. A
-        // network error or exhausted-transient failure is NOT a token problem,
-        // so the token survives.
+        // Self-heal (epic #603 Phase 6): a token the Worker reported as PERMANENTLY invalid
+        // (dead / unregistered / wrong-app) is pruned so it is never retried again. A
+        // network error or exhausted-transient failure is NOT a token problem, so the token
+        // survives.
         if (isTokenInvalidError(err)) {
           this.deps.pruneToken?.(token);
         }
@@ -662,7 +659,8 @@ export class NotificationDispatcher {
   ): void {
     const { deviceTokens, pushConfig } = this.deps;
     this.deps.refreshDeviceTokens?.();
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
     const secure = this.deps.securePush;
     if (wanting.length === 0 && !secure?.hasRecipients('question')) return;
     const session = this.deps.sessionRegistry.getSession(this.sessionId);
@@ -685,7 +683,6 @@ export class NotificationDispatcher {
     const body = (
       reason === 'subagent' ? ask : `${why}; if it is still open, ${how}: ${ask}`
     ).slice(0, BODY_MAX);
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     if (secure)
       void secure.send({ kind: 'question', logicalId: terminalNoticeId(question.id), title, body });
@@ -739,7 +736,10 @@ export class NotificationDispatcher {
     // #690: pick up a device a sibling daemon removed or muted since our last
     // read, as every other push does.
     this.deps.refreshDeviceTokens?.();
-    const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg)
+      ? tokensWanting(deviceTokens.values(), 'turn_failed')
+      : [];
     const secure = this.deps.securePush;
     if (wanting.length === 0 && !secure?.hasRecipients('turn_failed')) {
       log('[TurnFailedPush] no recipient');
@@ -749,7 +749,6 @@ export class NotificationDispatcher {
     this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
     const { title, body } = buildTurnFailedText(sessionName, input, agentName);
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     const perToken: Promise<boolean | DeliveryOutcome>[] = wanting.map((dt) =>
       this.pushOnceWithRetry(
@@ -829,8 +828,8 @@ export class NotificationDispatcher {
     const { deviceTokens, pushConfig } = this.deps;
     if (this.deps.securePush)
       void this.deps.securePush.send({ kind: 'dismiss', logicalId: secureLogicalId });
-    if (deviceTokens.size === 0) return;
     const cfg = pushConfig();
+    if (!legacyChannelOpen(cfg) || deviceTokens.size === 0) return;
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     for (const dt of deviceTokens.values()) {
       // #723: same transient-retry path as alert pushes — a 429/5xx dismissal

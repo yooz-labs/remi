@@ -14,7 +14,11 @@
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import type { PermissionDeniedHookInput } from '../hooks/hook-types.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
-import { type LegacyPushPolicy, legacyPushFields } from './legacy-push-policy.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
 import type { PushTriggerOptions } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
@@ -79,7 +83,7 @@ export function pushHarnessDenied(
   deps: HarnessDeniedPushDeps,
   input: Pick<PermissionDeniedHookInput, 'tool_name' | 'tool_input' | 'reason' | 'agent_type'>,
 ): number {
-  const wanting = tokensWanting(deps.deviceTokens, 'harness_denied');
+  const wanting = legacyChannelOpen(deps) ? tokensWanting(deps.deviceTokens, 'harness_denied') : [];
   const secureRecipients = deps.securePush?.hasRecipients('harness_denied') === true;
   if (wanting.length === 0 && !secureRecipients) return 0;
   const { title, body } = buildHarnessDeniedText(deps.sessionName, input);

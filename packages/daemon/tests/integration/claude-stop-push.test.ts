@@ -284,10 +284,12 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
       expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(false);
       await s.longTurn('p-explicit-off', 'EXPLICIT-OFF-ANSWER');
       // The real Stop reached the shipping sink; silence cannot be a missing hook or token.
+      // With no legacy recipient the sink logs nothing, so the hook bridge's own line proves the
+      // real Stop arrived; silence cannot be a missing hook or token.
       await pollUntil(
-        () => s.daemon.output.text.includes('[TurnComplete] push requested'),
+        () => s.daemon.output.text.includes('[Hooks] Turn complete'),
         10000,
-        'the turn-complete sink to receive the real Stop',
+        'the hook bridge to receive the real Stop',
       );
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);
@@ -305,9 +307,9 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
       expect(response.status).toBe(200);
       expect(response.body).toEqual({});
       await pollUntil(
-        () => s.daemon.output.text.includes('[TurnFailedPush] legacy failed'),
+        () => s.daemon.output.text.includes('[TurnFailedPush] no recipient'),
         10000,
-        'the actual turn-failed dispatcher to report its disabled legacy attempt',
+        'the actual turn-failed dispatcher to find no legacy recipient',
       );
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);
