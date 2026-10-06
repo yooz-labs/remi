@@ -10,7 +10,7 @@ export type RelayPhase = 'opening' | 'handshake' | 'confirmation' | 'connected' 
 export interface RelayMachineEvents {
   readonly onPhase?: (phase: RelayPhase, fingerprint?: string) => void;
   readonly onMessage?: (message: ProtocolMessage) => void;
-  readonly onReady?: (pin: RelayMachinePin) => void;
+  readonly onReady?: (pin: RelayMachinePin) => void | Promise<void>;
   readonly onClose?: (end: relayV2.StreamEnd) => void;
   readonly onError?: (error: Error) => void;
 }
@@ -314,8 +314,9 @@ export class RelayMachineChannel {
       this.token?.secret.fill(0);
       this.token = null;
       this.clearTimers();
+      await this.events.onReady?.(this.pin);
+      if (!this.current(generation)) return;
       this.phase = 'connected';
-      this.events.onReady?.(this.pin);
       this.events.onPhase?.(this.phase);
       return;
     }

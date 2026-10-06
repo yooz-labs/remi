@@ -35,7 +35,7 @@ test('client awaits exact local confirmation, uses one semantic channel and resu
     signer,
     () => current,
     {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: (message) => messages.push(message),
       onError: (error) => failures.push(error),
       onClose: (end) => endings.push(end),
@@ -84,7 +84,7 @@ test('client awaits exact local confirmation, uses one semantic channel and resu
     await client.close();
     expect(await endings.next()).toBe('clean');
     const resumed = RelayMachineChannel.resume(client.pin, signer, () => current, {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: (message) => messages.push(message),
       onError: (error) => failures.push(error),
     });
