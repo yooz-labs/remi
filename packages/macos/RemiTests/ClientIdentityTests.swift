@@ -636,6 +636,48 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     @MainActor
+    func testActualBundledPairingTrustCommitsOnlyCurrentNativeAttempt() async throws {
+        let identity = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let root = authorityDirectory.appendingPathComponent("pairing-web")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try "<html><body>Completed pairing trust</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
+        config.userContentController.addScriptMessageHandler(
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account,
+                foreground: { true }), contentWorld: .page, name: NativeIdentityBridge.handlerName)
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
+        for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
+        let began = try await web.callAsyncJavaScript("""
+            try {
+              window.pairAttempt = await window.webkit.messageHandlers.remiIdentity.postMessage({op:'beginPushPairing',publicKey,revision});
+              return typeof window.pairAttempt.attempt === 'string';
+            } catch { return false; }
+            """, arguments: ["publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision], in: nil, contentWorld: .page)
+        XCTAssertEqual(began as? Bool, true, "Actual bundled ingress must issue a bounded native pairing attempt")
+        guard began as? Bool == true else { return }
+        XCTAssertNil(try authority.machineTrust(rid: Data(repeating: 0, count: 16)), "Beginning cannot install completed trust")
+        let machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let rid = Data(SHA256.hash(data: machine).prefix(16))
+        let committed = try await web.callAsyncJavaScript("""
+            window.completedRequest = {op:'commitPushPairing',attempt:window.pairAttempt.attempt,publicKey,revision,
+              machinePublicKey,rid,endpoint:'https://relay.example.invalid',relayUrl:'wss://relay.example.invalid/prefix'};
+            try { const result = await window.webkit.messageHandlers.remiIdentity.postMessage(window.completedRequest); return result.saved === true; }
+            catch { return false; }
+            """, arguments: ["publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision,
+                              "machinePublicKey": machine.base64EncodedString(), "rid": rid.base64EncodedString()], in: nil, contentWorld: .page)
+        XCTAssertEqual(committed as? Bool, true, "Current native attempt must durably commit exact public READY trust")
+        XCTAssertEqual(try NativePushState(file: authorityDirectory.appendingPathComponent("push.sqlite")).machineTrust(rid: rid)?.machinePublicKey, machine)
+        let reused = try await web.callAsyncJavaScript("""
+            try { await window.webkit.messageHandlers.remiIdentity.postMessage(window.completedRequest); return true; }
+            catch { return false; }
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(reused as? Bool, false, "Completed native attempt cannot be reused")
+    }
+
+    @MainActor
     private func providerWebView() async throws -> (WKWebView, URL) {
         let bundle = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"],
             "Build web/tests/browser/build-native-provider-harness.ts into private state and set REMI_TEST_NATIVE_PROVIDER_BUNDLE")
