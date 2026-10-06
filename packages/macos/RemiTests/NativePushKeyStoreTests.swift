@@ -97,4 +97,20 @@ final class NativePushKeyStoreTests: XCTestCase {
         XCTAssertEqual(try secondary.load().map { $0.publicKey }, other.publicKey)
     }
 
+    // #1200 D6: the daemon refuses an equal key version with a different key
+    // (STALE_KEY_VERSION), so a recreated key must outrank every version the lost
+    // key could have registered; earlier builds always registered version 1.
+    func testRecreatedPushKeyOutranksTheVersionTheLostKeyRegistered() throws {
+        let lost = try store().loadOrCreate()
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess, "The P256 item is lost; the daemon still holds its registration")
+        Thread.sleep(forTimeInterval: 0.01)
+        let recreated = try store().loadOrCreate()
+        XCTAssertNotEqual(recreated.publicKey, lost.publicKey)
+        XCTAssertGreaterThan(recreated.keyVersion, lost.keyVersion,
+                             "An equal version with a different key can never register again")
+    }
+    func testNewPushKeyOutranksVersionOneFromEarlierBuilds() throws {
+        let key = try store().loadOrCreate()
+        XCTAssertGreaterThan(key.keyVersion, 1, "A device that registered version 1 must be able to register the new key")
+    }
 }
