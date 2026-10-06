@@ -66,7 +66,11 @@ import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
 import { legacyPushFields } from '../notifications/legacy-push-policy.ts';
-import type { PushConfig, PushFn } from '../notifications/notification-dispatcher.ts';
+import type {
+  DeliveryOutcome,
+  PushConfig,
+  PushFn,
+} from '../notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from '../notifications/push-client.ts';
 import { tokensWanting } from '../notifications/push-preferences.ts';
 import type { SecureSessionPush } from '../notifications/secure-push-service.ts';
@@ -280,12 +284,15 @@ export class ForeignSessionEscalator {
     const title = `Unbound Claude session (${shortId})`;
     const body = `${input.tool_name} requested permission in a Claude session Remi does not manage${cwdHint ? ` (${cwdHint})` : ''}. Not connected to Remi; answer it in that terminal directly.`;
 
-    const tasks: Promise<boolean>[] = [];
+    const tasks: Promise<boolean | DeliveryOutcome>[] = [];
     if (secureRecipients) {
       tasks.push(
-        secure
-          .send({ kind: 'question', logicalId: `foreign-session-${input.session_id}`, title, body })
-          .then((outcome) => outcome === 'pushed'),
+        secure.send({
+          kind: 'question',
+          logicalId: `foreign-session-${input.session_id}`,
+          title,
+          body,
+        }),
       );
     }
     tasks.push(
@@ -303,8 +310,10 @@ export class ForeignSessionEscalator {
       ),
     );
     const results = await Promise.allSettled(tasks);
-    if (!results.some((r) => r.status === 'fulfilled' && r.value)) {
-      logError('[ForeignSession] informational push failed');
-    }
+    if (results.some((r) => r.status === 'fulfilled' && (r.value === true || r.value === 'pushed')))
+      return;
+    // A lost delivery result is not evidence that the receiver saw nothing (#1200).
+    const uncertain = results.some((r) => r.status === 'fulfilled' && r.value === 'uncertain');
+    logError(`[ForeignSession] informational push ${uncertain ? 'uncertain' : 'failed'}`);
   }
 }

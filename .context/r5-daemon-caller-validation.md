@@ -76,6 +76,13 @@ network effects; each red below failed named assertions on both Bun versions.
   preserves the complete selected argument in question detail when the display
   summary omits its middle. The restored actual held Bash case passes all seven
   assertions and exposes no action when the full meaning cannot fit.
+- 54186320: one actual foreign-session socket-loss diagnostic failure, 10
+  assertions. The service already retained uncertainty, but this informational
+  caller converted it to a boolean and logged definite failure. It now preserves
+  accepted/uncertain/failed precedence in its fixed diagnostic. The real effect
+  remains single, its verified payload remains informational, and the existing
+  foreign-session rate limit prevents repetition. The whole event group passes
+  12 cases/151 assertions on both versions after correction.
 
 The corrected Read/uncertainty focused group passes 15 cases/108 assertions on
 both versions. The complete-detail legacy/harness regression group passes 114
