@@ -189,3 +189,46 @@ final class NativeAPNsEnvironmentTests: XCTestCase {
     }
 
 }
+
+/// #1200: `project.yml` is the source of truth for the checked-in project. The
+/// native push sources need these build settings and files; a regeneration that
+/// drops them leaves `$(APNS_ENVIRONMENT)` empty in the entitlements and removes
+/// the Objective-C bridging header `NativeAPNsEnvironment.swift` compiles against.
+final class MacOSProjectSpecTests: XCTestCase {
+    private var macos: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    }
+    private func text(_ name: String) throws -> String {
+        try String(contentsOf: macos.appendingPathComponent(name), encoding: .utf8)
+    }
+    /// The lines of one top-level-indented target block in project.yml.
+    private func block(_ name: String, in spec: String) throws -> String {
+        let lines = spec.components(separatedBy: "\n")
+        let start = try XCTUnwrap(lines.firstIndex { $0 == "  \(name):" }, "project.yml has no target \(name)")
+        let rest = lines[(start + 1)...]
+        let end = rest.firstIndex { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.isEmpty && !trimmed.hasPrefix("#") && line.prefix { $0 == " " }.count <= 2
+        }
+        return rest[..<(end ?? lines.endIndex)].joined(separator: "\n")
+    }
+    func testSpecDeclaresTheApnsEnvironmentPerConfiguration() throws {
+        let app = try block("Remi", in: text("project.yml"))
+        XCTAssertTrue(app.contains("APNS_ENVIRONMENT: development"), "Debug must sign the development APNs environment")
+        XCTAssertTrue(app.contains("APNS_ENVIRONMENT: production"), "Release must sign the production APNs environment")
+        let project = try text("Remi.xcodeproj/project.pbxproj")
+        XCTAssertTrue(project.contains("APNS_ENVIRONMENT = development;") && project.contains("APNS_ENVIRONMENT = production;"))
+    }
+    func testSpecDeclaresTheBridgingHeaderTheEnvironmentQueryNeeds() throws {
+        let spec = try text("project.yml")
+        XCTAssertTrue(spec.contains("SWIFT_OBJC_BRIDGING_HEADER: Remi/NativePush/NativePush-Bridging-Header.h"))
+        XCTAssertTrue(try text("Remi.xcodeproj/project.pbxproj").contains("SWIFT_OBJC_BRIDGING_HEADER"))
+    }
+    func testSpecCompilesTheShippingExtensionAndDelegateIntoTheTestTarget() throws {
+        let tests = try block("RemiTests", in: text("project.yml"))
+        XCTAssertTrue(tests.contains("RemiNotificationService/NotificationService.swift"),
+                      "Tests must construct the actual iOS notification extension class")
+        XCTAssertFalse(tests.contains("AppDelegate.swift"),
+                       "Registration ingress tests construct the actual macOS AppDelegate")
+    }
+}

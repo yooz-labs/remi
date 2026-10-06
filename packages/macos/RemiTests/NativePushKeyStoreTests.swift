@@ -16,9 +16,16 @@ final class NativePushKeyStoreTests: XCTestCase {
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
-    private func store(operations: NativeKeychainOperations = .system) -> NativePushKeyStore {
-        NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+    private func store(operations: NativeKeychainOperations = .system, now: @escaping () -> Date = Date.init) -> NativePushKeyStore {
+        NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations, now: now)
     }
+    private func put(_ data: Data) throws {
+        var item = query
+        item[kSecValueData as String] = data
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        XCTAssertEqual(SecItemAdd(item as CFDictionary, nil), errSecSuccess)
+    }
+    private struct StoredRecord: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
     private func bytes() throws -> Data {
         var q = query
         q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -33,7 +40,7 @@ final class NativePushKeyStoreTests: XCTestCase {
         guard let key else { XCTFail("The actual native provider did not return its durable key"); return }
         let second = try store().loadOrCreate()
         XCTAssertEqual(second.publicKey, key.publicKey)
-        XCTAssertEqual(second.keyVersion, 1)
+        XCTAssertEqual(second.keyVersion, key.keyVersion, "Loading an existing key never changes its version")
         XCTAssertEqual(second.publicKey.count, 65)
         let record = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes()) as? [String: Any])
         XCTAssertEqual(Set(record.keys), Set(["version", "privateDER", "publicKey", "keyVersion"]))
@@ -97,4 +104,84 @@ final class NativePushKeyStoreTests: XCTestCase {
         XCTAssertEqual(try secondary.load().map { $0.publicKey }, other.publicKey)
     }
 
+    // #1200 D6: the daemon refuses an equal key version with a different key
+    // (STALE_KEY_VERSION), so a recreated key must outrank every version the lost
+    // key could have registered; earlier builds always registered version 1.
+    func testRecreatedPushKeyOutranksTheVersionTheLostKeyRegistered() throws {
+        let lost = try store().loadOrCreate()
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess, "The P256 item is lost; the daemon still holds its registration")
+        Thread.sleep(forTimeInterval: 0.01)
+        let recreated = try store().loadOrCreate()
+        XCTAssertNotEqual(recreated.publicKey, lost.publicKey)
+        XCTAssertGreaterThan(recreated.keyVersion, lost.keyVersion,
+                             "An equal version with a different key can never register again")
+    }
+    func testNewPushKeyOutranksVersionOneFromEarlierBuilds() throws {
+        let key = try store().loadOrCreate()
+        XCTAssertGreaterThan(key.keyVersion, 1, "A device that registered version 1 must be able to register the new key")
+    }
+    func testPushKeyVersionIsTheCreationTimeInMilliseconds() throws {
+        let key = try store(now: { Date(timeIntervalSince1970: 1_790_000_000.5) }).loadOrCreate()
+        XCTAssertEqual(key.keyVersion, 1_790_000_000_500)
+        XCTAssertEqual(try store().load()?.keyVersion, 1_790_000_000_500, "A later load never changes the stored version")
+    }
+
+    // #1200 D7: explicit repair of a corrupt item.
+    func testRepairReplacesACorruptItemWithAKeyAboveItsReadableVersion() throws {
+        let readable = P256.KeyAgreement.PrivateKey()
+        // Corrupt (wrong public point) but still states a version above the clock.
+        try put(JSONEncoder().encode(StoredRecord(version: 1, privateDER: readable.derRepresentation,
+            publicKey: P256.KeyAgreement.PrivateKey().publicKey.x963Representation, keyVersion: 4_000_000_000_000)))
+        XCTAssertThrowsError(try store().load())
+        try store(now: { Date(timeIntervalSince1970: 1_790_000_000) }).repairCorruptItem()
+        let repaired = try XCTUnwrap(store().load())
+        XCTAssertNotEqual(repaired.publicKey, readable.publicKey.x963Representation)
+        XCTAssertEqual(repaired.keyVersion, 4_000_000_000_001, "The clock cannot undercut a version the corrupt record still states")
+    }
+    func testRepairReplacesUnparsableBytesWithAClockVersionedKey() throws {
+        try put(Data("not a native key record".utf8))
+        try store(now: { Date(timeIntervalSince1970: 1_790_000_000) }).repairCorruptItem()
+        XCTAssertEqual(try XCTUnwrap(store().load()).keyVersion, 1_790_000_000_000)
+    }
+    func testRepairNeverReplacesAValidKeyOrCreatesAMissingOne() throws {
+        try store().repairCorruptItem()
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, nil), errSecItemNotFound, "Repair never creates")
+        _ = try store().loadOrCreate()
+        let valid = try bytes()
+        try store().repairCorruptItem()
+        XCTAssertEqual(try bytes(), valid, "A valid key is never replaced")
+    }
+    func testRepairLeavesAnItemItCannotReadAlone() throws {
+        _ = try store().loadOrCreate()
+        let original = try bytes()
+        var operations = NativeKeychainOperations.system
+        operations.copyMatching = { _, _ in errSecInteractionNotAllowed }
+        var updates = 0
+        operations.update = { _, _ in updates += 1; return errSecSuccess }
+        XCTAssertThrowsError(try store(operations: operations).repairCorruptItem(), "A locked device is a read error, not corruption")
+        XCTAssertEqual(updates, 0)
+        XCTAssertEqual(try bytes(), original)
+    }
+    func testRepairRefusesToOverwriteAnItemAnotherProcessChanged() throws {
+        let corrupt = Data("corrupt".utf8), other = Data("another corrupt record".utf8)
+        try put(corrupt)
+        var operations = NativeKeychainOperations.system
+        var reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            // After the repair has seen the corrupt bytes, a second process changes the item.
+            if reads == 2 { SecItemUpdate(self.query as CFDictionary, [kSecValueData as String: other] as CFDictionary) }
+            return SecItemCopyMatching(request, result)
+        }
+        XCTAssertThrowsError(try store(operations: operations).repairCorruptItem())
+        XCTAssertEqual(try bytes(), other, "The changed record is not overwritten")
+    }
+    func testRepairFailureKeepsTheCorruptItem() throws {
+        let corrupt = Data("corrupt".utf8)
+        try put(corrupt)
+        var operations = NativeKeychainOperations.system
+        operations.update = { _, _ in errSecAuthFailed }
+        XCTAssertThrowsError(try store(operations: operations).repairCorruptItem())
+        XCTAssertEqual(try bytes(), corrupt)
+    }
 }

@@ -1,13 +1,13 @@
 import Foundation
 import UserNotifications
 
-/// Actual app action/quiet-dismiss boundary. Original capsules and durable
-/// lifecycle state, rather than outer routing or NSE flags, grant authority.
-/// No v2 action may enter the legacy direct or wrapped-JS answer path.
+/// Actual app quiet-dismiss and foreground-presentation boundary. Original
+/// capsules and durable lifecycle state, rather than outer routing or NSE flags,
+/// grant authority. A v2 notification offers no answer actions before R6, and no
+/// v2 response may enter the legacy direct or wrapped-JS answer path.
 final class NativePushNotificationConsumer {
     struct DeliveredCard { let identifier: String; let userInfo: [AnyHashable: Any] }
     enum DismissOutcome: Equatable { case removed(Int), ignored, unavailable }
-    enum ActionOutcome: Equatable { case verifiedOpenApp, unavailable }
     typealias DeliveredReader = (@escaping ([DeliveredCard]) -> Void) -> Void
     typealias DeliveredRemover = ([String]) -> Void
     private let effectFactory: () throws -> NativePushEffect
@@ -94,21 +94,22 @@ final class NativePushNotificationConsumer {
         } catch { finish(id, outcome: .unavailable) }
     }
     /// A v2 marker is never permission to fall back to a second answer owner.
-    /// Even malformed capsules or unavailable native stores are consumed here.
-    static func routeAction(userInfo: [AnyHashable: Any], identifier: String,
-                            consumerFactory: () throws -> NativePushNotificationConsumer = configured,
-                            legacy: () -> Void) -> Bool {
-        guard userInfo["remiPush"] != nil else { legacy(); return false }
-        if let consumer = try? consumerFactory() { _ = consumer.receiveAction(userInfo: userInfo, identifier: identifier) }
-        return true
+    /// A v2 card has no answer actions, so a response to one is the default tap
+    /// (the OS opens the app) or a stale action; it is consumed here, even when
+    /// the capsule is malformed or the native stores are unavailable, and runs
+    /// neither the legacy direct relay nor the wrapped JavaScript handler.
+    /// A notification without the marker is legacy and runs `legacy`.
+    static func routeResponse(userInfo: [AnyHashable: Any], legacy: () -> Void) {
+        if userInfo["remiPush"] == nil { legacy() }
     }
     static func isGenericFallback(_ content: UNNotificationContent) -> Bool {
         content.title == "Remi needs your attention" && content.subtitle.isEmpty &&
             content.body == "Open Remi to view this notification." && content.categoryIdentifier.isEmpty
     }
     /// The foreground adapter independently verifies original bytes and exact
-    /// displayed text/category. The fixed generic no-action fallback grants no
-    /// authentication, route or option authority.
+    /// displayed text. A signed card carries no category, so any category is
+    /// unverified authority and is refused. The fixed generic no-action fallback
+    /// grants no authentication, route or option authority.
     func allowsPresentation(_ content: UNNotificationContent) -> Bool {
         if Self.isGenericFallback(content) { return true }
         do {
@@ -120,19 +121,10 @@ final class NativePushNotificationConsumer {
             case .informational(let information): title = information.title; body = information.body
             case .dismiss: return false
             }
-            guard content.title == title, content.subtitle.isEmpty, content.body == body else { return false }
-            let category = "REMI_SECURE_\(prepared.push.originalCarrier.rid)_\(prepared.push.record.collapseId)_\(prepared.push.record.revision)"
-            guard content.categoryIdentifier.isEmpty || (!prepared.actions.isEmpty && content.categoryIdentifier == category) else { return false }
+            guard content.title == title, content.subtitle.isEmpty, content.body == body,
+                  content.categoryIdentifier.isEmpty else { return false }
             try effect.recheck(prepared)
             return true
         } catch { return false }
-    }
-    func receiveAction(userInfo: [AnyHashable: Any], identifier: String) -> ActionOutcome {
-        do {
-            _ = try effectFactory().action(userInfo: userInfo, identifier: identifier)
-            // R5 consumes the v2 action here. R6 will add the sole native owner;
-            // neither legacy direct POST nor wrapped JavaScript submits it now.
-            return .verifiedOpenApp
-        } catch { return .unavailable }
     }
 }

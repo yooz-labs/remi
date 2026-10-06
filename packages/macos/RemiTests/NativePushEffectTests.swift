@@ -119,7 +119,6 @@ final class NativePushEffectTests: XCTestCase {
         let e = effect()
         guard let p = prepared(e, "question-yn") else { return }
         XCTAssertEqual(p.outcome, .publish)
-        XCTAssertEqual(p.actions.map(\.value), ["allow", "deny"])
         XCTAssertEqual(p.push.payloadBytes, try hex(XCTUnwrap(vector("question-yn")["payloadHex"] as? String)))
         XCTAssertNoThrow(try e.recheck(p))
         let other = try NativePushState(file: directory.appendingPathComponent("public.sqlite"))
@@ -168,7 +167,7 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertThrowsError(try e.prepare(userInfo: info("question")), "A retained old nonce is not an eligible duplicate once another digest is latest")
         XCTAssertNoThrow(try e.recheck(later))
     }
-    func testActualSignedDismissIsAbsorbingAndCarriesNoActions() throws {
+    func testActualSignedDismissIsAbsorbing() throws {
         let e = effect()
         guard let first = prepared(e, "question") else { return }
         let terminal = try reseal(vector("dismiss")) { $0[5] = Data(first.push.record.collapseId.utf8) }
@@ -179,7 +178,6 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertGreaterThan(dismiss.push.record.revision, first.push.record.revision)
         XCTAssertNotEqual(first.push.record.nonce, dismiss.push.record.nonce)
         XCTAssertEqual(dismiss.outcome, .dismiss)
-        XCTAssertTrue(dismiss.actions.isEmpty)
         XCTAssertNoThrow(try e.recheck(dismiss), "Current signed terminal digest must authorize actual delayed dismiss after recheck")
         XCTAssertThrowsError(try e.recheck(first))
         let reopening = try reseal(vector("question-yn")) { $0[5] = Data(first.push.record.collapseId.utf8) }
@@ -191,7 +189,7 @@ final class NativePushEffectTests: XCTestCase {
         clock = p.push.record.expiresAt
         XCTAssertThrowsError(try e.recheck(p), "Expiry is exclusive at the actual effect boundary")
     }
-    func testUnsignedOuterCategoryAndOptionsCannotGrantActions() throws {
+    func testUnsignedOuterFieldsCannotChangeTheSignedMeaning() throws {
         let e = effect()
         var outer = try info("informational-question-no-authority")
         outer["aps"] = ["category": "REMI_YNA"]
@@ -201,94 +199,8 @@ final class NativePushEffectTests: XCTestCase {
         var p: NativePushEffect.Prepared?
         XCTAssertNoThrow(p = try e.prepare(userInfo: outer))
         guard let p else { return }
-        XCTAssertTrue(p.actions.isEmpty, "Only the ORIGINAL signed payload can authorize options")
         if case .informational = p.push.payload {} else { XCTFail("Outer fields changed the signed informational meaning") }
     }
-    func testActualSignedMultiChoiceAlwaysRequiresOpeningApp() throws {
-        let e = effect()
-        let v = try vector("question-yn")
-        let original = try reseal(v, resign: false) { _ in }
-        XCTAssertEqual(original["sealed"] as? String, try carrier(v)["sealed"] as? String,
-            "Real independent CryptoKit producer must reproduce the shared capsule before edits")
-        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: hex(XCTUnwrap(v["payloadHex"] as? String))) as? [String: Any])
-        payload["category"] = "REMI_MULTI"
-        let payloadBytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        let multi = try reseal(v) { $0[11] = payloadBytes }
-        var p: NativePushEffect.Prepared?
-        XCTAssertNoThrow(p = try e.prepare(userInfo: ["remiPush": multi]))
-        guard let p else { return }
-        XCTAssertTrue(p.actions.isEmpty, "ALL MULTI cards are app-only even when complete options are signed")
-        for id in ["OPT_0", "OPT_1"] {
-            XCTAssertThrowsError(try e.action(userInfo: ["remiPush": multi], identifier: id), "Signed MULTI must not reach a native answer")
-        }
-    }
-    func testActionsIndependentlyVerifyOriginalCapsuleAndCanonicalOptionIndex() throws {
-        let e = effect()
-        let signed = try info("question-yn")
-        XCTAssertThrowsError(try e.action(userInfo: signed, identifier: "OPT_0"), "Cryptographic authenticity without committed latest state is insufficient")
-        guard let p = prepared(e, "question-yn") else { return }
-        XCTAssertEqual(p.actions.map(\.value), ["allow", "deny"])
-        for (id, value) in [("OPT_0", "allow"), ("OPT_1", "deny")] {
-            var result: NativePushEffect.Action?
-            XCTAssertNoThrow(result = try e.action(userInfo: signed, identifier: id))
-            XCTAssertEqual(result?.option.value, value, "Native action must select ORIGINAL signed meaning")
-            XCTAssertEqual(result?.question.questionId, "synthetic-question")
-        }
-        for id in ["OPT_00", "OPT_-1", "OPT_2", "OPT_3", "OPT_99999999999999999999999", "YES", "allow", "opt_0", "OPT_0x"] {
-            XCTAssertThrowsError(try e.action(userInfo: signed, identifier: id), "Only exact canonical signed option indices may act")
-        }
-        var forged = signed
-        forged["questionId"] = "foreign-question"
-        forged["sessionId"] = "foreign-session"
-        forged["opt_0"] = "deny"
-        forged["verified"] = true
-        var originalAction: NativePushEffect.Action?
-        XCTAssertNoThrow(originalAction = try e.action(userInfo: forged, identifier: "OPT_0"))
-        XCTAssertEqual(originalAction?.option.value, "allow")
-        XCTAssertEqual(originalAction?.question.questionId, "synthetic-question")
-        let terminal = try reseal(vector("dismiss")) {
-            $0[5] = Data(p.push.record.collapseId.utf8)
-            $0[6] = be64(UInt64(p.push.record.revision + 1))
-        }
-        var later: NativePushEffect.Prepared?
-        XCTAssertNoThrow(later = try e.prepare(userInfo: ["remiPush": terminal]))
-        XCTAssertNotNil(later)
-        XCTAssertThrowsError(try e.action(userInfo: signed, identifier: "OPT_0"), "An old signed card cannot act after durable dismiss")
-    }
-    func testActionsRefuseExpiryAndUnsignedCapsule() throws {
-        let e = effect()
-        guard let p = prepared(e, "question-yn") else { return }
-        XCTAssertNoThrow(try e.action(userInfo: info("question-yn"), identifier: "OPT_0"))
-        clock = p.push.record.expiresAt
-        XCTAssertThrowsError(try e.action(userInfo: info("question-yn"), identifier: "OPT_0"))
-        XCTAssertThrowsError(try e.action(userInfo: ["verified":true,"opt_0":"allow","aps":["category":"REMI_YN"]], identifier:"OPT_0"))
-    }
-    func testProtectedAuthorityAndAppOnlySignedChoicesGrantNoNativeActions() throws {
-        let e = effect()
-        let old = try XCTUnwrap(state.currentAuthority())
-        let content = try XCTUnwrap(vector("question")["content"] as? [String:Any])
-        let rid = try hex(XCTUnwrap(content["rid"] as? String))
-        let trust = try XCTUnwrap(state.machineTrust(rid: rid))
-        let lease = try state.acquireIdentityMutation()
-        defer { lease.release() }
-        let generation = try lease.invalidateIdentityAuthority()
-        try lease.installIdentityAuthority(publicKey:old.publicKey,revision:old.revision,requiresAppUnlock:true,generation:generation)
-        let protected = NativePushState.MachineTrust(rid:trust.rid,machinePublicKey:trust.machinePublicKey,endpoint:trust.endpoint,
-            authority:try XCTUnwrap(state.currentAuthority()),relayUrl:trust.relayUrl)
-        try state.installMachineTrust(protected,generation:generation)
-        guard let p = prepared(e,"question-yn") else { return }
-        XCTAssertTrue(p.actions.isEmpty, "Protected Dpk policy requires foreground app unlock before answering")
-        XCTAssertThrowsError(try e.action(userInfo:info("question-yn"),identifier:"OPT_0"))
-    }
-    func testOriginalLongSignedStandingScopeRequiresOpeningApp() throws {
-        let e = effect()
-        guard let p = prepared(e, "question") else { return }
-        XCTAssertTrue(p.actions.isEmpty, "Original addRules scope must not be truncated or hidden to fit a native title")
-        for id in ["OPT_0", "OPT_1", "OPT_2"] {
-            XCTAssertThrowsError(try e.action(userInfo: info("question"), identifier: id), "A native action cannot bypass a complete standing scope that requires opening the app")
-        }
-    }
-
     func testActualSQLiteDigestOnlyChangeInvalidatesPreparedEffect() throws {
         let e = effect()
         guard let p = prepared(e, "question-yn") else { return }
@@ -318,51 +230,4 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertEqual(try keys.load()?.keyVersion, p.push.keyVersion)
         XCTAssertThrowsError(try e.recheck(p), "Only latest digest changed: revision, nonce, generation and both public keys cannot mask the digest guard")
     }
-    private func shortStandingCapsule(grant: String = "addRules", scope: Any = "*", namespace: UInt8 = 80) throws -> [String:Any] {
-        let v = try vector("question")
-        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: hex(XCTUnwrap(v["payloadHex"] as? String))) as? [String:Any])
-        var options = try XCTUnwrap(payload["options"] as? [[String:Any]])
-        options[1]["label"] = "Read"
-        options[1]["description"] = scope
-        options[1]["standingGrant"] = grant
-        payload["options"] = options
-        let bytes = try JSONSerialization.data(withJSONObject:payload, options:[.sortedKeys])
-        return try reseal(v) {
-            $0[5] = Data(b64url(Data(repeating:namespace,count:16)).utf8)
-            $0[6] = be64(UInt64(namespace))
-            $0[8] = Data(repeating:namespace,count:32)
-            $0[11] = bytes
-        }
-    }
-    func testShortCompleteSignedStandingScopeRemainsVisibleAndActionable() throws {
-        let e = effect()
-        let capsule = try shortStandingCapsule()
-        var p: NativePushEffect.Prepared?
-        XCTAssertNoThrow(p = try e.prepare(userInfo:["remiPush":capsule]))
-        guard let p else { return }
-        XCTAssertEqual(p.actions.map(\.value), ["allow","session","deny"])
-        XCTAssertEqual(p.actions.count, 3)
-        guard p.actions.count == 3 else { return }
-        let title = NativePushEffect.actionTitle(p.actions[1])
-        XCTAssertEqual(title, "Read — * · This session", "Every ORIGINAL signed scope byte and session lifetime must remain visible")
-        XCTAssertLessThanOrEqual(title.count, 24)
-        var action: NativePushEffect.Action?
-        XCTAssertNoThrow(action = try e.action(userInfo:["remiPush":capsule],identifier:"OPT_1"))
-        XCTAssertEqual(action?.option.value,"session")
-        XCTAssertEqual(action?.option.description,"*")
-        XCTAssertEqual(action?.option.standingGrant,.addRules)
-    }
-    func testOtherOrMissingSignedStandingScopeRequiresOpeningApp() throws {
-        let e = effect()
-        let variants: [(String,Any)] = [("setMode","*"),("session","*"),("addRules",NSNull()),("addRules"," ")]
-        for (index, variant) in variants.enumerated() {
-            let capsule = try shortStandingCapsule(grant:variant.0,scope:variant.1,namespace:UInt8(90+index))
-            var p: NativePushEffect.Prepared?
-            XCTAssertNoThrow(p = try e.prepare(userInfo:["remiPush":capsule]))
-            guard let p else { continue }
-            XCTAssertTrue(p.actions.isEmpty, "Only a complete explicit addRules scope may grant the whole native YNA set")
-            XCTAssertThrowsError(try e.action(userInfo:["remiPush":capsule],identifier:"OPT_1"))
-        }
-    }
-
 }

@@ -136,7 +136,8 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         }
     }
 
-    // No push caller is connected until the actual verified decoder/trust bridge.
+    /// Captured by the codec, the effect and the registration coordinator, and rechecked
+    /// before every effect, so equal public fields cannot hide a replaced lifetime.
     func authorityGeneration() throws -> Int64 {
         connectionLock.lock(); defer { connectionLock.unlock() }
         return try integer("SELECT generation FROM authority_generation WHERE slot=1")

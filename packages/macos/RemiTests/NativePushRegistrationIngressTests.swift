@@ -173,6 +173,22 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         XCTAssertEqual(permissionRequests, 1)
         XCTAssertEqual(registrations, 1)
     }
+    // #1200 D7: a corrupt P256 item can never be repaired by loadOrCreate, which
+    // must not guess. The explicit enable action is the user's repair request.
+    @MainActor func testExplicitEnableRepairsACorruptPushKeyAndNeverReplacesAValidOne() async throws {
+        let web = try await web(tokens: NativePushTokenOwner())
+        let original = try keys.loadOrCreate()
+        let kept = try await call(web, op: "enableSecurePush")
+        XCTAssertEqual(kept["requested"] as? Bool, true)
+        XCTAssertEqual(try keys.load()?.publicKey, original.publicKey, "Enabling never replaces a valid key")
+        XCTAssertEqual(SecItemUpdate(keyQuery as CFDictionary, [kSecValueData as String: Data("corrupt".utf8)] as CFDictionary), errSecSuccess)
+        XCTAssertThrowsError(try keys.load(), "The fixture item is corrupt")
+        let repaired = try await call(web, op: "enableSecurePush")
+        XCTAssertEqual(repaired["requested"] as? Bool, true)
+        let key = try XCTUnwrap(try keys.load(), "The explicit enable must repair a corrupt item")
+        XCTAssertNotEqual(key.publicKey, original.publicKey)
+        XCTAssertGreaterThan(key.keyVersion, original.keyVersion, "The replacement must be able to register past the old key")
+    }
     @MainActor func testActualNativeIngressCannotAcceptJavaScriptTokenOrEnvironment() async throws {
         let web = try await web(tokens: NativePushTokenOwner())
         let result = try await call(web, op: "preparePushRegistration", extra: ["rid": rid.base64EncodedString(), "token": "abcd", "environment": "production"])

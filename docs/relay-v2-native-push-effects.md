@@ -5,42 +5,57 @@ CryptoKit decoder. It reads the existing P256 recipient before checking the
 captured public key/version, authority generation and completed machine trust.
 Preparation commits the exact original-body digest, nonce and collapse lifecycle
 in SQLite before publication. The effect overload checks the captured authority
-generation inside that transaction. Exact duplicates cannot reinstall a card;
-an accepted old nonce also refuses when its digest is no longer latest.
+generation inside that transaction. An exact duplicate of the latest live digest
+renders its card again; an accepted old nonce refuses when its digest is no
+longer latest.
 
 Publication and deletion consumers must call `recheck` after every asynchronous
 wait and immediately before their effect. Live content requires the latest exact
 revision, digest and nonce before expiry. Dismiss uses a separate terminal check;
-its absorbing tombstone cannot become a live question. Actions independently
-open the original capsule and check the latest live state, rather than relying
-on an NSE flag or outer routing/option fields.
+its absorbing tombstone cannot become a live question. No outer NSE flag or
+outer routing/option field grants any authority.
 
-The shipping notification service extension starts with a new generic alert and
-empty category. It forwards only the original public capsule. Verified text is
-installed only after durable preparation. A category registration failure leaves
-verified text without actions. Category callbacks recheck generation, recipient,
-trust and lifecycle; expiration completes the fallback once and late callbacks
-cannot publish or mutate it. Duplicate and dismiss content has no permission
-card text or actions. An empty extension result is not a signed-device guarantee
-that the OS suppresses an alert; an unexecuted extension can also leave untrusted
-outer alert text on screen. Independent action refusal remains necessary.
+The shipping notification service extension starts a secure (`remiPush`) push
+with a new generic alert and empty category. It forwards only the original public
+capsule. Verified text is installed only after durable preparation, which
+rechecks generation, recipient, trust and lifecycle as its last step. Preparation
+runs on its own queue, so an expiry is never held behind Keychain or SQLite;
+expiration completes the fallback once and late work cannot publish or mutate
+delivered content.
 
-Native MULTI and category-none cards always open the app. Protected identities,
-missing/incomplete scope, setMode/session grants and action titles that cannot
-contain their complete signed label/description/scope also grant no native
-choice. YN/YNA require exact signed yes/no flags and option ordering; YNA permits
-only a complete addRules scope. No label inference, truncation or omitted choice
-is used. The whole title ceiling is 24 characters. For R5 every installed action
-opens the app; the R6 native submission owner is not wired by this checkpoint.
+The extension registers no category, so a verified card has no action buttons
+and a tap opens the app. Answering from the lock screen or the Watch is R6
+(#1201) and has no native owner yet. The extension used to register Yes/No
+actions that opened the app, but iOS dismisses the card after an action tap and
+nothing answered, so the choice was dropped. They were removed together with the
+action eligibility policy and its tests; the parent of the commit
+`fix(native): offer no answer actions on secure cards` holds the last version.
+
+The delivered notification's identifier is the collapse id, so what the extension
+returns replaces the live card. An exact duplicate of the latest live digest
+renders the same verified text again. A capsule that is no longer the latest
+live revision (an older revision, a superseded collapse, a replay of an older
+nonce, or a question after its terminal) cannot be dropped by an extension that
+lacks the notification filtering entitlement, so it receives the generic alert:
+it grants nothing, opens the app, and leaves the newer revision's lifecycle
+record untouched. A terminal capsule that reaches the extension shows no text.
+An empty extension result is not a signed-device guarantee that the OS suppresses
+an alert; an unexecuted extension can also leave untrusted outer alert text on
+screen.
+
+A push with no `remiPush` carrier is the direct-mode plaintext push. The
+extension returns its content and userInfo unchanged and builds its dynamic
+`REMI_DYN_` category as before #1200, without opening the secure state or keys;
+`RemiAnswerRelay` answers it through the legacy signed relay.
 
 The direct Effect tests and actual notification-extension caller tests use the
 committed shared capsules, actual CryptoKit, UUID-owned Keychain services with
-explicit nil access groups, private SQLite files and controlled OS category
-callback scheduling. They cover same-public-identity generation replacement,
-same-version P256 replacement, latest digest, terminal dismiss, deadline,
-canonical option indices, full scope and protected policy. Notification tests
-observe durable state before the callback and completion histories afterward.
-The category boundary is injected; business logic and crypto are production.
+explicit nil access groups, private SQLite files and a controlled legacy category
+callback. They cover same-public-identity generation replacement, same-version
+P256 replacement, latest digest, terminal dismiss, deadline, duplicate and stale
+delivery, expiry before preparation and the legacy passthrough. The category
+installer is injected for the legacy path only; business logic and crypto are
+production.
 
 Keychain and SQLite remain separate systems. Final observed checks are not a
 claim of distributed atomicity or detection of every unobserved external change.
@@ -55,22 +70,23 @@ signed rid/collapse/revision. The current terminal and captured generation/P256
 are rechecked immediately before removal. An expired candidate capsule remains
 untouched, rather than accepting it with relaxed time validation.
 
-Background question wakes do not consume a notification nonce. The action
-consumer independently verifies the original option and latest lifecycle, then
-returns only a verified open-app result. It has no answer transport. Its owned
-OS callback tests cover actual second-connection authority changes, recipient
-replacement, scan bounds, absorbing dismissal and repeated late callback
-histories. The iOS `AppDelegate` calls this consumer for v2 quiet wakes before the
-legacy JavaScript pre-wake. `RemiAnswerRelay` routes v2 actions before reading
-outer IDs/options; the legacy and wrapped JavaScript senders run only for the
-explicit old path. Foreground presentation independently verifies the original
-capsule and exact text/category. The fixed generic no-action fallback grants no
-route or authentication. Secure registration and the verified JS notification
-consumer remain separate work.
+Background question wakes do not consume a notification nonce. There is no native
+action consumer: `NativePushNotificationConsumer.routeResponse` consumes every
+response to a v2 notification without reading its outer fields and without
+answering. The owned OS callback tests of the quiet dismiss cover actual
+second-connection authority changes, recipient replacement, scan bounds,
+absorbing dismissal and repeated late callback histories. The iOS `AppDelegate`
+calls this consumer for v2 quiet wakes before the legacy JavaScript pre-wake.
+`RemiAnswerRelay` routes responses before reading outer IDs/options; the legacy
+and wrapped JavaScript senders run only for the explicit old path, so no
+JavaScript consumer of a verified v2 notification exists. Foreground presentation
+independently verifies the original capsule and exact text; a signed card
+carries no category, so any category is refused. The fixed generic no-action
+fallback grants no route or authentication.
 
 The adapter pins construct the actual native router and consume a result from
 the shipping notification extension, including missing-key/malformed routing
-refusal and altered text/category. SDK 27 unsigned iOS `App` and its notification
+refusal and altered text or category. SDK 27 unsigned iOS `App` and its notification
 extension build with the real frozen Capacitor modules. The private build
 extracts the installed CLI's SPM template, runs its actual sync, and uses
 `CODE_SIGNING_ALLOWED=NO`; no shipping app is launched. This compile/build result
