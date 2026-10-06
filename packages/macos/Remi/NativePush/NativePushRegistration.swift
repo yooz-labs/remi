@@ -1,4 +1,29 @@
 import Foundation
+import UserNotifications
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+extension Notification.Name {
+    static let nativePushTokenChanged = Notification.Name("remi.native-push-token-changed")
+}
+
+/// Constructible fail-closed permission continuation scaffold for real OS-boundary pins.
+@MainActor
+final class NativePushPermission {
+    typealias Request = (@escaping (Bool) -> Void) -> Void
+    private let osRequest: Request
+    init(osRequest: @escaping Request = { completion in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, error in
+            completion(allowed && error == nil)
+        }
+    }) { self.osRequest = osRequest }
+    static func request() async -> Bool { await NativePushPermission().resolve() }
+    func resolve() async -> Bool { false }
+    static func register() {}
+}
 
 /// #1200: only actual OS delegate callbacks publish a bounded token snapshot.
 /// Every callback changes its epoch, including a repeated token or failure.

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000090000000000000010 /* NativePushPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000009; };
         120000090000000000000008 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54; };
         120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000006; };
         120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000004; };
@@ -86,6 +87,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000090000000000000009 /* NativePushPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushPermissionTests.swift; sourceTree = SOURCE_ROOT; };
         120000090000000000000006 /* NativePushRegistrationIngressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushRegistrationIngressTests.swift; sourceTree = SOURCE_ROOT; };
         120000090000000000000004 /* NativePushRegistrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushRegistrationTests.swift; sourceTree = SOURCE_ROOT; };
         120000090000000000000001 /* NativePushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushRegistration.swift; sourceTree = SOURCE_ROOT; };
@@ -205,6 +207,7 @@
                 120000080000000000000003 /* NativePushNotificationConsumerTests.swift */,
                 120000090000000000000004 /* NativePushRegistrationTests.swift */,
                 120000090000000000000006 /* NativePushRegistrationIngressTests.swift */,
+                120000090000000000000009 /* NativePushPermissionTests.swift */,
 				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
@@ -413,6 +416,7 @@
                 120000080000000000000004 /* NativePushNotificationConsumerTests.swift in Sources */,
                 120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */,
                 120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */,
+                120000090000000000000010 /* NativePushPermissionTests.swift in Sources */,
                 120000090000000000000008 /* AppDelegate.swift in Sources */,
                 120000010000000000000005 /* NativePushStateTests.swift in Sources */,
                 120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */,
@@ -605,6 +609,7 @@
 		E0C991C711F983BD70198873 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Remi/Remi.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -627,6 +632,7 @@
 		E54506BA894C2E53100F1B95 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Remi/Remi.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
