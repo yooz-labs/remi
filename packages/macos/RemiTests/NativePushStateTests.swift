@@ -139,6 +139,9 @@ final class NativePushStateTests: XCTestCase {
         process.standardOutput = output
         process.standardError = output
         try process.run()
+        return try collectOwnedProcess(process, output: output, timeout: timeout)
+    }
+    private func collectOwnedProcess(_ process: Process, output: Pipe, timeout: TimeInterval = 20) throws -> String {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.01) }
         if process.isRunning {
@@ -332,6 +335,50 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertThrowsError(try state.recordVerifiedContent(content(trust, nonce: 2, revision: 2), trust: trust, now: 1000))
         try install(state, publicKey: trust.authority.publicKey, revision: trust.authority.revision)
         XCTAssertThrowsError(try state.reverifyLatestContent(first, trust: trust, now: 1000), "Identity authority installation cannot recreate completed trust")
+    }
+
+    func testConcurrentActualProcessesAcceptOneCapsuleOnlyOnce() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let macos = source.deletingLastPathComponent()
+        let helper = directory.appendingPathComponent("owned-replay-helper")
+        _ = try ownedProcess(URL(fileURLWithPath: "/usr/bin/xcrun"), ["swiftc",
+            macos.appendingPathComponent("Remi/NativePush/NativePushState.swift").path,
+            macos.appendingPathComponent("Remi/NativePush/NativeEd25519PublicKey.swift").path,
+            source.appendingPathComponent("fixtures/NativePushStateProcess/main.swift").path, "-o", helper.path])
+        let file = directory.appendingPathComponent("concurrent.sqlite")
+        let state = try NativePushState(file: file)
+        let trust = try paired(state)
+        let first = content(trust)
+        let json: [String: Any] = ["rid": first.rid.base64EncodedString(), "collapseId": first.collapseId,
+            "revision": first.revision, "kind": first.kind, "nonce": first.nonce.base64EncodedString(),
+            "digest": first.digest.base64EncodedString(), "issuedAt": first.issuedAt, "expiresAt": first.expiresAt]
+        let fixture = try JSONSerialization.data(withJSONObject: json).base64EncodedString()
+        var children: [(Process, Pipe)] = []
+        defer {
+            // Even a failed assertion/throw owns and joins every helper it launched.
+            for (child, output) in children where child.isRunning {
+                child.terminate()
+                _ = try? collectOwnedProcess(child, output: output, timeout: 2)
+            }
+        }
+        for _ in 0..<2 {
+            let child = Process(); let output = Pipe()
+            child.executableURL = helper
+            child.arguments = [file.path, "record", fixture]
+            child.standardOutput = output; child.standardError = output
+            try child.run(); children.append((child, output))
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 8
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if children.allSatisfy({ FileManager.default.fileExists(atPath: file.appendingPathExtension("ready-" + String($0.0.processIdentifier)).path) }) { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(children.allSatisfy({ FileManager.default.fileExists(atPath: file.appendingPathExtension("ready-" + String($0.0.processIdentifier)).path) }),
+                      "Both actual production-store processes must reach the external start barrier")
+        try Data().write(to: file.appendingPathExtension("start"))
+        let outcomes = try children.map { try collectOwnedProcess($0.0, output: $0.1) }.sorted()
+        XCTAssertEqual(outcomes, ["duplicate", "publish"], "A single real cross-process SQLite transaction owns publication")
+        XCTAssertNoThrow(try state.reverifyLatestContent(first, trust: trust, now: 1000))
     }
 
 }
