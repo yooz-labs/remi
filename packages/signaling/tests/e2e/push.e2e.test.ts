@@ -1045,6 +1045,55 @@ test('actual gateway refuses all14 reviewed weak encodings in both public fields
   ).toEqual([]);
 }, 15000);
 
+// #1200 A9: the acceptance names both of these and no other test covered them.
+test('a URL naming a different valid room than the signed body is refused before any effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  const other = await newMachine();
+  expect(other.ridHex).not.toBe(m.ridHex);
+  const res = await get(`${w.url}/v2/push/${other.ridHex}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...bearer },
+    body: r.encodePushSubmit(s),
+  });
+  expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
+    outcome: 'rejected',
+    reason: 'MALFORMED',
+    retryable: false,
+  });
+  expect(requests.length).toBe(0);
+  for (const rid of [m.ridHex, other.ridHex])
+    expect(
+      Object.keys((await roomState(w, rid)).storage).filter((k) => k.startsWith('push-nonce:')),
+    ).toEqual([]);
+  // The same bytes still succeed at the room they were signed for: only the URL was wrong.
+  expect((await post(w, s)).outcome).toBe('accepted');
+}, 15000);
+
+test('an already stale or not yet valid signed submit is refused before any effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const now = Math.floor(Date.now() / 1000);
+  for (const [issuedAt, expiresAt] of [
+    [now - 120, now - 60],
+    [now - 61, now - 1],
+    [now - 60, now],
+    [now + 120, now + 180],
+  ] as const) {
+    const stale = await submission(w, m, d, p, { issuedAt, expiresAt });
+    expect(await post(w, stale), `issuedAt=${issuedAt - now} expiresAt=${expiresAt - now}`).toEqual(
+      {
+        v: 2,
+        requestDigest: null,
+        outcome: 'rejected',
+        reason: 'EXPIRED',
+        retryable: false,
+      },
+    );
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${stale.nonce}`);
+  }
+  expect(requests.length).toBe(0);
+}, 15000);
+
 test('actual configured enrollment limit above64 still admits push with lazy per-row authority', async () => {
   const {
     worker: w,
