@@ -6,6 +6,23 @@ credentials, model invocation, full monorepo suite or native/physical acceptance
 was performed by this worker. The caller map and lifetime details are in
 [relay-v2-push-worker.md](relay-v2-push-worker.md).
 
+## Superseded by the #1200 review fixes (track A)
+
+This file records the validation run of the implementation named above; the numbers and
+variant names below describe that run and are not re-measured. Review fixes changed the
+behavior they exercised, so read them against [relay-v2-push-worker.md](relay-v2-push-worker.md):
+
+- `/v2/push` now requires the deployment bearer (`PUSH_SECRET`) before anything else, and
+  there is no longer "no v2 shared secret".
+- The cleartext submit and the APNs carrier no longer carry the event kind, key version,
+  revision or push key (the carrier is `{v, rid, collapseId, sealed}`), so the "signed
+  off-curve P256" case (`worker-off-curve-point-refusal`) is now refused by the daemon's
+  seal and not by the Worker, which cannot see the push key.
+- The submit gained a signed `storeUntil` (`apns-expiration`), a `pushClass`, and Apple
+  429, 5xx and expired-token answers are retryable instead of final.
+- The legacy `/push` is on by default until the R7 gate (the `legacy-default-off` variant
+  describes the earlier default), and its bearer is compared in constant time.
+
 ## Environment and gates
 
 Frozen lockfile installation used `bun install --ignore-scripts --frozen-lockfile`.

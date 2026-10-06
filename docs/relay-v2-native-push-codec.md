@@ -7,6 +7,12 @@ native pairing route; nullable legacy rows remain diagnostic state and refuse.
 This module never creates or repairs a key, installs pairing trust, commits
 lifecycle state, publishes a notification or signs an answer.
 
+The carrier is exactly `{v, rid, collapseId, sealed}` (#1200): the room, the collapse id
+and the sealed bytes, which is all the extension needs before it can decrypt. The event
+kind and the key version are not restated there; both are read from the signed tuple after
+decryption, and the tuple's key version must equal the actual recipient's. A carrier that
+adds `kind`, `keyVersion` or any other member refuses.
+
 The codec parses only the exact `remiPush` member. Other outer fields, including
 APS category, session selectors, options and a supplied verification flag, are
 untrusted. The recipient, machine key and device identity come from the actual
@@ -89,7 +95,7 @@ xcodebuild test -project packages/macos/Remi.xcodeproj -scheme Remi \
   -only-testing:RemiTests/NativePushCodecTests CODE_SIGNING_ALLOWED=NO
 bun test packages/shared/tests/relay/push.test.ts \
   packages/shared/tests/relay/push-vectors.test.ts
-python3 scripts/verify-push-vectors.py
+uv run --with cryptography python scripts/verify-push-vectors.py
 ```
 
 The initial scaffold produced actual verification-outcome assertion failures.

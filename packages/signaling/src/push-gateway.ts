@@ -1,4 +1,4 @@
-/** Actual durable push operation: consumption precedes JWT/network; exact epoch owns every await. */
+/** Actual durable push operation: consumption precedes the network effect; exact epoch owns every await. */
 import {
   type PushRejectReason,
   type PushSubmit,

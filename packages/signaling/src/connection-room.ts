@@ -35,7 +35,8 @@
  * session payloads and device names are encrypted; private keys and the pairing
  * secret never reach it. It sees public keys, admission metadata and the plaintext
  * hello/hello_ack handshake. R5 stores bounded signed-push nonce outcomes and internal enrollment
- * epochs, but never notification plaintext. Legacy /push is explicit authenticated compatibility.
+ * epochs, but never notification plaintext. Legacy /push is bearer-authenticated and on by default
+ * until the R7 gate (#1200).
  */
 
 import {
