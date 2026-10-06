@@ -328,18 +328,16 @@ describe('ForeignSessionEscalator (#672)', () => {
         { mode: 0o600 },
       );
       registerToken();
-      // The real sender: the latch refuses it before any request is made.
-      const escalator = new ForeignSessionEscalator({
-        ...deps({
-          pushConfig: () => ({
-            signalingUrl: 'https://example.test',
-            legacyEnabled: true,
-            pushSecret: 'owned-test-secret',
-            authorityDirectory: tmpDir,
-          }),
+      // The real sender (no pushFn override): the latch refuses it before any request is made.
+      const { pushFn: _capturingFake, ...realSender } = deps({
+        pushConfig: () => ({
+          signalingUrl: 'https://example.test',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+          authorityDirectory: tmpDir,
         }),
-        pushFn: undefined,
       });
+      const escalator = new ForeignSessionEscalator(realSender);
       escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
       await Bun.sleep(100);
       // Only this escalator's lines: the logger is process-wide, so other files' timers can log.
