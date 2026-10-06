@@ -111,17 +111,24 @@ export class ChildProxy {
     const remaining =
       message.type === 'native_answer' ? Math.max(0, message.expiresAt * 1000 - Date.now()) : 10000;
     timer = setTimeout(() => complete('uncertain'), Math.min(10000, remaining));
+    let outcome: AnswerResultOutcome;
     try {
       await this.send(message.sessionId, message);
-      return await result;
+      outcome = await result;
     } catch (error) {
-      return error instanceof Error && error.message === 'SESSION_NOT_FOUND'
-        ? 'session-not-found'
-        : 'uncertain';
+      outcome =
+        error instanceof Error && error.message === 'SESSION_NOT_FOUND'
+          ? 'session-not-found'
+          : 'uncertain';
     } finally {
       if (timer) clearTimeout(timer);
       if (this.answers.get(message.id) === entry) this.answers.delete(message.id);
     }
+    // Every coalesced waiter shares `result` (#1201). A send that fails before any child
+    // answer_result leaves it unsettled, and its timer is cleared above, so settle it with
+    // the first caller's outcome on every exit path. Settling an already settled result is a no-op.
+    complete(outcome);
+    return outcome;
   }
   private refuseAnswers(sessionId?: string, ws?: WebSocket): void {
     for (const entry of this.answers.values())

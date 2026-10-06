@@ -68,15 +68,21 @@ export class SecurePushStore {
       true,
     );
   }
-  /** READY peers keep the same captured generations for their entire channel lifetime. */
-  isCurrentAuthority(authority: SecurePushAuthority): boolean {
+  /**
+   * READY peers keep the same captured generations for their entire channel lifetime.
+   * A store fault (a lock timeout, an unreadable file) is not a revocation, but it cannot
+   * show the authority is current either, so it answers false like one and, when given,
+   * reports the error to `onFault` so a caller can tell the two apart (#1201).
+   */
+  isCurrentAuthority(authority: SecurePushAuthority, onFault?: (error: unknown) => void): boolean {
     try {
       return this.trust.withAuthorizationEpoch(
         authority.publicKey,
         (epoch) =>
           !!epoch && epoch === authority.authorizationEpoch && this.enrollmentCurrent(authority),
       );
-    } catch {
+    } catch (error) {
+      onFault?.(error);
       return false;
     }
   }

@@ -342,6 +342,19 @@ test('guarded Codex: revoked authority keeps real pending card and emits no unix
   expect(c.responses()[0]?.frame['result']).toEqual({ decision: 'accept' });
   expect(f.output()).toBe('');
 });
+test('guarded Codex through the answer handlers: revoked authority refuses before the socket result (#1201)', async () => {
+  const f = await fixture();
+  const c = await codex(f);
+  f.revoke();
+  // The production composition: gateAnswerDeps -> the session's decisions -> the real commit.
+  expect(await c.handlers.guardedAnswer(f.sid, c.card.id, c.option.value, f.commit)).toBe('stale');
+  expect(f.invocations()).toBe(0);
+  expect(c.decisions.isHeld(c.card.id)).toBe(true);
+  expect(f.registry.getQuestion(f.sid, c.card.id)).not.toBeNull();
+  expect(c.responses()).toHaveLength(0);
+  expect(c.noticeReads()).toBe(0);
+  expect(c.cleanupReads()).toBe(0);
+});
 test('guarded Codex: socket accepts before revoke; unavailable-link notice and cleanup reenter after unlock', async () => {
   const f = await fixture();
   const c = await codex(f);

@@ -3,7 +3,8 @@
  * real PTYSession is deliberately unstarted because held answers use the hook.
  */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import {
   type NativeAnswerMessage,
@@ -42,8 +43,9 @@ afterEach(async () => {
   __resetLoggerForTests();
 });
 
-async function fixture() {
-  configureLogger({ writeLog: () => {} });
+async function fixture(options: { beforeApply?: () => void } = {}) {
+  const logs: string[] = [];
+  configureLogger({ writeLog: (line) => logs.push(line) });
   const directory = mkdtempSync('/private/tmp/remi-native-ledger-');
   chmodSync(directory, 0o700);
   const trust = new IdentityStore(directory);
@@ -154,7 +156,11 @@ async function fixture() {
     store,
     contexts,
     runtimeFor: (sid) => (sid === sessionId ? runtime : undefined),
-    apply: handlers.guardedAnswer,
+    // Fault injection point only: the real guarded answer core still runs.
+    apply: (...args) => {
+      options.beforeApply?.();
+      return handlers.guardedAnswer(...args);
+    },
   });
   cleanups.push(async () => {
     gate.forceRelease('owned ledger cleanup');
@@ -259,6 +265,8 @@ async function fixture() {
     });
   }
   return {
+    directory,
+    logs,
     ledger,
     store,
     devices,
@@ -537,3 +545,132 @@ test('native ledger never evicts a real queued PTY answer after proof retention 
   });
   expect(f.resolved).toHaveLength(1025);
 }, 30000);
+
+test('native ledger serves a retained result only while its proof is unexpired (#1201)', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const complete = await f.proof(held.question);
+  const proof = await f.sign({ ...complete, expiresAt: complete.issuedAt + 2 });
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+  while (Math.floor(Date.now() / 1000) < proof.expiresAt) await Bun.sleep(20);
+  // The documented limit: after expiry the exact proof reads stale although it was delivered,
+  // and nothing is applied twice.
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  expect(f.resolved).toEqual([held.question.id]);
+  expect(f.logs.filter((line) => line.includes('[NativeAnswer]'))).toEqual([
+    '[NativeAnswer] refused (EXPIRED)',
+  ]);
+}, 10000);
+
+/** A lock owned by a live foreign process, exactly what a concurrent `remi authorize` leaves. */
+function holdForeignLock(directory: string): () => void {
+  const lockPath = join(directory, 'authorized_keys.json.lock');
+  writeFileSync(
+    lockPath,
+    JSON.stringify({
+      version: 1,
+      ownerId: 'owned-foreign-owner',
+      pid: process.ppid,
+      host: hostname(),
+      acquiredAt: Date.now(),
+    }),
+  );
+  const release = () => rmSync(lockPath, { force: true });
+  cleanups.push(async () => release());
+  return release;
+}
+
+const ledgerLines = (logs: string[]) => logs.filter((line) => line.includes('[NativeAnswer]'));
+
+test('native ledger tells a storage lock fault from a refusal before anything is claimed (#1201)', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  const release = holdForeignLock(f.directory);
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  release();
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while verifying; nothing applied',
+  ]);
+  // Nothing was claimed or applied, so the same proof still delivers once the store is readable.
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+}, 10000);
+
+test('native ledger tells a storage lock fault from a refusal while claiming (#1201)', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  const pending = f.ledger.answer(proof);
+  // The authority read above succeeded; the lock appears while signature verification awaits.
+  const release = holdForeignLock(f.directory);
+  expect(await pending).toBe('stale');
+  release();
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while claiming; nothing applied',
+  ]);
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+}, 10000);
+
+test('native ledger tells a storage lock fault from a refusal at the final commit (#1201)', async () => {
+  let release: (() => void) | undefined;
+  const f = await fixture({
+    beforeApply: () => {
+      release = holdForeignLock(f.directory);
+    },
+  });
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  release?.();
+  expect(ledgerLines(f.logs)).toEqual([
+    '[error] [NativeAnswer] fault (InterprocessFileLockError) while committing; nothing applied',
+  ]);
+  // Fail closed: the hold stays live for the terminal or a later proof.
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(f.resolved).toEqual([]);
+}, 10000);
+
+test('native ledger names the reason of each refusal without any answer content (#1201)', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  const now = Math.floor(Date.now() / 1000);
+  const expired = await f.sign({
+    ...proof,
+    issuedAt: now - 31,
+    expiresAt: now - 1,
+    timestamp: new Date((now - 31) * 1000).toISOString(),
+  });
+  expect(await f.ledger.answer(expired)).toBe('stale');
+  expect(await f.ledger.answer(await f.sign({ ...proof, answer: '99' }))).toBe('stale');
+  f.trust.removeAuthorizedKey(f.deviceIdentity.fingerprint);
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  const refusals = f.logs.filter((line) => line.startsWith('[NativeAnswer]'));
+  expect(refusals).toEqual([
+    '[NativeAnswer] refused (EXPIRED)',
+    '[NativeAnswer] refused (action-not-current)',
+    '[NativeAnswer] refused (device-not-current)',
+  ]);
+  for (const line of f.logs)
+    for (const secret of [proof.id, proof.nonce, proof.questionId, proof.signature])
+      expect(line).not.toContain(secret);
+});
+
+test('native ledger names a revoked authority at the final commit and keeps the hold (#1201)', async () => {
+  const f = await fixture({
+    beforeApply: () => {
+      expect(f.trust.removeAuthorizedKey(f.deviceIdentity.fingerprint)).toBe(true);
+    },
+  });
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  expect(f.logs.filter((line) => line.startsWith('[NativeAnswer]'))).toEqual([
+    '[NativeAnswer] refused (authority-revoked)',
+  ]);
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(f.resolved).toEqual([]);
+});
