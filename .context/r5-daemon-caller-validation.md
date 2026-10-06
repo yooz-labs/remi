@@ -224,3 +224,43 @@ families produce eight named assertion kills across both runtimes, with actual
 CLI/direct-client baselines and restored controls passing four cases/15
 assertions each. These receipts are separate from the tracker correction and
 do not establish native or owner acceptance.
+
+## Root-origin push routing correction
+
+A fresh source review found that the CLI discarded a custom signaling path,
+query or fragment before constructing the push audience. The interactive relay
+preserved its prefix, while push silently posted to the origin root. Actual
+source-CLI controls at cfd91fd8 reproduced the prefix, query and fragment cases
+through owned TLS, the real SQLite Worker and an owned APNs receiver. Each
+reached the held hook, verified the original signed content and exited naturally
+before failing the named wrong-root assertion: three POSTs and no refusal notice.
+
+Source 2c7ceb17 accepts only a raw HTTPS/WSS root authority with an optional root
+slash. It refuses credentials, prefixes, dot segments, backslashes, whitespace,
+queries and fragments before normalization, emits a fixed notice and creates no
+push service. The interactive prefix route and signed push tuple are unchanged.
+The first helper test run exposed a trailing-space omission in the new regex;
+that receipt remains preserved. The corrected focused group passes 53 cases/232
+assertions on both runtimes.
+
+At final fixture head f0ef0235, both the root and independent reviewer ran all four
+actual CLI modes on Bun 1.4.2 and 1.3.11, with the child using the same runtime.
+Each root control passes 25 checks and receives three authenticated encrypted
+notifications. Each unsupported form passes 17 checks, observes the fixed refusal,
+posts nothing and receives no APNs effect. Every CLI exits zero. Root tracked
+process receipts end naturally with zero residuals. The standalone fixture is
+included in the scoped integration typecheck; its gateway observation waits for
+both the APNs callback and gateway result before evaluating delivery.
+
+Independent restoration of the old CLI derivation, with the fixed helper still
+present, kills the named wrong-root prefix assertion on both runtimes after 23
+behavior checks. Exact restoration passes the root and prefix controls again.
+There is no setup exception or timeout counted as a mutation kill. Review is clear
+within this component scope. Root receipts use `/private/tmp/remi-r5-route-root-path`;
+the independent receipt is `/private/tmp/remi-r5-route-review.tGXQ8q/final-receipt.json`.
+
+The previous frozen cfd91fd8 static checks and full Bun 1.4.2 run passed 7,151
+cases with 22 skips, zero failures and zero tracked residuals. The waiting runner
+was stopped only after verifying its PID, birth, command and cwd, before starting
+Bun 1.3.11, because this new finding superseded that checkpoint. Fresh full gates
+after this correction and native/owner acceptance remain separate.
