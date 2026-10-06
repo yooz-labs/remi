@@ -1,6 +1,10 @@
 /**
- * Explicit plaintext compatibility sender, OFF by default (#1200).
- * An enabled caller needs a secret and an untouched secure-authority directory.
+ * Plaintext legacy sender (#1200). It refuses unless the caller passes
+ * `legacyEnabled: true`; the daemon passes `notifications.legacy_push_enabled`,
+ * which is ON by default until secure push ships end to end (the default flips
+ * at the R7 gate). An enabled caller needs a secret and an untouched
+ * secure-authority directory: once any device enrolls over the relay the
+ * activation latch refuses this sender for good.
  * Signed sealed delivery uses SecurePushTransport; this sender never falls back.
  */
 
@@ -35,7 +39,7 @@ export type PushKind =
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {
-  /** Explicit plaintext compatibility only, default OFF (#1200). */
+  /** Must be true or the sender throws `LEGACY_PUSH_DISABLED` before any I/O (#1200). */
   legacyEnabled?: boolean;
   /** Authority state directory; tests must supply their owned disposable directory. */
   authorityDirectory?: string;
