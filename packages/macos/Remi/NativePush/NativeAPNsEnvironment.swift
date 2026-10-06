@@ -53,12 +53,12 @@ final class NativeAPNsEnvironment {
                 }
                 for production in [true, false] {
                     attempt.leases.append(query(production) { [weak self] match in
-                        Task { @MainActor in self?.received(match, production: production, id: id) }
+                        Task { @MainActor [weak self] in self?.received(match, production: production, id: id) }
                     })
                 }
             }
         }, onCancel: { [weak self] in
-            Task { @MainActor in self?.finish(id: id, result: .unavailable) }
+            Task { @MainActor [weak self] in self?.finish(id: id, result: .unavailable) }
         })
     }
 

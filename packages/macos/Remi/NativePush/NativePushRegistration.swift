@@ -37,10 +37,10 @@ final class NativePushPermission {
                     self?.finish(false)
                 }
                 osRequest { [weak self] accepted in
-                    Task { @MainActor in self?.finish(accepted) }
+                    Task { @MainActor [weak self] in self?.finish(accepted) }
                 }
             }
-        }, onCancel: { [weak self] in Task { @MainActor in self?.finish(false) } })
+        }, onCancel: { [weak self] in Task { @MainActor [weak self] in self?.finish(false) } })
         return !Task.isCancelled && result
     }
     private func finish(_ result: Bool) {
