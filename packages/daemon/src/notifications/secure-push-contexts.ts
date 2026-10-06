@@ -64,6 +64,8 @@ export interface SecurePushRuntime {
 export interface SecurePushEvent {
   readonly kind: relayV2.SecurePushKind;
   readonly logicalId: string;
+  /** Internal occurrence identity; distinct turns can share display text and collapse slot. */
+  readonly eventId?: string;
   readonly title?: string;
   readonly body?: string;
   readonly question?: Question;
@@ -120,7 +122,11 @@ export class SecurePushContexts {
       if (
         this.runtimes.get(runtime.sessionId) !== runtime ||
         new TextEncoder().encode(event.logicalId).length > 256 ||
-        !event.logicalId
+        !event.logicalId ||
+        (event.eventId !== undefined &&
+          (typeof event.eventId !== 'string' ||
+            !event.eventId ||
+            new TextEncoder().encode(event.eventId).length > 256))
       )
         return null;
       this.prune();
@@ -202,6 +208,7 @@ export class SecurePushContexts {
       });
       const meaning = JSON.stringify({
         kind: event.kind,
+        eventId: event.eventId ?? null,
         payload: normalized,
         questionMeaning: qMeaning ?? null,
         subscription: captured,

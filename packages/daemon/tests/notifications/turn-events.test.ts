@@ -503,6 +503,8 @@ describe('cli.ts wires the sink (source pins)', () => {
     expect(call).toContain('pushSecret: () => cliPushSecret,');
     expect(call).toContain('send: sendPushTrigger');
     expect(call).toContain('log,');
-    expect(call).toContain("onError: (err) => logError('[TurnComplete] push failed:', err),");
+    expect(call).toContain("onError: () => logError('[TurnComplete] push failed'),");
+    expect(call).toContain('legacyPolicy: legacyPushPolicy,');
+    expect(call).toContain('securePush: securePushForSession,');
   });
 });

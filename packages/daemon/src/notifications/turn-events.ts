@@ -48,6 +48,8 @@ import { buildTurnCompleteText, shouldNotifyTurnComplete } from './turn-timer.ts
 
 export interface TurnCompletedEvent {
   readonly sessionId: UUID;
+  /** Actual harness occurrence, retained across duplicate frames; never sent in outer metadata. */
+  readonly eventId?: string;
   /** How long the turn ran. Undefined when unknown, which fails toward silence. */
   readonly elapsedMs: number | undefined;
   /** What the agent said last. Empty or absent means nothing to show, so no push. */
@@ -131,6 +133,7 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
           ?.send({
             kind: 'turn_complete',
             logicalId: `turn-complete-${event.sessionId}`,
+            ...(event.eventId === undefined ? {} : { eventId: event.eventId }),
             title,
             body,
           })

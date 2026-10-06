@@ -27,7 +27,7 @@ import type { CodexLaunchDeps } from '../../../src/harness/codex/codex-session.t
 import { CodexHarness } from '../../../src/harness/codex/codex.ts';
 import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { HarnessSession } from '../../../src/harness/types.ts';
-import type { TurnEventSink } from '../../../src/notifications/turn-events.ts';
+import type { TurnCompletedEvent, TurnEventSink } from '../../../src/notifications/turn-events.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -230,6 +230,31 @@ describe('a Codex session: turn events and chat', () => {
     r.sent.filter((m) => m.type === 'structured_agent_output');
 
   describe('turn events', () => {
+    test('actual Codex turn IDs reach completion contexts and repeated frames stay deduplicated (#1200)', async () => {
+      const completed: TurnCompletedEvent[] = [];
+      const r = await launch({
+        sink: {
+          turnCompleted: (event) => completed.push(event),
+          turnFailed: () => {},
+          turnSucceeded: () => {},
+        },
+      });
+      for (const id of ['owned-turn-one', 'owned-turn-two', 'owned-turn-two']) {
+        r.server.emit(turnCompletedFrame(r.tuiId, { turnId: id, durationMs: 90_000 }), {
+          threadId: r.tuiId,
+        });
+      }
+      r.server.emit(itemCompletedFrame(r.tuiId, userMessageItem('owned-barrier', 'barrier')), {
+        threadId: r.tuiId,
+      });
+      await until(() => transcripts(r).length === 1, 'the ordered frame barrier');
+      expect(completed.map((event) => event.eventId)).toEqual([
+        'codex:owned-turn-one',
+        'codex:owned-turn-two',
+      ]);
+      expect(completed.map((event) => event.lastAssistantMessage)).toEqual(['done', 'done']);
+    });
+
     test('a turn that completes on the tracked thread reaches the sink as completed, then succeeded', async () => {
       const r = await launch();
 
