@@ -203,15 +203,26 @@ final class NativePushCodecTests: XCTestCase {
     func testSignedPayloadStrictSchemaDuplicateAliasesAndFatalUTF8Refuse() throws {
         let vector = try XCTUnwrap(cases.first)
         let original = try XCTUnwrap(vector["payloadUtf8"] as? String)
+        var invalidText = Data(original.utf8)
+        invalidText.replaceSubrange(try XCTUnwrap(invalidText.range(of: Data("Synthetic permission".utf8))), with: Data([0xff]))
         let payloads = [Data(("{\"unknown\":1," + original.dropFirst()).utf8),
             Data(("{\"type\":\"question\"," + original.dropFirst()).utf8),
             Data(("{\"\\u0074ype\":\"question\"," + original.dropFirst()).utf8),
             Data(original.replacingOccurrences(of: "\"actionable\":true", with: "\"actionable\":1").utf8),
             Data(original.replacingOccurrences(of: "\"standingGrant\":null", with: "\"standingGrant\":\"all\"").utf8),
-            Data([0xff, 0xfe]), Data("{\"type\":\"dismiss\",\"actionable\":false}".utf8)]
+            Data(original.replacingOccurrences(of: "Synthetic permission", with: "\\ud800").utf8),
+            Data([0xff, 0xfe]), invalidText, Data("{\"type\":\"dismiss\",\"actionable\":false}".utf8)]
         for (index, payload) in payloads.enumerated() {
             XCTAssertThrowsError(try open(reseal(vector) { $0[11] = payload }), "Actually signed invalid payload case \(index) must refuse")
         }
+        var nonQuestion = try reseal(vector) { $0[7] = Data([2]) }
+        nonQuestion["kind"] = "turn_complete"
+        XCTAssertThrowsError(try open(nonQuestion), "Matching signed informational KIND cannot carry an actionable question payload")
+        var wrongDismiss = try reseal(vector) {
+            $0[7] = Data([6]); $0[11] = Data("{\"type\":\"informational\",\"actionable\":false,\"sessionId\":null,\"title\":\"\",\"body\":\"\"}".utf8)
+        }
+        wrongDismiss["kind"] = "dismiss"
+        XCTAssertThrowsError(try open(wrongDismiss), "Matching signed dismiss KIND must carry only strict dismiss payload")
     }
     func testExactTimeAndWholeInnerMultibyteBoundaries() throws {
         let vector = try XCTUnwrap(cases.first)
@@ -360,5 +371,26 @@ final class NativePushCodecTests: XCTestCase {
         XCTAssertNoThrow(try open(original), "Actual version-one recipient and signed tuple must have a passing baseline")
         original["keyVersion"] = true
         XCTAssertThrowsError(try open(original), "JSON true cannot alias the actual numeric recipient version1")
+    }
+    func testTrustRemovalDuringFinalOSReadRefusesWithoutIdentityChange() throws {
+        let original = try carrier(XCTUnwrap(cases.first))
+        let verified = try open(original)
+        var operations = NativeKeychainOperations.system; var reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            if reads == 2 {
+                do {
+                    let other = try NativePushState(file: self.directory.appendingPathComponent("public.sqlite"))
+                    try other.forgetMachine(rid: verified.record.rid)
+                } catch { XCTFail("Owned trust removal setup failed"); return errSecNotAvailable }
+            }
+            return SecItemCopyMatching(request, result)
+        }
+        let observed = NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+        XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": original], state: state, keys: observed, now: 1_700_000_000),
+                             "Removal of ONLY completed machine trust during OS read invalidates the result")
+        XCTAssertEqual(try state.currentAuthority(), verified.trust.authority)
+        XCTAssertEqual(try state.authorityGeneration(), verified.authorityGeneration)
+        XCTAssertNil(try state.machineTrust(rid: verified.record.rid))
     }
 }
