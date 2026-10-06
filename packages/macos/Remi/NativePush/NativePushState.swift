@@ -19,12 +19,34 @@ enum NativePushStateError: Error { case unavailable, corrupt, invalid, capacity,
 /// no SQLite transaction remains open during Keychain or authentication calls.
 final class NativePushState: NativeIdentityAuthorityBarrier {
     struct Authority: Equatable { let publicKey: Data; let revision: String; let requiresAppUnlock: Bool }
+    struct MachineTrust: Equatable {
+        let rid: Data
+        let machinePublicKey: Data
+        let endpoint: String
+        let authority: Authority
+    }
+    struct ContentRecord: Equatable {
+        let rid: Data
+        let collapseId: String
+        let revision: Int64
+        let kind: Int
+        let nonce: Data
+        let digest: Data
+        let issuedAt: Int64
+        let expiresAt: Int64
+    }
+    enum ContentOutcome: Equatable { case publish, duplicate, dismiss }
+    private let maximumMachines: Int
+    private let maximumEntries: Int
     private var database: OpaquePointer?
     private let mutationLock: URL
     private let connectionLock = NSRecursiveLock()
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init(file: URL) throws {
+    init(file: URL, maximumMachines: Int = 32, maximumEntries: Int = 2048) throws {
+        guard (1...32).contains(maximumMachines), (1...2048).contains(maximumEntries) else { throw NativePushStateError.invalid }
+        self.maximumMachines = maximumMachines
+        self.maximumEntries = maximumEntries
         guard file.isFileURL else { throw NativePushStateError.unavailable }
         mutationLock = file.appendingPathExtension("identity-lock")
         let status = sqlite3_open_v2(file.path, &database,
@@ -94,6 +116,22 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
             return Authority(publicKey: key, revision: revision, requiresAppUnlock: protected)
         }
+    }
+
+    // Fail-closed construction surface for the next red-first persistence tranche.
+    // No push caller is connected until the actual verified decoder/trust bridge.
+    func authorityGeneration() throws -> Int64 {
+        connectionLock.lock(); defer { connectionLock.unlock() }
+        return try integer("SELECT generation FROM authority_generation WHERE slot=1")
+    }
+    func installMachineTrust(_ trust: MachineTrust, generation: Int64) throws { throw NativePushStateError.unavailable }
+    func machineTrust(rid: Data) throws -> MachineTrust? { throw NativePushStateError.unavailable }
+    func forgetMachine(rid: Data) throws { throw NativePushStateError.unavailable }
+    func recordVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws -> ContentOutcome {
+        throw NativePushStateError.unavailable
+    }
+    func reverifyLatestContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws {
+        throw NativePushStateError.unavailable
     }
 
     /// An observed deletion, corruption, read failure or different revision

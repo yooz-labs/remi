@@ -179,4 +179,64 @@ final class NativePushStateTests: XCTestCase {
         XCTAssertNil(try state.currentAuthority(), "Actual child-process invalidation must close the original SQLite connection")
     }
 
+    private func machine(_ state: NativePushState) throws -> NativePushState.MachineTrust {
+        let key = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let authority = try XCTUnwrap(state.currentAuthority())
+        return .init(rid: Data(SHA256.hash(data: key).prefix(16)), machinePublicKey: key,
+                     endpoint: "https://relay.example.invalid", authority: authority)
+    }
+
+    func testCompletedMachineTrustPersistsOnlyForExactCurrentAuthorityGeneration() throws {
+        let file = directory.appendingPathComponent("trust.sqlite")
+        let state = try NativePushState(file: file)
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let trust = try machine(state)
+        let generation = try state.authorityGeneration()
+        XCTAssertNoThrow(try state.installMachineTrust(trust, generation: generation),
+                         "Completed machine trust must durably commit exact native authority and generation")
+        guard let saved = try? state.machineTrust(rid: trust.rid) else { return }
+        XCTAssertEqual(saved, trust)
+        let reopened = try NativePushState(file: file)
+        XCTAssertEqual(try reopened.machineTrust(rid: trust.rid), trust)
+        let wrongRid = NativePushState.MachineTrust(rid: Data(repeating: 0, count: 16), machinePublicKey: trust.machinePublicKey,
+            endpoint: trust.endpoint, authority: trust.authority)
+        XCTAssertThrowsError(try state.installMachineTrust(wrongRid, generation: generation), "Stored rid must derive from actual Mpk")
+        XCTAssertThrowsError(try state.installMachineTrust(trust, generation: generation - 1), "Stale generation cannot install trust")
+        XCTAssertEqual(try reopened.machineTrust(rid: trust.rid), trust)
+    }
+
+    func testIdentityMutationClosesCompletedMachineTrustAndWriterCannotRestoreIt() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("trust-close.sqlite"))
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let trust = try machine(state)
+        XCTAssertNoThrow(try state.installMachineTrust(trust, generation: state.authorityGeneration()),
+                         "Actual SQLite must accept a completed pair before testing invalidation")
+        guard (try? state.machineTrust(rid: trust.rid)) == trust else { return }
+        let lease = try state.acquireIdentityMutation()
+        defer { lease.release() }
+        let generation = try lease.invalidateIdentityAuthority()
+        XCTAssertNil(try state.machineTrust(rid: trust.rid), "Identity invalidation must close completed machine trust DURABLY")
+        try lease.installIdentityAuthority(publicKey: trust.authority.publicKey, revision: UUID().uuidString,
+            requiresAppUnlock: false, generation: generation)
+        XCTAssertNil(try state.machineTrust(rid: trust.rid), "Verified identity writer cannot restore prior pairing implicitly")
+        XCTAssertThrowsError(try state.installMachineTrust(trust, generation: generation))
+    }
+
+    func testSavedMachineCapacityRefusesWithoutEvictingExistingTrust() throws {
+        let state = try NativePushState(file: directory.appendingPathComponent("trust-cap.sqlite"), maximumMachines: 1)
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let first = try machine(state)
+        let second = try machine(state)
+        XCTAssertNoThrow(try state.installMachineTrust(first, generation: state.authorityGeneration()),
+                         "First actual completed pair must fit the configured native capacity")
+        guard (try? state.machineTrust(rid: first.rid)) == first else { return }
+        XCTAssertThrowsError(try state.installMachineTrust(second, generation: state.authorityGeneration()),
+                             "Saved-machine capacity cannot evict an existing completed pair")
+        XCTAssertEqual(try state.machineTrust(rid: first.rid), first)
+        XCTAssertNil(try state.machineTrust(rid: second.rid))
+        try state.forgetMachine(rid: first.rid)
+        XCTAssertNil(try state.machineTrust(rid: first.rid))
+        XCTAssertNoThrow(try state.installMachineTrust(second, generation: state.authorityGeneration()))
+    }
+
 }
