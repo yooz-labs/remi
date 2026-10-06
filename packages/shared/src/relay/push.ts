@@ -168,6 +168,7 @@ export type PushRejectReason =
   | 'RATE_LIMITED'
   | 'STORE_ERROR'
   | 'INVALID_TOKEN'
+  | 'APNS_UNAVAILABLE'
   | 'APNS_REJECTED';
 export type PushSubmitResult =
   | { readonly v: 2; readonly requestDigest: string; readonly outcome: 'accepted' | 'uncertain' }
@@ -221,6 +222,7 @@ const REASONS: readonly PushRejectReason[] = [
   'RATE_LIMITED',
   'STORE_ERROR',
   'INVALID_TOKEN',
+  'APNS_UNAVAILABLE',
   'APNS_REJECTED',
 ];
 function malformed(): never {

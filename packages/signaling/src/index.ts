@@ -210,7 +210,11 @@ export default {
       const attempt = await withinPushBudget(env.LIMITER, 'attempt', {
         ip: await hashPublic(request.headers.get('CF-Connecting-IP') ?? 'unknown'),
       });
-      if (!attempt.ok) return pushResponse(rejected(attempt.reason ?? 'STORE_ERROR', null, true));
+      if (!attempt.ok)
+        return pushResponse(
+          rejected(attempt.reason ?? 'STORE_ERROR', null, true),
+          attempt.retryAfter,
+        );
       // The room authenticates by the machine signature alone; the bearer stops here.
       const forwarded = new Headers(request.headers);
       forwarded.delete('authorization');

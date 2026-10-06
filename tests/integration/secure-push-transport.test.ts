@@ -543,6 +543,88 @@ test('secure transport waits for the Worker Retry-After before it retries the sa
   expect(received.bodies[1]).toBe(received.bodies[0]);
 }, 10000);
 
+test('secure transport retries an unavailable APNs with growing backoff and gives up at the cap', async () => {
+  const f = await fixture();
+  const times: number[] = [];
+  const received = receiver(async (req, body) => {
+    times.push(Date.now());
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult({
+        v: 2,
+        outcome: 'rejected',
+        requestDigest,
+        reason: 'APNS_UNAVAILABLE',
+        retryable: true,
+      }),
+      { status: 400 },
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 40,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'APNS_UNAVAILABLE',
+    retryable: true,
+    attempts: 3,
+  });
+  expect(new Set(received.bodies).size).toBe(1);
+  // 40 ms, then 80 ms: the second wait is longer than the first.
+  expect((times[1] ?? 0) - (times[0] ?? 0)).toBeGreaterThanOrEqual(35);
+  expect((times[2] ?? 0) - (times[1] ?? 0)).toBeGreaterThanOrEqual(75);
+});
+test('secure transport never waits past the submit validity for a Retry-After', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult({
+        v: 2,
+        outcome: 'rejected',
+        requestDigest,
+        reason: 'RATE_LIMITED',
+        retryable: true,
+      }),
+      { status: 429, headers: { 'retry-after': '60' } },
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 1,
+  });
+  // The fixture content lives 50 s, so a 60 s window can never end inside the submit validity.
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  const started = Date.now();
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+    retryable: true,
+    attempts: 1,
+  });
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(received.bodies).toHaveLength(1);
+});
 test('secure transport refuses a deployment secret fetch could not send as a header', async () => {
   const f = await fixture();
   const received = receiver(() => Response.json({}));

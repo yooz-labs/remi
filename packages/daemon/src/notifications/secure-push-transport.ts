@@ -58,6 +58,21 @@ interface PrivatePreparation {
   readonly requestDigest: string;
   sending?: Promise<SecurePushDelivery>;
 }
+/** Reasons the Worker marks retryable that a later attempt of the same bytes can clear (#1200). */
+const RETRYABLE: readonly r.PushRejectReason[] = [
+  'RATE_LIMITED',
+  'CAPACITY',
+  'STORE_ERROR',
+  'APNS_UNAVAILABLE',
+];
+/** Added to a Retry-After and kept free before the submit expires, for clock and scheduling slack. */
+const RETRY_AFTER_MARGIN_MS = 250;
+/** The Worker's budget refusal says when its fixed window ends; anything else is not a hint. */
+function retryAfterSeconds(header: string | null): number | undefined {
+  if (header === null || !/^[0-9]{1,2}$/.test(header)) return undefined;
+  const seconds = Number(header);
+  return seconds >= 1 && seconds <= 60 ? seconds : undefined;
+}
 const ownedTests = new WeakMap<SecurePushTransportOptions, string>();
 const refusal = (reason: SecurePushRefusal) => ({ outcome: 'refused' as const, reason });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -355,8 +370,10 @@ export class SecurePushTransport {
       if (effect === null) return { ...refusal('AUTHORITY_CHANGED'), attempts };
       if ('reason' in effect) return { ...refusal(effect.reason), attempts };
       let result: r.PushSubmitResult;
+      let retryAfter: number | undefined;
       try {
         const response = await effect.response;
+        retryAfter = retryAfterSeconds(response.headers.get('retry-after'));
         result = await resultBody(response);
         if (
           result.requestDigest !== captured.requestDigest ||
@@ -371,9 +388,17 @@ export class SecurePushTransport {
       }
       if (result.outcome !== 'rejected')
         return { outcome: result.outcome, requestDigest: captured.requestDigest, attempts };
-      const retryable =
-        result.retryable && ['RATE_LIMITED', 'CAPACITY', 'STORE_ERROR'].includes(result.reason);
-      if (!retryable || attempts >= this.maxAttempts)
+      const retryable = result.retryable && RETRYABLE.includes(result.reason);
+      // #1200: the same signed bytes are retried only while the submit is valid. A budget refusal
+      // cannot clear inside its fixed window, so it waits for the Worker's Retry-After; any other
+      // transient failure backs off exponentially. A wait the submit cannot outlive ends the
+      // delivery with the Worker's own verdict instead of a retry that could only be refused.
+      const delay =
+        retryAfter === undefined
+          ? this.retryDelayMs * 2 ** (attempts - 1)
+          : retryAfter * 1000 + RETRY_AFTER_MARGIN_MS;
+      const remaining = captured.expiresAt * 1000 - Date.now();
+      if (!retryable || attempts >= this.maxAttempts || remaining <= delay + RETRY_AFTER_MARGIN_MS)
         return {
           outcome: 'rejected',
           requestDigest: captured.requestDigest,
@@ -383,9 +408,7 @@ export class SecurePushTransport {
         };
       const reason = this.guard(captured.snapshot, captured.isCurrent, captured.expiresAt);
       if (reason) return { ...refusal(reason), attempts };
-      const remaining = captured.expiresAt * 1000 - Date.now();
-      if (remaining <= this.retryDelayMs) return { ...refusal('EXPIRED'), attempts };
-      await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs));
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
     }
   }
 }

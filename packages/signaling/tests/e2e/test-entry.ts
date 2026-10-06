@@ -132,8 +132,8 @@ export class ConnectionRoom extends RealRoom {
     this.pushBarrier = pushBarrier;
   }
 
-  protected override async pushJwt(): Promise<string> {
-    const jwt = await super.pushJwt();
+  protected override async pushJwt(refresh = false): Promise<string> {
+    const jwt = await super.pushJwt(refresh);
     // Actual import/sign/cache operation completes; only its result delivery is paused.
     if (this.pushBarrier.stage === 'jwt') {
       this.pushBarrier.reached = true;

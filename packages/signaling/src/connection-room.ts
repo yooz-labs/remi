@@ -196,12 +196,15 @@ export class ConnectionRoom {
       return null;
     }
   }
-  protected pushJwt(): Promise<string> {
-    return createApnsJwt({
-      keyId: this.env.APNS_KEY_ID ?? '',
-      teamId: this.env.APNS_TEAM_ID ?? '',
-      privateKey: this.env.APNS_PRIVATE_KEY ?? '',
-    });
+  protected pushJwt(refresh = false): Promise<string> {
+    return createApnsJwt(
+      {
+        keyId: this.env.APNS_KEY_ID ?? '',
+        teamId: this.env.APNS_TEAM_ID ?? '',
+        privateKey: this.env.APNS_PRIVATE_KEY ?? '',
+      },
+      refresh,
+    );
   }
   protected sendPushRequest(request: ApnsRequest, signal: AbortSignal): Promise<Response> {
     return fetch(request.url, {
@@ -220,7 +223,7 @@ export class ConnectionRoom {
       return new PushGateway(this.state.storage, this.env, {
         now: () => this.now(),
         audience: () => this.pushAudience(),
-        jwt: () => this.pushJwt(),
+        jwt: (refresh) => this.pushJwt(refresh),
         send: (r, signal) => this.sendPushRequest(r, signal),
       }).submit(request, push[1] as string);
     }

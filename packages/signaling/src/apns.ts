@@ -211,12 +211,13 @@ const JWT_MAX_AGE_S = 3000;
  * Create a JWT for APNS authentication.
  * Uses ES256 algorithm with the p8 private key.
  * The JWT is cached per keyId and reused until it is 50 minutes old to avoid
- * APNS TooManyProviderTokenUpdates (429) errors.
+ * APNS TooManyProviderTokenUpdates (429) errors. `refresh` signs a new one and replaces the
+ * cached token: the v2 gateway asks for it after Apple answered ExpiredProviderToken (#1200).
  */
-export async function createApnsJwt(config: ApnsConfig): Promise<string> {
+export async function createApnsJwt(config: ApnsConfig, refresh = false): Promise<string> {
   const nowS = Math.floor(Date.now() / 1000);
   const cached = jwtCache.get(config.keyId);
-  if (cached && nowS - cached.iat < JWT_MAX_AGE_S) {
+  if (!refresh && cached && nowS - cached.iat < JWT_MAX_AGE_S) {
     return cached.jwt;
   }
 

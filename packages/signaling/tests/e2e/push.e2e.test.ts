@@ -526,6 +526,14 @@ test('an unusable APNs key is a retryable unavailable outcome and strands no non
   expect(requests.length).toBe(0);
 }, 15000);
 
+test('missing APNs credentials are a retryable unavailable outcome that charges no send budget', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ APNS_KEY_ID: '' });
+  const first = await post(w, await submission(w, m, d, p));
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_UNAVAILABLE', retryable: true });
+  expect((await budgetRows(w)).filter((k) => k.startsWith('ps:'))).toEqual([]);
+  expect(requests.length).toBe(0);
+}, 15000);
+
 for (const [httpStatus, reason] of [
   [429, 'TooManyRequests'],
   [500, 'InternalServerError'],
@@ -871,10 +879,12 @@ test('actual signed submit expiry during JWT completion delivery refuses before 
   expect(requests.length).toBe(0);
 }, 15000);
 
-test('actual pending nonce ownership replacement during JWT completion prevents APNs effect', async () => {
+test('actual pending nonce ownership replacement during consume sync completion prevents APNs effect', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const signed = await submission(w, m, d, p);
-  await gate(w, m.ridHex, 'jwt');
+  // #1200 A3: the JWT is now obtained before the nonce is consumed, so ownership is
+  // contested at the first point the pending record exists: its consume sync.
+  await gate(w, m.ridHex, 'consume-sync');
   const result = post(w, signed);
   await reached(w, m.ridHex);
   const key = `push-nonce:${signed.nonce}`;
