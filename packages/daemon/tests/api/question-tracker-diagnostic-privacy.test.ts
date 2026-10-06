@@ -22,7 +22,10 @@ for (const [mode, operation] of cases) {
       const sentinel = ${JSON.stringify(sentinel)};
       const mode = ${JSON.stringify(mode)};
       const make = (suffix, source = 'permission_request') => ({
-        id: crypto.randomUUID(), text: sentinel + suffix, options: [],
+        id: crypto.randomUUID(), text: sentinel + suffix, options: [
+          { label: 'Yes', value: '1', isYes: true, isNo: false, isRecommended: false },
+          { label: 'No', value: '2', isYes: false, isNo: true, isRecommended: false },
+        ],
         allowsFreeText: false, isAnswered: false, source, agentId: 'probe-agent',
       });
       const first = make('-first');
