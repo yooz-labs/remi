@@ -24,6 +24,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// Register UNNotificationCategory objects for lock-screen / Apple Watch action buttons.
+    /// These serve the legacy direct-mode pushes only: a v2 (remiPush) card carries no
+    /// category and opens the app until R6 (#1200).
     /// Capacitor owns UNUserNotificationCenter.delegate; do NOT override it here.
     ///
     /// #665: `.authenticationRequired` blocks watchOS mirrored-notification

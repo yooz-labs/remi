@@ -1,11 +1,54 @@
 # Native secure-push persistence and environment query (#1200)
 
 This directory implements native persistence, original-capsule verification,
-notification publication, quiet dismissal, and foreground action verification.
-Verified actions open the app; native answer transport is still pending #1201.
-The registration coordinator and guarded bundled-WebKit operations are connected
-to actual OS token callbacks. Web subscription requests and the visible enable
-control still need to be connected.
+notification publication, quiet dismissal and foreground presentation checks.
+
+What ships for a v2 notification (one carrying the `remiPush` capsule):
+
+- The notification service extension replaces the generic alert with the
+  verified title and body, and registers no category. A secure card has no
+  action buttons, so a tap opens the app. Answering from the lock screen or the
+  Watch is R6 (#1201), which has no native owner yet: an action button would be
+  dismissed by iOS on tap and the choice silently dropped. The action policy
+  that R6 needs (exact yes/no flags, complete `addRules` scope, protected
+  identities) was removed with its tests in the commit `fix(native): offer no
+  answer actions on secure cards`; its parent holds the last version.
+- `NativePushNotificationConsumer.routeResponse` consumes every response to a
+  v2 notification, even a malformed or unverifiable one, so none reaches the
+  legacy direct relay or the wrapped Capacitor handler.
+- Foreground presentation accepts only the verified text with an empty
+  category. A category on a signed card is unverified authority and is refused.
+- An exact duplicate of the latest live capsule renders the same verified card
+  again, because the collapse id is the delivered notification's identifier and
+  any other result would replace the live card. A capsule that is no longer the
+  latest live revision (stale, replayed after a newer revision, or after a
+  terminal) cannot be dropped by an extension without the notification
+  filtering entitlement, so it shows the generic alert: no text, no actions,
+  and the newer revision's record is untouched.
+
+A push without the `remiPush` carrier is the direct-mode plaintext push. The
+extension passes its content and userInfo through and builds its dynamic
+`REMI_DYN_` category exactly as before #1200, never opening the secure state or
+keys, and `RemiAnswerRelay` answers it through the legacy signed relay (#591).
+That path keeps its documented arbitrary eviction of old dynamic categories.
+
+The registration coordinator and the guarded bundled-WebKit operations
+(`enableSecurePush`, `preparePushRegistration`, `validatePushRegistration`) are
+connected to the actual OS token callbacks of both app delegates. The web
+client's subscription request and its visible enable control are not wired into
+the app: `SettingsPanel` renders the control only when a caller supplies
+`onEnableSecurePush`, and `App` supplies none, so no shipped screen reaches
+these operations yet.
+
+The P256 sealing key carries a version that is its creation time in milliseconds.
+The daemon refuses an equal version with a different key, so a key recreated
+after the item was lost must outrank every version the device could have
+registered; earlier builds registered 1. This assumes the device clock has not
+run backward past an earlier creation. A corrupt item is never replaced by
+`loadOrCreate` or by registration. The explicit enable action calls
+`repairCorruptItem`, which replaces only a corrupt item (not a valid key, a
+missing item or a read error such as a locked device) with a higher-version key;
+the new key must then register with the daemon before it receives any push.
 
 Registration reads only an actual OS delegate token, captures its epoch, and
 resolves the runtime APNs environment for each attempt. The bundled main document
@@ -72,8 +115,9 @@ complete rows and never import browser localStorage pins.
 Completed machine trust is limited to 32 saved machines. Replay state has 2048
 rows total across nonce and collapse tables; it never evicts live rows. The
 preverified tuple/digest storage boundary commits before publication or deletion.
-Exact duplicate capsules do not redisplay. Actions require the identical latest
-live digest. Dismiss is absorbing until the maximum of the seen expiry plus 60
+An exact duplicate is recognized by its recorded nonce and digest and renders only
+while it is still the identical latest live digest; a superseded one is refused.
+Dismiss is absorbing until the maximum of the seen expiry plus 60
 seconds and dismiss issue time plus 3600 plus 120 seconds. Forget and re-pair
 preserve replay records and tombstones. Cryptographic verification belongs to the
 original-byte decoder; the persistence API does not verify a signature itself.

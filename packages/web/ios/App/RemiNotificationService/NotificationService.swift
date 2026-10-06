@@ -169,7 +169,7 @@ class NotificationService: UNNotificationServiceExtension {
 
     /// KNOWN RACE (#719): this extension runs in its own process, apart from the
     /// app that registers REMI_YN/YNA/MULTI at launch, so the CURRENT set is read
-    /// and ours UNIONed in, never replaced wholesale. setNotificationCategories
+    /// and ours merged in, never replaced wholesale. setNotificationCategories
     /// has no completion handler, so the read-back is the only way to tell the
     /// registration landed before the notification displays.
     private static func registerDynamicCategory(_ category: UNNotificationCategory, completion: @escaping (Bool) -> Void) {
