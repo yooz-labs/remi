@@ -88,6 +88,23 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(first.fingerprint, second.fingerprint)
     }
 
+    /// #1200 D9: released macOS builds stored the identity with no access group and
+    /// no kSecUseDataProtectionKeychain, in the file-based keychain, and this branch
+    /// queries with an explicit group. Apple's TN3137 says SecItem defaults to the
+    /// file-based keychain unless that flag (or kSecAttrSynchronizable) is set, and
+    /// an unsigned local experiment showed the group is ignored there: the group
+    /// qualified query finds the group-less item, and a group-qualified add collides
+    /// with it. This pins that observable in the UNSIGNED test process; a signed,
+    /// sandboxed app was not exercised. Setting the flag without a migration would
+    /// hide every existing identity (and fails with errSecMissingEntitlement here).
+    func testIdentityStoredWithoutAGroupStaysVisibleToGroupQualifiedQueries() throws {
+        let before = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let after = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: "ABCDE12345.live.yooz.remi.tests",
+                                                         service: service, account: account)
+        XCTAssertEqual(after.publicKeyRaw, before.publicKeyRaw, "An upgrade must not mint a new identity")
+        XCTAssertEqual(after.revision, before.revision)
+    }
+
     func testResetForTestingForcesAFreshKey() throws {
         let first = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
         ClientIdentityStore.resetForTesting(service: service, account: account)
