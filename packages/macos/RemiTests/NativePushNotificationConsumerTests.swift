@@ -123,6 +123,7 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         var callback: (([NativePushNotificationConsumer.DeliveredCard]) -> Void)?
         var outcome: NativePushNotificationConsumer.DismissOutcome?
         var removals: [[String]] = []
+        var completionCount = 0
         var activitySent = false
         init(_ test: XCTestCase) { activity = test.expectation(description: "Native dismiss reached OS read or completion") }
         func read(_ callback: @escaping ([NativePushNotificationConsumer.DeliveredCard]) -> Void) {
@@ -130,12 +131,13 @@ final class NativePushNotificationConsumerTests: XCTestCase {
             if first { activity.fulfill() }
         }
         func complete(_ outcome: NativePushNotificationConsumer.DismissOutcome) {
-            lock.lock(); let firstCompletion = self.outcome == nil; self.outcome = outcome
+            lock.lock(); completionCount += 1; let firstCompletion = self.outcome == nil; self.outcome = outcome
             let first = !activitySent; activitySent = true; lock.unlock()
             if first { activity.fulfill() }; if firstCompletion { completed.fulfill() }
         }
         func remove(_ identifiers: [String]) { lock.lock(); removals.append(identifiers); lock.unlock() }
         func release(_ cards: [NativePushNotificationConsumer.DeliveredCard]) { lock.lock(); let callback = self.callback; lock.unlock(); callback?(cards) }
+        func completions() -> Int { lock.lock(); defer { lock.unlock() }; return completionCount }
         func wasRead() -> Bool { lock.lock(); defer { lock.unlock() }; return callback != nil }
         func snapshot() -> (NativePushNotificationConsumer.DismissOutcome?, [[String]]) { lock.lock(); defer { lock.unlock() }; return (outcome, removals) }
     }
@@ -159,6 +161,7 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         probe.release([
             .init(identifier: "owned-signed-card", userInfo: try info("question-yn")),
             .init(identifier: "another-signed-collapse", userInfo: try info("question")),
+            .init(identifier: "terminal-capsule-is-not-a-card", userInfo: terminal),
             .init(identifier: "forged-outer-routing", userInfo: ["questionId": "same", "collapseId": opened.record.collapseId, "verified": true])
         ])
         wait(for: [probe.completed], timeout: 3)
@@ -215,5 +218,31 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         wait(for: [probe.completed], timeout: 3)
         XCTAssertEqual(probe.snapshot().0, .unavailable); XCTAssertTrue(probe.snapshot().1.isEmpty,
             "A bounded refusal must not partially delete a notification scan")
+    }
+    func testActualQuietDismissDeadlineSuppressesLateOSCallbackAndCompletesOnce() throws {
+        let (consumer, probe, _) = try beginDismiss(); _ = consumer
+        guard probe.wasRead() else { XCTFail("Actual signed dismiss must reach delivered-card read"); return }
+        let original = try info("question-yn")
+        let lateCallbackSent = expectation(description: "Actual OS boundary callback delivered after its two-second lifetime")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.15) {
+            probe.release([.init(identifier: "owned-signed-card", userInfo: original)])
+            probe.release([.init(identifier: "owned-signed-card", userInfo: original)])
+            // Observe the already enqueued callbacks, without touching a private
+            // coordinator queue or bypassing its production lifetime checks.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { lateCallbackSent.fulfill() }
+        }
+        wait(for: [probe.completed, lateCallbackSent], timeout: 4)
+        XCTAssertEqual(probe.snapshot().0, .unavailable, "An expired read cannot become a successful deletion")
+        XCTAssertTrue(probe.snapshot().1.isEmpty, "Late OS callback cannot remove a notification")
+        XCTAssertEqual(probe.completions(), 1, "Timeout and repeated late callback have one completion owner")
+    }
+    func testBackgroundQuestionCannotConsumeNonceOrSuppressItsNSE() throws {
+        let probe = ReadProbe(self)
+        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock }, readDelivered: probe.read, removeDelivered: probe.remove)
+        consumer.receiveDismiss(userInfo: try info("question-yn"), completion: probe.complete)
+        wait(for: [probe.activity, probe.completed], timeout: 3)
+        XCTAssertEqual(probe.snapshot().0, .ignored); XCTAssertFalse(probe.wasRead())
+        XCTAssertEqual(try effect().prepare(userInfo: info("question-yn")).outcome, .publish,
+            "A background question wake must not consume the notification's lifecycle nonce")
     }
 }
