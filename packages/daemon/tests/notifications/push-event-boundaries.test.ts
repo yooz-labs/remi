@@ -323,14 +323,11 @@ for (const event of ['turn', 'denied', 'foreign'] as const) {
       expect(f.logs.join('\n')).not.toContain('PRIVATE_');
       expect(f.legacyCalls).toHaveLength(legacyCount);
       for (const call of f.legacyCalls) expect(call).toMatchObject(f.policy);
-      expect(f.errors).toHaveLength(event === 'foreign' ? 0 : legacyCount);
-      for (const error of f.errors) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toBe(
-          event === 'turn' ? 'TURN_COMPLETE_PUSH_FAILED' : 'HARNESS_DENIED_PUSH_FAILED',
-        );
-        expect(String(error)).not.toContain('PRIVATE_');
-      }
+      // The secure subscription latched this machine, so the activation latch refuses each
+      // legacy send: a retired channel, not a push failure (#1200). A real legacy failure is
+      // still reported (legacy-push-retired.test.ts).
+      expect(f.errors).toEqual([]);
+      expect(f.logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
     });
   }
 }

@@ -71,7 +71,7 @@ import type {
   PushConfig,
   PushFn,
 } from '../notifications/notification-dispatcher.ts';
-import { sendPushTrigger } from '../notifications/push-client.ts';
+import { isLegacyPushRetired, sendPushTrigger } from '../notifications/push-client.ts';
 import { tokensWanting } from '../notifications/push-preferences.ts';
 import type { SecureSessionPush } from '../notifications/secure-push-service.ts';
 import type { SessionBindingStore } from '../session/index.ts';
@@ -312,8 +312,14 @@ export class ForeignSessionEscalator {
     const results = await Promise.allSettled(tasks);
     if (results.some((r) => r.status === 'fulfilled' && (r.value === true || r.value === 'pushed')))
       return;
+    // A send the activation latch refused is the retired plaintext channel of a relay-paired
+    // machine, and a secure `no_channel` is no subscription: neither is a failure (#1200).
+    const failures = results.filter((r) =>
+      r.status === 'rejected' ? !isLegacyPushRetired(r.reason) : r.value !== 'no_channel',
+    );
+    if (failures.length === 0) return;
     // A lost delivery result is not evidence that the receiver saw nothing (#1200).
-    const uncertain = results.some((r) => r.status === 'fulfilled' && r.value === 'uncertain');
+    const uncertain = failures.some((r) => r.status === 'fulfilled' && r.value === 'uncertain');
     logError(`[ForeignSession] informational push ${uncertain ? 'uncertain' : 'failed'}`);
   }
 }

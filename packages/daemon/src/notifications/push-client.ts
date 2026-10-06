@@ -41,6 +41,15 @@ export class LegacyPushError extends Error {
   }
 }
 
+/**
+ * The secure activation latch refused the plaintext sender: the expected state of a relay-paired
+ * machine, never a push failure to report (#1200). Every legacy sender checks this before it
+ * reports an error.
+ */
+export function isLegacyPushRetired(error: unknown): boolean {
+  return error instanceof LegacyPushError && error.code === 'LEGACY_PUSH_NOT_ELIGIBLE';
+}
+
 /** The Worker's error body is a few dozen bytes; anything past this is not read. */
 const MAX_ERROR_BODY_BYTES = 4096;
 

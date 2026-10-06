@@ -19,7 +19,7 @@ import {
   legacyChannelOpen,
   legacyPushFields,
 } from './legacy-push-policy.ts';
-import type { PushTriggerOptions } from './push-client.ts';
+import { type PushTriggerOptions, isLegacyPushRetired } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
 
@@ -109,7 +109,9 @@ export function pushHarnessDenied(
         questionId: harnessDeniedCollapseId(deps.sessionId),
         kind: 'harness_denied',
       })
-      .catch(() => deps.onError(new Error('HARNESS_DENIED_PUSH_FAILED')));
+      .catch((error) => {
+        if (!isLegacyPushRetired(error)) deps.onError(new Error('HARNESS_DENIED_PUSH_FAILED'));
+      });
   }
   return wanting.length;
 }

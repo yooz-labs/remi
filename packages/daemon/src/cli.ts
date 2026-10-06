@@ -227,7 +227,7 @@ import {
   legacyPushFields,
 } from './notifications/legacy-push-policy.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
-import { sendPushTrigger } from './notifications/push-client.ts';
+import { isLegacyPushRetired, sendPushTrigger } from './notifications/push-client.ts';
 import {
   SecurePushContexts,
   type SecurePushRuntime,
@@ -1391,8 +1391,8 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
       body,
       ...legacyPushFields(legacyPolicy),
       kind: 'subagent_alert',
-    }).catch(() => {
-      logError('[SubagentAlert] push failed');
+    }).catch((error) => {
+      if (!isLegacyPushRetired(error)) logError('[SubagentAlert] push failed');
     });
   }
 }

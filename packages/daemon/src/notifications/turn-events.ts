@@ -40,7 +40,7 @@ import {
   legacyChannelOpen,
   legacyPushFields,
 } from './legacy-push-policy.ts';
-import type { PushTriggerOptions } from './push-client.ts';
+import { type PushTriggerOptions, isLegacyPushRetired } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
 import {
@@ -163,7 +163,9 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
             ...legacyFields,
             kind: 'turn_complete',
           })
-          .catch(() => deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED')));
+          .catch((error) => {
+            if (!isLegacyPushRetired(error)) deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED'));
+          });
       }
     },
 

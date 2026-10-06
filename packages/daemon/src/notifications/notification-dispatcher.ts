@@ -23,7 +23,7 @@ import {
   legacyChannelOpen,
   legacyPushFields,
 } from './legacy-push-policy.ts';
-import { LegacyPushError, sendPushTrigger } from './push-client.ts';
+import { LegacyPushError, isLegacyPushRetired, sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
@@ -607,7 +607,7 @@ export class NotificationDispatcher {
           await sleep(delay);
           continue;
         }
-        if (err instanceof LegacyPushError && err.code === 'LEGACY_PUSH_NOT_ELIGIBLE') {
+        if (isLegacyPushRetired(err)) {
           log('Legacy push not eligible; secure push is active on this machine');
           return 'no_channel';
         }
