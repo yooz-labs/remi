@@ -126,6 +126,34 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         XCTAssertEqual(reply["accepted"] as? Bool, false, "The old web continuation cannot publish registration metadata")
         XCTAssertEqual(try ClientIdentityStore.load(authority: state, accessGroup: nil, service: service, account: "owned-dpk")?.publicKeyRaw, identity.publicKeyRaw)
     }
+    @MainActor func testActualRenderedSettingsOffersExplicitNativeSecureNotificationEnable() async throws {
+        var permissions = 0; var registrations = 0
+        let web = try await web(tokens: NativePushTokenOwner(), authorization: { permissions += 1; return true }, register: {registrations += 1})
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"])
+        let script = try String(contentsOfFile: path, encoding: .utf8)
+        let evaluated = try await web.callAsyncJavaScript(script + ";return true;", arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(evaluated as? Bool, true)
+        let result = try await web.callAsyncJavaScript("""
+            await window.nativeProviderTest.renderNativeSettings();
+            let button;
+            for(let i=0;i<100;i++) {
+              button = [...document.querySelectorAll('button')].find(item=>item.textContent==='Enable secure relay notifications');
+              if(button)break;
+              await new Promise(resolve=>setTimeout(resolve,10));
+            }
+            if(!button)return {found:false};
+            button.click();
+            for(let i=0;i<100;i++) {
+              if(document.body.textContent.includes('Notifications requested.'))return {found:true,completed:true};
+              await new Promise(resolve=>setTimeout(resolve,10));
+            }
+            return {found:true,completed:false};
+            """, arguments: [:], in: nil, contentWorld: .page)
+        let reply = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(reply["found"] as? Bool, true, "Actual SettingsPanel must offer the explicit native permission action")
+        XCTAssertEqual(reply["completed"] as? Bool, true)
+        XCTAssertEqual(permissions,1);XCTAssertEqual(registrations,1)
+    }
     @MainActor func testActualBundledIngressReturnsOnlyNativeSecureMetadata() async throws {
         let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([0, 15, 255]))
         let web = try await web(tokens: tokens)

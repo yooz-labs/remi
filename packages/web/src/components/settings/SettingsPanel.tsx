@@ -27,6 +27,7 @@ interface SettingsPanelProps {
   readonly settings: AppSettings;
   readonly onClose: () => void;
   readonly onChange: (settings: AppSettings) => void;
+  readonly onEnableSecurePush?: () => Promise<void>;
 }
 
 function ThemeButton({
