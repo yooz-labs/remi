@@ -346,6 +346,11 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
               let url = URLComponents(string: trust.endpoint), url.scheme == "https", let host = url.host, !host.isEmpty,
               host == host.lowercased(), url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
               url.path.isEmpty, url.port != 443, url.string == trust.endpoint else { throw NativePushStateError.invalid }
+        if let port = url.port, !(0...65535).contains(port) { throw NativePushStateError.invalid }
+        // Re-emit the parsed port to reject zero prefixes and an empty port, as the shared URL origin does.
+        var canonical = url
+        canonical.port = url.port
+        guard canonical.string == trust.endpoint else { throw NativePushStateError.invalid }
     }
     private func bind(_ value: Data, to stmt: OpaquePointer, at index: Int32) throws {
         let status = value.withUnsafeBytes { sqlite3_bind_blob(stmt, index, $0.baseAddress, Int32(value.count), Self.transient) }
