@@ -335,6 +335,116 @@ describe('ClaudeHarness.createSession', () => {
     return { snapshot, store, trust, pair };
   }
 
+  // Causal pins over the actual registry, harness and recipient; no policy substitute.
+  test('secure push context audit replacement releases capacity and finish invalidates its exact launch', async () => {
+    const { session, sessionId, question } = visiblePrompt();
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      },
+      1,
+      1,
+    );
+    const { snapshot } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const oldRuntime = contexts.begin(sessionId);
+    const first = contexts.capture(oldRuntime, snapshot, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    const freshRuntime = contexts.begin(sessionId);
+    expect(contexts.isCurrent(first)).toBe(false);
+    const second = contexts.capture(freshRuntime, snapshot, event);
+    expect(second).not.toBeNull();
+    if (!second) return;
+    expect(contexts.isCurrent(second)).toBe(true);
+    contexts.finish(freshRuntime);
+    expect(contexts.isCurrent(second)).toBe(false);
+    expect(contexts.capture(freshRuntime, snapshot, event)).toBeNull();
+    const third = contexts.capture(contexts.begin(sessionId), snapshot, event);
+    expect(third).not.toBeNull();
+  });
+
+  test('secure push context audit digest binds exact current content once and latest action cannot alias', async () => {
+    const { decisions, sessionId, card, response } = await holdPrompt(false);
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const { snapshot } = await pushRecipient();
+      const event = {
+        kind: 'question' as const,
+        logicalId: card.id,
+        question: card,
+        title: 'Remi',
+        body: card.text,
+      };
+      const first = contexts.capture(runtime, snapshot, event);
+      expect(first).not.toBeNull();
+      if (!first) return;
+      expect(contexts.bindDigest(first, 'invalid')).toBe(false);
+      expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(true);
+      expect(contexts.bindDigest(first, 'cd'.repeat(32))).toBe(false);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
+        'ab'.repeat(32),
+      );
+      expect(contexts.latestAction(runtime, card.id, 'unrelated-public-key')).toBeNull();
+      const second = contexts.capture(runtime, snapshot, {
+        ...event,
+        body: `${event.body} updated`,
+      });
+      expect(second).not.toBeNull();
+      if (!second) return;
+      expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(false);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toBeNull();
+      expect(contexts.bindDigest(second, 'cd'.repeat(32))).toBe(true);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toEqual({
+        context: second,
+        contentDigest: 'cd'.repeat(32),
+      });
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+    }
+  });
+
+  test('secure push context audit informational card still requires actual registry presence', async () => {
+    const { decisions, sessionId, card, response } = await holdPrompt(false);
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const { snapshot } = await pushRecipient();
+      const first = contexts.capture(runtime, snapshot, {
+        kind: 'question',
+        logicalId: card.id,
+        question: card,
+        title: 'Remi',
+        body: '😀'.repeat(140),
+      });
+      expect(first).not.toBeNull();
+      if (!first) return;
+      expect(first.payload.actionable).toBe(false);
+      expect(contexts.isCurrent(first)).toBe(true);
+      sessionRegistry.removeQuestion(sessionId, card.id, 'owned-private-audit');
+      expect(decisions.isHeld(card.id)).toBe(true);
+      expect(contexts.isCurrent(first)).toBe(false);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+    }
+  });
+
   test('secure push context floors the actual held deadline, keeps identical event authority and never settles its hook', async () => {
     const { decisions, card, sessionId, response } = await holdPrompt(false);
     const contexts = new SecurePushContexts({
