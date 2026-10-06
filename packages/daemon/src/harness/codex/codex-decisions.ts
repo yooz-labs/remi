@@ -55,7 +55,13 @@ import { escapeUnsafeText, generateId } from '@remi/shared';
 import type { Question, UUID } from '@remi/shared';
 
 import type { SessionRegistry } from '../../session/session-registry.ts';
-import type { AnswerValidity, HeldAnswer, HeldAnswerOutcome } from '../decision.ts';
+import {
+  type AnswerCommit,
+  type AnswerValidity,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../decision.ts';
 import type { DecisionChannel } from '../types.ts';
 import type { AppServerClient } from './app-server-client.ts';
 import type { RequestId } from './app-server-protocol.ts';
@@ -264,7 +270,7 @@ export class CodexDecisions implements DecisionChannel {
     this.disposed = true;
   }
 
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
     const entry = this.byId.get(questionId);
     // Never `unknown`, whatever the id: the handlers type into the PTY for `unknown`, and nothing
     // is typed for a Codex answer. A card this session never showed has no hold; it is closed.
@@ -296,7 +302,14 @@ export class CodexDecisions implements DecisionChannel {
     let sent = false;
     let encoded = true;
     try {
-      sent = this.deps.client.respond(spec.requestId, mapped.result);
+      // Only the actual socket result is inside the final authorization lock.
+      // Link notices and card cleanup below may themselves read authority.
+      const committed = applyAnswerCommit(
+        () => this.deps.client.respond(spec.requestId, mapped.result),
+        commit,
+      );
+      if (committed.kind === 'refused') return 'authority-refused';
+      sent = committed.value;
     } catch (error) {
       encoded = false;
       this.deps.log(

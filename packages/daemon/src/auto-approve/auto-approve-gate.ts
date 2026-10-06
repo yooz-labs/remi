@@ -104,7 +104,13 @@
 import type { UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
-import type { AnswerValidity, HeldAnswer, HeldAnswerOutcome } from '../harness/decision.ts';
+import {
+  type AnswerCommit,
+  type AnswerValidity,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../harness/decision.ts';
 import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import {
@@ -624,7 +630,7 @@ export class AutoApproveGate {
    * For an AskUserQuestion or ExitPlanMode (#1127), see `askDecision` and
    * `planDecision`. Anything else is refused and the hold stays.
    */
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
     const hold = this.holds.get(questionId);
     if (!hold) return this.closedHoldIds.has(questionId) ? 'closed' : 'unknown';
     const decision = this.decisionFor(hold, answer);
@@ -634,8 +640,11 @@ export class AutoApproveGate {
       );
       return 'refused';
     }
-    this.openQuestionSignatures.delete(questionId);
-    this.endHold(questionId, decision);
+    const committed = applyAnswerCommit(() => {
+      this.openQuestionSignatures.delete(questionId);
+      this.endHold(questionId, decision);
+    }, commit);
+    if (committed.kind === 'refused') return 'authority-refused';
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} answered from the phone: ${describeDecision(decision)}`,
     );
