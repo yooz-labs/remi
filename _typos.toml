@@ -28,4 +28,8 @@ extend-exclude = [
   "packages/shared/tests/fixtures/relay-v2/vectors.json",
   # Signed push vectors (#1200): the same synthetic binary fixture encoding.
   "packages/shared/tests/fixtures/relay-v2/push-vectors.json",
+  # Signed native-answer vectors and their protocol fixture (#1201): generated
+  # base64url keys/signatures, not prose. Keep the original cryptographic bytes.
+  "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json",
+  "packages/shared/tests/fixtures/protocol/native_answer.json",
 ]
