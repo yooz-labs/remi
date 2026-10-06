@@ -170,6 +170,11 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
         do { replyHandler(try handle(message.body), nil) }
+        catch NativePushStateError.capacity {
+            if (message.body as? [String: Any])?["op"] as? String == "commitPushPairing" {
+                replyHandler(nil, "Saved machine limit reached. Forget a machine before pairing again.")
+            } else { replyHandler(nil, "Native identity request refused") }
+        }
         catch { replyHandler(nil, "Native identity request refused"); }
     }
 

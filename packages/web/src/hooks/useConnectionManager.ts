@@ -26,6 +26,7 @@ import { isNative } from '@/lib/platform';
 import { RelayMachineChannel, type RelayMachinePin } from '@/lib/relay-machine-channel';
 import { RelayTransport, type ConnectionTransport } from '@/lib/relay-transport';
 import { rememberRelayPin } from '@/lib/relay-pins';
+import { beginNativePairingTrust, cancelNativePairingTrust, commitNativePairingTrust, type NativePairingAttempt } from '@/lib/native-push-trust';
 import { RelayRequests, type RelayAnswerStatus } from '@/lib/relay-requests';
 import {
   allocateStaggerSlot,
@@ -839,11 +840,24 @@ export function useConnectionManager(
       serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
     };
     const alive = () => currentIdentity() && connectionsMapRef.current.get(connectionId) === mc;
+    let nativeAttempt: NativePairingAttempt | null = null;
+    const cancelNativeAttempt = () => {
+      const pending = nativeAttempt; nativeAttempt = null;
+      // A failed cancel cannot authorize a later commit: native attempts also bind
+      // document, identity, generation and deadline, and this channel is closed.
+      if (pending) void cancelNativePairingTrust(pending).catch(() => {});
+    };
     const messages = createMessageHandler(mc);
     mc.relayRequests = new RelayRequests(message => mc.client.send(message), status => {
       if (connectionsMapRef.current.get(connectionId) === mc) answerOutcomeRef.current?.(connectionId, status);
     });
     mc.client = new RelayTransport(async (events, resume) => {
+      cancelNativeAttempt();
+      if ('kind' in signedIdentity) {
+        const pending = await beginNativePairingTrust(signedIdentity);
+        if (!alive()) { await cancelNativePairingTrust(pending); throw new Error('Pairing canceled or identity changed.'); }
+        nativeAttempt = pending;
+      }
       // The initial unconfirmed token is used once. No retry retains it or its secret.
       if (!resume && first) {
         const initialPin = first.pin;
@@ -860,9 +874,20 @@ export function useConnectionManager(
         if (!alive()) return;
         mc.relayConfirmation = phase === 'confirmation' ? fingerprint : undefined; syncState();
       },
-      onReady: verifiedPin => { if (alive()) { rememberRelayPin(verifiedPin); mc.relayCancel?.(); mc.relayPin = verifiedPin; } },
+      onReady: async verifiedPin => {
+        if (!alive()) throw new Error('Pairing canceled or identity changed.');
+        if ('kind' in signedIdentity) {
+          const pending = nativeAttempt;
+          if (!pending) throw new Error('Native pairing attempt is no longer available.');
+          await commitNativePairingTrust(pending, verifiedPin);
+          if (!alive() || nativeAttempt !== pending) throw new Error('Pairing canceled or identity changed.');
+          nativeAttempt = null;
+        } else rememberRelayPin(verifiedPin);
+        if (!alive()) throw new Error('Pairing canceled or identity changed.');
+        mc.relayCancel?.(); mc.relayPin = verifiedPin;
+      },
       onError: error => { if (alive()) { mc.error = error; syncState(); } },
-      onClose: () => { if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
+      onClose: () => { cancelNativeAttempt(); if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
       onStatus: status => {
         if (!alive()) return;
         mc.status = status;
@@ -874,6 +899,7 @@ export function useConnectionManager(
     connectionsMapRef.current.set(connectionId, mc);
     if (signal && typeof tokenOrPin === 'string') {
       const cancel = () => {
+        cancelNativeAttempt();
         mc.relayCancel?.();
         mc.relayRequests?.closed(); mc.client.disconnect();
         void first?.close(); first = null; tokenOrPin = pin;

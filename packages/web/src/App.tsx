@@ -16,6 +16,7 @@ import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
 import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
+import { forgetNativeRelayPin, loadNativeRelayPins } from '@/lib/native-push-trust';
 import type { RelayAnswerStatus } from '@/lib/relay-requests';
 import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
@@ -1970,7 +1971,14 @@ function App() {
     const context = `${relayIdentityRevision}:${publicKey}`;
     if (restoredRelayIdentityRef.current === context) return;
     restoredRelayIdentityRef.current = context;
-    for (const pin of loadRelayPins()) void connectRelay(pin).catch(() => { /* Public pin remains available for explicit retry. */ });
+    let cancelled = false;
+    void (async () => {
+      const pins = unlockedIdentity && 'kind' in unlockedIdentity
+        ? await loadNativeRelayPins(unlockedIdentity) : loadRelayPins();
+      if (cancelled || restoredRelayIdentityRef.current !== context) return;
+      for (const pin of pins) void connectRelay(pin).catch(() => { /* Explicit retry keeps the public native/browser pin. */ });
+    })().catch(() => { /* Missing or replaced native authority never imports a browser pin. */ });
+    return () => { cancelled = true; };
   }, [unlockedIdentity, connectRelay, relayIdentityRevision]);
 
   const connectDirectRef = useRef(connectDirect);
@@ -3206,7 +3214,15 @@ function App() {
           list={() => listRelayDevices(deviceConnectionId)}
           revoke={fingerprint => revokeRelayDevice(deviceConnectionId, fingerprint)}
           onClose={() => setDeviceConnectionId(null)}
-          forget={() => { forgetRelayPin(connection.relayPin?.machinePublicKey ?? ''); disconnectConnection(deviceConnectionId); }} /> : null;
+          forget={async () => {
+            const machine = connection.relayPin?.machinePublicKey ?? '';
+            if (usesNativeIdentity()) {
+              const identity = currentNativeIdentity();
+              if (!identity) throw new Error('Unlock your identity before forgetting this machine.');
+              await forgetNativeRelayPin(identity, machine);
+            } else forgetRelayPin(machine);
+            disconnectConnection(deviceConnectionId);
+          }} /> : null;
       })()}
 
       <ConnectModal

@@ -1,8 +1,8 @@
 # Native secure-push persistence and environment query (#1200)
 
 This directory currently implements the native persistence and APNs environment
-boundaries. Secure registration, original-byte capsule verification, the verified
-READY web caller, and NSE/action consumers still need to be connected. The
+boundaries. Secure registration and NSE/action consumers still need to be
+connected. The
 existing notification extension is not yet the secure-push decoder.
 
 `NativePushState` stores public identity authority and completed machine trust in
@@ -17,8 +17,12 @@ Native pairing ingress issues a one-use, two-minute monotonic attempt bound to t
 current private identity, protection revision, bundled document, and durable
 authority generation. Commit rechecks these contexts after the actual writer lock.
 An explicit completed pairing may recover public identity authority for that same
-generation; ordinary get/sign operations still never restore it. The verified web
-READY callback is not connected to these new ingress operations yet.
+generation; ordinary get/sign operations still never restore it. The actual
+authenticated and encrypted web READY continuation awaits this durable commit
+before publishing connected. Native restore and forget use only these completed
+native rows, never browser pin storage. Browser-only clients retain their separate
+browser persistence. A failed native save remains a visible terminal pairing
+error and requires explicit retry.
 
 Read-only identity observation invalidates installed authority if the actual
 record is unavailable, deleted, corrupt, or differs in public key, revision, or

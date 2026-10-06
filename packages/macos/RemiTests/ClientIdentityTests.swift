@@ -714,12 +714,60 @@ final class ClientIdentityTests: XCTestCase {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(DistSchemeHandler(webRoot:root),forURLScheme:"remi-app")
         config.userContentController.addScriptMessageHandler(
-            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme:"remi-app",service:service,account:account,foreground:{ true },authorization:{ true }),contentWorld:.page,name:NativeIdentityBridge.handlerName)
+            NativeIdentityBridge(authority: authority, accessGroup: nil, scheme:"remi-app",service:service,account:account,pushState:{ self.authority },foreground:{ true },authorization:{ true }),contentWorld:.page,name:NativeIdentityBridge.handlerName)
         let web = WKWebView(frame:.zero,configuration:config)
         web.load(URLRequest(url:try XCTUnwrap(URL(string:"remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds:20_000_000) }
         XCTAssertFalse(web.isLoading)
         return (web,root)
+    }
+
+    @MainActor
+    func testActualWebProviderPersistsAndForgetsOnlyNativeCompletedTrust() async throws {
+        let native = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let rid = Data(SHA256.hash(data: machine).prefix(16))
+        let machineB64u = machine.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let (web, root) = try await providerWebView()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let saved = try await web.callAsyncJavaScript("""
+            const api = window.nativeProviderTest;
+            const state = await api.inspectNativeIdentity();
+            if (state.kind !== 'ready') throw new Error('native signer unavailable');
+            window.nativeSigner = state.identity;
+            localStorage.setItem('remi-relay-pins', 'owned browser marker');
+            const before = await api.loadNativeRelayPins(state.identity);
+            const attempt = await api.beginNativePairingTrust(state.identity);
+            window.publicPin = {machinePublicKey,relayUrl:'wss://relay.example.invalid/prefix'};
+            await api.commitNativePairingTrust(attempt, window.publicPin);
+            const restored = await api.loadNativeRelayPins(state.identity);
+            let reused = false;
+            try { await api.commitNativePairingTrust(attempt, window.publicPin); reused = true; } catch {}
+            const cancelled = await api.beginNativePairingTrust(state.identity);
+            await api.cancelNativePairingTrust(cancelled);
+            let acceptedCancelled = false;
+            try { await api.commitNativePairingTrust(cancelled, window.publicPin); acceptedCancelled = true; } catch {}
+            return {before:before.length,restored,reused,acceptedCancelled,
+              browser:localStorage.getItem('remi-relay-pins'),keys:Object.keys(state.identity).sort()};
+            """, arguments: ["machinePublicKey": machineB64u], in: nil, contentWorld: .page)
+        let result = try XCTUnwrap(saved as? [String: Any])
+        XCTAssertEqual(result["before"] as? Int, 0, "Native restore must not import a browser pin")
+        let restored = try XCTUnwrap(result["restored"] as? [[String: String]])
+        XCTAssertEqual(restored, [["machinePublicKey": machineB64u, "relayUrl": "wss://relay.example.invalid/prefix"]])
+        XCTAssertEqual(result["reused"] as? Bool, false)
+        XCTAssertEqual(result["acceptedCancelled"] as? Bool, false)
+        XCTAssertEqual(result["browser"] as? String, "owned browser marker", "Native save must not write browser persistence")
+        XCTAssertEqual(result["keys"] as? [String], ["fingerprint", "kind", "publicKeyRaw", "requiresAppUnlock", "revision", "sign"])
+        let reopened = try NativePushState(file: authorityDirectory.appendingPathComponent("push.sqlite"))
+        XCTAssertEqual(try reopened.machineTrust(rid: rid)?.authority.publicKey, native.publicKeyRaw)
+        let forgotten = try await web.callAsyncJavaScript("""
+            await window.nativeProviderTest.forgetNativeRelayPin(window.nativeSigner, window.publicPin.machinePublicKey);
+            return (await window.nativeProviderTest.loadNativeRelayPins(window.nativeSigner)).length;
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(forgotten as? Int, 0, "Actual native forget must remove the durable completed trust")
+        XCTAssertNil(try reopened.machineTrust(rid: rid))
+        XCTAssertEqual(try reopened.currentAuthority()?.publicKey, native.publicKeyRaw, "Forgetting a machine must retain the current public identity")
     }
 
     @MainActor
