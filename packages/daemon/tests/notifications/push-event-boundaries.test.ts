@@ -40,7 +40,7 @@ afterEach(async () => {
   for (const stop of cleanup.splice(0).reverse()) await stop();
   __resetLoggerForTests();
 });
-async function fixture(muted = false) {
+async function fixture(muted = false, loseApnsResponse = false) {
   const directory = mkdtempSync(join(tmpdir(), 'remi-secure-events-'));
   chmodSync(directory, 0o700);
   cleanup.push(async () => rmSync(directory, { recursive: true, force: true }));
@@ -72,6 +72,10 @@ async function fixture(muted = false) {
     let body = '';
     for await (const chunk of req) body += chunk;
     received.push({ body, httpVersion: req.httpVersion });
+    if (loseApnsResponse) {
+      req.socket.destroy();
+      return;
+    }
     res.writeHead(200);
     res.end();
   });
@@ -384,3 +388,21 @@ test('foreign ownership read failure logs fixed operation without session, tool 
   expect(f.logs.join('\n')).toContain('[ForeignSession] ownership read failed; push suppressed');
   expect(f.logs.join('\n')).not.toContain('PRIVATE_');
 });
+
+test('foreign actual socket-loss delivery remains uncertain without resend or false failure', async () => {
+  const f = await fixture(false, true);
+  const escalator = f.foreign();
+  escalator.handleUnadmitted(f.foreignInput, SID);
+  await f.flush();
+  expect(f.events).toHaveLength(1);
+  expect(f.received).toHaveLength(1);
+  expect(f.outcomes).toEqual(['uncertain']);
+  expect((await f.open()).payload).toMatchObject({ type: 'informational', actionable: false });
+  escalator.handleUnadmitted(f.foreignInput, SID);
+  await f.flush();
+  expect(f.events).toHaveLength(1);
+  expect(f.received).toHaveLength(1);
+  expect(f.legacyCalls).toHaveLength(0);
+  expect(f.logs.join('\n')).not.toContain('[ForeignSession] informational push failed');
+  expect(f.logs.join('\n')).toContain('[ForeignSession] informational push uncertain');
+}, 15000);
