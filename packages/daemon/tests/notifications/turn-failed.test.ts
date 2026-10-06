@@ -446,7 +446,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       ]);
     });
 
-    test('a missing code and the code unknown are one reason', async () => {
+    test('a missing code and the code unknown, with the same details, are one reason', async () => {
       register(false);
       deviceTokens.set('a', device('a'));
       const dispatcher = make();
@@ -455,6 +455,72 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       await dispatcher.pushTurnFailed({ error: 'unknown' });
 
       expect(sent).toHaveLength(1);
+    });
+
+    test('failures with no recognized code are told apart by their details', async () => {
+      // A Codex error whose codexErrorInfo is an object carries no string code.
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({ error_details: 'stream disconnected' });
+      await dispatcher.pushTurnFailed({ error_details: 'model not found' });
+      await dispatcher.pushTurnFailed({ error_details: 'stream disconnected' });
+
+      expect(sent).toHaveLength(2);
+    });
+
+    test("a subagent's failure does not use up the main agent's alert", async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      expect(
+        await dispatcher.pushTurnFailed({
+          error: 'overloaded',
+          agent_id: 'agent-1',
+          agent_type: 'Explore',
+        }),
+      ).toBe('pushed');
+      expect(await dispatcher.pushTurnFailed({ error: 'overloaded' })).toBe('pushed');
+      expect(
+        await dispatcher.pushTurnFailed({
+          error: 'overloaded',
+          agent_id: 'agent-2',
+          agent_type: 'Explore',
+        }),
+      ).toBe('deduped');
+      expect(await dispatcher.pushTurnFailed({ error: 'overloaded' })).toBe('deduped');
+      expect(sent).toHaveLength(2);
+    });
+
+    test('a dismiss while the first push is in flight lets the next failure alert', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      const first = dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      dispatcher.dismissTurnFailed();
+      const second = dispatcher.pushTurnFailed({ error: 'rate_limit' });
+
+      expect(await first).toBe('pushed');
+      expect(await second).toBe('pushed');
+      expect(sent.filter((p) => p.opts['kind'] === 'turn_failed')).toHaveLength(2);
+    });
+
+    test('a burst whose one push fails: the next failure after it tries again', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      failFor.add('a');
+      const dispatcher = make();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 3 }, () => dispatcher.pushTurnFailed({ error: 'rate_limit' })),
+      );
+      expect(outcomes).toEqual(['failed', 'deduped', 'deduped']);
+
+      failFor.clear();
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
     });
 
     test('a successful turn ends the streak: the same failure alerts again after it', async () => {
