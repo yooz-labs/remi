@@ -238,4 +238,104 @@ final class NativePushCodecTests: XCTestCase {
         XCTAssertNoThrow(try open(resized(2048)), "The WHOLE multibyte signed inner envelope exactly2048 bytes is valid")
         XCTAssertThrowsError(try open(resized(2049)), "The WHOLE envelope cap includes metadata, signature and multibyte text")
     }
+    func testCarrierCanonicalEncodingsTypesAndUnknownFlagsCannotGrantAuthority() throws {
+        let original = try carrier(XCTUnwrap(cases.first))
+        XCTAssertNoThrow(try open(original))
+        let mutations: [(String, Any)] = [("v", true), ("v", 3), ("keyVersion", true), ("keyVersion", 0), ("keyVersion", 3.5),
+            ("keyVersion", 9_007_199_254_740_992 as Int64), ("keyVersion", 4), ("kind", "QUESTION"),
+            ("rid", "94B442B3712A799934ED2BDEF943D321"), ("collapseId", "Yxc4uePYQ4cjMoWyFwSxOA=="),
+            ("sealed", try XCTUnwrap(original["sealed"] as? String) + "=")]
+        for (key, value) in mutations {
+            var outer = original; outer[key] = value
+            XCTAssertThrowsError(try open(outer), "Carrier canonical/type field \(key) must refuse")
+        }
+        var unknown = original; unknown["verified"] = true
+        XCTAssertThrowsError(try open(unknown), "A supplied verified flag is never accepted")
+        for key in original.keys {
+            var missing = original; missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try open(missing), "Required carrier field \(key) cannot be omitted")
+        }
+        let untrusted = try NativePushCodec.open(userInfo: ["aps": ["category": "REMI_YN"], "verified": true,
+            "sessionId": "untrusted", "options": ["forged"], "remiPush": original], state: state, keys: keys, now: 1_700_000_000)
+        guard case .question(let question) = untrusted.payload else { XCTFail("Shared vector must remain a question"); return }
+        XCTAssertEqual(question.sessionId, "synthetic-session")
+        XCTAssertEqual(question.category, .yesNoAlways)
+        XCTAssertEqual(question.options[1].standingGrant, .addRules)
+        XCTAssertEqual(question.options[1].description, "Read only the synthetic fixture directory")
+    }
+    func testAllReviewedWeakPublicKeysAndMalformedTupleShapesRefuse() throws {
+        let vector = try XCTUnwrap(cases.first)
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/ed25519-server-keys.json")
+        let fixtures = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [[String: Any]])
+        let weak = try fixtures.filter { ($0["smallOrder"] as? Bool) == true }.map { try XCTUnwrap($0["publicKey"] as? String) }
+        XCTAssertEqual(weak.count, 14)
+        for encoding in weak {
+            let bytes = try XCTUnwrap(Data(base64Encoded: encoding))
+            for index in [0, 2] {
+                XCTAssertThrowsError(try open(reseal(vector) { $0[index] = bytes }), "Reviewed weak Ed25519 field \(index) must refuse")
+            }
+        }
+        XCTAssertThrowsError(try open(reseal(vector) { $0.append(Data()) }), "Extra length-prefixed tuple field refuses")
+        XCTAssertThrowsError(try open(reseal(vector) { $0.removeLast() }), "Missing length-prefixed tuple field refuses")
+        XCTAssertThrowsError(try open(reseal(vector) { $0[3] = Data([4]) + Data(repeating: 0, count: 64) }), "Off-curve P256 recipient refuses")
+        XCTAssertThrowsError(try open(reseal(vector) { $0[6] = self.be64(9_007_199_254_740_992) }), "Tuple integers cannot exceed JS safe range")
+    }
+    func testInformationalTTLAndCompleteUTF8DisplayCaps() throws {
+        let information = try XCTUnwrap(cases.first { ($0["name"] as? String) == "turn_complete" })
+        XCTAssertNoThrow(try open(reseal(information) { $0[10] = self.be64(1_700_000_300) }), "Informational TTL exactly300 is valid")
+        XCTAssertThrowsError(try open(reseal(information) { $0[10] = self.be64(1_700_000_301) }), "Information cannot claim the question TTL")
+        let vector = try XCTUnwrap(cases.first)
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(XCTUnwrap(vector["payloadUtf8"] as? String).utf8)) as? [String: Any])
+        for (key, maximum) in [("title", 128), ("body", 512)] {
+            payload[key] = String(repeating: "é", count: maximum / 2)
+            let exact = try JSONSerialization.data(withJSONObject: payload)
+            XCTAssertNoThrow(try open(reseal(vector) { $0[11] = exact }), "Exact \(key) UTF8 cap is valid")
+            payload[key] = String(repeating: "é", count: maximum / 2) + "a"
+            let over = try JSONSerialization.data(withJSONObject: payload)
+            XCTAssertThrowsError(try open(reseal(vector) { $0[11] = over }), "Complete \(key) is measured in UTF8 bytes, never silently truncated")
+            payload[key] = "Synthetic"
+        }
+    }
+    func testSameIdentityRecoveryAndRecipientRotationDuringFinalReadRefuse() throws {
+        let original = try carrier(XCTUnwrap(cases.first))
+        let verified = try open(original)
+        var operations = NativeKeychainOperations.system; var reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            if reads == 2 {
+                do {
+                    let other = try NativePushState(file: self.directory.appendingPathComponent("public.sqlite"))
+                    let lease = try other.acquireIdentityMutation(); defer { lease.release() }
+                    let next = try lease.invalidateIdentityAuthority()
+                    try lease.installIdentityAuthority(publicKey: verified.trust.authority.publicKey, revision: verified.trust.authority.revision,
+                        requiresAppUnlock: verified.trust.authority.requiresAppUnlock, generation: next)
+                    try other.installMachineTrust(verified.trust, generation: next)
+                } catch { XCTFail("Owned same-identity recovery setup failed"); return errSecNotAvailable }
+            }
+            return SecItemCopyMatching(request, result)
+        }
+        let observed = NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+        XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": original], state: state, keys: observed, now: 1_700_000_000),
+                             "A fresh durable generation invalidates decode even when recovered public identity/trust compare equal")
+        XCTAssertEqual(try state.machineTrust(rid: verified.record.rid), verified.trust)
+        XCTAssertNoThrow(try open(original), "The independently fresh current decode remains valid")
+        reads = 0
+        operations.copyMatching = { request, result in
+            reads += 1
+            if reads == 2 {
+                do {
+                    struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
+                    let next = P256.KeyAgreement.PrivateKey()
+                    let record = try JSONEncoder().encode(Record(version: 1, privateDER: next.derRepresentation,
+                        publicKey: next.publicKey.x963Representation, keyVersion: 4))
+                    XCTAssertEqual(SecItemUpdate(self.query as CFDictionary, [kSecValueData as String: record] as CFDictionary), errSecSuccess)
+                } catch { XCTFail("Owned P256 rotation setup failed"); return errSecNotAvailable }
+            }
+            return SecItemCopyMatching(request, result)
+        }
+        let rotated = NativePushKeyStore(service: service, account: account, accessGroup: nil, operations: operations)
+        XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": original], state: state, keys: rotated, now: 1_700_000_000),
+                             "Actual recipient rotation during final read invalidates the original capsule")
+        XCTAssertEqual(try keys.load()?.keyVersion, 4)
+    }
 }
