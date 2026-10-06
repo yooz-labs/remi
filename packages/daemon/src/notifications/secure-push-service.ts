@@ -68,7 +68,11 @@ export class SecurePushService {
         return delivery;
       });
       return Promise.all(tasks).then((outcomes) =>
-        outcomes.includes('pushed') ? 'pushed' : 'failed',
+        outcomes.includes('pushed')
+          ? 'pushed'
+          : outcomes.includes('uncertain')
+            ? 'uncertain'
+            : 'failed',
       );
     } catch {
       this.report('refused');
@@ -108,7 +112,11 @@ export class SecurePushService {
       bound.digest = preparation.prepared.contentDigest;
       const result = await transport.sendPrepared(preparation.prepared);
       this.report(result.outcome);
-      return result.outcome === 'accepted' ? 'pushed' : 'failed';
+      return result.outcome === 'accepted'
+        ? 'pushed'
+        : result.outcome === 'uncertain'
+          ? 'uncertain'
+          : 'failed';
     } catch {
       this.report('refused');
       return 'failed';

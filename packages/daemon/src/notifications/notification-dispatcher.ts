@@ -310,8 +310,21 @@ export type PushFn = typeof sendPushTrigger;
  *                  out (the earlier push is the delivery).
  *   - `no_channel` no client attached AND no device tokens — nobody can be told.
  *   - `failed`     tokens exist but every push failed (e.g. BadDeviceToken).
+ *   - `uncertain`  no push was accepted and at least one result is unknown;
+ *                  a lost response is never permission to send a fresh event.
  */
-export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
+export type DeliveryOutcome =
+  | 'in_app'
+  | 'pushed'
+  | 'deduped'
+  | 'no_channel'
+  | 'failed'
+  | 'uncertain';
+
+function fanoutOutcome(results: readonly (boolean | DeliveryOutcome)[]): DeliveryOutcome {
+  if (results.some((result) => result === true || result === 'pushed')) return 'pushed';
+  return results.includes('uncertain') ? 'uncertain' : 'failed';
+}
 
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
@@ -533,7 +546,7 @@ export class NotificationDispatcher {
       kind: 'question' as const,
     };
 
-    const perToken = wanting.map((dt) =>
+    const perToken: Promise<boolean | DeliveryOutcome>[] = wanting.map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, {
         sent: '[QuestionPush] legacy accepted',
         failed: '[QuestionPush] legacy failed',
@@ -541,13 +554,11 @@ export class NotificationDispatcher {
     );
     if (secure)
       perToken.push(
-        secure
-          .send({ kind: 'question', logicalId: question.id, question, title, body })
-          .then((outcome) => outcome === 'pushed'),
+        secure.send({ kind: 'question', logicalId: question.id, question, title, body }),
       );
     // Diagnostic APNs acceptance only. Held hooks keep their own captured
     // deadline and resolve only through the harness's human-answer paths (#1126).
-    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+    return Promise.all(perToken).then(fanoutOutcome);
   }
 
   /**
@@ -721,7 +732,7 @@ export class NotificationDispatcher {
     const { title, body } = buildTurnFailedText(sessionName, input, agentName);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    const perToken = wanting.map((dt) =>
+    const perToken: Promise<boolean | DeliveryOutcome>[] = wanting.map((dt) =>
       this.pushOnceWithRetry(
         cfg.signalingUrl,
         dt.token,
@@ -741,16 +752,14 @@ export class NotificationDispatcher {
     );
     if (secure)
       perToken.push(
-        secure
-          .send({
-            kind: 'turn_failed',
-            logicalId: this.turnFailedSecureId as string,
-            title,
-            body,
-          })
-          .then((outcome) => outcome === 'pushed'),
+        secure.send({
+          kind: 'turn_failed',
+          logicalId: this.turnFailedSecureId as string,
+          title,
+          body,
+        }),
       );
-    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+    return Promise.all(perToken).then(fanoutOutcome);
   }
 
   /**
