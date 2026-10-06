@@ -152,3 +152,35 @@ record changes, no cast bypasses the server's error handler, and no runtime code
 changes. The failed fresh receipt remains at
 `/private/tmp/remi-r5-daemon-combined-gates-path`; subsequent exact-head gates
 must start from a new frozen checkout.
+
+## Compatibility fixtures and diagnostic privacy
+
+The fresh 8c9b6efa gate passed all four package type checks, both scoped
+integration type checks, Biome, typos and diff checks. Its Bun 1.4.2 full suite
+then reported 7,128 passes, 22 skips and 13 failures, with zero tracked process
+residuals. Bun 1.3.11's full suite was not started after that failure.
+
+Two failures were obsolete conformance counts after the four secure-push wire
+messages were added. The corrected shipping web/direct-daemon fixture exercises
+both register and unregister requests and correlated unsupported responses.
+The other eleven failures waited for a removed diagnostic or assumed implicit
+legacy push. Positive legacy fixtures now opt in explicitly and wait for the
+real durable token store; they retain their push, chat, transcript and session
+assertions. The real default-off case still supplies a secret and a token and
+observes the notification sink while asserting zero network effects.
+
+Those actual source-CLI checks exposed two separate privacy defects: an admitted
+Stop callback logged completion text, and an admitted StopFailure callback
+logged an arbitrary unknown error string. Test-only commits 2a97dffb and
+1840fe01 each failed at the named no-content assertion on both pinned runners
+and children, with valid hook responses, zero network effects and zero process
+residuals. The correction 687a3381 records fixed operation text at those two
+callbacks and preserves dispatch and notification content. It removes the old
+log-only truncation helper and corrects the stale comment in the same change.
+
+The restored Claude Stop, session-notifier and hook-bridge regression group
+passes 145 cases/519 assertions on each runtime, with zero natural tracked
+process residuals. This includes the two real source-CLI privacy cases; it
+does not establish that every daemon diagnostic is content-free. Receipt marker:
+`/private/tmp/remi-r5-diagnostic-privacy-path`. A new frozen daemon-only gate is
+required after these corrections; native R5 and final R7 remain separate.
