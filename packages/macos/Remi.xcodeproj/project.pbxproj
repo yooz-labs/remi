@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000090000000000000002 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
+        120000090000000000000003 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
         120000080000000000000005 /* NativePushNotificationConsumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000080000000000000001; };
         120000080000000000000004 /* NativePushNotificationConsumerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000080000000000000003; };
         120000080000000000000002 /* NativePushNotificationConsumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000080000000000000001; };
@@ -81,6 +83,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000090000000000000001 /* NativePushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushRegistration.swift; sourceTree = SOURCE_ROOT; };
         120000080000000000000003 /* NativePushNotificationConsumerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushNotificationConsumerTests.swift; sourceTree = SOURCE_ROOT; };
         120000080000000000000001 /* NativePushNotificationConsumer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushNotificationConsumer.swift; sourceTree = SOURCE_ROOT; };
         120000070000000000000001 /* NativePushPublicationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushPublicationTests.swift; sourceTree = SOURCE_ROOT; };
@@ -161,6 +164,7 @@
                 120000040000000000000001 /* NativePushCodec.swift */,
                 120000060000000000000001 /* NativePushEffect.swift */,
                 120000080000000000000001 /* NativePushNotificationConsumer.swift */,
+                120000090000000000000001 /* NativePushRegistration.swift */,
 				120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */,
 				B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */,
 				81CA6F64B5FFA6B90233A956 /* HubClient.swift */,
@@ -361,6 +365,7 @@
                 120000040000000000000002 /* NativePushCodec.swift in Sources */,
                 120000060000000000000002 /* NativePushEffect.swift in Sources */,
                 120000080000000000000002 /* NativePushNotificationConsumer.swift in Sources */,
+                120000090000000000000002 /* NativePushRegistration.swift in Sources */,
 				120000030000000000000007 /* NativeAPNsEnvironmentQuery.m in Sources */,
 				A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */,
 				779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */,
@@ -393,6 +398,7 @@
                 120000040000000000000003 /* NativePushCodec.swift in Sources */,
                 120000060000000000000003 /* NativePushEffect.swift in Sources */,
                 120000080000000000000005 /* NativePushNotificationConsumer.swift in Sources */,
+                120000090000000000000003 /* NativePushRegistration.swift in Sources */,
                 120000020000000000000005 /* NativePushKeyStoreTests.swift in Sources */,
                 120000040000000000000005 /* NativePushCodecTests.swift in Sources */,
                 120000060000000000000005 /* NativePushEffectTests.swift in Sources */,
