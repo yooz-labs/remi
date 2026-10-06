@@ -9,4 +9,3 @@ struct NativeKeychainOperations {
     var update: (CFDictionary, CFDictionary) -> OSStatus
     static var system: Self { .init(copyMatching:SecItemCopyMatching,add:SecItemAdd,update:SecItemUpdate) }
 }
-
