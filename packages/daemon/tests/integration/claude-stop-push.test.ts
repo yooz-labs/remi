@@ -12,7 +12,8 @@
  * endpoint that records what it is sent, and a phone (a WebSocket client) with a device
  * registered. The hooks are POSTed to the hook port as Claude's own hook scripts do. Every
  * assertion reads what the daemon sent to the endpoint or wrote to its log, so it holds for any
- * implementation of the hand-off. It passed unchanged on the code before Phase 6.
+ * implementation of the hand-off. Positive cases explicitly opt into pre-secure legacy
+ * compatibility (#1200); the default-off case verifies that a secret alone sends nothing.
  *
  * Time: `turn_complete_min_seconds` is 0.3 here, and a "long" turn waits 450 ms between its
  * `UserPromptSubmit` and its `Stop`. A timer is never early, so a long turn is long however busy
@@ -32,6 +33,7 @@ import {
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
+  waitForRegisteredDeviceToken,
 } from './hub-test-utils.ts';
 
 const PUSH_SECRET = 'claude-stop-push-secret';
@@ -109,12 +111,12 @@ interface Session {
   longTurn(promptId: string, message: string): Promise<void>;
 }
 
-async function startSession(): Promise<Session> {
+async function startSession(legacyEnabled: boolean): Promise<Session> {
   const { home, work } = makeIsolatedDirs();
   fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
   fs.writeFileSync(
     path.join(home, '.remi', 'config.toml'),
-    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n`,
+    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n${legacyEnabled ? 'legacy_push_enabled = true\n' : ''}`,
   );
   const fakeDir = path.join(home, 'fake-claude');
   const fakeBin = path.join(home, 'fake-bin');
@@ -122,6 +124,9 @@ async function startSession(): Promise<Session> {
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
   fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+  const fakeShell = path.join(fakeBin, 'sh-path');
+  fs.writeFileSync(fakeShell, '#!/bin/sh\necho "$PATH"\n');
+  fs.chmodSync(fakeShell, 0o755);
 
   const pushes: Push[] = [];
   const stub = Bun.serve({
@@ -140,7 +145,12 @@ async function startSession(): Promise<Session> {
   const spawned = await spawnDaemon(
     home,
     work,
-    { PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`, FAKE_CLAUDE_DIR: fakeDir },
+    {
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      SHELL: fakeShell,
+      FAKE_CLAUDE_DIR: fakeDir,
+      REMI_HOME: path.join(home, '.remi'),
+    },
     ['--signaling-url', `http://127.0.0.1:${stub.port}`, '--push-secret', PUSH_SECRET],
   );
   const output = { text: '' };
@@ -182,11 +192,7 @@ async function startSession(): Promise<Session> {
     throw new Error('no hello_ack received');
   }
   ws.send(serialize(createRegisterDeviceToken('claude-stop-device', 'ios')));
-  await pollUntil(
-    () => output.text.includes('Device token registered'),
-    10000,
-    'the device token to register',
-  );
+  await waitForRegisteredDeviceToken(home, 'claude-stop-device', 10000);
 
   const post = async (body: Record<string, unknown>): Promise<void> => {
     const response = await fetch(`http://127.0.0.1:${hookPort}/hooks`, {
@@ -233,8 +239,31 @@ async function startSession(): Promise<Session> {
 }
 
 describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180)', () => {
+  test('default-off legacy push makes no network request despite a registered token and secret', async () => {
+    const s = await startSession(false);
+    try {
+      const directory = path.join(s.daemon.home, '.remi');
+      expect(fs.readFileSync(path.join(directory, 'config.toml'), 'utf8')).not.toContain(
+        'legacy_push_enabled',
+      );
+      expect(fs.existsSync(path.join(directory, 'relay_devices.json'))).toBe(false);
+      expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(false);
+      await s.longTurn('p-default-off', 'DEFAULT-OFF-ANSWER');
+      // The real Stop reached the shipping sink; silence cannot be a missing hook or token.
+      await pollUntil(
+        () => s.daemon.output.text.includes('[TurnComplete] push requested'),
+        10000,
+        'the turn-complete sink to receive the real Stop',
+      );
+      await sleep(SETTLE_MS);
+      expect(s.pushes).toEqual([]);
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
   test('a long turn of the session pushes turn_complete with the secret, the session name and its message; a sibling session’s Stop pushes nothing', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       // A sibling session's long turn first (another Claude in the same directory sends its
       // hooks to this port too): the daemon only reports the turns of its own session.
@@ -256,7 +285,7 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
   }, 60000);
 
   test('a Stop that is a re-entry pushes nothing, and the later real Stop still measures the whole turn', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       await s.submit('p-turn');
       await sleep(LONG_TURN_MS);
@@ -277,7 +306,7 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
   }, 60000);
 
   test('an empty message, a prompt the daemon never saw and a second Stop of a finished prompt push nothing', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       // An empty message: nothing to show.
       await s.submit('p-empty');
