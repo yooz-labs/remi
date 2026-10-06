@@ -41,7 +41,7 @@ final class NativePushCodecTests: XCTestCase {
             revision: UUID().uuidString, requiresAppUnlock: false, generation: generation)
         let trust = NativePushState.MachineTrust(rid: try hex(XCTUnwrap(content["rid"] as? String)),
             machinePublicKey: try b64(XCTUnwrap(content["machinePublicKey"] as? String)),
-            endpoint: "https://relay.example.invalid", authority: try XCTUnwrap(state.currentAuthority()))
+            endpoint: "https://relay.example.invalid", authority: try XCTUnwrap(state.currentAuthority()), relayUrl: "wss://relay.example.invalid")
         try state.installMachineTrust(trust, generation: generation)
     }
     override func tearDownWithError() throws {
@@ -337,5 +337,16 @@ final class NativePushCodecTests: XCTestCase {
         XCTAssertThrowsError(try NativePushCodec.open(userInfo: ["remiPush": original], state: state, keys: rotated, now: 1_700_000_000),
                              "Actual recipient rotation during final read invalidates the original capsule")
         XCTAssertEqual(try keys.load()?.keyVersion, 4)
+    }
+    func testDiagnosticLegacyTrustCannotOpenSecureContent() throws {
+        let original = try carrier(XCTUnwrap(cases.first))
+        let verified = try open(original)
+        XCTAssertEqual(verified.trust.relayUrl, "wss://relay.example.invalid")
+        let legacy = NativePushState.MachineTrust(rid: verified.trust.rid, machinePublicKey: verified.trust.machinePublicKey,
+            endpoint: verified.trust.endpoint, authority: verified.trust.authority)
+        try state.installMachineTrust(legacy, generation: state.authorityGeneration())
+        XCTAssertEqual(try state.machineTrust(rid: legacy.rid), legacy, "Diagnostic legacy row remains intact and readable")
+        XCTAssertThrowsError(try open(original), "A nullable legacy route is not completed native pairing authority")
+        XCTAssertEqual(try state.machineTrust(rid: legacy.rid), legacy, "Refusal cannot repair or delete old public state")
     }
 }
