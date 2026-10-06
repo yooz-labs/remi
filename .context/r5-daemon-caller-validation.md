@@ -184,3 +184,40 @@ process residuals. This includes the two real source-CLI privacy cases; it
 does not establish that every daemon diagnostic is content-free. Receipt marker:
 `/private/tmp/remi-r5-diagnostic-privacy-path`. A new frozen daemon-only gate is
 required after these corrections; native R5 and final R7 remain separate.
+
+The frozen 0f0e5ea9 daemon gate then passed all static checks and Bun 1.4.2's
+full suite: 7,145 passes, 22 skips, zero failures and zero tracked residuals.
+Before starting Bun 1.3.11, a further real wrapper CLI pin exposed private
+question text in the tracker's parked-subagent diagnostic. The waiting owned
+gate runner was stopped after verifying its process birth and checkout; its
+successful first-runtime receipt is preserved, but it is not final acceptance
+of the later correction.
+
+Test-only 17d661c1 drives the real wrapper, synthetic Claude executable,
+HookServer and passthrough permission gate into the parked tracker path and
+fails solely because the owned diagnostic log contains the private command.
+Five actual tracker subprocess probes cover keeping and replacing pending
+records, parked rendering, immediate orphan suppression and suppression after
+a real debounce timer. Each confirms unchanged sink/render behavior before
+checking diagnostic privacy. The corrected fixture has real offered options;
+the initial optionless render probe incorrectly expected a hook merge and is
+preserved as an excluded fixture failure. The corrected six named privacy
+cases fail with 29 assertions on each runtime before the source correction.
+
+Source d4d37620 replaces only the six content-bearing debug templates with
+fixed operation text. State transitions, matching, timers and payloads are
+unchanged. Six individual old-log restoration variants produce twelve named
+privacy assertion kills across both runtimes; restored controls pass six
+cases/29 assertions each and the exact corrected source is restored. The
+broader tracker, hook bridge, actual Claude Stop/notifier and wrapper group
+passes 225 cases/734 assertions on each runtime with zero natural tracked
+process residuals. Marker `/private/tmp/remi-r5-tracker-privacy-path` identifies
+the causal receipts; the regression receipts use the diagnostic privacy marker
+above. Final frozen full-suite acceptance remains pending after this correction.
+
+Independent review of the earlier 687a3381 callbacks and the shipping direct
+client's correlated register/unregister refusal pins is clear. Its four source
+families produce eight named assertion kills across both runtimes, with actual
+CLI/direct-client baselines and restored controls passing four cases/15
+assertions each. These receipts are separate from the tracker correction and
+do not establish native or owner acceptance.
