@@ -73,6 +73,11 @@ async function pair(
   return { client, signer, errors };
 }
 
+// The owned hub signals over a loopback ws:// URL, which cannot be a secure push audience (a root
+// HTTPS origin is required), so the real hub has no secure sender and refuses a subscription with
+// UNSUPPORTED instead of acknowledging one nothing could serve (#1200, B5). A real sender needs a
+// TLS ingress that also carries the relay WebSocket and a push secret; the daemon's own
+// packages/daemon/tests/remote/hub-relay-secure-push.test.ts covers a registration that succeeds.
 test('actual encrypted native push subscription waiter accepts only its correlated current channel outcome', async () => {
   const local = await ownedRelayOffer();
   const messages = new Mailbox<ProtocolMessage>();
@@ -88,10 +93,10 @@ test('actual encrypted native push subscription waiter accepts only its correlat
     expect(settled, 'The real encrypted request must wait for its actual response').toBe(false);
     const wire = await nextType(messages, 'secure_push_register_response') as SecurePushRegisterResponseMessage;
     expect(requests.receive({...wire,requestId:generateId()})).toBe(false);
-    if (wire.success) expect(requests.receive({...wire,keyVersion:wire.keyVersion+1})).toBe(false);
+    expect(wire).toMatchObject({success:false,error:'UNSUPPORTED'});
     expect(settled).toBe(false);
     expect(requests.receive(wire)).toBe(true);
-    expect(await reply).toMatchObject({success:true,keyVersion:1});
+    expect(await reply).toMatchObject({success:false,error:'UNSUPPORTED'});
     expect(requests.receive(wire)).toBe(false);
     const removed = requests.unregisterPush();
     const removal = await nextType(messages, 'secure_push_unregister_response');

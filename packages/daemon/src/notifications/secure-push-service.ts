@@ -130,3 +130,16 @@ export class SecurePushService {
     }
   }
 }
+
+/**
+ * The class of a failure while building the service, safe to log (#1200, B5): a fixed upper-case
+ * code (this codebase's `SECURE_PUSH_*` convention) or the error's type name, never its message
+ * text, which could carry key material, a path or a URL.
+ */
+export function initFailureClass(error: unknown): string {
+  if (error instanceof Error) {
+    if (/^[A-Z][A-Z0-9_]{2,63}$/.test(error.message)) return error.message;
+    if (/^[A-Za-z]{1,32}Error$/.test(error.name)) return error.name;
+  }
+  return 'UNKNOWN';
+}

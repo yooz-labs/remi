@@ -57,7 +57,7 @@ for (const [label, prefs, expected] of [
 }
 
 test('a hub with no secure push sender refuses registration with UNSUPPORTED and stores nothing (#1200, B5)', async () => {
-  const { hub, register, stored } = await start({ securePushSender: () => false } as never);
+  const { hub, register, stored } = await start({ securePushSender: () => false });
   expect(await register()).toMatchObject({
     type: 'secure_push_register_response',
     success: false,
@@ -69,7 +69,7 @@ test('a hub with no secure push sender refuses registration with UNSUPPORTED and
 
 test('sender availability is read per request: registration succeeds once a sender exists (#1200, B5)', async () => {
   let sender = false;
-  const { register, stored } = await start({ securePushSender: () => sender } as never);
+  const { register, stored } = await start({ securePushSender: () => sender });
   expect(await register()).toMatchObject({ success: false, error: 'UNSUPPORTED' });
   sender = true;
   expect(await register()).toMatchObject({ success: true, keyVersion: 1 });

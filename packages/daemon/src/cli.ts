@@ -232,7 +232,11 @@ import {
   SecurePushContexts,
   type SecurePushRuntime,
 } from './notifications/secure-push-contexts.ts';
-import { SecurePushService, type SecureSessionPush } from './notifications/secure-push-service.ts';
+import {
+  SecurePushService,
+  type SecureSessionPush,
+  initFailureClass,
+} from './notifications/secure-push-service.ts';
 import { SecurePushStore } from './notifications/secure-push-store.ts';
 import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
@@ -2426,8 +2430,10 @@ if (relayWanted && relayIdentity) {
         runtimeFor: (sessionId) => securePushRuntimes.get(sessionId),
         apply: inputHandlers.guardedAnswer,
       });
-    } catch {
-      logError('[SecurePush] initialization refused');
+    } catch (error) {
+      // The cause class only (a fixed code or an error type), never a message that could carry
+      // key material or a path; without a service the hub refuses subscriptions (#1200, B5).
+      logError(`[SecurePush] initialization refused (${initFailureClass(error)})`);
     }
   }
 }
@@ -2711,6 +2717,8 @@ if (cliDaemonMode) {
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,
+          // A subscription is acknowledged only while a secure push service exists (#1200, B5).
+          securePushSender: () => securePushService !== undefined,
           log: console.error,
         },
         sharedEvents,

@@ -94,6 +94,13 @@ export interface HubRelayConfig {
   trust: IdentityStore;
   dir: string;
   registry: SessionRegistryFile;
+  /**
+   * Whether this daemon can actually send a secure push right now (#1200, B5). A subscription
+   * is acknowledged only while it can be served: enrolling a device latches legacy push off for
+   * good, so a phone registered with no sender would receive nothing at all. Production wires
+   * the existence of the secure push service (`cli.ts`); absent, registration is not gated.
+   */
+  securePushSender?: () => boolean;
   random?: relayV2.Rng;
   ephemeral?: () => Promise<relayV2.EcPair>;
   log?: (message: string) => void;
@@ -663,6 +670,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     if (message.type === 'secure_push_register_request') {
       const authority = peer.pushAuthority;
       if (!authority) throw new Error('RELAY_REVOKED');
+      if (this.cfg.securePushSender?.() === false) {
+        this.log('Secure push registration refused: no secure push sender');
+        this.sendRaw(
+          peer.cid,
+          createSecurePushRegisterResponse(message.id, { success: false, error: 'UNSUPPORTED' }),
+        );
+        return;
+      }
       const allowed = [
         'type',
         'id',
