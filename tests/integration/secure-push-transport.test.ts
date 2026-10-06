@@ -162,9 +162,58 @@ test('secure transport binds actual signer, signs each tuple once and reuses imm
     attempts: 2,
   });
   expect(received.bodies).toHaveLength(2);
+  // #1200 A5: the Worker sees the push class, not the event kind or any key metadata.
+  expect(Object.keys(JSON.parse(received.bodies[0] ?? '')).sort()).toEqual([
+    'audience',
+    'collapseId',
+    'devicePublicKey',
+    'environment',
+    'expiresAt',
+    'issuedAt',
+    'machinePublicKey',
+    'nonce',
+    'pushClass',
+    'rid',
+    'sealed',
+    'signature',
+    'token',
+    'v',
+  ]);
+  expect(Object.keys(result.prepared.carrier).sort()).toEqual(['collapseId', 'rid', 'sealed', 'v']);
   expect(signatures).toBe(2); // Retrying invokes neither signer again.
   expect(received.bodies[1]).toBe(received.bodies[0]);
   expect(received.bodies[0]).not.toContain('PRIVATE_BODY_SENTINEL');
+});
+test('secure transport classifies a dismissal as background and every other event as alert', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const events: [r.PushContentMetadata, r.SecurePushPayload][] = [
+    [f.metadata, f.payload],
+    [
+      { ...f.metadata, kind: 'dismiss' },
+      { type: 'dismiss', actionable: false },
+    ],
+  ];
+  for (const [metadata, payload] of events) {
+    const prepared = await transport.prepare(f.snapshot, metadata, payload, () => true);
+    if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+    expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });
+  }
+  expect(received.bodies.map((b) => JSON.parse(b).pushClass)).toEqual(['alert', 'background']);
 });
 test('secure transport refuses durable revoke at actual signing completion and performs zero effects', async () => {
   const f = await fixture();

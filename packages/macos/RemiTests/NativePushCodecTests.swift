@@ -119,6 +119,22 @@ final class NativePushCodecTests: XCTestCase {
             XCTAssertEqual(result.authorityGeneration, try state.authorityGeneration())
         }
     }
+    /// #1200 A5: before decryption the extension needs the room (authority lookup and AAD), the
+    /// collapse id (AAD) and the sealed bytes. The event kind and key version are proven inside the
+    /// signed content, so the carrier APNs relays no longer states them.
+    func testCarrierCarriesOnlyWhatTheExtensionNeedsBeforeDecryption() throws {
+        for vector in cases {
+            let submit = try XCTUnwrap(vector["submit"] as? [String: Any])
+            let minimal: [String: Any] = ["v": 2, "rid": try XCTUnwrap(submit["rid"]), "collapseId": try XCTUnwrap(submit["collapseId"]),
+                                          "sealed": try XCTUnwrap(submit["sealed"])]
+            XCTAssertNoThrow(try open(minimal), "The four-field carrier must open: \(vector["name"] ?? "")")
+            XCTAssertNoThrow(try NativePushCodec.parseCarrier(JSONSerialization.data(withJSONObject: minimal)))
+            for (key, value) in [("kind", "question"), ("keyVersion", 3)] as [(String, Any)] {
+                var restated = minimal; restated[key] = value
+                XCTAssertThrowsError(try open(restated), "A carrier may not restate \(key)")
+            }
+        }
+    }
     func testActualCarrierParserAcceptsCanonicalObjectAndRefusesDuplicateAliases() throws {
         let object = try carrier(XCTUnwrap(cases.first))
         let bytes = try JSONSerialization.data(withJSONObject: object)

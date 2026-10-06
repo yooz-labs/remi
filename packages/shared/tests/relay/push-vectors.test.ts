@@ -93,3 +93,13 @@ test('push signature is checked before interpreting altered plaintext semantics'
     ),
   ).toBe('BAD_SIGNATURE');
 });
+
+test('no committed submit carries the event kind, key version, revision or push key in the clear', () => {
+  for (const c of fixture.cases) {
+    const keys = Object.keys(c.submit);
+    for (const sealedOnly of ['kind', 'keyVersion', 'revision', 'pushPublicKey'])
+      expect(keys, `${c.name} submit must not expose ${sealedOnly}`).not.toContain(sealedOnly);
+    expect(keys, `${c.name} submit names its push class`).toContain('pushClass');
+    expect(JSON.parse(c.submitJson), `${c.name} submitJson`).toEqual(c.submit);
+  }
+});

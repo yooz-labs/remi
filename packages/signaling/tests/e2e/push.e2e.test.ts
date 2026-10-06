@@ -191,14 +191,15 @@ test('real gateway accepts exact machine proof without legacy secret and sends o
   expect(Object.keys(body).sort()).toEqual(['aps', 'remiPush']);
   expect(body.aps['mutable-content']).toBe(1);
   expect(body.aps.category).toBe('');
+  // #1200 A5: the carrier APNs relays names the room, the collapse id and the sealed bytes only.
   expect(body.remiPush).toEqual({
     v: 2,
     rid: s.rid,
     collapseId: s.collapseId,
-    keyVersion: s.keyVersion,
-    kind: s.kind,
     sealed: s.sealed,
   });
+  expect(req.body).not.toContain('keyVersion');
+  expect(req.body).not.toContain('"kind"');
   expect(req.headers['apns-topic']).toBe('owned.synthetic.topic');
   expect(req.headers['x-owned-apns-url']).toBe(
     `https://api.sandbox.push.apple.com/3/device/${s.token}`,

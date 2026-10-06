@@ -299,6 +299,51 @@ async function signedSubmission() {
   return { machine, recipient, content, unsigned, signed: { ...unsigned, signature } };
 }
 
+// #1200 A5: plan 3.5 says the Worker sees the token, the room id, an opaque id and a generic
+// title. The event kind, key version, revision and push key are signed inside the sealed content
+// and have no business in the cleartext submit or in the carrier APNs relays.
+test('the submit hands the Worker only what it needs; kind and key metadata stay sealed', async () => {
+  const { signed } = await signedSubmission();
+  expect(Object.keys(r.decodePushSubmit(r.encodePushSubmit(signed))).sort()).toEqual([
+    'audience',
+    'collapseId',
+    'devicePublicKey',
+    'environment',
+    'expiresAt',
+    'issuedAt',
+    'machinePublicKey',
+    'nonce',
+    'pushClass',
+    'rid',
+    'sealed',
+    'signature',
+    'token',
+    'v',
+  ]);
+});
+
+test('the carrier names only the room, the collapse id and the sealed bytes', async () => {
+  const { machine, recipient, content } = await context();
+  const sealed = await r.sealPushContent(machine, content, payload, r.systemRandom);
+  const authority = {
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
+    pushPublicKey: content.pushPublicKey,
+    keyVersion: 1,
+  };
+  const carrier = {
+    v: 2,
+    rid: content.rid,
+    collapseId: content.collapseId,
+    sealed: r.b64u(sealed),
+  };
+  const open = (c: object) => r.openPushContent(recipient, c as never, authority, 1001);
+  expect((await open(carrier)).payload).toEqual(payload);
+  // The sealed content proves its own key version and kind; the carrier may not restate them.
+  expect(await codeOf(open({ ...carrier, kind: 'question' }))).toBe('MALFORMED');
+  expect(await codeOf(open({ ...carrier, keyVersion: 1 }))).toBe('MALFORMED');
+});
+
 test('actual outer machine proof binds every submission field and distinguishes content signatures', async () => {
   const verify = required<typeof r.verifyPushSubmit>('verifyPushSubmit');
   const encode = required<typeof r.encodePushSubmit>('encodePushSubmit');
