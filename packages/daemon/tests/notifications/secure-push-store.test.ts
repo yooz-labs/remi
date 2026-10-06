@@ -186,6 +186,33 @@ test('secure subscription: strict token/environment/point/preferences refuse wit
   }
 });
 
+test('secure subscription: malformed or unknown preferences fail toward delivering, never refuse (#1200, B7)', async () => {
+  const { authority, registration } = await recipient();
+  const everything = { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true };
+  for (const [given, stored] of [
+    [{ questions: 'false' }, everything],
+    [
+      { questions: 0, turnFailed: false },
+      { ...everything, turnFailed: false },
+    ],
+    [
+      { bogus: false, harnessDenied: false },
+      { ...everything, harnessDenied: false },
+    ],
+    ['junk', everything],
+    [null, everything],
+    [[], everything],
+  ] as const) {
+    expect(
+      await subscriptions.register(authority, {
+        ...registration,
+        pushPrefs: given,
+      } as unknown as SecurePushRegistration),
+    ).toEqual({ success: true, keyVersion: 1 });
+    expect(subscriptions.listCurrent()[0]?.pushPrefs).toEqual(stored);
+  }
+});
+
 test('secure subscription: real cancellation and stale authority fail after actual crypto preparation', async () => {
   const { identity, authority, registration } = await recipient();
   expect(await subscriptions.register(authority, registration, () => false)).toEqual({
