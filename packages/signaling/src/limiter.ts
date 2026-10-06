@@ -64,14 +64,15 @@ export class GlobalLimiter {
     } catch {
       return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
     }
-    const fields = mode === 'attempt' ? ['ip'] : ['ip', 'rid', 'tokenHash'];
+    const hashes = mode === 'attempt' ? ['ip'] : ['ip', 'rid', 'tokenHash'];
     if (
       !body ||
       typeof body !== 'object' ||
-      Object.keys(body).length !== fields.length ||
-      fields.some(
+      Object.keys(body).length !== hashes.length + (mode === 'send' ? 1 : 0) ||
+      hashes.some(
         (k) => typeof body[k] !== 'string' || !/^[0-9a-f]{32,64}$/.test(body[k] as string),
-      )
+      ) ||
+      (mode === 'send' && body['pushClass'] !== 'alert' && body['pushClass'] !== 'background')
     )
       return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
     const prefix = mode === 'attempt' ? 'pa:' : 'ps:';
@@ -84,7 +85,10 @@ export class GlobalLimiter {
           ]
         : [
             [`ip:${body['ip']}`, pushLimit(this.env, 'PUSH_SEND_IP')],
-            [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
+            // Dismissals are counted per room apart from alerts (#1200, #723).
+            body['pushClass'] === 'background'
+              ? [`ridbg:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID_BACKGROUND')]
+              : [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
             [`token:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN')],
             ['all', pushLimit(this.env, 'PUSH_SEND_AGGREGATE')],
           ];
@@ -173,7 +177,7 @@ export async function withinBudget(
 export async function withinPushBudget(
   ns: LimiterNamespace | undefined,
   mode: 'attempt' | 'send',
-  body: { ip: string; rid?: string; tokenHash?: string },
+  body: { ip: string; rid?: string; tokenHash?: string; pushClass?: 'alert' | 'background' },
 ): Promise<{
   ok: boolean;
   reason?: 'RATE_LIMITED' | 'CAPACITY' | 'STORE_ERROR';

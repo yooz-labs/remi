@@ -250,6 +250,7 @@ export class PushGateway {
         ip: await hashPublic(request.headers.get('CF-Connecting-IP') ?? 'unknown'),
         rid,
         tokenHash: await hashPublic(checked.token),
+        pushClass: checked.pushClass,
       });
       if (!budget.ok)
         return pushResponse(
