@@ -44,12 +44,14 @@ const MAX_PORT = 65535;
 
 /**
  * Bind a server adjacent to `anchorPort`. Walks +1, +2, ... until it finds
- * a free port (most attempts succeed in 1–3 tries), or -1, -2, ... when the
- * ports above the anchor run out: the OS can hand a port-0 server 65535
- * itself (#1228). Used by tests that need a tight scan range; CI runners
- * allocate random ports thousands apart, so we cannot rely on
- * `Bun.serve({ port: 0 })` placing two servers near each other. Returns the
- * bound server, which may sit BELOW the anchor: scan with `scanRange`.
+ * a free port (most attempts succeed in 1–3 tries), or -1, -2, ... when
+ * fewer than 49 ports remain above the anchor: the OS can hand a port-0
+ * server 65535 itself (#1228). The direction is chosen up front; there is no
+ * fallback to the other side when every port tried is busy. Used by tests
+ * that need a tight scan range; CI runners allocate random ports thousands
+ * apart, so we cannot rely on `Bun.serve({ port: 0 })` placing two servers
+ * near each other. Returns the bound server, which may sit BELOW the anchor:
+ * scan with `scanRange`.
  */
 function bindNear(
   anchorPort: number,
@@ -81,6 +83,28 @@ describe('bindNear (test helper)', () => {
       expect(MAX_PORT - server.port).toBeLessThan(50);
     } finally {
       server.stop();
+    }
+  });
+});
+
+describe('discoverDaemonPort from the top of the port range (#1228)', () => {
+  test('finds a daemon that bindNear placed below its anchor', async () => {
+    // The case the fix exists for: the second server sits BELOW the first,
+    // so the scan must start from the lower port. Anchoring at the last port
+    // forces it every run instead of once in a few hundred.
+    const daemon = bindNear(MAX_PORT, (req) =>
+      new URL(req.url).pathname === '/auth-info'
+        ? Response.json({ authRequired: false, fingerprint: null })
+        : new Response('Not found', { status: 404 }),
+    );
+    try {
+      const found = await discoverDaemonPort('127.0.0.1', {
+        ...scanRange(MAX_PORT, daemon.port),
+        timeoutMs: 800,
+      });
+      expect(found).toBe(daemon.port);
+    } finally {
+      daemon.stop();
     }
   });
 });
