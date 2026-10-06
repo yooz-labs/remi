@@ -131,6 +131,7 @@ final class NativePushEffectTests: XCTestCase {
         let other = try NativePushState(file: directory.appendingPathComponent("public.sqlite"))
         let old = try XCTUnwrap(other.currentAuthority())
         let lease = try other.acquireIdentityMutation()
+        defer { lease.release() }
         let generation = try lease.invalidateIdentityAuthority()
         try lease.installIdentityAuthority(publicKey: old.publicKey, revision: old.revision,
             requiresAppUnlock: old.requiresAppUnlock, generation: generation)
@@ -207,17 +208,17 @@ final class NativePushEffectTests: XCTestCase {
     }
     func testActionsIndependentlyVerifyOriginalCapsuleAndCanonicalOptionIndex() throws {
         let e = effect()
-        let signed = try info("question")
+        let signed = try info("question-yn")
         XCTAssertThrowsError(try e.action(userInfo: signed, identifier: "OPT_0"), "Cryptographic authenticity without committed latest state is insufficient")
-        guard let p = prepared(e, "question") else { return }
-        XCTAssertEqual(p.actions.map(\.value), ["allow", "session", "deny"])
-        for (id, value) in [("OPT_0", "allow"), ("OPT_1", "session"), ("OPT_2", "deny")] {
+        guard let p = prepared(e, "question-yn") else { return }
+        XCTAssertEqual(p.actions.map(\.value), ["allow", "deny"])
+        for (id, value) in [("OPT_0", "allow"), ("OPT_1", "deny")] {
             var result: NativePushEffect.Action?
             XCTAssertNoThrow(result = try e.action(userInfo: signed, identifier: id))
             XCTAssertEqual(result?.option.value, value, "Native action must select ORIGINAL signed meaning")
             XCTAssertEqual(result?.question.questionId, "synthetic-question")
         }
-        for id in ["OPT_00", "OPT_-1", "OPT_3", "OPT_99999999999999999999999", "YES", "allow", "opt_0", "OPT_0x"] {
+        for id in ["OPT_00", "OPT_-1", "OPT_2", "OPT_3", "OPT_99999999999999999999999", "YES", "allow", "opt_0", "OPT_0x"] {
             XCTAssertThrowsError(try e.action(userInfo: signed, identifier: id), "Only exact canonical signed option indices may act")
         }
         var forged = signed
@@ -253,8 +254,17 @@ final class NativePushEffectTests: XCTestCase {
         let protected = NativePushState.MachineTrust(rid:trust.rid,machinePublicKey:trust.machinePublicKey,endpoint:trust.endpoint,
             authority:try XCTUnwrap(state.currentAuthority()),relayUrl:trust.relayUrl)
         try state.installMachineTrust(protected,generation:generation)
-        guard let p = prepared(e,"question") else { return }
+        guard let p = prepared(e,"question-yn") else { return }
         XCTAssertTrue(p.actions.isEmpty, "Protected Dpk policy requires foreground app unlock before answering")
-        XCTAssertThrowsError(try e.action(userInfo:info("question"),identifier:"OPT_0"))
+        XCTAssertThrowsError(try e.action(userInfo:info("question-yn"),identifier:"OPT_0"))
     }
+    func testOriginalLongSignedStandingScopeRequiresOpeningApp() throws {
+        let e = effect()
+        guard let p = prepared(e, "question") else { return }
+        XCTAssertTrue(p.actions.isEmpty, "Original addRules scope must not be truncated or hidden to fit a native title")
+        for id in ["OPT_0", "OPT_1", "OPT_2"] {
+            XCTAssertThrowsError(try e.action(userInfo: info("question"), identifier: id), "A native action cannot bypass a complete standing scope that requires opening the app")
+        }
+    }
+
 }
