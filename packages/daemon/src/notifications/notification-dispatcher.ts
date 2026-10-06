@@ -276,6 +276,20 @@ export function buildPushText(
   return { title, body };
 }
 
+/** Full secure display input. Contexts alone decides whether it fits an action (#1200).
+ * Legacy preview limits must not hide the actual target while retaining a one-tap grant. */
+export function buildSecurePushText(
+  sessionName: string,
+  question: Question,
+): { title: string; body: string } {
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
+  const detail = question.detail === undefined ? '' : normalizeNotificationText(question.detail);
+  return {
+    title: `${sessionName}: question`,
+    body: detail && detail !== ask ? `${ask}\n${detail}` : ask,
+  };
+}
+
 /** Why the phone is told to answer at the terminal (#1126); see
  *  `NotificationDispatcher.pushTerminalNotice`. */
 export type TerminalNoticeReason =
@@ -554,7 +568,12 @@ export class NotificationDispatcher {
     );
     if (secure)
       perToken.push(
-        secure.send({ kind: 'question', logicalId: question.id, question, title, body }),
+        secure.send({
+          kind: 'question',
+          logicalId: question.id,
+          question,
+          ...buildSecurePushText(sessionName, question),
+        }),
       );
     // Diagnostic APNs acceptance only. Held hooks keep their own captured
     // deadline and resolve only through the harness's human-answer paths (#1126).
