@@ -1125,7 +1125,11 @@ function retireSecurePushRuntime(sessionId: UUID): void {
   const runtime = securePushRuntimes.get(sessionId);
   if (runtime) securePushContexts.retire(runtime);
 }
-/** Last step of a teardown, after the disposal: wait (bounded) for its dismissals, then finish. */
+/**
+ * Last step of a teardown, after the disposal: dismiss the pushed cards the disposal did not (the
+ * session is already out of the registry when a close is announced), wait (bounded) for the
+ * dismissals, then finish.
+ */
 async function closeSecurePushRuntime(
   sessionId: UUID,
   expected?: SecurePushRuntime,
@@ -1133,6 +1137,7 @@ async function closeSecurePushRuntime(
   const runtime = securePushRuntimes.get(sessionId);
   if (!runtime || (expected && runtime !== expected)) return;
   try {
+    securePushService?.dismissUndismissedQuestions(runtime);
     await securePushService?.drain(runtime, SECURE_TEARDOWN_WAIT_MS);
   } finally {
     finishSecurePushRuntime(sessionId, runtime);

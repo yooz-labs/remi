@@ -167,6 +167,19 @@ export class SecurePushContexts {
   retire(runtime: SecurePushRuntime): void {
     if (this.runtimes.get(runtime.sessionId) === runtime) this.closing.add(runtime);
   }
+  /**
+   * The logical ids of the question cards this runtime pushed that nothing dismissed. A session
+   * that is already gone from the registry when its teardown runs (`closeSession` clears it
+   * before it announces the close) never has its held prompts dismissed by the gate, which only
+   * announces a card it still finds registered, so the teardown dismisses these itself (B3).
+   */
+  undismissedQuestionIds(runtime: SecurePushRuntime): string[] {
+    const ids = new Set<string>();
+    for (const entry of this.entries.values())
+      if (entry.context.runtime === runtime && entry.questionId && !entry.dismissed)
+        ids.add(entry.context.logicalId);
+    return [...ids];
+  }
   /** The service reports a dismissal that did not go out; the next dismissal event retries it. */
   allowDismissRetry(context: SecurePushContext): void {
     if (context.payload.type !== 'dismiss') return;

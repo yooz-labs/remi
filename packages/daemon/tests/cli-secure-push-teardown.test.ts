@@ -53,3 +53,12 @@ describe('the secure push runtime outlives the teardown that dismisses its cards
     });
   }
 });
+
+test('the closing step dismisses the cards the disposal did not, before it waits (#1200, B3)', () => {
+  const body = between('async function closeSecurePushRuntime(', '\n}\n');
+  const dismiss = body.indexOf('dismissUndismissedQuestions(');
+  const drain = body.indexOf('.drain(');
+  expect(dismiss, 'it dismisses the undismissed cards').toBeGreaterThan(-1);
+  expect(drain, 'it waits for them').toBeGreaterThan(dismiss);
+  expect(body.indexOf('finishSecurePushRuntime(')).toBeGreaterThan(drain);
+});

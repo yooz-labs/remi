@@ -515,3 +515,31 @@ test('draining waits no longer than its bound for a slow delivery (#1200, B3)', 
   expect(Date.now() - started).toBeLessThan(1000);
   expect(f.received.length).toBeGreaterThanOrEqual(1);
 }, 20000);
+
+test('a close that already cleared the registry still dismisses the pushed card, once, and leaves information alone (#1200, B3)', async () => {
+  const f = await fixture();
+  const { question, event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('pushed');
+  const other = pushedQuestion(f);
+  // A pushed notice about something else (no card) must not be dismissed by the teardown.
+  expect(
+    await f.secure.send({
+      kind: 'harness_denied',
+      logicalId: 'harness-denied-session',
+      title: 'Remi',
+      body: 'blocked',
+    }),
+  ).toBe('pushed');
+  expect(other.question.id).toBe(question.id);
+  // closeSession clears the session first, so the gate never announces its held card (#1200, B3).
+  f.questions.remove(question.id);
+  f.contexts.retire(f.runtime);
+  expect(f.service.dismissUndismissedQuestions(f.runtime)).toBe(1);
+  await f.service.drain(f.runtime, 5000);
+  expect(f.received).toHaveLength(3);
+  expect((await f.open(2)).payload).toMatchObject({ type: 'dismiss', actionable: false });
+  expect((await f.open(2)).content.collapseId).toBe((await f.open(0)).content.collapseId);
+  // Nothing is left to dismiss, and a dismissal that already went out is not sent twice.
+  expect(f.service.dismissUndismissedQuestions(f.runtime)).toBe(0);
+  f.contexts.finish(f.runtime);
+}, 30000);

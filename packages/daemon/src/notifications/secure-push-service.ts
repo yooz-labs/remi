@@ -65,6 +65,18 @@ export class SecurePushService {
       );
   }
   /**
+   * Dismiss every question card this runtime pushed that nothing dismissed yet (#1200, B3).
+   * Closing a session clears it from the registry before announcing the close, and the gate
+   * announces a held card only while it is still registered, so a pushed card would otherwise keep
+   * its action buttons on the lock screen until its hold deadline. Run it after the session's own
+   * disposal (whose dismissals, where they exist, come first and are absorbing) and before `drain`.
+   */
+  dismissUndismissedQuestions(runtime: SecurePushRuntime): number {
+    const ids = this.options.contexts.undismissedQuestionIds(runtime);
+    for (const logicalId of ids) void this.send(runtime, { kind: 'dismiss', logicalId });
+    return ids.length;
+  }
+  /**
    * Wait, for at most `maxMs`, for the sends of `runtime` that are still in flight (#1200, B3).
    * A teardown retires the runtime, lets the session dispose emit its dismissals, drains here and
    * only then finishes the runtime. Never rejects.
