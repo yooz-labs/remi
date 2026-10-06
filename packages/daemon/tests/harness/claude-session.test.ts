@@ -36,17 +36,23 @@ import {
 import type { ClaudeLaunchDeps } from '../../src/harness/claude-session.ts';
 import { ClaudeHarness } from '../../src/harness/index.ts';
 import type { HarnessSession } from '../../src/harness/index.ts';
+import type { StopHookInput } from '../../src/hooks/hook-types.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
+import { createClaudeTurnStop } from '../../src/notifications/claude-turn-stop.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
 import {
   NotificationDispatcher as ActualNotificationDispatcher,
   buildPushText,
 } from '../../src/notifications/notification-dispatcher.ts';
+import { sendPushTrigger } from '../../src/notifications/push-client.ts';
+import type { SecurePushEvent } from '../../src/notifications/secure-push-contexts.ts';
 import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
 import { SecurePushService } from '../../src/notifications/secure-push-service.ts';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { SecurePushTransport } from '../../src/notifications/secure-push-transport.ts';
+import { createTurnEventSink } from '../../src/notifications/turn-events.ts';
+import { TurnTimer } from '../../src/notifications/turn-timer.ts';
 import { parseQuestion } from '../../src/parser/question-parser.ts';
 import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
@@ -871,6 +877,126 @@ describe('ClaudeHarness.createSession', () => {
     } finally {
       decisions.answerHeld(card.id, { kind: 'cancel' });
       await response;
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
+
+  test('secure-only actual Claude turn IDs distinguish repeated final text while an exact event stays immutable', async () => {
+    hookServer = newHookServer();
+    hookServer.start();
+    const harness = newHarness();
+    const { sessionId, session } = launch(harness, { register: true });
+    const { store, trust } = await pushRecipient();
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const { createServer } = await import('node:http');
+    const submitted: ReturnType<typeof relayV2.decodePushSubmit>[] = [];
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      submitted.push(submit);
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const actual = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const events: SecurePushEvent[] = [];
+      const tasks: Promise<unknown>[] = [];
+      // Observation only: forward every actual event to the actual service unchanged.
+      const secure = {
+        hasRecipients: (kind: relayV2.SecurePushKind) => actual.hasRecipients(kind),
+        send(event: SecurePushEvent) {
+          events.push(event);
+          const task = actual.send(event);
+          tasks.push(task);
+          return task;
+        },
+      };
+      const sink = createTurnEventSink({
+        config: () => ({ onTurnComplete: true, turnCompleteMinSeconds: 0 }),
+        deviceTokens: () => [],
+        sessionName: () => 'owned',
+        notifiers: new Map(),
+        signalingUrl: () => origin,
+        pushSecret: () => undefined,
+        securePush: () => secure,
+        send: sendPushTrigger,
+        log: () => {},
+        onError: () => {},
+      });
+      const timer = new TurnTimer();
+      const stop = createClaudeTurnStop({
+        admits: (input) => harness.admitsAnySession(input),
+        timer,
+        primarySessionId: () => sessionId,
+        sink,
+      });
+      const first = {
+        ...stopEventFor(sessionId),
+        prompt_id: generateId(),
+        stop_hook_active: false,
+        last_assistant_message: 'Same actual final text',
+      } as StopHookInput;
+      expect(harness.admitsAnySession(first)).toBe(true);
+      timer.observe(first.prompt_id);
+      await Bun.sleep(5);
+      stop(first);
+      await Promise.all(tasks);
+      expect(submitted).toHaveLength(1);
+      expect(events).toHaveLength(1);
+      const event = events[0];
+      if (!event) throw new Error('actual completion event missing');
+      await actual.send(event);
+      expect(submitted).toHaveLength(1);
+      const second = { ...first, prompt_id: generateId() };
+      timer.observe(second.prompt_id);
+      await Bun.sleep(5);
+      stop(second);
+      await Promise.all(tasks);
+      expect(events).toHaveLength(2);
+      expect(submitted).toHaveLength(2);
+      expect(submitted[1]?.collapseId).toBe(submitted[0]?.collapseId);
+      expect(submitted[1]?.revision).toBe((submitted[0]?.revision ?? 0) + 1);
+      expect(submitted[1]?.nonce).not.toBe(submitted[0]?.nonce);
+    } finally {
       receiver.closeAllConnections();
       await new Promise<void>((resolve) => receiver.close(() => resolve()));
     }
