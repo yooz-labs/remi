@@ -83,7 +83,11 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                     try execute("DELETE FROM identity_authority")
                     try execute("UPDATE authority_generation SET generation=generation+1 WHERE slot=1")
                     try execute("PRAGMA user_version=2")
-                } else if version != 2 || application != 1380798514 { throw NativePushStateError.corrupt }
+                } else if ![2, 3].contains(version) || application != 1380798514 { throw NativePushStateError.corrupt }
+                if try integer("PRAGMA user_version") == 2 {
+                    try execute("CREATE TABLE machine_trust (rid BLOB PRIMARY KEY CHECK(length(rid)=16), machine_key BLOB NOT NULL CHECK(length(machine_key)=32), endpoint TEXT NOT NULL, device_key BLOB NOT NULL CHECK(length(device_key)=32), identity_revision TEXT NOT NULL CHECK(length(identity_revision)=36), requires_unlock INTEGER NOT NULL CHECK(requires_unlock IN(0,1)), generation INTEGER NOT NULL CHECK(generation>0))")
+                    try execute("PRAGMA user_version=3")
+                }
                 guard try integer("SELECT generation FROM authority_generation WHERE slot=1") >= 0 else {
                     throw NativePushStateError.corrupt
                 }
@@ -118,15 +122,59 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         }
     }
 
-    // Fail-closed construction surface for the next red-first persistence tranche.
     // No push caller is connected until the actual verified decoder/trust bridge.
     func authorityGeneration() throws -> Int64 {
         connectionLock.lock(); defer { connectionLock.unlock() }
         return try integer("SELECT generation FROM authority_generation WHERE slot=1")
     }
-    func installMachineTrust(_ trust: MachineTrust, generation: Int64) throws { throw NativePushStateError.unavailable }
-    func machineTrust(rid: Data) throws -> MachineTrust? { throw NativePushStateError.unavailable }
-    func forgetMachine(rid: Data) throws { throw NativePushStateError.unavailable }
+    /// Only the native verified-READY caller installs this public completed trust.
+    /// Identity writers install public Dpk authority, never machine trust.
+    func installMachineTrust(_ trust: MachineTrust, generation: Int64) throws {
+        try Self.validateTrust(trust)
+        try transaction {
+            guard generation > 0, try authorityGeneration() == generation,
+                  try currentAuthority() == trust.authority else { throw NativePushStateError.changed }
+            if try machineTrust(rid: trust.rid) == nil {
+                guard try integer("SELECT count(*) FROM machine_trust") < Int64(maximumMachines) else { throw NativePushStateError.capacity }
+            }
+            try statement("INSERT INTO machine_trust VALUES(?,?,?,?,?,?,?) ON CONFLICT(rid) DO UPDATE SET machine_key=excluded.machine_key,endpoint=excluded.endpoint,device_key=excluded.device_key,identity_revision=excluded.identity_revision,requires_unlock=excluded.requires_unlock,generation=excluded.generation") { stmt in
+                try bind(trust.rid, to: stmt, at: 1)
+                try bind(trust.machinePublicKey, to: stmt, at: 2)
+                try bind(trust.endpoint, to: stmt, at: 3)
+                try bind(trust.authority.publicKey, to: stmt, at: 4)
+                try bind(trust.authority.revision, to: stmt, at: 5)
+                guard sqlite3_bind_int(stmt, 6, trust.authority.requiresAppUnlock ? 1 : 0) == SQLITE_OK,
+                      sqlite3_bind_int64(stmt, 7, generation) == SQLITE_OK else { throw NativePushStateError.unavailable }
+                try complete(stmt)
+            }
+        }
+    }
+    func machineTrust(rid: Data) throws -> MachineTrust? {
+        guard rid.count == 16 else { throw NativePushStateError.invalid }
+        connectionLock.lock(); defer { connectionLock.unlock() }
+        // One SQLite statement sees one consistent cross-process snapshot.
+        return try statement("SELECT t.machine_key,t.endpoint,t.device_key,t.identity_revision,t.requires_unlock FROM machine_trust t JOIN identity_authority a ON a.slot=1 AND a.public_key=t.device_key AND a.revision=t.identity_revision AND a.requires_unlock=t.requires_unlock JOIN authority_generation g ON g.slot=1 AND g.generation=t.generation WHERE t.rid=?") { stmt in
+            try bind(rid, to: stmt, at: 1)
+            let status = sqlite3_step(stmt)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW, sqlite3_column_type(stmt, 4) == SQLITE_INTEGER,
+                  [0, 1].contains(sqlite3_column_int(stmt, 4)) else { throw NativePushStateError.corrupt }
+            let trust = MachineTrust(rid: rid, machinePublicKey: try blob(stmt, 0), endpoint: try text(stmt, 1),
+                authority: Authority(publicKey: try blob(stmt, 2), revision: try text(stmt, 3), requiresAppUnlock: sqlite3_column_int(stmt, 4) == 1))
+            try Self.validateTrust(trust)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
+            return trust
+        }
+    }
+    func forgetMachine(rid: Data) throws {
+        guard rid.count == 16 else { throw NativePushStateError.invalid }
+        try transaction {
+            try statement("DELETE FROM machine_trust WHERE rid=?") { stmt in
+                try bind(rid, to: stmt, at: 1); try complete(stmt)
+            }
+            // Replay and terminal records are deliberately retained through re-pair.
+        }
+    }
     func recordVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws -> ContentOutcome {
         throw NativePushStateError.unavailable
     }
@@ -167,6 +215,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             guard generation < Int64.max else { throw NativePushStateError.capacity }
             try execute("UPDATE authority_generation SET generation=generation+1 WHERE slot=1")
             try execute("DELETE FROM identity_authority")
+            try execute("DELETE FROM machine_trust")
             return generation + 1
         }
     }
@@ -184,6 +233,38 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                       sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.unavailable }
             }
         }
+    }
+
+    private static func validateTrust(_ trust: MachineTrust) throws {
+        try validate(trust.authority.publicKey, trust.authority.revision)
+        guard trust.machinePublicKey.count == 32, !NativeEd25519PublicKey.isSmallOrder(trust.machinePublicKey),
+              (try? Curve25519.Signing.PublicKey(rawRepresentation: trust.machinePublicKey)) != nil,
+              trust.rid == Data(SHA256.hash(data: trust.machinePublicKey).prefix(16)),
+              trust.endpoint.utf8.count <= 2048,
+              let url = URLComponents(string: trust.endpoint), url.scheme == "https", let host = url.host, !host.isEmpty,
+              host == host.lowercased(), url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty, url.port != 443, url.string == trust.endpoint else { throw NativePushStateError.invalid }
+    }
+    private func bind(_ value: Data, to stmt: OpaquePointer, at index: Int32) throws {
+        let status = value.withUnsafeBytes { sqlite3_bind_blob(stmt, index, $0.baseAddress, Int32(value.count), Self.transient) }
+        guard status == SQLITE_OK else { throw NativePushStateError.unavailable }
+    }
+    private func bind(_ value: String, to stmt: OpaquePointer, at index: Int32) throws {
+        guard sqlite3_bind_text(stmt, index, value, -1, Self.transient) == SQLITE_OK else { throw NativePushStateError.unavailable }
+    }
+    private func blob(_ stmt: OpaquePointer, _ index: Int32) throws -> Data {
+        guard sqlite3_column_type(stmt, index) == SQLITE_BLOB, let bytes = sqlite3_column_blob(stmt, index) else { throw NativePushStateError.corrupt }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, index)))
+    }
+    private func text(_ stmt: OpaquePointer, _ index: Int32) throws -> String {
+        guard sqlite3_column_type(stmt, index) == SQLITE_TEXT, let bytes = sqlite3_column_text(stmt, index),
+              let value = String(bytes: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(stmt, index))), encoding: .utf8) else {
+            throw NativePushStateError.corrupt
+        }
+        return value
+    }
+    private func complete(_ stmt: OpaquePointer) throws {
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.unavailable }
     }
 
     private static func validate(_ publicKey: Data, _ revision: String) throws {
