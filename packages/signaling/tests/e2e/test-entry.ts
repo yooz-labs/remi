@@ -289,8 +289,19 @@ export class GlobalLimiter extends RealLimiter {
   }
 }
 
+// Test-only ingress observation; requests and responses still use the real Worker.
+const ownedAnswerRequests: { method: string; path: string; body: string }[] = [];
 export default {
-  fetch(request: Request, env: { CONNECTIONS: unknown }): Promise<Response> | Response {
+  async fetch(request: Request, env: { CONNECTIONS: unknown }): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === '/__answerrequests') return Response.json(ownedAnswerRequests);
+    if (path === '/answer' || path === '/auth-info') {
+      ownedAnswerRequests.push({
+        method: request.method,
+        path,
+        body: await request.clone().text(),
+      });
+    }
     if (new URL(request.url).pathname.startsWith('/__limiter/')) {
       const ns = (
         env as unknown as {

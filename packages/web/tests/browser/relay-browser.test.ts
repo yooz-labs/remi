@@ -742,3 +742,217 @@ browserTest(
   },
   20000,
 );
+
+/** OS delivery is controlled; routing, real browser fetch and receiver remain production code. */
+browserTest.each(['relay-disconnected', 'relay-connected', 'direct'] as const)(
+  'stripped carrier keeps %s OPT answers away from plaintext Worker fallback',
+  async (mode) => {
+    const local = await ownedRelayOffer();
+    const child = await ownedRelayChild(local.running);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let abort: AbortController | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('remi-settings', JSON.stringify({ autoReconnect: false }));
+        const owned = window as unknown as {
+          ownedSockets: WebSocket[];
+          ownedBinding: Record<string, string> | null;
+          ownedQuestion: Record<string, unknown> | null;
+        };
+        owned.ownedSockets = [];
+        owned.ownedBinding = null;
+        owned.ownedQuestion = null;
+        const observe = (raw: string) => {
+          try {
+            const m = JSON.parse(raw);
+            if (m.type === 'hello_ack' && typeof m.sessionId === 'string') owned.ownedBinding = m;
+            if (m.type === 'question') owned.ownedQuestion = m;
+          } catch {
+            /* binary channel/control frames */
+          }
+        };
+        const RealWebSocket = window.WebSocket;
+        window.WebSocket = class extends RealWebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            owned.ownedSockets.push(this);
+            this.addEventListener('message', (e) => {
+              if (typeof e.data === 'string') observe(e.data);
+            });
+          }
+        };
+        const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+        crypto.subtle.decrypt = async (...args: Parameters<SubtleCrypto['decrypt']>) => {
+          const plaintext = await decrypt(...args);
+          observe(new TextDecoder().decode(plaintext));
+          return plaintext;
+        };
+      });
+      await page.goto(origin);
+      if (mode !== 'direct') {
+        await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Pair machine', exact: true }).click();
+        await page.getByLabel('Pairing token').fill(String(local.offer['token']));
+        await page.getByRole('button', { name: 'Start pairing', exact: true }).click();
+        const compare = await local.inbox.next();
+        expect(compare['t']).toBe('compare');
+        local.ws.send(
+          JSON.stringify({
+            t: 'confirm',
+            id: 'owned-r4',
+            offerId: local.offer['offerId'],
+            connectionId: compare['connectionId'],
+            fingerprint: compare['fingerprint'],
+            accept: true,
+          }),
+        );
+        await page.getByText('Relay machine connected', { exact: true }).waitFor();
+        const project = local.running.dir.split('/').pop() ?? 'missing-owned-project';
+        await page.getByRole('button').filter({ hasText: project }).first().click();
+      } else {
+        const publicKey = await page.evaluate(async () => {
+          const path = '/src/lib/identity-client.ts';
+          return (await (await import(path)).ensureIdentity()).publicKey as string;
+        });
+        const { IdentityStore } = await import('../../../daemon/src/auth/identity-store');
+        await new IdentityStore(join(local.running.dir, 'state')).addAuthorizedKey(
+          publicKey,
+          'owned browser',
+        );
+        await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
+        await page.getByPlaceholder('localhost').fill(`127.0.0.1:${child.entry.wsPort}`);
+        await page.getByRole('button', { name: 'Connect', exact: true }).last().click();
+      }
+      await page.waitForFunction(
+        (sid) =>
+          (window as unknown as { ownedBinding?: { sessionId: string } }).ownedBinding
+            ?.sessionId === sid,
+        child.entry.sessionId,
+      );
+      const binding = await page.evaluate(
+        () => (window as unknown as { ownedBinding: Record<string, string> }).ownedBinding,
+      );
+      if (mode !== 'direct') {
+        const stored = await page.evaluate(
+          (sid) => ({
+            sessionRoute: JSON.parse(localStorage.getItem('remi-session-daemons') ?? '{}')[sid],
+            directUrls: JSON.parse(localStorage.getItem('remi-connections') ?? '[]'),
+          }),
+          child.entry.sessionId,
+        );
+        expect(stored.sessionRoute).toBeUndefined();
+        expect(stored.directUrls).toEqual([]);
+      }
+      expect(binding['claudeSessionId']).toBeString();
+      abort = new AbortController();
+      const hook = fetch(`http://127.0.0.1:${child.entry.hookPort}/hooks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: abort.signal,
+        body: JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          session_id: binding['claudeSessionId'],
+          transcript_path: binding['transcriptPath'],
+          cwd: local.running.dir,
+          permission_mode: 'default',
+          tool_name: 'Bash',
+          tool_input: { command: 'OWNED_STRIPPED_CARRIER_NEVER_RUN' },
+        }),
+      });
+      let hookResolved = false;
+      void hook.then(
+        () => {
+          hookResolved = true;
+        },
+        () => undefined,
+      );
+      await page.waitForFunction(
+        () => (window as unknown as { ownedQuestion: unknown }).ownedQuestion !== null,
+      );
+      const question = await page.evaluate(
+        () => (window as unknown as { ownedQuestion: Record<string, unknown> }).ownedQuestion,
+      );
+      const card = question['question'] as {
+        id: string;
+        options: { value: string; isNo?: boolean }[];
+      };
+      const answer = card.options.find((option) => option.isNo)?.value;
+      expect(answer).toBeString();
+      if (mode !== 'relay-connected')
+        await page.evaluate(
+          async (port) => {
+            const sockets = (
+              window as unknown as { ownedSockets: WebSocket[] }
+            ).ownedSockets.filter(
+              (s) => s.readyState === WebSocket.OPEN && new URL(s.url).port === String(port),
+            );
+            await Promise.all(
+              sockets.map(
+                (s) =>
+                  new Promise<void>((resolve) => {
+                    s.addEventListener('close', () => resolve(), { once: true });
+                    s.close(1000, 'owned network disconnect');
+                  }),
+              ),
+            );
+          },
+          mode !== 'direct' ? Number(new URL(local.running.worker.url).port) : child.entry.wsPort,
+        );
+      // The real close callbacks must publish the disconnected snapshot before OS delivery.
+      await page.waitForTimeout(150);
+      const directPosts: string[] = [];
+      page.on('request', (request) => {
+        if (
+          request.method() === 'POST' &&
+          request.url() === `http://127.0.0.1:${child.entry.wsPort}/answer`
+        )
+          directPosts.push(request.postData() ?? '');
+      });
+      await page.evaluate(
+        ({ sid, qid, answer }) =>
+          document.dispatchEvent(
+            new CustomEvent('push-notification-answer', {
+              detail: { sessionId: sid, questionId: qid, answer },
+            }),
+          ),
+        { sid: child.entry.sessionId, qid: card.id, answer },
+      );
+      if (mode === 'direct') {
+        const response = await Promise.race([
+          hook,
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(() => reject(new Error('direct hook answer deadline')), 6000);
+          }),
+        ]);
+        expect((await response.json()).hookSpecificOutput.decision.behavior).toBe('deny');
+        expect(directPosts).toHaveLength(1);
+        expect(JSON.parse(directPosts[0] ?? '{}').claudeSessionId).toBe(binding['claudeSessionId']);
+      } else {
+        await page.waitForTimeout(1800);
+        const seen = (await (
+          await fetch(`${local.running.worker.url}/__answerrequests`)
+        ).json()) as { method: string; path: string; body: string }[];
+        const posts = seen.filter((r) => r.path === '/answer' && r.method === 'POST');
+        if (posts.length)
+          expect(JSON.parse(posts[0]?.body ?? '{}')).toEqual({
+            sessionId: child.entry.sessionId,
+            questionId: card.id,
+            answer,
+            claudeSessionId: binding['claudeSessionId'],
+          });
+        expect(posts, 'stripped relay OPT must never POST plaintext to Worker /answer').toEqual([]);
+        expect(
+          hookResolved,
+          'stripped relay OPT must never decide the real held hook through legacy JS',
+        ).toBe(false);
+      }
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      abort?.abort();
+      await context.close();
+    }
+  },
+  40000,
+);
