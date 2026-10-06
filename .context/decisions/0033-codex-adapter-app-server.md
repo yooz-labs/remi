@@ -767,7 +767,7 @@ An answer made only of removed characters, whitespace or zero-width joiners also
 An interrupted turn is not announced.
 That Codex reports a turn ended by the phone's No (`cancel`), by Esc or by `turn/interrupt` as `interrupted` is an ASSUMPTION: no recorded frame shows it.
 The spike's decline run answered `decision: "decline"` (`expA-decline.jsonl:65`), which is not what the phone's No sends (`cancel`), and its `turn/completed` says `completed` (`:141`); live step LV-3 (c) saw the item declined and the turn "interrupted" on the TUI, not the frame.
-A `turn/started` does not clear a stale failure notice (Claude's `UserPromptSubmit` does); the next completed or interrupted turn does.
+A `turn/started` does not clear a stale failure notice; the next completed or interrupted turn does, and since #1226 so does an `item/completed` of Codex's own work on the main thread (not the person's message), which also lets the next failure of the same reason alert again (a failure alerts once per `turnFailureKey` until then).
 A turn that ended while remi was not attached, before the first attach or while the link was down, is never seen: it pushes nothing, and a stale "Codex stopped" stays until the next completed or interrupted turn.
 4. **The chat seam.**
 `HarnessChat.readHistory(emit): Promise<number>` and `HarnessSession.chat?` (`harness/types.ts`); the transcript handler takes an optional `chatFor(remiSessionId)` and asks it BEFORE any file lookup, so a transcript file that happens to bear the id is not read in its place.
