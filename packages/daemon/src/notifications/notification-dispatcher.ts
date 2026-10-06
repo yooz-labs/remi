@@ -21,7 +21,12 @@ import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
-import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
+import {
+  type TurnFailedInput,
+  buildTurnFailedText,
+  describeTurnFailure,
+  turnFailedCollapseId,
+} from './turn-failed.ts';
 
 export interface PushConfig {
   /**
@@ -407,6 +412,10 @@ export class NotificationDispatcher {
    *  In memory only: after a daemon restart a stale notice stays until the
    *  user clears it, which is the safe direction. */
   private turnFailedOutstanding = false;
+  /** The failure reasons (`describeTurnFailure`'s phrase) alerted since the
+   *  last turn that finished well (#1226): a repeat of one is not pushed
+   *  again. Cleared with the notice by `dismissTurnFailed`. */
+  private readonly turnFailedReasons = new Set<string>();
   /** Resolved once at construction: the real sendPushTrigger unless a test
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
@@ -683,13 +692,22 @@ export class NotificationDispatcher {
    * authentication, and similar. Informational, never a card: no `category`, no `options`, and
    * nothing is registered in-app (the card this replaced had Yes/No that no
    * answer could reach). Its `questionId` is the session's collapse key
-   * (`turnFailedCollapseId`), so a repeat replaces the previous notification
-   * instead of stacking, and `sessionId` lets a tap open the session.
+   * (`turnFailedCollapseId`), so a later failure replaces the previous
+   * notification instead of stacking, and `sessionId` lets a tap open the
+   * session.
+   *
+   * One alert per reason until a turn succeeds (#1226): a failure whose
+   * reason already alerted since the last `dismissTurnFailed` resolves
+   * `deduped` and sends nothing. At a usage limit every turn fails, each
+   * subagent's included, and the collapse key replaces the banner without
+   * stopping the phone from alerting again. A different reason still alerts.
+   * A fan-out that reached no device does not count, so the next failure
+   * tries again.
    *
    * Deliberate differences from `maybePush`:
-   *  - always pushes (no attached-client skip, no dedup): the app shows no
-   *    card for a failure, so an attached client would otherwise be told
-   *    nothing, and a backgrounded one is exactly who the push is for;
+   *  - no attached-client skip and not `PushDedup`: the app shows no card for
+   *    a failure, so an attached client would otherwise be told nothing, and
+   *    a backgrounded one is exactly who the push is for;
    *  - filtered by `pushPrefs.turnFailed` ONLY. `notifications.on_turn_complete`
    *    is not consulted: a failed turn is the one turn end a user must not
    *    miss by default, and the machine-wide switch is about the "done"
@@ -715,6 +733,14 @@ export class NotificationDispatcher {
       );
       return Promise.resolve('no_channel');
     }
+    const reason = describeTurnFailure(input.error);
+    if (this.turnFailedReasons.has(reason)) {
+      log(
+        `Turn-failed push suppressed for session ${this.sessionId}: this failure already alerted`,
+      );
+      return Promise.resolve('deduped');
+    }
+    this.turnFailedReasons.add(reason);
     this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
     const { title, body } = buildTurnFailedText(sessionName, input, agentName);
@@ -738,7 +764,11 @@ export class NotificationDispatcher {
         },
       ),
     );
-    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+    return Promise.all(perToken).then((rs) => {
+      if (rs.some(Boolean)) return 'pushed';
+      this.turnFailedReasons.delete(reason);
+      return 'failed';
+    });
   }
 
   /**
@@ -747,10 +777,11 @@ export class NotificationDispatcher {
    * collapse key (`turnFailedCollapseId`), never filtered by preferences, so
    * even a device that muted failed turns after receiving one is cleared.
    * Sends nothing when no `turn_failed` push is outstanding, so the hook
-   * wiring can call it on every main `Stop` and `UserPromptSubmit` without a
-   * silent push per turn.
+   * wiring can call it on every main `Stop` without a silent push per turn.
+   * Always ends the failure streak, so the next failure alerts (#1226).
    */
   dismissTurnFailed(): void {
+    this.turnFailedReasons.clear();
     if (!this.turnFailedOutstanding) return;
     this.turnFailedOutstanding = false;
     this.dismiss(this.sessionId, turnFailedCollapseId(this.sessionId) as UUID);

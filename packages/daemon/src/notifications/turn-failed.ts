@@ -9,7 +9,11 @@
  * every prompt), stacking in the app and on the lock screen.
  *
  * What this module owns: the readable text and the per-session collapse key.
- * Who is pushed, and how, is `NotificationDispatcher.pushTurnFailed`.
+ * Who is pushed, and how, is `NotificationDispatcher.pushTurnFailed`, which
+ * alerts once per failure reason until a turn finishes well (#1226): before
+ * that, at a usage limit, every failed turn (a subagent's too) alerted the
+ * phone again under the same collapse key, and a new prompt cleared the
+ * notice first, so a retry loop alerted on every cycle.
  *
  * Mutable per device through `pushPrefs.turnFailed` (default on) and by
  * nothing else: `notifications.on_turn_complete = false` does NOT silence it,
@@ -143,8 +147,8 @@ export function buildTurnFailedText(
 
 /**
  * The collapse key of a session's `turn_failed` pushes: one per session, so a
- * repeat (a usage limit fails every following prompt too) replaces the
- * previous notification on the lock screen instead of stacking one per turn.
+ * later failure (another reason; a repeat of one is not pushed, #1226)
+ * replaces the previous notification on the lock screen instead of stacking.
  * Sent as the push's `questionId`, which the signaling Worker turns into
  * `apns-collapse-id`; the prefix keeps it from ever naming a real card. 48
  * bytes for a UUID, under APNS's 64.

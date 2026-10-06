@@ -617,7 +617,7 @@ those two are both exactly `{token, title, body}`.
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914); for Codex a `turn/completed` with status `completed` of the same length (#1180) | yes, `pushPrefs.turnComplete` |
 | `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
 | `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
-| `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153), or a Codex `turn/completed` with status `failed` (the title says "Codex stopped", #1180); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message` (Codex: its error message); one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
+| `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153), or a Codex `turn/completed` with status `failed` (the title says "Codex stopped", #1180); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message` (Codex: its error message); one collapse key per session (`turn-failed-<sessionId>`), so a different reason replaces the previous notice; one alert per reason until a turn finishes well (#1226: at a usage limit every turn fails, a subagent's included, and each one used to alert the phone again) | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
@@ -628,10 +628,11 @@ those two are both exactly `{token, title, body}`.
   filters its per-token fan-out in `notifications/push-preferences.ts`.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise. The next main-agent `Stop` or
-  `UserPromptSubmit` after a `turn_failed` push sends one (same collapse key,
-  only while a `turn_failed` push is outstanding), so a stale "Claude stopped"
-  does not outlive a turn that succeeded.
+  of the device that asked for less noise. The next main-agent `Stop` after a
+  `turn_failed` push sends one (same collapse key, only while a `turn_failed`
+  push is outstanding), so a stale "Claude stopped" does not outlive a turn
+  that succeeded. A new prompt does not (#1226): at a usage limit it fails
+  too, and clearing on it re-alerted the phone on every retry.
 - **Push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
   in its body, the same posture as `turn_complete` (the first 200 characters

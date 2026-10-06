@@ -682,11 +682,15 @@ describe('setupHookBridge', () => {
         expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
       });
 
-      test('a repeat failure in the same session reuses the one collapse key', async () => {
+      test('a later failure in the same session reuses the one collapse key', async () => {
         const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]));
         lock('claude-A');
         hookServer.fire('StopFailure', stopFailure());
-        hookServer.fire('StopFailure', stopFailure({ prompt_id: 'second-turn' }));
+        // Another reason: a repeat of the first is not pushed at all (#1226).
+        hookServer.fire(
+          'StopFailure',
+          stopFailure({ prompt_id: 'second-turn', error: 'overloaded' }),
+        );
         await Promise.all(outcomes);
 
         expect(sent).toHaveLength(2);
