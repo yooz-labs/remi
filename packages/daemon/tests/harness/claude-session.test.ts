@@ -882,6 +882,108 @@ describe('ClaudeHarness.createSession', () => {
     }
   }, 10000);
 
+  test('secure-only dispatcher actions require the complete actual held Bash command', async () => {
+    const fullCommand = `printf '%s' '${'OWNED_LITERAL_TEXT_'.repeat(18)} ACTUAL_MIDDLE_ARGUMENT OWNED_END'`;
+    const { decisions, card, sessionId, response } = await holdPrompt(false, 'Bash', {
+      command: fullCommand,
+    });
+    const { store, trust, pair, snapshot } = await pushRecipient();
+    const { createServer } = await import('node:http');
+    let opened: Awaited<ReturnType<typeof relayV2.openPushContent>> | undefined;
+    let effects = 0;
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      opened = await relayV2.openPushContent(
+        pair,
+        {
+          v: 2,
+          rid,
+          collapseId: submit.collapseId,
+          keyVersion: submit.keyVersion,
+          kind: submit.kind,
+          sealed: submit.sealed,
+        },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      effects++;
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const secure = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const dispatcher = new ActualNotificationDispatcher(
+        {
+          sessionRegistry,
+          deviceTokens: new Map(),
+          pushConfig: () => ({ signalingUrl: origin }),
+          getPrimarySessionId: () => sessionId,
+          securePush: secure,
+        },
+        sessionId,
+      );
+      expect(card.text).not.toContain(fullCommand);
+      expect(new TextEncoder().encode(card.text).length).toBeLessThanOrEqual(512);
+      await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe('pushed');
+      expect(effects).toBe(1);
+      expect(decisions.isHeld(card.id)).toBe(true);
+      if (!opened || opened.payload.type === 'dismiss')
+        throw new Error('missing question delivery');
+      expect(buildPushText('Agent', card).body).not.toContain(fullCommand);
+      expect(!opened.payload.actionable || opened.payload.body.includes(fullCommand)).toBe(true);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
+
   test('secure-only actual Claude turn IDs distinguish repeated final text while an exact event stays immutable', async () => {
     hookServer = newHookServer();
     hookServer.start();
