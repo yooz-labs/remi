@@ -177,7 +177,7 @@ async function post(
   return r.decodePushSubmitResult(raw);
 }
 
-test('real gateway accepts exact machine proof without legacy secret and sends only sealed generic APNs data', async () => {
+test('real gateway accepts the deployment bearer and exact machine proof and sends only sealed generic APNs data', async () => {
   const { worker: w, machine: m, device: d, recipient: p, p8 } = await setup();
   const s = await submission(w, m, d, p);
   const proof = await r.verifyPushSubmit(
