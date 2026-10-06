@@ -61,6 +61,20 @@ function bindNear(
   throw new Error(`bindNear: could not bind any port in [${anchorPort + 1}, ${anchorPort + 49}]`);
 }
 
+describe('bindNear (test helper)', () => {
+  test('stays in the valid range when the anchor is the last port (#1228)', () => {
+    // The OS can hand a port-0 server 65535 itself; the helper used to walk
+    // only upward from it and throw.
+    const server = bindNear(65535, () => new Response('ok'));
+    try {
+      expect(server.port).toBeLessThanOrEqual(65535);
+      expect(65535 - server.port).toBeLessThan(50);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
 describe('parseHostInput', () => {
   test('plain hostname has no explicit port', () => {
     expect(parseHostInput('localhost')).toEqual({
