@@ -164,6 +164,14 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(result.title, question.title); XCTAssertEqual(result.body, question.body)
         XCTAssertEqual(result.categoryIdentifier, category.identifier)
         XCTAssertEqual(Set(result.userInfo.keys.compactMap { $0 as? String }), ["remiPush"])
+        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock })
+        XCTAssertTrue(consumer.allowsPresentation(result), "The actual foreground consumer must verify the original NSE capsule and signed text")
+        let forged = try XCTUnwrap(result.mutableCopy() as? UNMutableNotificationContent)
+        forged.title = "Forged foreground title"
+        XCTAssertFalse(consumer.allowsPresentation(forged))
+        forged.title = result.title; forged.categoryIdentifier = "REMI_YNA"
+        XCTAssertFalse(consumer.allowsPresentation(forged), "An unverified static category cannot grant native foreground actions")
+
     }
     func testActualNSECategoryRefusalPreservesVerifiedTextWithoutActions() throws {
         let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }

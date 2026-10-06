@@ -245,4 +245,28 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         XCTAssertEqual(try effect().prepare(userInfo: info("question-yn")).outcome, .publish,
             "A background question wake must not consume the notification's lifecycle nonce")
     }
+    func testActualV2RoutingConsumesOriginalActionWithoutLegacyOrWrappedSend() throws {
+        _ = try effect().prepare(userInfo: info("question-yn"))
+        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock }, readDelivered: { _ in XCTFail("Action routing does not read cards") }, removeDelivered: { _ in XCTFail("Action routing does not remove cards") })
+        var legacySends = 0; var factoryCalls = 0
+        let consumed = NativePushNotificationConsumer.routeAction(userInfo: try info("question-yn"), identifier: "OPT_0",
+            consumerFactory: { factoryCalls += 1; return consumer }, legacy: { legacySends += 1 })
+        XCTAssertTrue(consumed, "The actual v2 router owns the action before the legacy/wrapped sender")
+        XCTAssertEqual(factoryCalls, 1, "The actual native verifier must be invoked")
+        XCTAssertEqual(legacySends, 0)
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
+        XCTAssertTrue(NativePushNotificationConsumer.routeAction(userInfo: try info("question-yn"), identifier: "OPT_0",
+            consumerFactory: { consumer }, legacy: { legacySends += 1 }), "Missing native key cannot fall through to another answer owner")
+        XCTAssertEqual(legacySends, 0)
+        XCTAssertTrue(NativePushNotificationConsumer.routeAction(userInfo: ["remiPush": NSNull(), "opt_0": "forged", "verified": true], identifier: "OPT_0",
+            consumerFactory: { consumer }, legacy: { legacySends += 1 }), "Malformed capsule cannot select legacy routing")
+        XCTAssertEqual(legacySends, 0)
+    }
+    func testActualLegacyNotificationRouteRemainsExplicitlySeparate() {
+        var legacySends = 0
+        XCTAssertFalse(NativePushNotificationConsumer.routeAction(userInfo: ["sessionId": "old-direct"], identifier: "OPT_0",
+            consumerFactory: { XCTFail("A legacy notification must not load native secure groups"); throw NativePushStateError.unavailable },
+            legacy: { legacySends += 1 }))
+        XCTAssertEqual(legacySends, 1)
+    }
 }
