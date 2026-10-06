@@ -434,8 +434,17 @@ describe('ClaudeHarness.createSession', () => {
     'turn-failed',
     'turn-failed-recovery',
     'dismiss',
+    'runtime-finished-during-sign',
+    'question-removed-during-sign',
+    'options-changed-during-sign',
+    'reauthorized-during-sign',
+    'subscription-rotated-during-sign',
+    'held-deadline-during-sign',
   ] as const) {
     test(`secure-only ${deliveryPath} sends authenticated sealed content through the real Worker and owned APNs`, async () => {
+      const retiring = deliveryPath.endsWith('-during-sign');
+      if (deliveryPath === 'held-deadline-during-sign')
+        prompts = { hold_seconds: 5, daemon_hold_seconds: 5 };
       const { decisions, card, sessionId, response } = await holdPrompt(false);
       const { snapshot, store, trust, pair } = await pushRecipient();
       const { createServer } = await import('node:http');
@@ -496,12 +505,31 @@ describe('ClaudeHarness.createSession', () => {
             validityFor: (_sid, qid) => decisions.answerValidity(qid),
           });
           const runtime = contexts.begin(sessionId);
+          let signingPaused = false;
+          let signingReached = false;
+          let releaseSigning: () => void = () => {};
+          const signingGate = new Promise<void>((resolve) => {
+            releaseSigning = resolve;
+          });
+          // The engine's real signature completes unchanged; only returning it is delayed.
+          const observedSigner: relayV2.Signer = {
+            publicKey: signer.publicKey,
+            async sign(input) {
+              const signed = await signer.sign(input);
+              if (retiring && !signingPaused) {
+                signingPaused = true;
+                signingReached = true;
+                await signingGate;
+              }
+              return signed;
+            },
+          };
           const service = new SecurePushService({
             store,
             contexts,
             transport: SecurePushTransport.forOwnedLoopbackTest({
               store,
-              signer,
+              signer: observedSigner,
               audience: worker.url,
               ownedOrigin: worker.url,
             }),
@@ -521,6 +549,47 @@ describe('ClaudeHarness.createSession', () => {
             sessionId,
           );
           const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
+          if (retiring) {
+            const pending = dispatcher.maybePush(sessionId, card, { held: true });
+            try {
+              await until(() => signingReached, 'actual content signature to complete');
+              if (deliveryPath === 'runtime-finished-during-sign') contexts.finish(runtime);
+              else if (deliveryPath === 'question-removed-during-sign')
+                sessionRegistry.removeQuestion(sessionId, card.id, 'owned-retirement');
+              else if (deliveryPath === 'options-changed-during-sign')
+                sessionRegistry.addQuestion(sessionId, {
+                  ...card,
+                  options: card.options.map((option) => ({
+                    ...option,
+                    description: 'changed meaning',
+                  })),
+                });
+              else if (deliveryPath === 'reauthorized-during-sign') {
+                trust.removeAuthorizedKey(snapshot.fingerprint);
+                await trust.addAuthorizedKey(snapshot.publicKey, 'owned reauthorization');
+              } else if (deliveryPath === 'subscription-rotated-during-sign') {
+                const authority = store.captureAuthority(snapshot.publicKey);
+                if (!authority) throw new Error('owned authority missing');
+                const replacement = await relayV2.generateEcPair();
+                expect(
+                  await store.register(authority, {
+                    token: snapshot.token,
+                    environment: snapshot.environment,
+                    pushPublicKey: relayV2.b64u(replacement.publicKey),
+                    keyVersion: snapshot.keyVersion + 1,
+                  }),
+                ).toEqual({ success: true, keyVersion: snapshot.keyVersion + 1 });
+              } else await until(() => !decisions.isHeld(card.id), 'real held deadline');
+            } finally {
+              releaseSigning();
+            }
+            await expect(pending).resolves.toBe('failed');
+            expect(bodies).toHaveLength(0);
+            if (decisions.isHeld(card.id))
+              expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+            await response;
+            return;
+          }
           const expectedCount =
             deliveryPath === 'dismiss' ? 2 : deliveryPath === 'turn-failed-recovery' ? 3 : 1;
           if (deliveryPath === 'dismiss')
