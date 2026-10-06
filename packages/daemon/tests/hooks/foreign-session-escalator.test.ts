@@ -342,7 +342,8 @@ describe('ForeignSessionEscalator (#672)', () => {
       });
       escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
       await Bun.sleep(100);
-      expect(logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+      // Only this escalator's lines: the logger is process-wide, so other files' timers can log.
+      expect(logs.filter((line) => line.startsWith('[error] [ForeignSession]'))).toEqual([]);
     });
 
     test('a real legacy failure is still logged at error level', async () => {
@@ -354,7 +355,7 @@ describe('ForeignSessionEscalator (#672)', () => {
       );
       escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
       await flush();
-      expect(logs.filter((line) => line.startsWith('[error]'))).toHaveLength(1);
+      expect(logs.filter((line) => line.startsWith('[error] [ForeignSession]'))).toHaveLength(1);
     });
 
     test('no device tokens registered -> no push attempted, no throw', async () => {

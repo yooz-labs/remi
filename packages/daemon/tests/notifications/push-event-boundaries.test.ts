@@ -327,7 +327,7 @@ for (const event of ['turn', 'denied', 'foreign'] as const) {
       // legacy send: a retired channel, not a push failure (#1200). A real legacy failure is
       // still reported (legacy-push-retired.test.ts).
       expect(f.errors).toEqual([]);
-      expect(f.logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+      expect(f.logs.filter((line) => line.startsWith('[error] [ForeignSession]'))).toEqual([]);
     });
   }
 }
