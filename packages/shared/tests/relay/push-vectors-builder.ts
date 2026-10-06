@@ -141,14 +141,22 @@ export async function buildPushVectors() {
       () => sealNonce.slice(),
       () => r.ecPairFromScalar(ephemeralScalar),
     );
+    // The Worker's view (#1200): no kind, key version, revision or push key; only the class.
     const unsigned: r.UnsignedPushSubmit = {
-      ...content,
       v: 2,
       audience: 'https://synthetic.example',
+      rid: content.rid,
+      machinePublicKey: content.machinePublicKey,
+      devicePublicKey: content.devicePublicKey,
       token: 'ab'.repeat(32),
       environment: i % 2 ? 'production' : 'sandbox',
+      collapseId: content.collapseId,
+      pushClass: r.pushClassOf(content.kind),
       nonce: r.b64u(seed(`push vector submit nonce ${i}`)),
+      issuedAt: content.issuedAt,
       expiresAt: 1700000050,
+      // APNs may keep the notification until the content itself expires (#1200).
+      storeUntil: content.expiresAt,
       sealed: r.b64u(sealed),
     };
     const submitInput = await r.buildPushSubmitSigningInput(unsigned);

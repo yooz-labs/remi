@@ -7,8 +7,9 @@ import { createServer as createNetServer } from 'node:net';
  * Actual source-CLI route acceptance (#1200). Run with Bun and root|prefix|query|fragment.
  * Own temporary HOME/state, generated identities/CA, real HTTPS ingress, real SQLite
  * Worker and an owned APNs HTTP receiver. No user keys, Apple endpoint or deployment.
- * Root delivers a decryptable question; unsupported route forms visibly refuse and
- * produce zero push POSTs through hook dispatch, empty unstick and natural exit.
+ * Root delivers a decryptable question; unsupported route forms and a missing
+ * push secret (nosecret) visibly refuse and produce zero push POSTs through hook dispatch,
+ * empty unstick and natural exit.
  * Neither setup failures nor timeouts count as the route regression's causal red.
  */
 import * as os from 'node:os';
@@ -17,8 +18,13 @@ import * as path from 'node:path';
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-r5-cli-route-')));
 fs.chmodSync(root, 0o700);
 const mode = process.argv[2] ?? 'root';
-if (!['root', 'prefix', 'query', 'fragment'].includes(mode)) throw new Error('invalid-mode');
+if (!['root', 'prefix', 'query', 'fragment', 'nosecret'].includes(mode))
+  throw new Error('invalid-mode');
 const refusalNotice = '[SecurePush] unsupported signaling URL; secure push requires a root origin';
+// #1200: the Worker refuses a /v2/push submit without its per-deployment secret. The `nosecret`
+// mode starts the CLI without one: it must build no secure push service and say so.
+const pushSecret = 'owned-cli-deployment-secret';
+const disabledNotice = '[SecurePush] disabled: set --push-secret or REMI_PUSH_SECRET';
 const repo = path.resolve(import.meta.dir, '../..');
 const own = fs.mkdtempSync(`${root}/cli-https-${mode}-`);
 fs.chmodSync(own, 0o700);
@@ -157,7 +163,12 @@ try {
         if (!request.method) throw new Error('gateway-method-missing');
         const reply = await fetch(worker.url + request.url, {
           method: request.method,
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(request.headers.authorization
+              ? { authorization: request.headers.authorization }
+              : {}),
+          },
           body,
           redirect: 'error',
         });
@@ -216,6 +227,7 @@ try {
   worker = await startWorker(
     {
       PUSH_AUDIENCE: audience,
+      PUSH_SECRET: pushSecret,
       APNS_KEY_ID: 'OWNEDTEST1',
       APNS_TEAM_ID: 'OWNEDTEAM1',
       APNS_PRIVATE_KEY: pem,
@@ -255,6 +267,7 @@ try {
     TERM: 'xterm-256color',
     FAKE_CLAUDE_DIR: fake,
     NODE_EXTRA_CA_CERTS: path.join(own, 'tls-ca.pem'),
+    ...(mode === 'nosecret' ? {} : { REMI_PUSH_SECRET: pushSecret }),
   };
   cli = Bun.spawn(
     [
@@ -392,6 +405,17 @@ try {
       'normal-root-control-delivers',
     );
     assert(!cliErr.includes(refusalNotice), 'normal-root-control-has-no-route-refusal');
+  } else if (mode === 'nosecret') {
+    assert(
+      gatewayPostPaths.length === 0 && apnsBodies.length === 0,
+      'no-secret-must-not-post-to-root',
+    );
+    assert(cliErr.includes(disabledNotice), 'no-secret-emits-one-line-notice');
+    assert(
+      !cliErr.includes(pushSecret) && !out.includes(pushSecret),
+      'diagnostics-never-carry-the-secret',
+    );
+    assert(!cliErr.includes(refusalNotice), 'no-secret-is-not-a-route-refusal');
   } else {
     assert(
       gatewayPostPaths.length === 0 && apnsBodies.length === 0,
@@ -447,6 +471,7 @@ try {
         cliBirth,
         gatewayPostPaths,
         refusalObserved: cliErr.includes(refusalNotice),
+        disabledObserved: cliErr.includes(disabledNotice),
         completed,
         failure,
         checks,

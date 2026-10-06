@@ -38,6 +38,12 @@ export const LIMIT_DEFAULTS = {
   PUSH_ATTEMPT_RECORDS: 4096,
   PUSH_SEND_IP: 120,
   PUSH_SEND_RID: 30,
+  /**
+   * Background (dismissal) pushes per room: quiet, so only a runaway-loop backstop (#723). They
+   * share nothing with PUSH_SEND_RID, or a burst of alerts would leave answered cards on lock
+   * screens. Sized about ten times the alert budget, the legacy ratio.
+   */
+  PUSH_SEND_RID_BACKGROUND: 300,
   PUSH_SEND_TOKEN: 10,
   PUSH_SEND_AGGREGATE: 600,
   PUSH_SEND_RECORDS: 4096,

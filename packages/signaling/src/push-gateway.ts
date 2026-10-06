@@ -1,4 +1,4 @@
-/** Actual durable push operation: consumption precedes JWT/network; exact epoch owns every await. */
+/** Actual durable push operation: consumption precedes the network effect; exact epoch owns every await. */
 import {
   type PushRejectReason,
   type PushSubmit,
@@ -27,18 +27,27 @@ export function rejected(
 ): PushSubmitResult {
   return { v: 2, requestDigest: digest, outcome: 'rejected', reason, retryable };
 }
-export function pushResponse(result: PushSubmitResult): Response {
+/**
+ * `retryAfter` is the seconds until the fixed budget window that refused the request ends (#1200):
+ * the caller may retry the same bytes then, never inside the window that refused them.
+ */
+export function pushResponse(result: PushSubmitResult, retryAfter?: number): Response {
   const status =
     result.outcome === 'rejected'
-      ? result.reason === 'RATE_LIMITED' || result.reason === 'CAPACITY'
-        ? 429
-        : result.reason === 'STORE_ERROR'
-          ? 503
-          : 400
+      ? result.reason === 'UNAUTHORIZED'
+        ? 401
+        : result.reason === 'RATE_LIMITED' || result.reason === 'CAPACITY'
+          ? 429
+          : result.reason === 'STORE_ERROR'
+            ? 503
+            : 400
       : 200;
   return new Response(encodePushSubmitResult(result), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(retryAfter === undefined ? {} : { 'retry-after': String(retryAfter) }),
+    },
   });
 }
 export async function hashPublic(value: string): Promise<string> {
@@ -84,7 +93,8 @@ export async function readPushBody(request: Request): Promise<string> {
 export interface PushIo {
   now(): number;
   audience(): string | null;
-  jwt(): Promise<string>;
+  /** `refresh` signs a new APNs provider token instead of reusing the cached one. */
+  jwt(refresh?: boolean): Promise<string>;
   send(request: ApnsRequest, signal: AbortSignal): Promise<Response>;
 }
 
@@ -127,6 +137,28 @@ export class PushGateway {
           if (!record || record.digest !== digest || record.epoch !== epoch)
             throw new Error('nonce ownership');
           this.storage.kv.put(nonceKey, { ...record, result });
+        });
+        await this.storage.sync();
+        return pushResponse(result);
+      } catch {
+        return pushResponse(uncertain());
+      }
+    };
+    // A definite transient refusal from Apple: the notification was NOT accepted, so the same
+    // signed bytes may try again while the submit is valid. Drop the pending nonce instead of
+    // retaining a final result (an uncertain outcome never takes this path).
+    const release = async (result: PushSubmitResult): Promise<Response> => {
+      try {
+        this.storage.transactionSync(() => {
+          const record = this.nonce(nonceKey);
+          if (
+            !record ||
+            record.digest !== digest ||
+            record.epoch !== epoch ||
+            record.result !== undefined
+          )
+            throw new Error('nonce ownership');
+          this.storage.kv.delete(nonceKey);
         });
         await this.storage.sync();
         return pushResponse(result);
@@ -197,14 +229,34 @@ export class PushGateway {
         if (retained.epoch !== epoch) return pushResponse(rejected('NOT_ENROLLED', digest));
         return pushResponse(retained.result ?? uncertain());
       }
+      // #1200: everything that can fail before Apple is reached runs BEFORE the nonce is consumed,
+      // so a missing or unusable credential or an oversized request is reported as what it is and
+      // strands no pending nonce. Signing a provider token is local work, not a network effect.
       if (!this.env.APNS_KEY_ID || !this.env.APNS_TEAM_ID || !this.env.APNS_PRIVATE_KEY)
-        return pushResponse(rejected('STORE_ERROR', digest, true));
+        return pushResponse(rejected('APNS_UNAVAILABLE', digest, true));
+      let jwt: string;
+      try {
+        jwt = await this.io.jwt();
+      } catch {
+        return pushResponse(rejected('APNS_UNAVAILABLE', digest, true));
+      }
+      let apns: ApnsRequest;
+      try {
+        apns = buildSecureApnsRequest(checked, jwt, this.env.APNS_BUNDLE_ID ?? 'live.yooz.remi');
+      } catch {
+        return pushResponse(rejected('OVERSIZE', digest));
+      }
       const budget = await withinPushBudget(this.env.LIMITER, 'send', {
         ip: await hashPublic(request.headers.get('CF-Connecting-IP') ?? 'unknown'),
         rid,
         tokenHash: await hashPublic(checked.token),
+        pushClass: checked.pushClass,
       });
-      if (!budget.ok) return pushResponse(rejected(budget.reason ?? 'STORE_ERROR', digest, true));
+      if (!budget.ok)
+        return pushResponse(
+          rejected(budget.reason ?? 'STORE_ERROR', digest, true),
+          budget.retryAfter,
+        );
       const submitting = checked;
       const decision = this.storage.transactionSync(() => {
         if (!sameEnrollment(this.storage, deviceKey, epoch))
@@ -235,18 +287,10 @@ export class PushGateway {
         return null;
       });
       if (decision) return pushResponse(decision);
-      // The nonce is consumed durably BEFORE signing an APNs JWT or invoking the receiver.
+      // The nonce is consumed durably BEFORE the receiver is invoked.
       await this.storage.sync();
       if (!sameEnrollment(this.storage, deviceKey, epoch))
         return finish(rejected('NOT_ENROLLED', digest));
-      const jwt = await this.io.jwt();
-      if (!sameEnrollment(this.storage, deviceKey, epoch))
-        return finish(rejected('NOT_ENROLLED', digest));
-      const apns = buildSecureApnsRequest(
-        checked,
-        jwt,
-        this.env.APNS_BUNDLE_ID ?? 'live.yooz.remi',
-      );
       const record = this.nonce(nonceKey);
       if (
         !sameEnrollment(this.storage, deviceKey, epoch) ||
@@ -284,7 +328,16 @@ export class PushGateway {
         const invalid = ['BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic'].includes(
           reason,
         );
-        return finish(rejected(invalid ? 'INVALID_TOKEN' : 'APNS_REJECTED', digest));
+        if (invalid) return finish(rejected('INVALID_TOKEN', digest));
+        // Transient (#1200): throttling, Apple-side errors and an expired provider token say
+        // nothing about this capsule, so the same bytes may succeed later. Everything else Apple
+        // refuses (bad topic, bad payload, invalid provider token) stays final and retained.
+        const expiredToken = response.status === 403 && reason === 'ExpiredProviderToken';
+        if (response.status === 429 || response.status >= 500 || expiredToken) {
+          if (expiredToken) await this.io.jwt(true).catch(() => undefined);
+          return release(rejected('APNS_UNAVAILABLE', digest, true));
+        }
+        return finish(rejected('APNS_REJECTED', digest));
       } finally {
         clearTimeout(timer);
       }

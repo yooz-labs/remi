@@ -21,6 +21,9 @@ interface Received {
   httpVersion: string;
   headers: Record<string, string | string[] | undefined>;
 }
+/** The per-deployment bearer secret (#1200); every v2 submit must present it. */
+const PUSH_SECRET = 'owned-test-push-secret';
+const bearer = { authorization: `Bearer ${PUSH_SECRET}` };
 let worker: TestWorker | undefined;
 let server: Server | undefined;
 const requests: Received[] = [];
@@ -45,7 +48,8 @@ afterEach(async () => {
   for (const dir of persistence.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(vars: Record<string, string> = {}, persist?: string) {
+/** A `vars` entry of `undefined` removes that Worker variable (the harness otherwise merges). */
+async function setup(vars: Record<string, string | undefined> = {}, persist?: string) {
   const p8 = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
     'sign',
     'verify',
@@ -76,14 +80,18 @@ async function setup(vars: Record<string, string> = {}, persist?: string) {
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('owned receiver unavailable');
-  const config = {
+  const merged: Record<string, string | undefined> = {
     APNS_KEY_ID: 'OWNEDTEST1',
     APNS_TEAM_ID: 'OWNEDTEAM1',
     APNS_PRIVATE_KEY: pem,
     APNS_BUNDLE_ID: 'owned.synthetic.topic',
     TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+    PUSH_SECRET,
     ...vars,
   };
+  const config = Object.fromEntries(
+    Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
   worker = await startWorker(config, true, persist ? { path: persist } : undefined);
   const machine = await newMachine();
   activeRid = machine.ridHex;
@@ -126,14 +134,22 @@ async function submission(
     },
     r.systemRandom,
   );
+  // The Worker's view (#1200): the class, never the sealed kind or key metadata.
+  const expiresAt = changes.expiresAt ?? now + 50;
   const unsigned: r.UnsignedPushSubmit = {
-    ...content,
     v: 2,
     audience: w.url,
+    rid: content.rid,
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
     token: 'ab'.repeat(32),
     environment: 'sandbox',
+    collapseId: content.collapseId,
+    pushClass: 'alert',
     nonce: r.b64u(r.systemRandom(32)),
-    expiresAt: now + 50,
+    issuedAt: now,
+    expiresAt,
+    storeUntil: changes.storeUntil ?? expiresAt,
     sealed: r.b64u(sealed),
     ...changes,
   };
@@ -142,12 +158,16 @@ async function submission(
     signature: r.b64u(await m.signer.sign(await r.buildPushSubmitSigningInput(unsigned))),
   };
 }
-async function post(w: TestWorker, s: r.PushSubmit | string) {
+async function post(
+  w: TestWorker,
+  s: r.PushSubmit | string,
+  headers: Record<string, string> = bearer,
+) {
   const rid =
     typeof s === 'string' ? (s.match(/"rid":"([0-9a-f]+)"/)?.[1] ?? '00'.repeat(16)) : s.rid;
   const res = await get(`${w.url}/v2/push/${rid}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: typeof s === 'string' ? s : r.encodePushSubmit(s),
   });
   const raw = await res.text();
@@ -157,7 +177,7 @@ async function post(w: TestWorker, s: r.PushSubmit | string) {
   return r.decodePushSubmitResult(raw);
 }
 
-test('real gateway accepts exact machine proof without legacy secret and sends only sealed generic APNs data', async () => {
+test('real gateway accepts the deployment bearer and exact machine proof and sends only sealed generic APNs data', async () => {
   const { worker: w, machine: m, device: d, recipient: p, p8 } = await setup();
   const s = await submission(w, m, d, p);
   const proof = await r.verifyPushSubmit(
@@ -179,14 +199,15 @@ test('real gateway accepts exact machine proof without legacy secret and sends o
   expect(Object.keys(body).sort()).toEqual(['aps', 'remiPush']);
   expect(body.aps['mutable-content']).toBe(1);
   expect(body.aps.category).toBe('');
+  // #1200 A5: the carrier APNs relays names the room, the collapse id and the sealed bytes only.
   expect(body.remiPush).toEqual({
     v: 2,
     rid: s.rid,
     collapseId: s.collapseId,
-    keyVersion: s.keyVersion,
-    kind: s.kind,
     sealed: s.sealed,
   });
+  expect(req.body).not.toContain('keyVersion');
+  expect(req.body).not.toContain('"kind"');
   expect(req.headers['apns-topic']).toBe('owned.synthetic.topic');
   expect(req.headers['x-owned-apns-url']).toBe(
     `https://api.sandbox.push.apple.com/3/device/${s.token}`,
@@ -203,13 +224,31 @@ test('real gateway accepts exact machine proof without legacy secret and sends o
   ).toBe(true);
 }, 15000);
 
+// #1200 A4: Apple stores the notification until `apns-expiration`; it follows the signed storage
+// deadline (the content expiry), not the 60 second acceptance window of the submit.
+test('apns-expiration follows the signed storage deadline while acceptance stays 60 seconds', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const now = Math.floor(Date.now() / 1000);
+  const s = await submission(w, m, d, p, {
+    issuedAt: now,
+    expiresAt: now + 50,
+    storeUntil: now + 900,
+  });
+  expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+  expect(requests[0]?.headers['apns-expiration']).toBe(String(now + 900));
+  const row = (await roomState(w, m.ridHex)).storage[`push-nonce:${s.nonce}`] as { until: number };
+  expect(row.until, 'the nonce is retained for the submit window, not the storage deadline').toBe(
+    now + 50 + 60,
+  );
+}, 15000);
+
 test('real durable nonce same digest returns retained outcome; different signed content never sends twice', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const s = await submission(w, m, d, p);
   const first = await post(w, s);
   expect(first.outcome).toBe('accepted');
   expect(await post(w, s)).toEqual(first);
-  const changed = await submission(w, m, d, p, { nonce: s.nonce, revision: 2 });
+  const changed = await submission(w, m, d, p, { nonce: s.nonce, pushClass: 'background' });
   expect(await post(w, changed)).toMatchObject({
     outcome: 'rejected',
     reason: 'NONCE_CONFLICT',
@@ -259,14 +298,150 @@ test('actual enrollment row epoch survives idempotent enroll and changes only on
   expect(legacy.epoch).toMatch(/^[A-Za-z0-9_-]{43}$/);
 }, 15000);
 
-test('legacy plaintext route is default off and explicit compatibility still requires a secret', async () => {
-  const { worker: w } = await setup({ APNS_KEY_ID: '' });
-  const res = await get(`${w.url}/push`, {
+/** Durable budget rows the limiter holds: any `pa:` or `ps:` row means a budget was charged. */
+async function budgetRows(w: TestWorker): Promise<string[]> {
+  const v = (await (await get(`${w.url}/__limiter/__state`)).json()) as {
+    storage: Record<string, unknown>;
+  };
+  return Object.keys(v.storage).filter((k) => k.startsWith('pa:') || k.startsWith('ps:'));
+}
+const unauthorized: r.PushSubmitResult = {
+  v: 2,
+  requestDigest: null,
+  outcome: 'rejected',
+  reason: 'UNAUTHORIZED',
+  retryable: false,
+};
+
+// #1200 A1: plan 3.2 asks for a machine-key signature PLUS a per-deployment secret. Before the
+// fix the v2 route read no bearer at all, so anyone could enroll a device in a room named by
+// their own key and submit for any token, and garbage posts drained the shared attempt budget.
+for (const [name, headers] of [
+  ['missing', {}],
+  ['wrong', { authorization: 'Bearer not-the-deployment-secret' }],
+  ['wrong scheme', { authorization: `Basic ${PUSH_SECRET}` }],
+  ['empty token', { authorization: 'Bearer ' }],
+] as const)
+  test(`v2 push with a ${name} bearer is refused before any budget or APNs effect`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup();
+    const s = await submission(w, m, d, p);
+    const res = await get(`${w.url}/v2/push/${s.rid}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: r.encodePushSubmit(s),
+    });
+    expect(res.status).toBe(401);
+    expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+    expect(await budgetRows(w)).toEqual([]);
+    expect(requests.length).toBe(0);
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+  }, 15000);
+
+test('v2 push bearer is checked before the path, the body and the attempt budget', async () => {
+  const { worker: w } = await setup({ PUSH_ATTEMPT_IP: '1' });
+  for (const path of ['/v2/push/not-a-room', `/v2/push/${'0'.repeat(32)}?x=1`]) {
+    const res = await get(`${w.url}${path}`, { method: 'POST', body: ' '.repeat(9000) });
+    expect(res.status).toBe(401);
+    expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+  }
+  expect(await budgetRows(w)).toEqual([]);
+}, 15000);
+
+// A deployment with no secret must not become an open relay (plan 3.2): refuse, never skip.
+for (const [name, secret] of [
+  ['unset', undefined],
+  ['empty', ''],
+  ['whitespace', ' \n\t'],
+] as const)
+  test(`v2 push on a deployment whose PUSH_SECRET is ${name} refuses every submit`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup({ PUSH_SECRET: secret });
+    const s = await submission(w, m, d, p);
+    for (const headers of [
+      {},
+      { authorization: 'Bearer ' },
+      { authorization: `Bearer ${secret ?? ''}` },
+    ]) {
+      const res = await get(`${w.url}/v2/push/${s.rid}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: r.encodePushSubmit(s),
+      });
+      expect(res.status).toBe(401);
+      expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+    }
+    expect(await budgetRows(w)).toEqual([]);
+    expect(requests.length).toBe(0);
+  }, 15000);
+
+test('a correct bearer is accepted and the secret never appears in the APNs request', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  const req = requests[0];
+  if (!req) throw new Error('receiver missing');
+  expect(JSON.stringify(req)).not.toContain(PUSH_SECRET);
+}, 15000);
+
+// #1200 A10 (owner decision): the legacy plaintext /push stays ON by default until secure push
+// ships end to end (the default flips at the R7 gate), so a deployment that sets only PUSH_SECRET,
+// as every existing one does, keeps working. It is disabled only by an explicit false value, and
+// it still needs the bearer. APNs credentials are left unset here so a request that passes both
+// gates stops at APNS_NOT_CONFIGURED instead of reaching Apple.
+async function legacyPush(w: TestWorker, headers: Record<string, string> = bearer) {
+  return get(`${w.url}/push`, {
     method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({ token: 'owned', title: 'owned', body: 'owned' }),
   });
-  expect(res.status).toBe(403);
+}
+test('legacy plaintext route is on by default and still requires the bearer', async () => {
+  const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: undefined });
+  expect((await legacyPush(w)).status).toBe(500);
+  expect(((await (await legacyPush(w)).json()) as { error: string }).error).toBe(
+    'APNS_NOT_CONFIGURED',
+  );
+  for (const headers of [
+    {},
+    { authorization: 'Bearer wrong' },
+    { authorization: `Bearer ${PUSH_SECRET}x` },
+    { authorization: `Bearer ${PUSH_SECRET.slice(0, -1)}` },
+    { authorization: `bearer ${PUSH_SECRET}` },
+  ])
+    expect((await legacyPush(w, headers)).status).toBe(401);
   expect(requests.length).toBe(0);
+}, 15000);
+
+// The configured flag is trimmed and only an explicit false value disables the route: a secret set
+// through `echo true | wrangler secret put` carries a newline that used to switch it off.
+for (const [value, enabled] of [
+  [undefined, true],
+  ['', true],
+  ['true', true],
+  ['true\n', true],
+  [' TRUE ', true],
+  ['yes', true],
+  ['garbage', true],
+  ['false', false],
+  ['false\n', false],
+  [' False ', false],
+  ['FALSE', false],
+  ['0', false],
+  ['no', false],
+  ['off', false],
+] as const)
+  test(`LEGACY_PUSH_ENABLED=${JSON.stringify(value)} ${enabled ? 'leaves' : 'turns off'} the legacy route`, async () => {
+    const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: value });
+    const res = await legacyPush(w);
+    if (enabled) expect(res.status).toBe(500);
+    else {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe('LEGACY_PUSH_DISABLED');
+    }
+    expect(requests.length).toBe(0);
+  }, 15000);
+
+test('legacy route accepts the secret as configured with surrounding whitespace', async () => {
+  const { worker: w } = await setup({ APNS_KEY_ID: '', PUSH_SECRET: `  ${PUSH_SECRET}\n` });
+  expect((await legacyPush(w)).status).toBe(500);
 }, 15000);
 
 async function gate(w: TestWorker, rid: string, stage: string | null) {
@@ -370,6 +545,39 @@ test('real low nonce capacity refuses without live eviction and reclaims only at
   expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${first.nonce}`);
 }, 15000);
 
+// #1200 A2 (#723): dismissals are quiet pushes that must not queue behind alerts. A shared
+// per-room budget left answered cards on lock screens, which is why legacy gave dismissals their
+// own, larger ceiling.
+test('a dismissal has its own per-room budget: exhausting the alert budget does not refuse it', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ PUSH_SEND_RID: '1' });
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  expect(await post(w, await submission(w, m, d, p))).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+  });
+  const dismissal = await post(w, await submission(w, m, d, p, { pushClass: 'background' }));
+  expect(dismissal.outcome).toBe('accepted');
+  expect(requests.map((q) => q.headers['apns-push-type'])).toEqual(['alert', 'background']);
+}, 15000);
+
+test('alerts do not consume the dismissal budget and the dismissal budget is its own ceiling', async () => {
+  const {
+    worker: w,
+    machine: m,
+    device: d,
+    recipient: p,
+  } = await setup({ PUSH_SEND_RID_BACKGROUND: '1' });
+  const dismiss = () => submission(w, m, d, p, { pushClass: 'background' });
+  expect((await post(w, await dismiss())).outcome).toBe('accepted');
+  expect(await post(w, await dismiss())).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+    retryable: true,
+  });
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  expect(requests.length).toBe(2);
+}, 15000);
+
 for (const name of ['PUSH_SEND_IP', 'PUSH_SEND_RID', 'PUSH_SEND_TOKEN', 'PUSH_SEND_AGGREGATE'])
   test(`actual durable ${name} low policy counts without APNs second send`, async () => {
     const { worker: w, machine: m, device: d, recipient: p } = await setup({ [name]: '1' });
@@ -408,6 +616,109 @@ test('real APNs rejection is final fixed invalid-token outcome with no environme
   expect(await post(w, s)).toEqual(first);
   expect(requests.length).toBe(1);
 }, 15000);
+
+// #1200 A3: a failure before APNs must be reported as what it is, and a transient one must leave
+// the same signed bytes able to succeed on a retry. Before the fix an unusable APNs key threw after
+// the nonce was consumed (HTTP 200 uncertain, nonce pending forever, never retried), and every
+// non-2xx from Apple, a 429 or 503 included, became a final non-retryable APNS_REJECTED.
+test('an unusable APNs key is a retryable unavailable outcome and strands no nonce', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ APNS_PRIVATE_KEY: 'x' });
+  const s = await submission(w, m, d, p);
+  const first = await post(w, s);
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_UNAVAILABLE', retryable: true });
+  expect(first.requestDigest).toMatch(/^[0-9a-f]{64}$/);
+  expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+  expect(await post(w, s)).toEqual(first);
+  expect(requests.length).toBe(0);
+}, 15000);
+
+test('missing APNs credentials are a retryable unavailable outcome that charges no send budget', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ APNS_KEY_ID: '' });
+  const first = await post(w, await submission(w, m, d, p));
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_UNAVAILABLE', retryable: true });
+  expect((await budgetRows(w)).filter((k) => k.startsWith('ps:'))).toEqual([]);
+  expect(requests.length).toBe(0);
+}, 15000);
+
+for (const [httpStatus, reason] of [
+  [429, 'TooManyRequests'],
+  [500, 'InternalServerError'],
+  [503, 'ServiceUnavailable'],
+] as const)
+  test(`APNs ${httpStatus} ${reason} is retryable and the same signed bytes succeed once APNs recovers`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup();
+    const s = await submission(w, m, d, p);
+    status = httpStatus;
+    responseBody = JSON.stringify({ reason });
+    expect(await post(w, s)).toMatchObject({
+      outcome: 'rejected',
+      reason: 'APNS_UNAVAILABLE',
+      retryable: true,
+    });
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+    status = 200;
+    responseBody = '';
+    expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+    expect(requests.length).toBe(2);
+    expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+    expect(requests.length).toBe(2);
+  }, 15000);
+
+test('an expired provider token is retryable and the retry signs a fresh JWT', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  status = 403;
+  responseBody = '{"reason":"ExpiredProviderToken"}';
+  expect(await post(w, s)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'APNS_UNAVAILABLE',
+    retryable: true,
+  });
+  status = 200;
+  responseBody = '';
+  expect(await post(w, s)).toMatchObject({ outcome: 'accepted' });
+  expect(requests.length).toBe(2);
+  expect(requests[1]?.headers['authorization']).not.toBe(requests[0]?.headers['authorization']);
+}, 15000);
+
+test('a permanent APNs rejection stays final and is retained for the same nonce', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  status = 400;
+  responseBody = '{"reason":"BadTopic"}';
+  const first = await post(w, s);
+  expect(first).toMatchObject({ outcome: 'rejected', reason: 'APNS_REJECTED', retryable: false });
+  status = 200;
+  responseBody = '';
+  expect(await post(w, s)).toEqual(first);
+  expect(requests.length).toBe(1);
+}, 15000);
+
+// A fixed-window refusal cannot succeed again inside its window, so the Worker says when the next
+// one starts and the daemon waits for it instead of retrying within the same minute.
+for (const [name, vars] of [
+  ['send', { PUSH_SEND_TOKEN: '1' }],
+  ['attempt', { PUSH_ATTEMPT_IP: '1' }],
+] as const)
+  test(`a ${name} budget refusal carries the seconds until the next window as Retry-After`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup(vars);
+    const submit = async () => {
+      const s = await submission(w, m, d, p);
+      return get(`${w.url}/v2/push/${s.rid}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer },
+        body: r.encodePushSubmit(s),
+      });
+    };
+    expect((await submit()).status).toBe(200);
+    const refused = await submit();
+    expect(r.decodePushSubmitResult(await refused.text())).toMatchObject({
+      reason: 'RATE_LIMITED',
+      retryable: true,
+    });
+    const seconds = Number(refused.headers.get('retry-after'));
+    expect(Number.isInteger(seconds) && seconds >= 1 && seconds <= 60).toBe(true);
+  }, 15000);
 
 test('actual production configured audience refuses HTTP even when owned test scheme seam admits it', async () => {
   const { worker: w, machine: m } = await setup();
@@ -533,7 +844,11 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
     `/v2/push/${m.ridHex.toUpperCase()}`,
     `/v2/push/${m.ridHex}/`,
   ]) {
-    const res = await get(`${w.url}${path}`, { method: 'POST', body: r.encodePushSubmit(s) });
+    const res = await get(`${w.url}${path}`, {
+      method: 'POST',
+      headers: bearer,
+      body: r.encodePushSubmit(s),
+    });
     expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
       outcome: 'rejected',
       reason: 'MALFORMED',
@@ -541,13 +856,18 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
   }
   const wrong = await submission(w, m, d, p, { audience: 'https://different-owned.example' });
   expect(await post(w, wrong)).toMatchObject({ outcome: 'rejected', reason: 'WRONG_AUDIENCE' });
-  const res = await get(`${w.url}/v2/push/${m.ridHex}`, { method: 'POST', body: ' '.repeat(8193) });
+  const res = await get(`${w.url}/v2/push/${m.ridHex}`, {
+    method: 'POST',
+    headers: bearer,
+    body: ' '.repeat(8193),
+  });
   expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
     outcome: 'rejected',
     reason: 'OVERSIZE',
   });
   const malformed = await get(`${w.url}/v2/push/${m.ridHex}`, {
     method: 'POST',
+    headers: bearer,
     body: Uint8Array.of(255),
   });
   expect(r.decodePushSubmitResult(await malformed.text())).toMatchObject({
@@ -558,7 +878,11 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
 }, 15000);
 
 test('legacy compatibility flag without secret remains refused on actual Worker', async () => {
-  const { worker: w } = await setup({ LEGACY_PUSH_ENABLED: 'true', APNS_KEY_ID: '' });
+  const { worker: w } = await setup({
+    LEGACY_PUSH_ENABLED: 'true',
+    PUSH_SECRET: '',
+    APNS_KEY_ID: '',
+  });
   const res = await get(`${w.url}/push`, {
     method: 'POST',
     body: JSON.stringify({ token: 'owned', title: 'owned', body: 'owned' }),
@@ -661,10 +985,12 @@ test('actual signed submit expiry during JWT completion delivery refuses before 
   expect(requests.length).toBe(0);
 }, 15000);
 
-test('actual pending nonce ownership replacement during JWT completion prevents APNs effect', async () => {
+test('actual pending nonce ownership replacement during consume sync completion prevents APNs effect', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const signed = await submission(w, m, d, p);
-  await gate(w, m.ridHex, 'jwt');
+  // #1200 A3: the JWT is now obtained before the nonce is consumed, so ownership is
+  // contested at the first point the pending record exists: its consume sync.
+  await gate(w, m.ridHex, 'consume-sync');
   const result = post(w, signed);
   await reached(w, m.ridHex);
   const key = `push-nonce:${signed.nonce}`;
@@ -682,7 +1008,7 @@ test('actual pending nonce ownership replacement during JWT completion prevents 
   expect(requests.length).toBe(0);
 }, 15000);
 
-test('actual gateway refuses all14 reviewed weak encodings in both public fields and an off-curve signed P256 recipient', async () => {
+test('actual gateway refuses all14 reviewed weak encodings in both public fields and any restated sealed-only field', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const s = await submission(w, m, d, p);
   // Read the single reviewed table; independent shared arithmetic tests validate its exact membership.
@@ -698,18 +1024,74 @@ test('actual gateway refuses all14 reviewed weak encodings in both public fields
         await post(w, JSON.stringify({ ...s, [field]: r.b64u(Buffer.from(key, 'hex')) })),
       ).toMatchObject({ outcome: 'rejected', reason: 'MALFORMED', requestDigest: null });
     }
-  const offCurve = new Uint8Array(65);
-  offCurve[0] = 4;
-  const signed = await submission(w, m, d, p, { pushPublicKey: r.b64u(offCurve) });
-  expect(await post(w, signed)).toMatchObject({
-    outcome: 'rejected',
-    reason: 'MALFORMED',
-    requestDigest: null,
-  });
+  // #1200 A5: the push key, key version, revision and event kind are sealed-only. The Worker
+  // cannot judge a push key (an off-curve one is refused by the daemon's seal), and a producer
+  // that restates any of them in the clear is refused by the strict decoder.
+  const restated: [string, unknown][] = [
+    ['pushPublicKey', s.nonce],
+    ['keyVersion', 1],
+    ['revision', 1],
+    ['kind', 'question'],
+  ];
+  for (const [field, value] of restated)
+    expect(await post(w, JSON.stringify({ ...s, [field]: value }))).toMatchObject({
+      outcome: 'rejected',
+      reason: 'MALFORMED',
+      requestDigest: null,
+    });
   expect(requests.length).toBe(0);
   expect(
     Object.keys((await roomState(w, m.ridHex)).storage).filter((k) => k.startsWith('push-nonce:')),
   ).toEqual([]);
+}, 15000);
+
+// #1200 A9: the acceptance names both of these and no other test covered them.
+test('a URL naming a different valid room than the signed body is refused before any effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const s = await submission(w, m, d, p);
+  const other = await newMachine();
+  expect(other.ridHex).not.toBe(m.ridHex);
+  const res = await get(`${w.url}/v2/push/${other.ridHex}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...bearer },
+    body: r.encodePushSubmit(s),
+  });
+  expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
+    outcome: 'rejected',
+    reason: 'MALFORMED',
+    retryable: false,
+  });
+  expect(requests.length).toBe(0);
+  for (const rid of [m.ridHex, other.ridHex])
+    expect(
+      Object.keys((await roomState(w, rid)).storage).filter((k) => k.startsWith('push-nonce:')),
+    ).toEqual([]);
+  // The same bytes still succeed at the room they were signed for: only the URL was wrong.
+  expect((await post(w, s)).outcome).toBe('accepted');
+}, 15000);
+
+test('an already stale or not yet valid signed submit is refused before any effect', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  const now = Math.floor(Date.now() / 1000);
+  for (const [issuedAt, expiresAt] of [
+    [now - 120, now - 60],
+    [now - 61, now - 1],
+    [now - 60, now],
+    [now + 120, now + 180],
+  ] as const) {
+    const stale = await submission(w, m, d, p, { issuedAt, expiresAt });
+    expect(await post(w, stale), `issuedAt=${issuedAt - now} expiresAt=${expiresAt - now}`).toEqual(
+      {
+        v: 2,
+        requestDigest: null,
+        outcome: 'rejected',
+        reason: 'EXPIRED',
+        retryable: false,
+      },
+    );
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${stale.nonce}`);
+  }
+  expect(requests.length).toBe(0);
 }, 15000);
 
 test('actual configured enrollment limit above64 still admits push with lazy per-row authority', async () => {

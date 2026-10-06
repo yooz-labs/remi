@@ -21,7 +21,8 @@ A courier.
 It admits sockets, pairs a client with the host's pipe, and forwards bytes it never parses.
 With conforming v2 endpoints, session payloads (including session ids) and device names are encrypted, and private keys and the pairing secret never reach it.
 It sees public keys, admission metadata and the plaintext `hello` / `hello_ack` handshake listed under "What the Worker sees".
-The separate legacy `POST /push` route still receives plaintext notification data; the v2 confidentiality claim does not cover it.
+The separate legacy `POST /push` route, which is on by default until the R7 gate, still receives plaintext notification data; the v2 confidentiality claim does not cover it.
+The R5 `POST /v2/push/<rid>` route receives sealed notification bytes plus the public delivery and proof metadata listed under "Sealed push"; it never sees notification text, event kind or options.
 Nothing in the end-to-end protocol depends on the Worker behaving (ADR 0034 section 4).
 
 ## Topology
@@ -181,7 +182,7 @@ Stated plainly, as ADR 0034 section 11 does, because the protocol hides content 
 
 With conforming v2 endpoints it does not see plaintext session payloads or device names, private identity keys, derived session keys or the pairing secret.
 It sees the public keys and handshake content listed above, and can derive a public fingerprint from the machine public key.
-This describes the v2 relay path; the legacy `POST /push` path still receives plaintext notification data, including session ids.
+This describes the v2 relay path; the legacy `POST /push` path (on by default until the R7 gate) still receives plaintext notification data, including session ids.
 An active Worker can drop, delay, duplicate, reorder or inject frames, refuse service, admit or refuse devices and close sockets; the library detects what it can (ADR 0034 sections 7 and 11).
 
 ## What stays and what changes
@@ -190,12 +191,33 @@ Deleted from the Worker: the code-named room (`/connect/<code>`, the 30-bit code
 
 Changed: the room (one per machine, admission, no TTL, edge ping), a global limiter object (new class `GlobalLimiter`, migration `v4`), the per-address upgrade limit (now through that object).
 
-**Unchanged: the legacy `POST /push`.**
-It stays until push privacy (R5) ships and old app builds update (plan section 3.5, owner decision D).
-Exactly what stays: the route, the `Authorization: Bearer <PUSH_SECRET>` check (only when `PUSH_SECRET` is set; with none, a request is accepted), the plaintext body shape, the per-isolate rate limiters (authenticated, unauthenticated and dismiss budgets), the APNS forwarding and its `tokenInvalid` reply.
+**Legacy `POST /push`: kept, on by default, now always authenticated.**
+It stays until push privacy ships end to end and old app builds update (plan section 3.5, owner decision D); the default flips and the route is removed at the R7 gate, by the criteria in [the runbook](relay-worker-deploy-runbook.md#retiring-the-legacy-plaintext-post-push-route).
+- **On by default.**
+  A deployment that sets only `PUSH_SECRET` keeps working.
+  Only an explicit false `LEGACY_PUSH_ENABLED` (`false`, `0`, `no` or `off`, trimmed, any case) turns it off, with `403 LEGACY_PUSH_DISABLED`.
+- **Always authenticated.**
+  The `Authorization: Bearer <PUSH_SECRET>` check is compared in constant time (SHA-256 digests of both sides), and an unset or blank `PUSH_SECRET` refuses every request with 401; the Worker never accepts an unauthenticated plaintext push.
+  The configured secret is trimmed before the comparison.
+- **Unchanged:** the plaintext body shape, the per-isolate rate limiters (authenticated and dismiss budgets), the APNS forwarding and its `tokenInvalid` reply.
+
 `/health` and the CORS preflight are unchanged too (`tests/pin-worker-routes.test.ts` pins them).
-**Not part of this change: per-machine authentication of `/push`.**
-It needs a signed message the ADR does not define; see the pull request for the options.
+The legacy route has no per-machine authentication: its bearer is one secret per deployment, shared by every daemon that uses it.
+Sealed push (below) adds the machine-key signature on top of the same bearer.
+
+## Sealed push (`POST /v2/push/<rid>`, R5, #1200)
+
+A daemon submits a sealed, signed push; the Worker checks it, meters it and forwards it to Apple; the iOS Notification Service Extension decrypts it.
+Authority and effect order are in [relay-v2-push-worker.md](../.context/relay-v2-push-worker.md); the cleartext fields are in [relay-v2-native-push-codec.md](relay-v2-native-push-codec.md).
+
+- **Bearer first.**
+  `Authorization: Bearer <PUSH_SECRET>` is checked in constant time before the path, the body or any budget is touched; a missing, wrong or unconfigured secret is `401 UNAUTHORIZED` and charges nothing.
+- **Then the machine key.**
+  The body is signed by the machine key whose hash is the room id, names a device key enrolled in that room, and is valid for at most 60 seconds.
+- **What the Worker sees:** the room id and both public keys, the APNs token and environment, an opaque collapse id, the push class (`alert` or `background`), a nonce and times, and the sealed bytes.
+  It does not see the event kind, key version, revision, push key or any text.
+- **Failures are truthful.**
+  A budget refusal carries `Retry-After` (seconds to the next fixed 60-second window); a failure before Apple, or an Apple 429, 5xx or expired provider token, is the retryable `APNS_UNAVAILABLE` and leaves the same signed bytes able to succeed; an outcome that may have reached Apple is `uncertain` and is never resent.
 
 ## Known limits
 

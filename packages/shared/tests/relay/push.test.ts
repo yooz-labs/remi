@@ -132,8 +132,6 @@ test('actual signed push seal opens only for current pinned machine/device/push-
     v: 2,
     rid: content.rid,
     collapseId: content.collapseId,
-    keyVersion: 1,
-    kind: content.kind,
     sealed: r.b64u(sealed),
   };
   const authority = {
@@ -147,6 +145,8 @@ test('actual signed push seal opens only for current pinned machine/device/push-
     open(recipient, carrier, { ...authority, devicePublicKey: r.b64u(seed('other device')) }, 1001),
   ).rejects.toThrow();
   await expect(open(recipient, { ...carrier, kind: 'dismiss' }, authority, 1001)).rejects.toThrow();
+  // The signed content proves the key version: an authority pinned to another one refuses.
+  await expect(open(recipient, carrier, { ...authority, keyVersion: 2 }, 1001)).rejects.toThrow();
   await expect(open(recipient, carrier, authority, 1100)).rejects.toThrow();
 });
 
@@ -211,8 +211,6 @@ test('exact reordered whitespace payload is authenticated unchanged; modified ra
     v: 2 as const,
     rid: content.rid,
     collapseId: content.collapseId,
-    keyVersion: 1,
-    kind: content.kind,
     sealed: '',
   };
   const wrap = async (p: Uint8Array) => ({
@@ -284,20 +282,71 @@ async function signedSubmission() {
     payload as r.SecurePushPayload,
     r.systemRandom,
   );
-  const unsigned = {
-    ...content,
-    kind: 'question' as const,
-    v: 2 as const,
+  const unsigned: r.UnsignedPushSubmit = {
+    v: 2,
     audience: 'https://owned.example',
+    rid: content.rid,
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
     token: 'ab'.repeat(32),
-    environment: 'sandbox' as const,
+    environment: 'sandbox',
+    collapseId: content.collapseId,
+    pushClass: 'alert',
     nonce: r.b64u(seed('submit nonce')),
+    issuedAt: content.issuedAt,
     expiresAt: 1050,
+    storeUntil: content.expiresAt,
     sealed: r.b64u(sealed),
   };
   const signature = r.b64u(await machine.sign(await build(unsigned)));
   return { machine, recipient, content, unsigned, signed: { ...unsigned, signature } };
 }
+
+// #1200 A5: plan 3.5 says the Worker sees the token, the room id, an opaque id and a generic
+// title. The event kind, key version, revision and push key are signed inside the sealed content
+// and have no business in the cleartext submit or in the carrier APNs relays.
+test('the submit hands the Worker only what it needs; kind and key metadata stay sealed', async () => {
+  const { signed } = await signedSubmission();
+  expect(Object.keys(r.decodePushSubmit(r.encodePushSubmit(signed))).sort()).toEqual([
+    'audience',
+    'collapseId',
+    'devicePublicKey',
+    'environment',
+    'expiresAt',
+    'issuedAt',
+    'machinePublicKey',
+    'nonce',
+    'pushClass',
+    'rid',
+    'sealed',
+    'signature',
+    'storeUntil',
+    'token',
+    'v',
+  ]);
+});
+
+test('the carrier names only the room, the collapse id and the sealed bytes', async () => {
+  const { machine, recipient, content } = await context();
+  const sealed = await r.sealPushContent(machine, content, payload, r.systemRandom);
+  const authority = {
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
+    pushPublicKey: content.pushPublicKey,
+    keyVersion: 1,
+  };
+  const carrier = {
+    v: 2,
+    rid: content.rid,
+    collapseId: content.collapseId,
+    sealed: r.b64u(sealed),
+  };
+  const open = (c: object) => r.openPushContent(recipient, c as never, authority, 1001);
+  expect((await open(carrier)).payload).toEqual(payload);
+  // The sealed content proves its own key version and kind; the carrier may not restate them.
+  expect(await codeOf(open({ ...carrier, kind: 'question' }))).toBe('MALFORMED');
+  expect(await codeOf(open({ ...carrier, keyVersion: 1 }))).toBe('MALFORMED');
+});
 
 test('actual outer machine proof binds every submission field and distinguishes content signatures', async () => {
   const verify = required<typeof r.verifyPushSubmit>('verifyPushSubmit');
@@ -308,22 +357,19 @@ test('actual outer machine proof binds every submission field and distinguishes 
   const baseline = await verify(decode(encode(signed)), expected, 1001);
   expect(baseline.requestDigest).toMatch(/^[0-9a-f]{64}$/);
   const { signer: other } = await r.generateIdentity();
-  const otherEc = await r.generateEcPair();
   const changes: Record<string, unknown> = {
     audience: 'https://other.example',
     rid: 'ab'.repeat(16),
     machinePublicKey: r.b64u(other.publicKey),
     devicePublicKey: r.b64u(other.publicKey),
-    pushPublicKey: r.b64u(otherEc.publicKey),
-    keyVersion: 2,
     token: 'cd'.repeat(32),
     environment: 'production',
     collapseId: r.b64u(seed('other collapse').slice(0, 16)),
-    revision: 2,
-    kind: 'turn_complete',
+    pushClass: 'background',
     nonce: r.b64u(seed('other nonce')),
     issuedAt: 999,
     expiresAt: 1049,
+    storeUntil: 1101,
     sealed: r.b64u(new Uint8Array(r.fromB64u(signed.sealed).length)),
     signature: r.b64u(new Uint8Array(64)),
   };
@@ -358,10 +404,39 @@ test('actual outer machine proof binds every submission field and distinguishes 
   );
   expect(
     codeOfSync(() =>
-      decode(encode(signed).replace('"keyVersion":1', '"keyVersion":9007199254740992')),
+      decode(encode(signed).replace('"issuedAt":1000', '"issuedAt":9007199254740992')),
     ),
   ).toBe('MALFORMED');
   expect(codeOfSync(() => decode(' '.repeat(8193)))).toBe('OVERSIZE');
+});
+
+// #1200 A4: APNs stores a notification until `apns-expiration`. The submit's own acceptance
+// window stays 60 s, but a phone that is offline longer must still get the question or its
+// dismissal, so a separate signed storage deadline follows the content expiry (never beyond the
+// content TTL, never before the submit's own expiry).
+test('the signed storage deadline is bounded by the content TTL and bound by the proof', async () => {
+  const { unsigned, machine } = await signedSubmission();
+  const withStore = (storeUntil: number) => ({ ...unsigned, storeUntil });
+  const sign = async (u: object) =>
+    r.b64u(await machine.sign(await r.buildPushSubmitSigningInput(u as r.UnsignedPushSubmit)));
+  const accepted = withStore(unsigned.issuedAt + 3600);
+  expect(await sign(accepted), 'content TTL is the inclusive ceiling').toMatch(/^[A-Za-z0-9_-]+$/);
+  expect(await codeOf(sign(withStore(unsigned.issuedAt + 3601)))).toBe('MALFORMED');
+  expect(await codeOf(sign(withStore(unsigned.expiresAt - 1)))).toBe('MALFORMED');
+  const signed = { ...accepted, signature: await sign(accepted) };
+  const expected = { rid: signed.rid, audience: signed.audience };
+  const baseline = await r.verifyPushSubmit(
+    r.decodePushSubmit(r.encodePushSubmit(signed)),
+    expected,
+    1001,
+  );
+  expect(baseline.requestDigest).toMatch(/^[0-9a-f]{64}$/);
+  await expect(
+    r.verifyPushSubmit({ ...signed, storeUntil: signed.storeUntil - 1 }, expected, 1001),
+    'the storage deadline is part of the signed tuple',
+  ).rejects.toThrow();
+  // The acceptance window itself is unchanged: expiry is still at most 60 s after issue.
+  expect(await codeOf(sign({ ...accepted, expiresAt: unsigned.issuedAt + 61 }))).toBe('MALFORMED');
 });
 
 test('push content and submit TTLs and future clock skew enforce exact finite boundaries', async () => {
@@ -413,8 +488,6 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
       v: 2 as const,
       rid: c.rid,
       collapseId: c.collapseId,
-      keyVersion: 1,
-      kind: c.kind,
       sealed: r.b64u(sealed),
     };
     if (skew === 60)
@@ -439,7 +512,12 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
   ).toBe('MALFORMED');
   for (const skew of [60, 61]) {
     const actual = await signedSubmission();
-    const matching = { ...actual.unsigned, issuedAt: now + skew, expiresAt: now + skew + 60 };
+    const matching = {
+      ...actual.unsigned,
+      issuedAt: now + skew,
+      expiresAt: now + skew + 60,
+      storeUntil: now + skew + 60,
+    };
     const proof = {
       ...matching,
       signature: r.b64u(await actual.machine.sign(await r.buildPushSubmitSigningInput(matching))),
@@ -493,8 +571,6 @@ test('whole signed inner measures multibyte UTF8 exactly at2048 and refuses2049 
           v: 2,
           rid: content.rid,
           collapseId: content.collapseId,
-          keyVersion: 1,
-          kind: content.kind,
           sealed: r.b64u(sealed),
         },
         {

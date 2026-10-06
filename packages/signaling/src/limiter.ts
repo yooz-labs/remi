@@ -64,14 +64,15 @@ export class GlobalLimiter {
     } catch {
       return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
     }
-    const fields = mode === 'attempt' ? ['ip'] : ['ip', 'rid', 'tokenHash'];
+    const hashes = mode === 'attempt' ? ['ip'] : ['ip', 'rid', 'tokenHash'];
     if (
       !body ||
       typeof body !== 'object' ||
-      Object.keys(body).length !== fields.length ||
-      fields.some(
+      Object.keys(body).length !== hashes.length + (mode === 'send' ? 1 : 0) ||
+      hashes.some(
         (k) => typeof body[k] !== 'string' || !/^[0-9a-f]{32,64}$/.test(body[k] as string),
-      )
+      ) ||
+      (mode === 'send' && body['pushClass'] !== 'alert' && body['pushClass'] !== 'background')
     )
       return Response.json({ ok: false, reason: 'MALFORMED' }, { status: 400 });
     const prefix = mode === 'attempt' ? 'pa:' : 'ps:';
@@ -84,7 +85,10 @@ export class GlobalLimiter {
           ]
         : [
             [`ip:${body['ip']}`, pushLimit(this.env, 'PUSH_SEND_IP')],
-            [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
+            // Dismissals are counted per room apart from alerts (#1200, #723).
+            body['pushClass'] === 'background'
+              ? [`ridbg:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID_BACKGROUND')]
+              : [`rid:${body['rid']}`, pushLimit(this.env, 'PUSH_SEND_RID')],
             [`token:${body['tokenHash']}`, pushLimit(this.env, 'PUSH_SEND_TOKEN')],
             ['all', pushLimit(this.env, 'PUSH_SEND_AGGREGATE')],
           ];
@@ -111,10 +115,12 @@ export class GlobalLimiter {
           }
         }
         const targets = checks.map(([key, max]) => ({ key: `${prefix}${window}:${key}`, max }));
+        // A fixed-window refusal cannot clear before the next window starts (#1200).
+        const retryAfter = Math.max(1, Math.ceil(((window + 1) * 60_000 - this.now()) / 1000));
         if (targets.some((t) => (rows.get(t.key)?.count ?? 0) >= t.max))
-          return { ok: false, reason: 'RATE_LIMITED' };
+          return { ok: false, reason: 'RATE_LIMITED', retryAfter };
         if (rows.size + targets.filter((t) => !rows.has(t.key)).length > cap)
-          return { ok: false, reason: 'CAPACITY' };
+          return { ok: false, reason: 'CAPACITY', retryAfter };
         for (const t of targets)
           kv.put(t.key, { window, count: (rows.get(t.key)?.count ?? 0) + 1 });
         return { ok: true };
@@ -171,8 +177,13 @@ export async function withinBudget(
 export async function withinPushBudget(
   ns: LimiterNamespace | undefined,
   mode: 'attempt' | 'send',
-  body: { ip: string; rid?: string; tokenHash?: string },
-): Promise<{ ok: boolean; reason?: 'RATE_LIMITED' | 'CAPACITY' | 'STORE_ERROR' }> {
+  body: { ip: string; rid?: string; tokenHash?: string; pushClass?: 'alert' | 'background' },
+): Promise<{
+  ok: boolean;
+  reason?: 'RATE_LIMITED' | 'CAPACITY' | 'STORE_ERROR';
+  /** Seconds until the fixed window that refused this request ends. */
+  retryAfter?: number;
+}> {
   if (!ns) return { ok: false, reason: 'STORE_ERROR' };
   try {
     const response = await ns
@@ -181,15 +192,26 @@ export async function withinPushBudget(
         method: 'POST',
         body: JSON.stringify(body),
       });
-    const value = (await response.json()) as { ok?: unknown; reason?: unknown };
+    const value = (await response.json()) as {
+      ok?: unknown;
+      reason?: unknown;
+      retryAfter?: unknown;
+    };
     if (value.ok === true) return { ok: true };
     if (
       value.ok === false &&
       (value.reason === 'RATE_LIMITED' ||
         value.reason === 'CAPACITY' ||
         value.reason === 'STORE_ERROR')
-    )
-      return { ok: false, reason: value.reason };
+    ) {
+      const retryAfter = value.retryAfter;
+      return typeof retryAfter === 'number' &&
+        Number.isInteger(retryAfter) &&
+        retryAfter >= 1 &&
+        retryAfter <= 60
+        ? { ok: false, reason: value.reason, retryAfter }
+        : { ok: false, reason: value.reason };
+    }
   } catch {}
   return { ok: false, reason: 'STORE_ERROR' };
 }

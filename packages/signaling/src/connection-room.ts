@@ -35,7 +35,8 @@
  * session payloads and device names are encrypted; private keys and the pairing
  * secret never reach it. It sees public keys, admission metadata and the plaintext
  * hello/hello_ack handshake. R5 stores bounded signed-push nonce outcomes and internal enrollment
- * epochs, but never notification plaintext. Legacy /push is explicit authenticated compatibility.
+ * epochs, but never notification plaintext. Legacy /push is bearer-authenticated and on by default
+ * until the R7 gate (#1200).
  */
 
 import {
@@ -196,12 +197,15 @@ export class ConnectionRoom {
       return null;
     }
   }
-  protected pushJwt(): Promise<string> {
-    return createApnsJwt({
-      keyId: this.env.APNS_KEY_ID ?? '',
-      teamId: this.env.APNS_TEAM_ID ?? '',
-      privateKey: this.env.APNS_PRIVATE_KEY ?? '',
-    });
+  protected pushJwt(refresh = false): Promise<string> {
+    return createApnsJwt(
+      {
+        keyId: this.env.APNS_KEY_ID ?? '',
+        teamId: this.env.APNS_TEAM_ID ?? '',
+        privateKey: this.env.APNS_PRIVATE_KEY ?? '',
+      },
+      refresh,
+    );
   }
   protected sendPushRequest(request: ApnsRequest, signal: AbortSignal): Promise<Response> {
     return fetch(request.url, {
@@ -220,7 +224,7 @@ export class ConnectionRoom {
       return new PushGateway(this.state.storage, this.env, {
         now: () => this.now(),
         audience: () => this.pushAudience(),
-        jwt: () => this.pushJwt(),
+        jwt: (refresh) => this.pushJwt(refresh),
         send: (r, signal) => this.sendPushRequest(r, signal),
       }).submit(request, push[1] as string);
     }

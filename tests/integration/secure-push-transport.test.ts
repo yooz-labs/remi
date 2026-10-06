@@ -162,9 +162,97 @@ test('secure transport binds actual signer, signs each tuple once and reuses imm
     attempts: 2,
   });
   expect(received.bodies).toHaveLength(2);
+  // #1200 A5: the Worker sees the push class, not the event kind or any key metadata.
+  expect(Object.keys(JSON.parse(received.bodies[0] ?? '')).sort()).toEqual([
+    'audience',
+    'collapseId',
+    'devicePublicKey',
+    'environment',
+    'expiresAt',
+    'issuedAt',
+    'machinePublicKey',
+    'nonce',
+    'pushClass',
+    'rid',
+    'sealed',
+    'signature',
+    'storeUntil',
+    'token',
+    'v',
+  ]);
+  expect(Object.keys(result.prepared.carrier).sort()).toEqual(['collapseId', 'rid', 'sealed', 'v']);
   expect(signatures).toBe(2); // Retrying invokes neither signer again.
   expect(received.bodies[1]).toBe(received.bodies[0]);
   expect(received.bodies[0]).not.toContain('PRIVATE_BODY_SENTINEL');
+});
+// #1200 A4: the submit is valid for at most 60 s, but APNs keeps the notification until the
+// content expires, so a phone that is offline for longer still gets the question or its dismissal.
+test('secure transport signs an APNs storage deadline that follows the content expiry', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  // An informational event lives up to 300 s; the Worker still accepts the submit for 60 s only.
+  const long = { ...f.metadata, issuedAt: now, expiresAt: now + 250 };
+  const prepared = await transport.prepare(f.snapshot, long, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });
+  const sent = JSON.parse(received.bodies[0] ?? '');
+  expect(sent.expiresAt - sent.issuedAt).toBeLessThanOrEqual(60);
+  expect(sent.storeUntil).toBe(long.expiresAt);
+  // A content lifetime shorter than the acceptance window is never stored past itself.
+  const short = { ...f.metadata, issuedAt: now, expiresAt: now + 20 };
+  const second = await transport.prepare(f.snapshot, short, f.payload, () => true);
+  if (second.outcome !== 'prepared') throw new Error('expected prepared capability');
+  await transport.sendPrepared(second.prepared);
+  const sentShort = JSON.parse(received.bodies[1] ?? '');
+  expect(sentShort.expiresAt).toBe(short.expiresAt);
+  expect(sentShort.storeUntil).toBe(short.expiresAt);
+});
+
+test('secure transport classifies a dismissal as background and every other event as alert', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+  });
+  const events: [r.PushContentMetadata, r.SecurePushPayload][] = [
+    [f.metadata, f.payload],
+    [
+      { ...f.metadata, kind: 'dismiss' },
+      { type: 'dismiss', actionable: false },
+    ],
+  ];
+  for (const [metadata, payload] of events) {
+    const prepared = await transport.prepare(f.snapshot, metadata, payload, () => true);
+    if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+    expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });
+  }
+  expect(received.bodies.map((b) => JSON.parse(b).pushClass)).toEqual(['alert', 'background']);
 });
 test('secure transport refuses durable revoke at actual signing completion and performs zero effects', async () => {
   const f = await fixture();
@@ -412,6 +500,186 @@ test('secure transport finite remaining-expiry wait aborts a real stalled receiv
   expect(received.bodies).toHaveLength(1);
 });
 
+// #1200 A1: the Worker refuses a submit that lacks its per-deployment secret, so the transport
+// must send it on every attempt, and only in the Authorization header.
+test('secure transport sends the deployment secret as a bearer on every attempt and nowhere else', async () => {
+  const f = await fixture();
+  const secret = 'owned-deployment-secret-9f2c';
+  const authorizations: (string | null)[] = [];
+  const received = receiver(async (req, body, count) => {
+    authorizations.push(req.headers.get('authorization'));
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult(
+        count === 1
+          ? { v: 2, outcome: 'rejected', requestDigest, reason: 'RATE_LIMITED', retryable: true }
+          : { v: 2, outcome: 'accepted', requestDigest },
+      ),
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    pushSecret: secret,
+    retryDelayMs: 1,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  const delivery = await transport.sendPrepared(prepared.prepared);
+  expect(delivery).toMatchObject({ outcome: 'accepted', attempts: 2 });
+  expect(authorizations).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  expect(received.bodies.join('')).not.toContain(secret);
+  expect(JSON.stringify(delivery)).not.toContain(secret);
+  expect(JSON.stringify(prepared.prepared)).not.toContain(secret);
+});
+// #1200 A3: a budget refusal cannot succeed again inside its fixed window, so the transport waits
+// for the Worker's Retry-After (bounded by the submit's own validity) instead of retrying at once.
+test('secure transport waits for the Worker Retry-After before it retries the same bytes', async () => {
+  const f = await fixture();
+  const times: number[] = [];
+  const received = receiver(async (req, body, count) => {
+    times.push(Date.now());
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return count === 1
+      ? new Response(
+          r.encodePushSubmitResult({
+            v: 2,
+            outcome: 'rejected',
+            requestDigest,
+            reason: 'RATE_LIMITED',
+            retryable: true,
+          }),
+          { status: 429, headers: { 'retry-after': '1' } },
+        )
+      : new Response(r.encodePushSubmitResult({ v: 2, outcome: 'accepted', requestDigest }));
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 1,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'accepted',
+    attempts: 2,
+  });
+  expect((times[1] ?? 0) - (times[0] ?? 0)).toBeGreaterThanOrEqual(1000);
+  expect(received.bodies[1]).toBe(received.bodies[0]);
+}, 10000);
+
+test('secure transport retries an unavailable APNs with growing backoff and gives up at the cap', async () => {
+  const f = await fixture();
+  const times: number[] = [];
+  const received = receiver(async (req, body) => {
+    times.push(Date.now());
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult({
+        v: 2,
+        outcome: 'rejected',
+        requestDigest,
+        reason: 'APNS_UNAVAILABLE',
+        retryable: true,
+      }),
+      { status: 400 },
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 40,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'APNS_UNAVAILABLE',
+    retryable: true,
+    attempts: 3,
+  });
+  expect(new Set(received.bodies).size).toBe(1);
+  // 40 ms, then 80 ms: the second wait is longer than the first.
+  expect((times[1] ?? 0) - (times[0] ?? 0)).toBeGreaterThanOrEqual(35);
+  expect((times[2] ?? 0) - (times[1] ?? 0)).toBeGreaterThanOrEqual(75);
+});
+test('secure transport never waits past the submit validity for a Retry-After', async () => {
+  const f = await fixture();
+  const received = receiver(async (req, body) => {
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult({
+        v: 2,
+        outcome: 'rejected',
+        requestDigest,
+        reason: 'RATE_LIMITED',
+        retryable: true,
+      }),
+      { status: 429, headers: { 'retry-after': '60' } },
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    retryDelayMs: 1,
+  });
+  // The fixture content lives 50 s, so a 60 s window can never end inside the submit validity.
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  const started = Date.now();
+  expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+    retryable: true,
+    attempts: 1,
+  });
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(received.bodies).toHaveLength(1);
+});
+test('secure transport refuses a deployment secret fetch could not send as a header', async () => {
+  const f = await fixture();
+  const received = receiver(() => Response.json({}));
+  const Transport = await transportClass();
+  for (const pushSecret of ['', '   ', 'line\nbreak', 'secret\u00e9', 'tab\there'])
+    expect(() =>
+      Transport.forOwnedLoopbackTest({
+        store: f.store,
+        signer: f.signer,
+        audience: received.server.url.origin,
+        ownedOrigin: received.server.url.origin,
+        pushSecret,
+      }),
+    ).toThrow('SECURE_PUSH_SECRET');
+});
+
 test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 effect', async () => {
   const f = await fixture();
   const { createServer } = await import('node:http');
@@ -440,6 +708,7 @@ test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 
       APNS_PRIVATE_KEY: pem,
       APNS_BUNDLE_ID: 'owned.synthetic.topic',
       TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      PUSH_SECRET: 'owned-deployment-secret-9f2c',
     },
     true,
   );
@@ -459,6 +728,7 @@ test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 
       signer: f.signer,
       audience: worker.url,
       ownedOrigin: worker.url,
+      pushSecret: 'owned-deployment-secret-9f2c',
     });
     const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
     expect(prepared.outcome).toBe('prepared');

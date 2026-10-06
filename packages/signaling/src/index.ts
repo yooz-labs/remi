@@ -7,15 +7,17 @@
  * session payloads and device names are encrypted; private keys and the pairing
  * secret never reach it. Public keys, admission metadata and hello/hello_ack are
  * visible. R5 /v2/push receives sealed notification bytes and public delivery/proof metadata.
- * Legacy /push receives plaintext only with explicit compatibility and configured auth.
+ * Legacy /push receives plaintext until it is turned off; it is bearer-authenticated.
  *
  * Routes (the version is part of the path and is never negotiated):
  * - GET /v2/host/<rid>: the machine's control socket (WebSocket upgrade)
  * - GET /v2/client/<rid>: an enrolled device, or one pairing with a ticket
  * - GET /v2/pipe/<rid>/<cid>: the host's socket for one client connection
  * - GET /health: health check
- * - POST /v2/push/<rid>: signed sealed push with durable nonce/budget authority
- * - POST /push: legacy plaintext, default OFF; requires LEGACY_PUSH_ENABLED=true + PUSH_SECRET
+ * - POST /v2/push/<rid>: signed sealed push with durable nonce/budget authority; it needs the
+ *   per-deployment `Authorization: Bearer <PUSH_SECRET>` (#1200) before anything else is read
+ * - POST /push: legacy plaintext, ON by default until the R7 gate (#1200); needs the PUSH_SECRET
+ *   bearer, and an explicit false LEGACY_PUSH_ENABLED turns it off
  *
  * Deleted by R2: the code-named room `/connect/<code>`, the `/answer/<code>`
  * relay and the offer, answer and ice-candidate forwarding.
@@ -23,6 +25,7 @@
 
 import { parseWorkerPath } from '@remi/shared/relay/index.ts';
 import { sendApnsPush } from './apns.ts';
+import { bearerAuthorized } from './bearer.ts';
 import { ConnectionRoom } from './connection-room.ts';
 import { GlobalLimiter, withinBudget, withinPushBudget } from './limiter.ts';
 import { type LimitEnv, limit } from './limits.ts';
@@ -95,7 +98,10 @@ interface PushRequestBody {
   kind?: string;
 }
 
-/** Explicit legacy compatibility retains its existing per-isolate alert/dismiss budgets. */
+/** The only `LEGACY_PUSH_ENABLED` values (trimmed, lowercased) that turn the legacy route off. */
+const LEGACY_OFF: ReadonlySet<string> = new Set(['false', '0', 'no', 'off']);
+
+/** Legacy compatibility retains its existing per-isolate alert/dismiss budgets. */
 const PUSH_AUTH_LIMIT = 60;
 /**
  * Dismiss ceiling (#723). Sharing PUSH_AUTH_LIMIT starved dismissals in
@@ -190,6 +196,11 @@ export default {
 
     // R5: precrypto durable attempts bound expensive proof and per-room work.
     if (url.pathname.startsWith('/v2/push/') && request.method === 'POST') {
+      // #1200: plan 3.2 asks for the machine-key signature PLUS a per-deployment secret. The
+      // secret is checked first, before the path, the body or any budget, so a stranger can
+      // neither enroll-and-submit through an open relay nor drain the shared attempt budget.
+      if (!(await bearerAuthorized(request.headers.get('Authorization'), env.PUSH_SECRET)))
+        return pushResponse(rejected('UNAUTHORIZED'));
       const match = /^\/v2\/push\/([0-9a-f]{32})$/.exec(url.pathname);
       if (!match || url.search || url.hash) return pushResponse(rejected('MALFORMED'));
       let body: string;
@@ -203,9 +214,16 @@ export default {
       const attempt = await withinPushBudget(env.LIMITER, 'attempt', {
         ip: await hashPublic(request.headers.get('CF-Connecting-IP') ?? 'unknown'),
       });
-      if (!attempt.ok) return pushResponse(rejected(attempt.reason ?? 'STORE_ERROR', null, true));
+      if (!attempt.ok)
+        return pushResponse(
+          rejected(attempt.reason ?? 'STORE_ERROR', null, true),
+          attempt.retryAfter,
+        );
+      // The room authenticates by the machine signature alone; the bearer stops here.
+      const forwarded = new Headers(request.headers);
+      forwarded.delete('authorization');
       return env.CONNECTIONS.get(env.CONNECTIONS.idFromName(match[1])).fetch(
-        new Request(request.url, { method: 'POST', headers: request.headers, body }),
+        new Request(request.url, { method: 'POST', headers: forwarded, body }),
       );
     }
 
@@ -216,26 +234,21 @@ export default {
         'Content-Type': 'application/json',
       };
 
-      // Explicit compatibility is plaintext and requires configured legacy auth.
-      if (env.LEGACY_PUSH_ENABLED !== 'true')
+      // The legacy route stays ON by default until secure push ships end to end; the default flips
+      // at the R7 gate (#1200, owner decision). Only an explicit false value turns it off. The flag
+      // is trimmed: `echo false | wrangler secret put` stores a trailing newline.
+      if (LEGACY_OFF.has((env.LEGACY_PUSH_ENABLED ?? '').trim().toLowerCase()))
         return new Response(JSON.stringify({ error: 'LEGACY_PUSH_DISABLED' }), {
           status: 403,
           headers: corsHeaders,
         });
-      if (!env.PUSH_SECRET?.trim())
-        return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), {
-          status: 401,
-          headers: corsHeaders,
-        });
-      if (env.PUSH_SECRET) {
-        const authHeader = request.headers.get('Authorization');
-        if (authHeader !== `Bearer ${env.PUSH_SECRET}`) {
-          return new Response(
-            JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
-            { status: 401, headers: corsHeaders },
-          );
-        }
-      }
+      // It is plaintext, so it needs the configured secret, compared in constant time; an unset or
+      // blank secret refuses every request.
+      if (!(await bearerAuthorized(request.headers.get('Authorization'), env.PUSH_SECRET)))
+        return new Response(
+          JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
+          { status: 401, headers: corsHeaders },
+        );
 
       if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY) {
         return new Response(
@@ -271,7 +284,7 @@ export default {
       }
 
       // Explicit authenticated legacy mode retains its per-isolate alert/dismiss counters.
-      const rlKey = authBucketKey(env.PUSH_SECRET);
+      const rlKey = authBucketKey((env.PUSH_SECRET ?? '').trim());
       const limiter = isDismiss ? dismissRateLimiter : pushAuthRateLimiter;
       if (!limiter.check(rlKey)) {
         return new Response(
