@@ -432,9 +432,10 @@ describe('ClaudeHarness.createSession', () => {
     'dispatcher',
     'terminal-notice',
     'turn-failed',
+    'turn-failed-recovery',
     'dismiss',
   ] as const) {
-    test(`secure-only ${deliveryPath} sends one authenticated sealed held question through the real Worker and owned APNs`, async () => {
+    test(`secure-only ${deliveryPath} sends authenticated sealed content through the real Worker and owned APNs`, async () => {
       const { decisions, card, sessionId, response } = await holdPrompt(false);
       const { snapshot, store, trust, pair } = await pushRecipient();
       const { createServer } = await import('node:http');
@@ -520,7 +521,8 @@ describe('ClaudeHarness.createSession', () => {
             sessionId,
           );
           const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
-          const expectedCount = deliveryPath === 'dismiss' ? 2 : 1;
+          const expectedCount =
+            deliveryPath === 'dismiss' ? 2 : deliveryPath === 'turn-failed-recovery' ? 3 : 1;
           if (deliveryPath === 'dismiss')
             await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe(
               'pushed',
@@ -532,6 +534,18 @@ describe('ClaudeHarness.createSession', () => {
               return dispatcher.maybePush(sessionId, card, { held: true });
             if (deliveryPath === 'turn-failed')
               return dispatcher.pushTurnFailed({ error: 'rate_limit' });
+            if (deliveryPath === 'turn-failed-recovery') {
+              if (bodies.length === expectedCount)
+                return dispatcher.pushTurnFailed({ error: 'authentication' });
+              await expect(dispatcher.pushTurnFailed({ error: 'rate_limit' })).resolves.toBe(
+                'pushed',
+              );
+              dispatcher.dismissTurnFailed();
+              const deadline = Date.now() + 3000;
+              while (bodies.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+              expect(bodies).toHaveLength(2);
+              return dispatcher.pushTurnFailed({ error: 'authentication' });
+            }
             if (deliveryPath === 'terminal-notice')
               dispatcher.pushTerminalNotice(sessionId, card, 'released_no_terminal');
             else dispatcher.dismiss(sessionId, card.id);
