@@ -441,7 +441,7 @@ describe('ClaudeHarness.createSession', () => {
     'subscription-rotated-during-sign',
     'held-deadline-during-sign',
   ] as const) {
-    test(`secure-only ${deliveryPath} sends authenticated sealed content through the real Worker and owned APNs`, async () => {
+    test(`secure-only ${deliveryPath} enforces delivery authority through the real Worker and owned APNs`, async () => {
       const retiring = deliveryPath.endsWith('-during-sign');
       if (deliveryPath === 'held-deadline-during-sign')
         prompts = { hold_seconds: 5, daemon_hold_seconds: 5 };

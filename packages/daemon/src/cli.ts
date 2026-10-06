@@ -1712,9 +1712,14 @@ async function createNewSession(
     return ptySession;
   } catch (error) {
     finishSecurePushRuntime(sessionId, runtime);
-    harnessSessions.get(sessionId)?.dispose();
-    harnessSessions.delete(sessionId);
-    sessionNotifiers.delete(sessionId);
+    try {
+      harnessSessions.get(sessionId)?.dispose();
+    } catch {
+      logError('[SessionSetup] cleanup failed');
+    } finally {
+      harnessSessions.delete(sessionId);
+      sessionNotifiers.delete(sessionId);
+    }
     throw error;
   }
 }
