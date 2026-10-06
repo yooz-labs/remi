@@ -780,6 +780,12 @@ final class ClientIdentityTests: XCTestCase {
             """, arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(resurrected as? Bool, false, "Forgetting a machine must invalidate a previously pending READY continuation")
         XCTAssertNil(try reopened.machineTrust(rid: rid), "Pending reconnect must not resurrect forgotten durable native trust")
+        let explicitPairing = try await web.callAsyncJavaScript("""
+            const next = await window.nativeProviderTest.beginNativePairingTrust(window.nativeSigner);
+            await window.nativeProviderTest.commitNativePairingTrust(next, window.publicPin);
+            return (await window.nativeProviderTest.loadNativeRelayPins(window.nativeSigner)).length;
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(explicitPairing as? Int, 1, "A fresh explicit begin after forget must remain available")
         XCTAssertEqual(try reopened.currentAuthority()?.publicKey, native.publicKeyRaw, "Forgetting a machine must retain the current public identity")
     }
 
@@ -807,6 +813,41 @@ final class ClientIdentityTests: XCTestCase {
                               "machineB": machineB.base64EncodedString().replacingOccurrences(of:"+",with:"-").replacingOccurrences(of:"/",with:"_").replacingOccurrences(of:"=",with:"")], in: nil, contentWorld: .page)
         XCTAssertEqual(completed as? [Bool], [true,true], "Starting another native machine reconnect must not replace an outstanding verified READY attempt")
         XCTAssertEqual(try authority.completedMachineTrusts().count, 2, "Both independently verified completed routes must persist")
+    }
+
+    @MainActor
+    func testActualWebProviderBoundsPendingAttemptsWithoutEviction() async throws {
+        _ = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let encoded = machine.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let (web, root) = try await providerWebView()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reply = try await web.callAsyncJavaScript("""
+            const api = window.nativeProviderTest;
+            const state = await api.inspectNativeIdentity();
+            const pending = [];
+            for (let i=0;i<32;i++) pending.push(await api.beginNativePairingTrust(state.identity));
+            let overCapacity = false;
+            try { await api.beginNativePairingTrust(state.identity); overCapacity = true; } catch {}
+            await api.cancelNativePairingTrust(pending[31]);
+            let replacement = false;
+            try { await api.beginNativePairingTrust(state.identity); replacement = true; } catch {}
+            const pin = {machinePublicKey,relayUrl:'wss://relay.example.invalid'};
+            let first = false;
+            try { await api.commitNativePairingTrust(pending[0],pin); first = true; } catch {}
+            let reused = false;
+            try { await api.commitNativePairingTrust(pending[0],pin); reused = true; } catch {}
+            let cancelled = false;
+            try { await api.commitNativePairingTrust(pending[31],pin); cancelled = true; } catch {}
+            return {overCapacity,replacement,first,reused,cancelled};
+            """, arguments: ["machinePublicKey": encoded], in: nil, contentWorld: .page)
+        let result = try XCTUnwrap(reply as? [String: Bool])
+        XCTAssertEqual(result["overCapacity"], false, "A 33rd live native attempt must refuse without eviction")
+        XCTAssertEqual(result["replacement"], true, "Exact cancellation must free only its pending slot")
+        XCTAssertEqual(result["first"], true, "Capacity refusal and cancellation must preserve the oldest live attempt")
+        XCTAssertEqual(result["reused"], false, "A native attempt commits once")
+        XCTAssertEqual(result["cancelled"], false, "A cancelled exact attempt cannot commit")
     }
 
     @MainActor
