@@ -21,6 +21,9 @@ interface Received {
   httpVersion: string;
   headers: Record<string, string | string[] | undefined>;
 }
+/** The per-deployment bearer secret (#1200); every v2 submit must present it. */
+const PUSH_SECRET = 'owned-test-push-secret';
+const bearer = { authorization: `Bearer ${PUSH_SECRET}` };
 let worker: TestWorker | undefined;
 let server: Server | undefined;
 const requests: Received[] = [];
@@ -45,7 +48,8 @@ afterEach(async () => {
   for (const dir of persistence.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(vars: Record<string, string> = {}, persist?: string) {
+/** A `vars` entry of `undefined` removes that Worker variable (the harness otherwise merges). */
+async function setup(vars: Record<string, string | undefined> = {}, persist?: string) {
   const p8 = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
     'sign',
     'verify',
@@ -76,14 +80,18 @@ async function setup(vars: Record<string, string> = {}, persist?: string) {
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('owned receiver unavailable');
-  const config = {
+  const merged: Record<string, string | undefined> = {
     APNS_KEY_ID: 'OWNEDTEST1',
     APNS_TEAM_ID: 'OWNEDTEAM1',
     APNS_PRIVATE_KEY: pem,
     APNS_BUNDLE_ID: 'owned.synthetic.topic',
     TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+    PUSH_SECRET,
     ...vars,
   };
+  const config = Object.fromEntries(
+    Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
   worker = await startWorker(config, true, persist ? { path: persist } : undefined);
   const machine = await newMachine();
   activeRid = machine.ridHex;
@@ -142,12 +150,16 @@ async function submission(
     signature: r.b64u(await m.signer.sign(await r.buildPushSubmitSigningInput(unsigned))),
   };
 }
-async function post(w: TestWorker, s: r.PushSubmit | string) {
+async function post(
+  w: TestWorker,
+  s: r.PushSubmit | string,
+  headers: Record<string, string> = bearer,
+) {
   const rid =
     typeof s === 'string' ? (s.match(/"rid":"([0-9a-f]+)"/)?.[1] ?? '00'.repeat(16)) : s.rid;
   const res = await get(`${w.url}/v2/push/${rid}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: typeof s === 'string' ? s : r.encodePushSubmit(s),
   });
   const raw = await res.text();
@@ -257,6 +269,89 @@ test('actual enrollment row epoch survives idempotent enroll and changes only on
   const legacy = (await roomState(w, m.ridHex)).storage[row] as { at: number; epoch: string };
   expect(legacy.at).toBe(1700000000000);
   expect(legacy.epoch).toMatch(/^[A-Za-z0-9_-]{43}$/);
+}, 15000);
+
+/** Durable budget rows the limiter holds: any `pa:` or `ps:` row means a budget was charged. */
+async function budgetRows(w: TestWorker): Promise<string[]> {
+  const v = (await (await get(`${w.url}/__limiter/__state`)).json()) as {
+    storage: Record<string, unknown>;
+  };
+  return Object.keys(v.storage).filter((k) => k.startsWith('pa:') || k.startsWith('ps:'));
+}
+const unauthorized: r.PushSubmitResult = {
+  v: 2,
+  requestDigest: null,
+  outcome: 'rejected',
+  reason: 'UNAUTHORIZED',
+  retryable: false,
+};
+
+// #1200 A1: plan 3.2 asks for a machine-key signature PLUS a per-deployment secret. Before the
+// fix the v2 route read no bearer at all, so anyone could enroll a device in a room named by
+// their own key and submit for any token, and garbage posts drained the shared attempt budget.
+for (const [name, headers] of [
+  ['missing', {}],
+  ['wrong', { authorization: 'Bearer not-the-deployment-secret' }],
+  ['wrong scheme', { authorization: `Basic ${PUSH_SECRET}` }],
+  ['empty token', { authorization: 'Bearer ' }],
+] as const)
+  test(`v2 push with a ${name} bearer is refused before any budget or APNs effect`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup();
+    const s = await submission(w, m, d, p);
+    const res = await get(`${w.url}/v2/push/${s.rid}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: r.encodePushSubmit(s),
+    });
+    expect(res.status).toBe(401);
+    expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+    expect(await budgetRows(w)).toEqual([]);
+    expect(requests.length).toBe(0);
+    expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${s.nonce}`);
+  }, 15000);
+
+test('v2 push bearer is checked before the path, the body and the attempt budget', async () => {
+  const { worker: w } = await setup({ PUSH_ATTEMPT_IP: '1' });
+  for (const path of ['/v2/push/not-a-room', `/v2/push/${'0'.repeat(32)}?x=1`]) {
+    const res = await get(`${w.url}${path}`, { method: 'POST', body: ' '.repeat(9000) });
+    expect(res.status).toBe(401);
+    expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+  }
+  expect(await budgetRows(w)).toEqual([]);
+}, 15000);
+
+// A deployment with no secret must not become an open relay (plan 3.2): refuse, never skip.
+for (const [name, secret] of [
+  ['unset', undefined],
+  ['empty', ''],
+  ['whitespace', ' \n\t'],
+] as const)
+  test(`v2 push on a deployment whose PUSH_SECRET is ${name} refuses every submit`, async () => {
+    const { worker: w, machine: m, device: d, recipient: p } = await setup({ PUSH_SECRET: secret });
+    const s = await submission(w, m, d, p);
+    for (const headers of [
+      {},
+      { authorization: 'Bearer ' },
+      { authorization: `Bearer ${secret ?? ''}` },
+    ]) {
+      const res = await get(`${w.url}/v2/push/${s.rid}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: r.encodePushSubmit(s),
+      });
+      expect(res.status).toBe(401);
+      expect(r.decodePushSubmitResult(await res.text())).toEqual(unauthorized);
+    }
+    expect(await budgetRows(w)).toEqual([]);
+    expect(requests.length).toBe(0);
+  }, 15000);
+
+test('a correct bearer is accepted and the secret never appears in the APNs request', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup();
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  const req = requests[0];
+  if (!req) throw new Error('receiver missing');
+  expect(JSON.stringify(req)).not.toContain(PUSH_SECRET);
 }, 15000);
 
 test('legacy plaintext route is default off and explicit compatibility still requires a secret', async () => {
@@ -533,7 +628,11 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
     `/v2/push/${m.ridHex.toUpperCase()}`,
     `/v2/push/${m.ridHex}/`,
   ]) {
-    const res = await get(`${w.url}${path}`, { method: 'POST', body: r.encodePushSubmit(s) });
+    const res = await get(`${w.url}${path}`, {
+      method: 'POST',
+      headers: bearer,
+      body: r.encodePushSubmit(s),
+    });
     expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
       outcome: 'rejected',
       reason: 'MALFORMED',
@@ -541,13 +640,18 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
   }
   const wrong = await submission(w, m, d, p, { audience: 'https://different-owned.example' });
   expect(await post(w, wrong)).toMatchObject({ outcome: 'rejected', reason: 'WRONG_AUDIENCE' });
-  const res = await get(`${w.url}/v2/push/${m.ridHex}`, { method: 'POST', body: ' '.repeat(8193) });
+  const res = await get(`${w.url}/v2/push/${m.ridHex}`, {
+    method: 'POST',
+    headers: bearer,
+    body: ' '.repeat(8193),
+  });
   expect(r.decodePushSubmitResult(await res.text())).toMatchObject({
     outcome: 'rejected',
     reason: 'OVERSIZE',
   });
   const malformed = await get(`${w.url}/v2/push/${m.ridHex}`, {
     method: 'POST',
+    headers: bearer,
     body: Uint8Array.of(255),
   });
   expect(r.decodePushSubmitResult(await malformed.text())).toMatchObject({
@@ -558,7 +662,11 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
 }, 15000);
 
 test('legacy compatibility flag without secret remains refused on actual Worker', async () => {
-  const { worker: w } = await setup({ LEGACY_PUSH_ENABLED: 'true', APNS_KEY_ID: '' });
+  const { worker: w } = await setup({
+    LEGACY_PUSH_ENABLED: 'true',
+    PUSH_SECRET: '',
+    APNS_KEY_ID: '',
+  });
   const res = await get(`${w.url}/push`, {
     method: 'POST',
     body: JSON.stringify({ token: 'owned', title: 'owned', body: 'owned' }),
