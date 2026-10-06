@@ -17,6 +17,12 @@ import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
 import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
 import { forgetNativeRelayPin, loadNativeRelayPins } from '@/lib/native-push-trust';
+import {
+  enableNativeSecurePush,
+  prepareNativePushRegistration,
+  validateNativePushRegistration,
+} from '@/lib/native-push-registration';
+import { SecurePushSubscriptions } from '@/lib/secure-push-subscriptions';
 import type { RelayAnswerStatus } from '@/lib/relay-requests';
 import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
@@ -1843,6 +1849,8 @@ function App() {
     requestSessionAttach,
     listRelayDevices,
     revokeRelayDevice,
+    registerRelayPush,
+    unregisterRelayPush,
     disconnect: disconnectConnection,
     reconnect: reconnectConnection,
     disconnectAll,
@@ -2309,6 +2317,54 @@ function App() {
     },
     [connectedIds, cmSendMessage],
   );
+
+  // Secure relay push (#1200): this device subscribes on each natively paired
+  // relay machine once the OS has a token, and again on a new token, a
+  // reconnect or a preference change. Separate from the plaintext path above,
+  // which a relay-paired machine never uses (the daemon's activation latch).
+  const nativeIdentity = unlockedIdentity && 'kind' in unlockedIdentity ? unlockedIdentity : null;
+  const securePushRef = useRef<SecurePushSubscriptions | null>(null);
+  if (!securePushRef.current) {
+    securePushRef.current = new SecurePushSubscriptions(
+      {
+        prepare: async (machinePublicKey) => {
+          const identity = currentNativeIdentity();
+          if (!identity) throw new Error('Native identity unavailable.');
+          const ticket = await prepareNativePushRegistration(identity, machinePublicKey);
+          return { metadata: ticket.metadata, validate: () => validateNativePushRegistration(ticket) };
+        },
+        register: (connectionId, registration) =>
+          registerRelayPush(connectionId as ConnectionId, registration),
+      },
+      (_connectionId, outcome) => {
+        // Codes only: nothing here carries a token, key or content.
+        if (outcome.kind === 'refused') console.warn(`[SecurePush] registration refused: ${outcome.error}`);
+        else if (outcome.kind === 'unverified') console.warn('[SecurePush] registration outcome unverified');
+      },
+    );
+  }
+  useEffect(() => {
+    const changed = () => securePushRef.current?.tokenChanged();
+    window.addEventListener('remi:native-push-token-changed', changed);
+    return () => window.removeEventListener('remi:native-push-token-changed', changed);
+  }, []);
+  const nativeIdentityKey = nativeIdentity ? `${nativeIdentity.publicKeyRaw}:${nativeIdentity.revision}` : null;
+  useEffect(() => {
+    if (nativeIdentityKey !== null) securePushRef.current?.reset();
+  }, [nativeIdentityKey]);
+  const securePushPrefs = useMemo(
+    () => pushPreferencesFromSettings(settings),
+    [settings],
+  );
+  useEffect(() => {
+    const targets = nativeIdentityKey === null ? [] : connections.flatMap((connection) =>
+      connection.mode === 'relay' && connection.status === 'connected' && connection.relayPin
+        ? [{ connectionId: connection.connectionId, machinePublicKey: connection.relayPin.machinePublicKey }]
+        : [],
+    );
+    securePushRef.current?.sync(targets, securePushPrefs);
+  }, [connections, nativeIdentityKey, securePushPrefs]);
+  const hasRelayMachine = connections.some((connection) => connection.mode === 'relay');
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
@@ -3211,6 +3267,9 @@ function App() {
         settings={settings}
         onClose={() => setShowSettings(false)}
         onChange={handleSettingsChange}
+        onEnableSecurePush={
+          nativeIdentity && hasRelayMachine ? () => enableNativeSecurePush(nativeIdentity) : undefined
+        }
       />
 
       {deviceConnectionId && (() => {
@@ -3223,6 +3282,10 @@ function App() {
           forget={async () => {
             const machine = connection.relayPin?.machinePublicKey ?? '';
             setRelayForgetError(null);
+            // Best effort: the machine stops sealing pushes to this device. The frame
+            // is queued before the close; its outcome is not awaited (#1200).
+            if (usesNativeIdentity() && connection.status === 'connected')
+              void unregisterRelayPush(deviceConnectionId).catch(() => {});
             // Forget intent ends the actual reconnect/READY lifetime synchronously.
             // Durable removal follows; a storage refusal remains visible afterward.
             disconnectConnection(deviceConnectionId);
