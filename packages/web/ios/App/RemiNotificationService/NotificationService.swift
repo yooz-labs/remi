@@ -68,14 +68,18 @@ class NotificationService: UNNotificationServiceExtension {
                 let prepared = try effect.prepare(userInfo: request.content.userInfo)
                 let content = UNMutableNotificationContent()
                 content.userInfo = ["remiPush": prepared.push.originalCarrier.userInfo]
-                switch prepared.push.payload {
-                case .question(let question): content.title = question.title; content.body = question.body
-                case .informational(let information): content.title = information.title; content.body = information.body
-                case .dismiss: break
-                }
-                if prepared.outcome != .publish {
-                    // Duplicates/terminal capsules never reinstall a permission card.
-                    content.title = ""; content.body = ""; content.sound = nil
+                // apns-collapse-id makes the delivered notification's identifier the
+                // collapse id, so this result REPLACES the live card. An exact
+                // duplicate of the latest live digest (#1200) therefore renders the
+                // same verified card again; only a terminal capsule shows no text.
+                // A capsule that is no longer the latest live revision never gets
+                // here (prepare throws) and receives the generic alert instead.
+                switch (prepared.outcome, prepared.push.payload) {
+                case (.publish, .question(let question)), (.duplicate, .question(let question)):
+                    content.title = question.title; content.body = question.body
+                case (.publish, .informational(let information)), (.duplicate, .informational(let information)):
+                    content.title = information.title; content.body = information.body
+                default: break
                 }
                 // #1200: no category. A verified v2 card opens the app until R6 has
                 // a native owner that submits an answer; an action button would be

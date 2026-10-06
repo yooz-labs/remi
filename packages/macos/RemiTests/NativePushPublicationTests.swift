@@ -208,17 +208,6 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(result.title, "Remi needs your attention"); XCTAssertEqual(result.categoryIdentifier, "")
         XCTAssertEqual(probe.snapshot().count, 1, "Late preparation cannot deliver a second notification")
     }
-    func testActualNSEDuplicateCannotReinstallPermissionCard() throws {
-        var prepared: NativePushEffect.Prepared?
-        XCTAssertNoThrow(prepared = try effect().prepare(userInfo: info("question-yn")), "Actual signed content must prepare before testing duplicate publication")
-        guard let prepared else { return }
-        XCTAssertEqual(prepared.outcome, .publish)
-        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
-        wait(for: [probe.completed], timeout: 3)
-        let result = try XCTUnwrap(probe.snapshot().first)
-        XCTAssertEqual(result.title, ""); XCTAssertEqual(result.body, ""); XCTAssertEqual(result.categoryIdentifier, "")
-        XCTAssertNil(probe.installedCategory())
-    }
     // #1200 D2: apns-collapse-id makes the delivered notification's identifier the
     // collapse id, so whatever the extension returns REPLACES the live card.
     func testActualNSEExactDuplicateOfTheLiveCardRendersTheSameVerifiedContent() throws {
@@ -235,6 +224,37 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(NSDictionary(dictionary: duplicate.userInfo), NSDictionary(dictionary: live.userInfo))
         XCTAssertNil(repeated.installedCategory())
     }
+    /// An extension cannot drop a notification without the filtering entitlement,
+    /// so a capsule that is no longer the latest live revision can only be shown as
+    /// the generic alert: it opens the app, which holds the real state, and it
+    /// grants nothing. It never renders the stale text and never touches the
+    /// newer revision's lifecycle record.
+    func testActualNSEStaleRevisionShowsOnlyTheGenericAlertAndLeavesTheNewerRevisionLive() throws {
+        let first = try NativePushCodec.open(userInfo: info("question-yn"), state: state, keys: keys, now: clock)
+        func capsule(revision: Int64, nonce: UInt8) throws -> [AnyHashable: Any] {
+            ["remiPush": try reseal(vector("question-yn")) {
+                $0[5] = Data(first.record.collapseId.utf8); $0[6] = self.be64(UInt64(revision)); $0[8] = Data(repeating: nonce, count: 32)
+            }]
+        }
+        func deliver(_ userInfo: [AnyHashable: Any]) throws -> UNNotificationContent {
+            let probe = DeliveryProbe(self)
+            let service = NotificationService(effectFactory: { self.effect() }, installCategory: probe.installed)
+            let content = UNMutableNotificationContent(); content.userInfo = userInfo
+            service.didReceive(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil), withContentHandler: probe.delivered)
+            wait(for: [probe.activity, probe.completed], timeout: 3)
+            return try XCTUnwrap(probe.snapshot().first)
+        }
+        let newer = try deliver(capsule(revision: first.record.revision + 1, nonce: 0x51))
+        XCTAssertNotEqual(newer.title, "Remi needs your attention", "The newer revision is verified and live")
+        let stale = try deliver(capsule(revision: first.record.revision - 1, nonce: 0x52))
+        XCTAssertTrue(NativePushNotificationConsumer.isGenericFallback(stale), "A stale revision cannot render its own text")
+        let replay = try deliver(info("question-yn"))
+        XCTAssertTrue(NativePushNotificationConsumer.isGenericFallback(replay), "A replay of a superseded capsule is stale too")
+        let latest = try NativePushCodec.open(userInfo: capsule(revision: first.record.revision + 1, nonce: 0x51), state: state, keys: keys, now: clock)
+        XCTAssertNoThrow(try state.reverifyLatestContent(latest.record, trust: latest.trust, now: clock),
+                         "The refused stale deliveries leave the newer revision's lifecycle record intact")
+    }
+
     // #1200 D3: no native owner answers a v2 action until R6, and iOS dismisses the
     // card after an action tap, so a Yes/No button would silently drop the choice.
     func testSecurePushOffersNoAnswerActionsAndOpensTheApp() throws {
