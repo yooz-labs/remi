@@ -29,7 +29,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         let documentGeneration: UInt64
         let deadline: TimeInterval
     }
-    private var pairingAttempt: PairingAttempt?
+    private var pairingAttempts: [String: PairingAttempt] = [:]
     private let unlockLifetime = NativeUnlockLifetime()
     private let foreground: @MainActor () -> Bool
     private let authorization: @MainActor () async -> Bool
@@ -65,7 +65,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                 MainActor.assumeIsolated {
                     self?.unlockedRevision = nil
                     self?.documentGeneration &+= 1
-                    self?.pairingAttempt = nil
+                    self?.pairingAttempts.removeAll()
                     self?.cancelQR()
                     // Public-only lifecycle notice lets the web owner discard derived relay keys.
                     self?.webView?.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-identity-locked'))")
@@ -73,7 +73,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
             object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.pairingAttempt = nil; self?.cancelQR() }
+                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelQR() }
             }
     }
 
@@ -103,10 +103,10 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         if webView !== message.webView {
             cancelQR()
             documentGeneration &+= 1
-            pairingAttempt = nil
+            pairingAttempts.removeAll()
             webView = message.webView
             documentObserver = message.webView?.observe(\.isLoading, options: [.new]) { [weak self] web, _ in
-                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.pairingAttempt = nil; self?.cancelQR() } }
+                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelQR() } }
             }
         }
         if let request = message.body as? [String: Any],
@@ -233,19 +233,26 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             guard Set(request.keys) == ["op", "publicKey", "revision"] else { throw NativeIdentityError.malformed }
             let identity = try pairingIdentity(request)
             let state = try pushState()
+            let generation = try state.authorityGeneration()
+            let now = ProcessInfo.processInfo.systemUptime
+            pairingAttempts = pairingAttempts.filter { _, attempt in
+                attempt.deadline > now && attempt.documentGeneration == documentGeneration &&
+                attempt.identity == identity && attempt.authorityGeneration == generation
+            }
+            guard pairingAttempts.count < 32 else { throw NativePushStateError.capacity }
             let attempt = PairingAttempt(id: UUID().uuidString, identity: identity,
-                authorityGeneration: try state.authorityGeneration(), documentGeneration: documentGeneration,
-                deadline: ProcessInfo.processInfo.systemUptime + 120)
-            pairingAttempt = attempt
+                authorityGeneration: generation, documentGeneration: documentGeneration,
+                deadline: now + 120)
+            pairingAttempts[attempt.id] = attempt
             return ["attempt": attempt.id, "publicKey": identity.publicKey.base64EncodedString(), "revision": identity.revision]
         case "cancelPushPairing":
             guard Set(request.keys) == ["op", "attempt"], let id = request["attempt"] as? String else { throw NativeIdentityError.malformed }
-            if pairingAttempt?.id == id { pairingAttempt = nil }
+            pairingAttempts.removeValue(forKey: id)
             return ["cancelled": true]
         case "commitPushPairing":
             guard Set(request.keys) == ["op", "attempt", "publicKey", "revision", "machinePublicKey", "rid", "endpoint", "relayUrl"],
-                  let attempt = pairingAttempt, request["attempt"] as? String == attempt.id else { throw NativeIdentityError.changed }
-            pairingAttempt = nil
+                  let id = request["attempt"] as? String,
+                  let attempt = pairingAttempts.removeValue(forKey: id) else { throw NativeIdentityError.changed }
             guard attempt.documentGeneration == documentGeneration,
                   ProcessInfo.processInfo.systemUptime < attempt.deadline,
                   try pairingIdentity(request) == attempt.identity,
@@ -289,6 +296,9 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             guard Set(request.keys) == ["op", "publicKey", "revision", "rid"] else { throw NativeIdentityError.malformed }
             _ = try pairingIdentity(request)
             try pushState().forgetMachine(rid: bytes(request["rid"], count: 16...16))
+            // Begin has no machine selector. Close every pending READY lifetime
+            // after durable forget so an earlier reconnect cannot restore trust.
+            pairingAttempts.removeAll()
             return ["forgotten": true]
         case "public":
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }

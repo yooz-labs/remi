@@ -263,6 +263,7 @@ function App() {
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [deviceConnectionId, setDeviceConnectionId] = useState<ConnectionId | null>(null);
+  const [relayForgetError, setRelayForgetError] = useState<string | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [modalConnectionId, setModalConnectionId] = useState<ConnectionId | null>(null);
   const openConnectModal = useCallback(() => {
@@ -3199,6 +3200,10 @@ function App() {
     <>
       {usesNativeIdentity() && <NativeIdentityPanel gate onReady={handleNativeIdentityReady} />}
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
+      {relayForgetError && <div role="alert" className="fixed inset-x-3 top-12 z-50 rounded-xl bg-[var(--color-surface)] p-4 shadow-lg">
+        <p>{relayForgetError}</p>
+        <button type="button" onClick={() => setRelayForgetError(null)}>Dismiss</button>
+      </div>}
 
       <SettingsPanel
         open={showSettings}
@@ -3216,12 +3221,20 @@ function App() {
           onClose={() => setDeviceConnectionId(null)}
           forget={async () => {
             const machine = connection.relayPin?.machinePublicKey ?? '';
-            if (usesNativeIdentity()) {
-              const identity = currentNativeIdentity();
-              if (!identity) throw new Error('Unlock your identity before forgetting this machine.');
-              await forgetNativeRelayPin(identity, machine);
-            } else forgetRelayPin(machine);
+            setRelayForgetError(null);
+            // Forget intent ends the actual reconnect/READY lifetime synchronously.
+            // Durable removal follows; a storage refusal remains visible afterward.
             disconnectConnection(deviceConnectionId);
+            setDeviceConnectionId(null);
+            try {
+              if (usesNativeIdentity()) {
+                const identity = currentNativeIdentity();
+                if (!identity) throw new Error('Unlock your identity before forgetting this machine.');
+                await forgetNativeRelayPin(identity, machine);
+              } else forgetRelayPin(machine);
+            } catch {
+              setRelayForgetError('Machine disconnected, but its saved trust could not be removed. Unlock your identity and try forgetting it again.');
+            }
           }} /> : null;
       })()}
 

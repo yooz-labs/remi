@@ -3,7 +3,9 @@
 This directory currently implements the native persistence and APNs environment
 boundaries. Secure registration and NSE/action consumers still need to be
 connected. The
-existing notification extension is not yet the secure-push decoder.
+notification extension now clears unsigned outer authority, but its effect
+coordinator is still a fail-closed scaffold; verified publication/actions are not
+yet implemented.
 
 `NativePushState` stores public identity authority and completed machine trust in
 SQLite. A nonblocking advisory file lock serializes identity writers. Every
@@ -13,13 +15,18 @@ only for its own invalidation generation. Failure never restores older machine
 trust. SQLite and Keychain are separate operations, not a distributed transaction.
 The bundled WebKit bridge checks foreground and document lifetime again after
 acquiring this lock; loads that migrate an older native seed use that same guard.
-Native pairing ingress issues a one-use, two-minute monotonic attempt bound to the
+Native pairing ingress permits up to32 pending one-use, two-minute monotonic
+attempts without evicting live entries. Each attempt is bound to the
 current private identity, protection revision, bundled document, and durable
 authority generation. Commit rechecks these contexts after the actual writer lock.
 An explicit completed pairing may recover public identity authority for that same
 generation; ordinary get/sign operations still never restore it. The actual
 authenticated and encrypted web READY continuation awaits this durable commit
-before publishing connected. Native restore and forget use only these completed
+before publishing connected. Forget intent synchronously closes its client
+reconnect; successful durable native forget clears all pending attempts, because
+begin does not carry a machine selector. A delayed READY cannot reinstall a
+forgotten row; a new explicit begin remains available. Native restore and forget
+use only these completed
 native rows, never browser pin storage. Browser-only clients retain their separate
 browser persistence. A failed native save remains a visible terminal pairing
 error and requires explicit retry.
