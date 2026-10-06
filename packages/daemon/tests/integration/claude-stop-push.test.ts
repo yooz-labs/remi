@@ -257,6 +257,7 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
       );
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);
+      expect(s.daemon.output.text).not.toContain('DEFAULT-OFF-ANSWER');
     } finally {
       s.ws.close();
     }
