@@ -78,16 +78,38 @@ Bun version, with six named independent causal controls, restored source and
 natural child exits with no owned-process residuals. Root is repeating those
 scenarios on the integrated branch.
 
+The separate source supervisor fixture boots `serve` itself, observes its
+session-less status and PID, sends an encrypted create request and checks the
+actual spawned source child's runtime, flags, port, session id, registry,
+working directory and process birth. It follows the same original sealed push
+to a signed No and actual HTTP deny, then queries the retained result over a
+fresh encrypted peer. Both actual CLI runtimes pass 40 checks, with four named
+causal mutation controls and restored runs. The transparent disposable TLS proxy
+runs on Bun 1.4.2 for both cases. Older-proxy upgrade failures were isolated,
+preserved and excluded; TLS verification was never disabled.
+
 Root repeated the final ledger tests on the integrated branch: 13 / 5,232 on
-both versions. Four project type graphs, scoped ingress/route type checks,
-changed-file Biome, spelling and diff checks pass. A fresh isolated full-suite
-gate is prepared but has not run at this checkpoint.
+both versions, and all three child/libraryHub scenarios: 112 checks per version
+with natural child exit and no owned-process residuals. Four project type
+graphs, scoped ingress/route type checks, changed-file Biome, spelling and diff
+checks pass.
+
+The first frozen full suite at `670e8998` finished 7,220 pass / 22 skip / 2 fail
+on Bun 1.4.2, with no owned-process residuals. Both failures were source guards:
+the new codec imported an application-protocol type and its explicit timestamp
+conversion matched a clock-read regex. `b3fa628f` defines the local selection
+shape and parses expressions in the guard, distinguishing explicit date
+conversion from ambient clock reads. Five independent actual-source controls
+fail the appropriate guard on both runtimes and pass after restoration; the
+focused baseline/restored set is 27 / 662. Emitted codec JavaScript is unchanged.
+This failed full suite is retained as diagnostic evidence; no Bun 1.3.11 full
+suite ran at that head. A new corrected-head full gate remains required.
 
 ## Remaining acceptance
 
 The 32-pending-per-session bound is not saturated by these tests: the actual
 guarded core constrains simultaneous decisions on one session's screen. The
-source CLI hub supervisor composition, shipping Swift signing and background
-transport, final combined full suites, final shipping-client soak, signed
+shipping Swift signing and background transport, final combined full suites,
+final shipping-client soak, signed
 hardware and deployed Worker acceptance remain outstanding. Component tests
 and unsigned builds do not substitute for those gates.
