@@ -65,12 +65,18 @@ the named `busy` assertion; restored controls pass.
 
 The source-CLI child composition fixture constructs a real HubRelay/ChildProxy,
 Worker SQLite, verified local TLS ingress and owned APNs receiver. At frozen
-daemon head `a079c3e0`, both Bun versions pass 32 checks: a genuinely sealed and
+daemon head `a079c3e0`, both Bun versions pass 34 positive checks: a genuinely sealed and
 opened actionable push produces a signed No proof, the held HTTP hook receives
 deny, and a fresh encrypted peer receives the retained delivered outcome for
 the identical proof. This fixture boots the source child directly; it does not
-prove the source CLI hub supervisor's boot/spawn path. Expanded result-loss and
-pending-correlation evidence is still being finalized.
+prove the source CLI hub supervisor's boot/spawn path. An actual lost child
+socket result returns correlated uncertain and produces no automatic resend;
+one explicit identical-proof query over a fresh encrypted peer receives the
+retained delivered result. Holding one real socket result demonstrates pending
+coalescing and same-id conflict refusal. All three scenarios pass 112 checks per
+Bun version, with six named independent causal controls, restored source and
+natural child exits with no owned-process residuals. Root is repeating those
+scenarios on the integrated branch.
 
 Root repeated the final ledger tests on the integrated branch: 13 / 5,232 on
 both versions. Four project type graphs, scoped ingress/route type checks,
