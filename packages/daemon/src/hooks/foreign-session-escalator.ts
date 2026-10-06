@@ -65,7 +65,7 @@ import type { UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
-import { legacyPushFields } from '../notifications/legacy-push-policy.ts';
+import { legacyChannelOpen, legacyPushFields } from '../notifications/legacy-push-policy.ts';
 import type {
   DeliveryOutcome,
   PushConfig,
@@ -272,14 +272,14 @@ export class ForeignSessionEscalator {
     // A permission request in a session remi does not manage is still a
     // question-class push (#968) — it buzzes, and it says the agent is blocked
     // on someone — so a device muted for questions does not get it.
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
     const secure = this.deps.securePush?.(callerSessionId);
     const secureRecipients = secure?.hasRecipients('question') === true;
     if (wanting.length === 0 && !secureRecipients) {
       log('[ForeignSession] no recipients; push suppressed');
       return;
     }
-    const cfg = pushConfig();
     const cwdHint = input.cwd ? path.basename(input.cwd) : undefined;
     const title = `Unbound Claude session (${shortId})`;
     const body = `${input.tool_name} requested permission in a Claude session Remi does not manage${cwdHint ? ` (${cwdHint})` : ''}. Not connected to Remi; answer it in that terminal directly.`;

@@ -86,6 +86,7 @@ describe('createTurnEventSink', () => {
         pushConfig: () => ({
           signalingUrl: 'ws://dispatcher.test',
           pushSecret: 'dispatcher-secret',
+          legacyEnabled: true,
         }),
         getPrimarySessionId: () => null,
         pushFn,
@@ -108,6 +109,7 @@ describe('createTurnEventSink', () => {
       },
       log: (m) => logs.push(m),
       onError: (err) => errors.push(err),
+      legacyPolicy: () => ({ legacyEnabled: true }),
       ...over,
     });
   }
@@ -153,7 +155,7 @@ describe('createTurnEventSink', () => {
         opts: {
           title: 'my-project: turn complete',
           body: 'All done, the tests pass.',
-          legacyEnabled: false,
+          legacyEnabled: true,
           pushSecret: 'shh',
           kind: 'turn_complete',
         },
@@ -178,14 +180,23 @@ describe('createTurnEventSink', () => {
       expect(body.endsWith('…')).toBe(true);
     });
 
-    test('omits the push secret when there is none', async () => {
+    test('a legacy channel with no push secret has no recipients (#1200)', async () => {
       deviceTokens.set('a', device('a'));
       pushSecret = undefined;
       make().turnCompleted(finished());
       await flush();
 
-      expect(sent).toHaveLength(1);
-      expect('pushSecret' in (sent[0]?.opts ?? {})).toBe(false);
+      expect(sent).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    test('explicit legacy_push_enabled = false has no recipients, however many tokens are registered (#1200)', async () => {
+      deviceTokens.set('a', device('a'));
+      make({ legacyPolicy: () => ({ legacyEnabled: false }) }).turnCompleted(finished());
+      await flush();
+
+      expect(sent).toEqual([]);
+      expect(logs).toEqual([]);
     });
 
     test('goes to every device that wants it, and only those', async () => {

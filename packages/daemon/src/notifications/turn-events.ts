@@ -35,7 +35,11 @@
 import type { UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
-import { type LegacyPushPolicy, legacyPushFields } from './legacy-push-policy.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
 import type { PushTriggerOptions } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
 import type { SecureSessionPush } from './secure-push-service.ts';
@@ -106,7 +110,11 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
       // exists": a machine whose every device muted turn-complete stops at the gate instead of
       // building text and fanning out to nobody. The machine-wide switch still wins over any
       // per-device preference; the gate checks it first.
-      const wanting = tokensWanting(deps.deviceTokens(), 'turn_complete');
+      const legacy = { ...deps.legacyPolicy?.(), pushSecret: deps.pushSecret() };
+      // A legacy channel that is off or has no secret has no recipients (#1200, B6).
+      const wanting = legacyChannelOpen(legacy)
+        ? tokensWanting(deps.deviceTokens(), 'turn_complete')
+        : [];
       const secure = deps.securePush?.(event.sessionId);
       const secureRecipients = secure?.hasRecipients('turn_complete') === true;
       const { onTurnComplete, turnCompleteMinSeconds } = deps.config();
@@ -144,8 +152,7 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
       }
 
       const signalingUrl = deps.signalingUrl();
-      const pushSecret = deps.pushSecret();
-      const legacy = legacyPushFields({ ...deps.legacyPolicy?.(), pushSecret });
+      const legacyFields = legacyPushFields(legacy);
       for (const device of wanting) {
         // Dismiss-only: no `category` or `questionId`, it answers nothing. `kind` is what makes it
         // distinguishable from a subagent alert, which is otherwise identical on the wire (#968).
@@ -153,7 +160,7 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
           .send(signalingUrl, device.token, {
             title,
             body,
-            ...legacy,
+            ...legacyFields,
             kind: 'turn_complete',
           })
           .catch(() => deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED')));

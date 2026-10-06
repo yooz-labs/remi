@@ -66,8 +66,10 @@ export interface DisplayConfig {
  * DURATION so it only fires when the user plausibly walked away.
  */
 export interface NotificationsConfig {
-  /** Plaintext compatibility requires explicit opt-in and a push secret (#1200).
-   * The irreversible secure activation latch still refuses it after pairing. */
+  /** Plaintext legacy push through the signaling Worker; it also needs a push secret.
+   * ON by default until secure push ships end to end; the default flips at the R7 gate
+   * (#1200). `false` disables it. Independent of this flag, the machine-wide activation
+   * latch refuses it for good once any device enrolls over the relay. */
   readonly legacy_push_enabled: boolean;
   /** Master on/off for the turn-complete push. */
   readonly on_turn_complete: boolean;
@@ -231,7 +233,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     transcript_binder_enabled: true,
   },
   notifications: {
-    legacy_push_enabled: false,
+    legacy_push_enabled: true,
     on_turn_complete: true,
     // 60s: long enough that a normal interactive turn (seconds) never fires
     // it, short enough to still be useful for "went to get coffee" absences.
@@ -670,8 +672,10 @@ authorized_chat_ids = []
 authorized_user_ids = []
 
 [notifications]
-# Plaintext compatibility is off. Enabling it also requires a push secret;
-# secure pairing permanently disables this path on the daemon (#1200).
+# Plaintext legacy push is on by default until secure push ships end to end
+# (the default flips at the R7 gate, #1200); it also needs a push secret.
+# Set false to disable it. Once any device enrolls over the relay, this
+# machine never sends plaintext push again, whatever this setting says.
 legacy_push_enabled = ${DEFAULT_CONFIG.notifications.legacy_push_enabled}
 # Push "<session>: turn complete" with Claude's actual last message when a
 # turn runs long (#914). Stop fires on EVERY turn, including two-second

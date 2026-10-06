@@ -641,7 +641,11 @@ describe('setupHookBridge', () => {
           {
             sessionRegistry,
             deviceTokens,
-            pushConfig: () => ({ signalingUrl: 'ws://x' }),
+            pushConfig: () => ({
+              signalingUrl: 'ws://x',
+              legacyEnabled: true,
+              pushSecret: 'owned-test-secret',
+            }),
             getPrimarySessionId: () => SID,
             pushFn,
           },

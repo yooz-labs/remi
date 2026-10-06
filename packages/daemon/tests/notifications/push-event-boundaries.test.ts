@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } 
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, relayV2 as r } from '@remi/shared';
+import { type UUID, createIdentity, relayV2 as r } from '@remi/shared';
 import { FakeHost } from '../../../signaling/tests/e2e/endpoints.ts';
 import { startWorker } from '../../../signaling/tests/e2e/harness.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
@@ -40,7 +40,7 @@ afterEach(async () => {
   for (const stop of cleanup.splice(0).reverse()) await stop();
   __resetLoggerForTests();
 });
-async function fixture(muted = false, loseApnsResponse = false) {
+async function fixture(muted = false, loseApnsResponse = false, holdApnsResponse = false) {
   const directory = mkdtempSync(join(tmpdir(), 'remi-secure-events-'));
   chmodSync(directory, 0o700);
   cleanup.push(async () => rmSync(directory, { recursive: true, force: true }));
@@ -76,6 +76,7 @@ async function fixture(muted = false, loseApnsResponse = false) {
       req.socket.destroy();
       return;
     }
+    if (holdApnsResponse) await Bun.sleep(1500); // a slow receiver: the delivery outlasts the bound
     res.writeHead(200);
     res.end();
   });
@@ -233,8 +234,8 @@ async function fixture(muted = false, loseApnsResponse = false) {
     await Promise.all(tasks);
     await Bun.sleep(0);
   };
-  const open = async () => {
-    const carrier = JSON.parse(received[0]?.body ?? '')['remiPush'] as r.PushCarrier;
+  const open = async (index = 0) => {
+    const carrier = JSON.parse(received[index]?.body ?? '')['remiPush'] as r.PushCarrier;
     return r.openPushContent(
       pair,
       carrier,
@@ -265,6 +266,11 @@ async function fixture(muted = false, loseApnsResponse = false) {
     contexts.finish(runtime);
   });
   return {
+    contexts,
+    runtime,
+    service,
+    secure,
+    questions,
     preferences,
     directory,
     received,
@@ -408,3 +414,134 @@ test('foreign actual socket-loss delivery remains uncertain without resend or fa
   expect(f.logs.join('\n')).not.toContain('[ForeignSession] informational push failed');
   expect(f.logs.join('\n')).toContain('[ForeignSession] informational push uncertain');
 }, 15000);
+
+test('an identical harness_denied repeat is a new occurrence and reaches the receiver again, on one collapse key (#1200, B2)', async () => {
+  const f = await fixture();
+  f.denied();
+  await f.flush();
+  f.denied();
+  await f.flush();
+  expect(f.events).toHaveLength(2);
+  expect(f.received).toHaveLength(2);
+  expect(f.outcomes).toEqual(['accepted', 'accepted']);
+  const carriers = f.received.map((rec) => JSON.parse(rec.body)['remiPush'] as r.PushCarrier);
+  expect(carriers[1]?.collapseId).toBe(carriers[0]?.collapseId);
+}, 20000);
+
+/** A pushed question card, as the dispatcher builds its secure push (full text, no detail). */
+function pushedQuestion(f: Awaited<ReturnType<typeof fixture>>) {
+  const question = {
+    id: 'b0000000-0000-0000-0000-000000000001' as UUID,
+    text: 'proceed?',
+    options: [
+      { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+      { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+    ],
+    allowsFreeText: false,
+    isAnswered: false,
+  };
+  f.questions.add(question);
+  return {
+    question,
+    event: {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    },
+  };
+}
+
+test('a retired runtime still sends the dismissals its teardown emits, then finishes once they are out (#1200, B3)', async () => {
+  const f = await fixture();
+  const { question, event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('pushed');
+  expect(f.received).toHaveLength(1);
+  // The order cli.ts runs on a session close: retire, the disposal's dismissals, drain, finish.
+  f.contexts.retire(f.runtime);
+  void f.secure.send({ kind: 'dismiss', logicalId: question.id });
+  await f.service.drain(f.runtime, 5000);
+  f.contexts.finish(f.runtime);
+  expect(f.received).toHaveLength(2);
+  const opened = await f.open(1);
+  expect(opened.payload).toMatchObject({ type: 'dismiss', actionable: false });
+  expect(opened.content.collapseId).toBe((await f.open(0)).content.collapseId);
+}, 20000);
+
+test('a retired runtime sends nothing new and nothing actionable (#1200, B3)', async () => {
+  const f = await fixture();
+  const pending = f.secure.send({
+    kind: 'harness_denied',
+    logicalId: 'harness-denied-session',
+    title: 'Remi',
+    body: 'blocked',
+  });
+  f.contexts.retire(f.runtime);
+  expect(await pending).toBe('failed');
+  const { event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('failed');
+  expect(f.received).toHaveLength(0);
+}, 20000);
+
+test('a dismissal whose delivery was lost is sent again by the next dismissal, with a fresh nonce (#1200, B3)', async () => {
+  const f = await fixture(false, true);
+  const { question, event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('uncertain');
+  expect(await f.secure.send({ kind: 'dismiss', logicalId: question.id })).toBe('uncertain');
+  expect(f.received).toHaveLength(2);
+  expect(await f.secure.send({ kind: 'dismiss', logicalId: question.id })).toBe('uncertain');
+  expect(f.received).toHaveLength(3);
+  const nonces = f.received.map(
+    (rec) => (JSON.parse(rec.body)['remiPush'] as r.PushCarrier).sealed,
+  );
+  expect(new Set(nonces).size).toBe(3);
+}, 30000);
+
+test('a dismissal that was accepted is not sent again (#1200, B3)', async () => {
+  const f = await fixture();
+  const { question, event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('pushed');
+  expect(await f.secure.send({ kind: 'dismiss', logicalId: question.id })).toBe('pushed');
+  expect(await f.secure.send({ kind: 'dismiss', logicalId: question.id })).toBe('pushed');
+  expect(f.received).toHaveLength(2);
+}, 20000);
+
+test('draining waits no longer than its bound for a slow delivery (#1200, B3)', async () => {
+  const f = await fixture(false, false, true);
+  const { event } = pushedQuestion(f);
+  void f.secure.send(event);
+  await Bun.sleep(300);
+  const started = Date.now();
+  await f.service.drain(f.runtime, 200);
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(f.received.length).toBeGreaterThanOrEqual(1);
+}, 20000);
+
+test('a close that already cleared the registry still dismisses the pushed card, once, and leaves information alone (#1200, B3)', async () => {
+  const f = await fixture();
+  const { question, event } = pushedQuestion(f);
+  expect(await f.secure.send(event)).toBe('pushed');
+  const other = pushedQuestion(f);
+  // A pushed notice about something else (no card) must not be dismissed by the teardown.
+  expect(
+    await f.secure.send({
+      kind: 'harness_denied',
+      logicalId: 'harness-denied-session',
+      title: 'Remi',
+      body: 'blocked',
+    }),
+  ).toBe('pushed');
+  expect(other.question.id).toBe(question.id);
+  // closeSession clears the session first, so the gate never announces its held card (#1200, B3).
+  f.questions.remove(question.id);
+  f.contexts.retire(f.runtime);
+  expect(f.service.dismissUndismissedQuestions(f.runtime)).toBe(1);
+  await f.service.drain(f.runtime, 5000);
+  expect(f.received).toHaveLength(3);
+  expect((await f.open(2)).payload).toMatchObject({ type: 'dismiss', actionable: false });
+  expect((await f.open(2)).content.collapseId).toBe((await f.open(0)).content.collapseId);
+  // Nothing is left to dismiss, and a dismissal that already went out is not sent twice.
+  expect(f.service.dismissUndismissedQuestions(f.runtime)).toBe(0);
+  f.contexts.finish(f.runtime);
+}, 30000);

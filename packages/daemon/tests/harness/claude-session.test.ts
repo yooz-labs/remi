@@ -813,8 +813,15 @@ describe('ClaudeHarness.createSession', () => {
               actionable: false,
             });
           }
+          // A repeated notice or failed turn is a later occurrence and pushes again (#1200, B2); a
+          // repeated dismissal or question is the same event and does not.
+          const repeats =
+            deliveryPath === 'terminal-notice' ||
+            deliveryPath === 'turn-failed' ||
+            deliveryPath === 'turn-failed-recovery';
           await deliver();
-          expect(bodies).toHaveLength(expectedCount);
+          if (repeats) await until(() => bodies.length === expectedCount + 1, 'the repeated push');
+          expect(bodies).toHaveLength(repeats ? expectedCount + 1 : expectedCount);
         } finally {
           host.control.close();
           await host.control.closed;
@@ -1238,8 +1245,9 @@ describe('ClaudeHarness.createSession', () => {
       await Promise.all(tasks);
       expect(events).toHaveLength(2);
       expect(submitted).toHaveLength(2);
-      expect(submitted[1]?.collapseId).toBe(submitted[0]?.collapseId);
-      expect(submitted[1]?.revision).toBe((submitted[0]?.revision ?? 0) + 1);
+      // Legacy stacked every turn-complete push (no collapse key); each turn keeps its own slot.
+      expect(submitted[1]?.collapseId).not.toBe(submitted[0]?.collapseId);
+      expect(submitted[1]?.revision).toBe(submitted[0]?.revision);
       expect(submitted[1]?.nonce).not.toBe(submitted[0]?.nonce);
     } finally {
       receiver.closeAllConnections();

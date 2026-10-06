@@ -221,14 +221,22 @@ import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decisi
 import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
-import { type LegacyPushPolicy, legacyPushFields } from './notifications/legacy-push-policy.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './notifications/legacy-push-policy.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import {
   SecurePushContexts,
   type SecurePushRuntime,
 } from './notifications/secure-push-contexts.ts';
-import { SecurePushService, type SecureSessionPush } from './notifications/secure-push-service.ts';
+import {
+  SecurePushService,
+  type SecureSessionPush,
+  initFailureClass,
+} from './notifications/secure-push-service.ts';
 import { SecurePushStore } from './notifications/secure-push-store.ts';
 import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
@@ -1086,7 +1094,8 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
-// Created before the message API or harness can emit; removed before teardown (#1200).
+// Created before the message API or harness can emit; retired before teardown, finished after the
+// disposal's dismissals are out (#1200).
 const securePushContexts = new SecurePushContexts({
   questionFor: (sessionId, questionId) => sessionRegistry.getQuestion(sessionId, questionId),
   validityFor: (sessionId, questionId) =>
@@ -1104,6 +1113,35 @@ function finishSecurePushRuntime(sessionId: UUID, expected?: SecurePushRuntime):
   if (!runtime || (expected && runtime !== expected)) return;
   securePushContexts.finish(runtime);
   securePushRuntimes.delete(sessionId);
+}
+/** How long a teardown waits for the dismissals its session's disposal emitted (#1200, B3). */
+const SECURE_TEARDOWN_WAIT_MS = 3000;
+/**
+ * First step of every teardown: nothing new and nothing actionable can be pushed from the
+ * runtime, but the dismissals of cards it already pushed still can (B3). The session's disposal
+ * emits those dismissals; `closeSecurePushRuntime` follows it.
+ */
+function retireSecurePushRuntime(sessionId: UUID): void {
+  const runtime = securePushRuntimes.get(sessionId);
+  if (runtime) securePushContexts.retire(runtime);
+}
+/**
+ * Last step of a teardown, after the disposal: dismiss the pushed cards the disposal did not (the
+ * session is already out of the registry when a close is announced), wait (bounded) for the
+ * dismissals, then finish.
+ */
+async function closeSecurePushRuntime(
+  sessionId: UUID,
+  expected?: SecurePushRuntime,
+): Promise<void> {
+  const runtime = securePushRuntimes.get(sessionId);
+  if (!runtime || (expected && runtime !== expected)) return;
+  try {
+    securePushService?.dismissUndismissedQuestions(runtime);
+    await securePushService?.drain(runtime, SECURE_TEARDOWN_WAIT_MS);
+  } finally {
+    finishSecurePushRuntime(sessionId, runtime);
+  }
 }
 function legacyPushPolicy(): LegacyPushPolicy {
   return {
@@ -1181,7 +1219,7 @@ const sessionRegistry = new SessionRegistry(
       log(`Session created: ${sessionId}`);
     },
     onSessionClosed: (sessionId, reason) => {
-      finishSecurePushRuntime(sessionId);
+      retireSecurePushRuntime(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1192,6 +1230,9 @@ const sessionRegistry = new SessionRegistry(
       // The session's dispose() also drops its #914 admits filter, so a closed
       // session's binder can never keep admitting turns on its behalf.
       harnessSessions.get(sessionId)?.dispose();
+      // The disposal cancelled the session's held prompts and dismissed their cards through the
+      // runtime retired above; finish it once those dismissals are out (#1200, B3).
+      void closeSecurePushRuntime(sessionId);
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
       // QuestionPresenceTracker (#920): a stale entry would make
@@ -1335,13 +1376,15 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
   if (secure)
     void secure.send({ kind: 'subagent_alert', logicalId: 'subagent-alert', title, body });
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of deviceTokens.values()) {
+  const legacyPolicy = legacyPushPolicy();
+  // A disabled or secretless legacy channel has no recipients (#1200, B6).
+  for (const dt of legacyChannelOpen(legacyPolicy) ? deviceTokens.values() : []) {
     // Deliberately no `category` / `options` / `questionId`: this is
     // dismiss-only and answers nothing (see subagent-alert.ts module doc).
     void sendPushTrigger(signalingUrl, dt.token, {
       title,
       body,
-      ...legacyPushFields(legacyPushPolicy()),
+      ...legacyPushFields(legacyPolicy),
       kind: 'subagent_alert',
     }).catch(() => {
       logError('[SubagentAlert] push failed');
@@ -1713,7 +1756,7 @@ async function createNewSession(
 
     return ptySession;
   } catch (error) {
-    finishSecurePushRuntime(sessionId, runtime);
+    retireSecurePushRuntime(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
     } catch {
@@ -1722,6 +1765,7 @@ async function createNewSession(
       harnessSessions.delete(sessionId);
       sessionNotifiers.delete(sessionId);
     }
+    void closeSecurePushRuntime(sessionId, runtime);
     throw error;
   }
 }
@@ -2429,8 +2473,10 @@ if (relayWanted && relayIdentity) {
         runtimeFor: (sessionId) => securePushRuntimes.get(sessionId),
         apply: inputHandlers.guardedAnswer,
       });
-    } catch {
-      logError('[SecurePush] initialization refused');
+    } catch (error) {
+      // The cause class only (a fixed code or an error type), never a message that could carry
+      // key material or a path; without a service the hub refuses subscriptions (#1200, B5).
+      logError(`[SecurePush] initialization refused (${initFailureClass(error)})`);
     }
   }
 }
@@ -2442,7 +2488,7 @@ let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
-  for (const sessionId of securePushRuntimes.keys()) finishSecurePushRuntime(sessionId);
+  for (const sessionId of securePushRuntimes.keys()) retireSecurePushRuntime(sessionId);
 
   cancelOrphanTimeout();
 
@@ -2500,6 +2546,8 @@ async function cleanup(): Promise<void> {
   for (const session of harnessSessions.values()) {
     session.dispose();
   }
+  // The disposals above dismissed their cards through the retired runtimes (#1200, B3).
+  await Promise.all([...securePushRuntimes.keys()].map((id) => closeSecurePushRuntime(id)));
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
@@ -2714,6 +2762,8 @@ if (cliDaemonMode) {
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,
+          // A subscription is acknowledged only while a secure push service exists (#1200, B5).
+          securePushSender: () => securePushService !== undefined,
           log: console.error,
         },
         sharedEvents,

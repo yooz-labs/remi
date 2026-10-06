@@ -13,7 +13,7 @@
  * registered. The hooks are POSTed to the hook port as Claude's own hook scripts do. Every
  * assertion reads what the daemon sent to the endpoint or wrote to its log, so it holds for any
  * implementation of the hand-off. Positive cases explicitly opt into pre-secure legacy
- * compatibility (#1200); the default-off case verifies that a secret alone sends nothing.
+ * compatibility (#1200); the explicit-off case verifies that a secret alone sends nothing.
  *
  * Time: `turn_complete_min_seconds` is 0.3 here, and a "long" turn waits 450 ms between its
  * `UserPromptSubmit` and its `Stop`. A timer is never early, so a long turn is long however busy
@@ -112,12 +112,13 @@ interface Session {
   longTurn(promptId: string, message: string): Promise<void>;
 }
 
-async function startSession(legacyEnabled: boolean): Promise<Session> {
+/** `'default'` writes no `legacy_push_enabled` key, so the shipped default applies (#1200). */
+async function startSession(legacy: boolean | 'default'): Promise<Session> {
   const { home, work } = makeIsolatedDirs();
   fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
   fs.writeFileSync(
     path.join(home, '.remi', 'config.toml'),
-    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n${legacyEnabled ? 'legacy_push_enabled = true\n' : ''}`,
+    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n${legacy === 'default' ? '' : `legacy_push_enabled = ${legacy}\n`}`,
   );
   const fakeDir = path.join(home, 'fake-claude');
   const fakeBin = path.join(home, 'fake-bin');
@@ -255,25 +256,44 @@ async function startSession(legacyEnabled: boolean): Promise<Session> {
 }
 
 describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180)', () => {
-  test('default-off legacy push makes no network request despite a registered token and secret', async () => {
-    const s = await startSession(false);
+  test('legacy push is ON by default: a long turn pushes with no legacy_push_enabled key (#1200)', async () => {
+    const s = await startSession('default');
     try {
       const directory = path.join(s.daemon.home, '.remi');
       expect(fs.readFileSync(path.join(directory, 'config.toml'), 'utf8')).not.toContain(
         'legacy_push_enabled',
       );
+      await s.longTurn('p-default-on', 'DEFAULT-ON-ANSWER');
+      await pollUntil(() => s.pushes.length >= 1, 10000, 'the default-on turn_complete push');
+      expect(s.pushes.map((p) => [p.kind, p.body])).toEqual([
+        ['turn_complete', 'DEFAULT-ON-ANSWER'],
+      ]);
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
+  test('explicit-off legacy push makes no network request despite a registered token and secret', async () => {
+    const s = await startSession(false);
+    try {
+      const directory = path.join(s.daemon.home, '.remi');
+      expect(fs.readFileSync(path.join(directory, 'config.toml'), 'utf8')).toContain(
+        'legacy_push_enabled = false',
+      );
       expect(fs.existsSync(path.join(directory, 'relay_devices.json'))).toBe(false);
       expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(false);
-      await s.longTurn('p-default-off', 'DEFAULT-OFF-ANSWER');
+      await s.longTurn('p-explicit-off', 'EXPLICIT-OFF-ANSWER');
       // The real Stop reached the shipping sink; silence cannot be a missing hook or token.
+      // With no legacy recipient the sink logs nothing, so the hook bridge's own line proves the
+      // real Stop arrived; silence cannot be a missing hook or token.
       await pollUntil(
-        () => s.daemon.output.text.includes('[TurnComplete] push requested'),
+        () => s.daemon.output.text.includes('[Hooks] Turn complete'),
         10000,
-        'the turn-complete sink to receive the real Stop',
+        'the hook bridge to receive the real Stop',
       );
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);
-      expect(s.daemon.output.text).not.toContain('DEFAULT-OFF-ANSWER');
+      expect(s.daemon.output.text).not.toContain('EXPLICIT-OFF-ANSWER');
     } finally {
       s.ws.close();
     }
@@ -287,9 +307,9 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
       expect(response.status).toBe(200);
       expect(response.body).toEqual({});
       await pollUntil(
-        () => s.daemon.output.text.includes('[TurnFailedPush] legacy failed'),
+        () => s.daemon.output.text.includes('[TurnFailedPush] no recipient'),
         10000,
-        'the actual turn-failed dispatcher to report its disabled legacy attempt',
+        'the actual turn-failed dispatcher to find no legacy recipient',
       );
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);

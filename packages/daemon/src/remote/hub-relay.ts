@@ -30,6 +30,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
@@ -94,6 +95,13 @@ export interface HubRelayConfig {
   trust: IdentityStore;
   dir: string;
   registry: SessionRegistryFile;
+  /**
+   * Whether this daemon can actually send a secure push right now (#1200, B5). A subscription
+   * is acknowledged only while it can be served: enrolling a device latches legacy push off for
+   * good, so a phone registered with no sender would receive nothing at all. Production wires
+   * the existence of the secure push service (`cli.ts`); absent, registration is not gated.
+   */
+  securePushSender?: () => boolean;
   random?: relayV2.Rng;
   ephemeral?: () => Promise<relayV2.EcPair>;
   log?: (message: string) => void;
@@ -691,6 +699,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     if (message.type === 'secure_push_register_request') {
       const authority = peer.pushAuthority;
       if (!authority) throw new Error('RELAY_REVOKED');
+      if (this.cfg.securePushSender?.() === false) {
+        this.log('Secure push registration refused: no secure push sender');
+        this.sendRaw(
+          peer.cid,
+          createSecurePushRegisterResponse(message.id, { success: false, error: 'UNSUPPORTED' }),
+        );
+        return;
+      }
       const allowed = [
         'type',
         'id',
@@ -710,7 +726,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           environment: message.environment,
           pushPublicKey: message.pushPublicKey,
           keyVersion: message.keyVersion,
-          ...(message.pushPrefs === undefined ? {} : { pushPrefs: message.pushPrefs }),
+          // Malformed preferences fail toward delivering, never refuse (#1200, B7).
+          pushPrefs: sanitizePushPreferences(message.pushPrefs),
         });
       } catch {
         this.sendRaw(

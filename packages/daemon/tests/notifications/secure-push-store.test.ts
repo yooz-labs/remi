@@ -175,7 +175,6 @@ test('secure subscription: strict token/environment/point/preferences refuse wit
     { ...registration, keyVersion: 0 },
     { ...registration, keyVersion: Number.MAX_SAFE_INTEGER + 1 },
     { ...registration, pushPublicKey: relayV2.b64u(new Uint8Array(65).fill(4)) },
-    { ...registration, pushPrefs: { questions: 'false' } },
     { ...registration, devicePublicKey: authority.publicKey },
   ]) {
     expect(await subscriptions.register(authority, invalid as SecurePushRegistration)).toEqual({
@@ -183,6 +182,33 @@ test('secure subscription: strict token/environment/point/preferences refuse wit
       error: 'INVALID_SUBSCRIPTION',
     });
     expect(fs.existsSync(path.join(directory, 'secure_push_subscriptions.json'))).toBe(false);
+  }
+});
+
+test('secure subscription: malformed or unknown preferences fail toward delivering, never refuse (#1200, B7)', async () => {
+  const { authority, registration } = await recipient();
+  const everything = { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true };
+  for (const [given, stored] of [
+    [{ questions: 'false' }, everything],
+    [
+      { questions: 0, turnFailed: false },
+      { ...everything, turnFailed: false },
+    ],
+    [
+      { bogus: false, harnessDenied: false },
+      { ...everything, harnessDenied: false },
+    ],
+    ['junk', everything],
+    [null, everything],
+    [[], everything],
+  ] as const) {
+    expect(
+      await subscriptions.register(authority, {
+        ...registration,
+        pushPrefs: given,
+      } as unknown as SecurePushRegistration),
+    ).toEqual({ success: true, keyVersion: 1 });
+    expect(subscriptions.listCurrent()[0]?.pushPrefs).toEqual(stored);
   }
 });
 
