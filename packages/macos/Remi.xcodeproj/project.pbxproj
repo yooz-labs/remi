@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000070000000000000002 /* NativePushPublicationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000070000000000000001; };
         120000010000000000000035 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
         120000010000000000000036 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
         120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
@@ -77,6 +78,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000070000000000000001 /* NativePushPublicationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushPublicationTests.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000034 /* NativeKeychainOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativeKeychainOperations.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000031 /* NativeEd25519PublicKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativeEd25519PublicKey.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000014 /* NativeIdentityAuthorityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativeIdentityAuthorityTests.swift; sourceTree = SOURCE_ROOT; };
@@ -184,6 +186,7 @@
                 120000020000000000000004 /* NativePushKeyStoreTests.swift */,
                 120000040000000000000004 /* NativePushCodecTests.swift */,
                 120000060000000000000004 /* NativePushEffectTests.swift */,
+                120000070000000000000001 /* NativePushPublicationTests.swift */,
 				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
@@ -384,6 +387,7 @@
                 120000020000000000000005 /* NativePushKeyStoreTests.swift in Sources */,
                 120000040000000000000005 /* NativePushCodecTests.swift in Sources */,
                 120000060000000000000005 /* NativePushEffectTests.swift in Sources */,
+                120000070000000000000002 /* NativePushPublicationTests.swift in Sources */,
                 120000010000000000000005 /* NativePushStateTests.swift in Sources */,
                 120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */,
 				120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */,
