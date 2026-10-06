@@ -4,12 +4,10 @@ import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createNetServer } from 'node:net';
 /**
- * Actual source-CLI child + HubRelay/Worker native-answer composition (#1201).
- * Own temporary HOME/state, generated identities/CA, real HTTPS ingress, real SQLite
- * Worker and an owned APNs HTTP receiver. No user keys, Apple endpoint or deployment.
- * Root delivers a decryptable question; unsupported route forms visibly refuse and
- * produce zero push POSTs through hook dispatch, empty unstick and natural exit.
- * Neither setup failures nor timeouts count as the route regression's causal red.
+ * Actual source-CLI child, HubRelay/ChildProxy, encrypted peer, Worker SQLite and TLS push
+ * composition (#1201). Run with Bun and positive|lost|coalesce. Owned identities/CA/APNs receiver;
+ * no installed model, owner keys, Apple service or deployment. Fault modes filter or hold one
+ * real loopback socket result after the core effect; no decision or crypto is replaced.
  */
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,6 +16,65 @@ import type { relayV2 as RelayTypes } from '../../packages/shared/src/index.ts';
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-r5-cli-route-')));
 fs.chmodSync(root, 0o700);
 const mode = 'root';
+const scenario = process.argv[2] ?? 'positive';
+if (!['positive', 'lost', 'coalesce'].includes(scenario)) throw new Error('invalid-scenario');
+let nativeForwards = 0;
+const nativeForwardCount = () => nativeForwards;
+let lostResults = 0;
+let heldResults = 0;
+let releaseChildResult: (() => void) | undefined;
+const ActualWebSocket = globalThis.WebSocket;
+class OwnedTransportWebSocket extends ActualWebSocket {
+  constructor(...args: ConstructorParameters<typeof ActualWebSocket>) {
+    super(...args);
+    if (new URL(this.url).pathname === '/ws') {
+      const actualSend = this.send;
+      this.send = (...values: Parameters<WebSocket['send']>) => {
+        if (typeof values[0] === 'string' && JSON.parse(values[0]).type === 'native_answer')
+          nativeForwards++;
+        return Reflect.apply(actualSend, this, values);
+      };
+    }
+  }
+  override get onmessage() {
+    return super.onmessage;
+  }
+  override set onmessage(callback: WebSocket['onmessage']) {
+    super.onmessage =
+      callback === null
+        ? null
+        : function (event) {
+            if (
+              scenario === 'coalesce' &&
+              heldResults === 0 &&
+              new URL(this.url).pathname === '/ws' &&
+              typeof event.data === 'string' &&
+              JSON.parse(event.data).type === 'answer_result'
+            ) {
+              heldResults++;
+              releaseChildResult = () => {
+                releaseChildResult = undefined;
+                callback.call(this, event);
+              };
+              return;
+            }
+            if (
+              scenario === 'lost' &&
+              lostResults === 0 &&
+              new URL(this.url).pathname === '/ws' &&
+              typeof event.data === 'string' &&
+              JSON.parse(event.data).type === 'answer_result'
+            ) {
+              lostResults++;
+              this.close(1000, 'owned-result-loss');
+              return;
+            }
+            callback.call(this, event);
+          };
+  }
+}
+// A real WebSocket subclass alters only the owned loopback delivery boundary.
+globalThis.WebSocket = OwnedTransportWebSocket;
 const refusalNotice = '[SecurePush] unsupported signaling URL; secure push requires a root origin';
 const repo = path.resolve(import.meta.dir, '../..');
 const own = fs.mkdtempSync(`${root}/cli-https-${mode}-`);
@@ -448,15 +505,21 @@ try {
         channel,
         received,
         drain: () => tail,
-        async result(id: string) {
+        async result(id: string, expected?: string) {
           await until(() => {
             if (receiveFailure) throw receiveFailure;
             return received.some(
-              (message) => message?.type === 'answer_result' && message.requestId === id,
+              (message) =>
+                message?.type === 'answer_result' &&
+                message.requestId === id &&
+                (expected === undefined || message.outcome === expected),
             );
           }, 'actual-correlated-native-result');
           return received.find(
-            (message) => message?.type === 'answer_result' && message.requestId === id,
+            (message) =>
+              message?.type === 'answer_result' &&
+              message.requestId === id &&
+              (expected === undefined || message.outcome === expected),
           );
         },
       };
@@ -492,19 +555,87 @@ try {
     const encoded = relayV2.encodeNativeAnswer(proof);
     const first = await peer();
     await first.channel.send(new TextEncoder().encode(encoded));
-    const outcome = await first.result(proof.id);
+    if (scenario === 'coalesce') {
+      await until(() => heldResults === 1, 'actual-child-result-held-after-effect');
+      await hook;
+      assert(settled, 'coalescing-holds-result-after-real-hook-effect');
+      await first.channel.send(new TextEncoder().encode(encoded));
+      const yes = opened.payload.options.find(
+        (option) => option.isYes && option.standingGrant === null,
+      );
+      assert(yes, 'actual-signed-conflicting-choice');
+      const conflictingUnsigned = { ...unsigned, answer: yes.value };
+      const conflicting = {
+        ...conflictingUnsigned,
+        signature: relayV2.b64u(
+          await deviceSigner.sign(await relayV2.buildNativeAnswerSigningInput(conflictingUnsigned)),
+        ),
+      };
+      await first.channel.send(new TextEncoder().encode(relayV2.encodeNativeAnswer(conflicting)));
+      // Observe the forbidden extra real send before waiting for a result that a broken
+      // same-id waiter map might lose. Such a mutation must fail an assertion, not time out.
+      await until(
+        () =>
+          nativeForwardCount() > 1 ||
+          first.received.some(
+            (message) =>
+              message?.type === 'answer_result' &&
+              message.requestId === proof.id &&
+              message.outcome === 'conflict',
+          ),
+        'actual-pending-id-boundary',
+      );
+      assert(nativeForwardCount() === 1, 'pending-exact-proof-coalesces-one-real-child-forward');
+      const refused = await first.result(proof.id, 'conflict');
+      assert(
+        refused?.type === 'answer_result' &&
+          refused.sessionId === proof.sessionId &&
+          refused.questionId === proof.questionId &&
+          refused.outcome === 'conflict',
+        'pending-same-id-different-body-correlated-conflict',
+      );
+      assert(nativeForwardCount() === 1, 'pending-exact-proof-coalesces-one-real-child-forward');
+      assert(
+        first.received.every(
+          (message) => message?.type !== 'answer_result' || message.outcome === 'conflict',
+        ),
+        'pending-coalesced-callers-wait-for-actual-result',
+      );
+      assert(releaseChildResult, 'actual-held-child-result-release-available');
+      releaseChildResult();
+      await until(
+        () =>
+          first.received.filter(
+            (message) =>
+              message?.type === 'answer_result' &&
+              message.requestId === proof.id &&
+              message.outcome === 'delivered',
+          ).length === 2,
+        'actual-two-coalesced-results',
+      );
+      assert(nativeForwardCount() === 1, 'coalesced-result-release-does-not-reinvoke-child');
+    }
+    const outcome = await first.result(proof.id, scenario === 'coalesce' ? 'delivered' : undefined);
     assert(
       outcome?.type === 'answer_result' &&
         outcome.sessionId === proof.sessionId &&
         outcome.questionId === proof.questionId &&
-        outcome.outcome === 'delivered',
-      'actual-native-no-correlated-delivered',
+        outcome.outcome === (scenario === 'lost' ? 'uncertain' : 'delivered'),
+      scenario === 'lost'
+        ? 'lost-child-result-correlated-uncertain'
+        : 'actual-native-no-correlated-delivered',
     );
     const actualHook = JSON.parse(await bounded(hook, 'actual-native-no-hook-result'));
     assert(
       actualHook.hookSpecificOutput?.decision?.behavior === 'deny',
       'actual-native-no-settles-http-deny',
     );
+    assert(nativeForwardCount() === 1, 'one-actual-child-native-forward');
+    if (scenario === 'lost') {
+      assert(lostResults === 1, 'lost-one-actual-child-result-after-effect');
+      await Bun.sleep(300);
+      assert(nativeForwardCount() === 1, 'uncertain-has-no-automatic-child-resend');
+    }
     assert(hub.connectionCount === 1, 'actual-current-encrypted-peer');
     assert(
       first.received.every((message) => message?.type !== 'raw_pty_output'),
@@ -528,6 +659,7 @@ try {
       resumed.received.every((message) => message?.type !== 'raw_pty_output'),
       'fresh-peer-no-raw-pty',
     );
+    assert(nativeForwardCount() === 2, 'one-explicit-exact-proof-query-on-fresh-peer');
   } else {
     assert(
       out.includes('[QuestionPush] no recipient'),
@@ -562,6 +694,8 @@ try {
 } catch (e) {
   failure = e instanceof Error ? e.message : 'fixture-failed';
 } finally {
+  releaseChildResult?.();
+  globalThis.WebSocket = ActualWebSocket;
   if (cli && cli.exitCode === null) {
     fs.writeFileSync(path.join(fake, 'release'), '');
     try {
@@ -616,6 +750,10 @@ try {
           encoding: 'utf8',
         }).trim(),
         mode,
+        scenario,
+        nativeForwards,
+        lostResults,
+        heldResults,
         cliBirth,
         gatewayPostPaths,
         refusalObserved: cliErr.includes(refusalNotice),
@@ -636,6 +774,10 @@ try {
     JSON.stringify({
       own,
       mode,
+      scenario,
+      nativeForwards,
+      lostResults,
+      heldResults,
       completed,
       failure,
       checks: checks.length,
