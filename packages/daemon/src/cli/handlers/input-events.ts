@@ -22,7 +22,12 @@ import {
 } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import type { HeldAnswer, HeldAnswerOutcome } from '../../harness/decision.ts';
+import {
+  type AnswerCommit,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../../harness/decision.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
@@ -50,7 +55,12 @@ export interface InputHandlerDeps {
    * has ended (`closed`) is never typed into, its answer belongs to the
    * terminal. Absent (no hook server: no held prompts) reads as `unknown`.
    */
-  answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  answerHeld?: (
+    sessionId: UUID,
+    questionId: UUID,
+    answer: HeldAnswer,
+    commit?: AnswerCommit,
+  ) => HeldAnswerOutcome;
   /**
    * A raw input that is a bare Escape was written to this session's
    * terminal (#1155): the web client's Esc button, Telegram's `/interrupt`,
@@ -300,7 +310,7 @@ export function trackerScreenDeps(
 /** The gate reads the answer path uses (`SessionGateHandle`). */
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome;
   noteTerminalEscape(): void;
 }
 
@@ -317,8 +327,8 @@ export function gateAnswerDeps(
 ): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'onTerminalEscape'> {
   return {
     retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
-    answerHeld: (sessionId, questionId, answer) =>
-      gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
+    answerHeld: (sessionId, questionId, answer, commit) =>
+      gateFor(sessionId)?.answerHeld(questionId, answer, commit) ?? 'unknown',
     onTerminalEscape: (sessionId) => gateFor(sessionId)?.noteTerminalEscape(),
   };
 }
@@ -586,6 +596,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     claudeSessionId: UUID | undefined,
     viaRelay = false,
     extra?: AnswerExtras,
+    commit?: AnswerCommit,
   ): Promise<AnswerOutcome> {
     log(
       `Answer from ${connectionId} for session ${sessionId}: ${answer.length} characters, ${extra?.selections?.length ?? 0} selections`,
@@ -595,7 +606,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // can answer even before the connection is fully mapped in the registry.
     const session =
       sessionRegistry.getSession(sessionId) ??
-      sessionRegistry.getSessionForConnection(connectionId);
+      (commit ? undefined : sessionRegistry.getSessionForConnection(connectionId));
     if (!session) {
       log(`No session found for connection ${connectionId} or session ${sessionId}`);
       if (!viaRelay) {
@@ -685,7 +696,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // delivered" notification. A different value (a genuine conflicting
       // late answer) or an unknown/expired question still falls through to
       // 'stale' below.
-      if (resolvedAnswers.matches(questionId, answerCacheKey(answer, extra?.selections))) {
+      if (
+        !commit &&
+        resolvedAnswers.matches(questionId, answerCacheKey(answer, extra?.selections))
+      ) {
         log(
           `[Answer] duplicate delivery for resolved question ${questionId.slice(0, 8)}; reporting delivered`,
         );
@@ -745,6 +759,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     const claimKeys = answerKeys(active, answer, extra?.selections);
     const inFlight = answersInFlight.get(questionId);
     if (inFlight !== undefined) {
+      // Signed native proofs are deduplicated by the child ledger's exact
+      // tuple, never by the ordinary answer's label/value aliases (#1201).
+      if (commit) return 'stale';
       if (claimKeys.some((k) => inFlight.keys.has(k))) {
         log(
           `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; typing nothing, reporting the first delivery's outcome`,
@@ -780,6 +797,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       extra,
       session,
       active,
+      commit,
     );
     answersInFlight.set(questionId, { keys: new Set(claimKeys), outcome });
     try {
@@ -812,6 +830,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     extra: AnswerExtras | undefined,
     session: ManagedSession,
     active: Question,
+    commit?: AnswerCommit,
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
     const selections = structuredSelections(extra);
@@ -828,7 +847,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           : option === undefined
             ? { kind: 'text', text: answer }
             : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
-    const outcome = answerHeld(session.sessionId, questionId, held);
+    const outcome = answerHeld(session.sessionId, questionId, held, commit);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
       resolvedAnswers.record(questionId, [
@@ -845,10 +864,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'delivered';
     }
     const closed = outcome === 'closed';
+    const authorityRefused = outcome === 'authority-refused';
     log(
       closed
         ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
+        : authorityRefused
+          ? '[Answer] final authority refused; card and hold kept'
+          : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
     );
     traceQuestionEvent({
       action: 'stale_answer',
@@ -860,11 +882,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       detail: {
         reason: closed
           ? 'hold-closed'
-          : active.terminalOnly === true
-            ? 'terminal-only'
-            : held.kind === 'ambiguous'
-              ? 'ambiguous-option'
-              : 'not-a-held-option',
+          : authorityRefused
+            ? 'authority-refused'
+            : active.terminalOnly === true
+              ? 'terminal-only'
+              : held.kind === 'ambiguous'
+                ? 'ambiguous-option'
+                : 'not-a-held-option',
         source: active.source,
       },
     });
@@ -920,6 +944,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     extra: AnswerExtras | undefined,
     session: ManagedSession,
     active: Question,
+    commit?: AnswerCommit,
   ): Promise<AnswerOutcome> {
     // #1126: a held prompt is answered through its hook response, and a
     // prompt whose hold has ended is answered only at the terminal. Both are
@@ -934,6 +959,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       extra,
       session,
       active,
+      commit,
     );
     if (heldOutcome !== null) return heldOutcome;
 
@@ -945,15 +971,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // refused below). AskUserQuestion and ExitPlanMode are held and answered
     // above (#1127).
     //
-    // The submit + question removal are wrapped so the question is ALWAYS
+    // The submit + question removal are wrapped so an attempted answer is
     // consumed exactly once: if `submitInput` throws, the `finally` still
     // removes it (no zombie question that a retry could double-submit), and
     // the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
+    // A final authority refusal before enqueue preserves the card (#1201).
     //
     // Overridden below only on the #920 prompt-currency refusal, so the
     // `finally` block's removal carries an honest signal instead of the
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
+    let preserveQuestion = false;
     /** Refuse a PTY submit for the #1134 guard: log, trace, consume the card
      *  (in `finally`, under the refusal's own signal), tell the client, type
      *  nothing. */
@@ -993,10 +1021,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'stale';
     };
     try {
-      // The gate stops tracking this escalation: this path removes and
-      // dismisses the card itself (the `finally` below).
+      // Ordinary answers retire now. Guarded native answers retire only
+      // after their enqueue commits, so final refusal keeps the card (#1201).
       try {
-        retireQuestion?.(session.sessionId, questionId);
+        if (!commit) retireQuestion?.(session.sessionId, questionId);
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
@@ -1141,7 +1169,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
       if (refusal !== null) return refuseSubmit(refusal, ptyInput, screenOptions);
 
-      await session.pty.submitInput(ptyInput);
+      // Only enqueue is synchronous under the final authorization check;
+      // waiting for the queued text/Enter runs after its lock has released.
+      const submitted = applyAnswerCommit(() => session.pty.submitInput(ptyInput), commit);
+      if (submitted.kind === 'refused') {
+        preserveQuestion = true;
+        return 'stale';
+      }
+      if (commit) {
+        try {
+          retireQuestion?.(session.sessionId, questionId);
+        } catch (err) {
+          logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
+        }
+      }
+      await submitted.value;
 
       // #752: the answer applied (PTY submit succeeded) — recorded directly
       // after application, so a throwing submit is never recorded (its
@@ -1161,22 +1203,32 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // so the #920 prompt-currency refusal above (which `return`s from
       // inside this `try`) still clears the stale card — `removalReason`
       // carries the honest signal for that path.
-      sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
-      // Cross-client dismissal (#585, P7): tell every client this question is
-      // resolved so its card clears and the lock-screen push is dismissed.
-      // Throw-safe: a broadcast/push failure must never break answer handling,
-      // and it lives in `finally` so even a throwing submit still clears the card
-      // (the question was consumed). Idempotent on the client side.
-      try {
-        onQuestionResolved?.(session.sessionId, questionId);
-      } catch (err) {
-        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+      if (!preserveQuestion) {
+        sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
+        // Cross-client dismissal (#585, P7): tell every client this question is
+        // resolved so its card clears and the lock-screen push is dismissed.
+        // Throw-safe: a broadcast/push failure must never break answer handling,
+        // and it lives in `finally` so even a throwing submit still clears the card
+        // (the question was consumed). Idempotent on the client side.
+        try {
+          onQuestionResolved?.(session.sessionId, questionId);
+        } catch (err) {
+          logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+        }
       }
     }
     return 'delivered';
   }
 
   return {
+    /** Exact-session answer after native proof verification; the ledger owns replay (#1201). */
+    guardedAnswer: (
+      sessionId: UUID,
+      questionId: UUID,
+      answer: string,
+      commit: AnswerCommit,
+    ): Promise<AnswerOutcome> =>
+      handleAnswer(sessionId, sessionId, questionId, answer, undefined, true, undefined, commit),
     onUserInput: async (
       connectionId: UUID,
       sessionId: UUID,

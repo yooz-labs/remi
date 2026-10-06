@@ -77,6 +77,7 @@ export type {
   EditMessage,
   QuestionMessage,
   AnswerMessage,
+  NativeAnswerMessage,
   AnswerSelection,
   AnswerExtras,
   SessionUpdateMessage,
@@ -260,3 +261,5 @@ export { escapeUnsafeText } from './display-text.ts';
 // Ed25519 admission defense shared by direct auth and relay (#873).
 export { isSmallOrderPublicKey } from './ed25519-public-key.ts';
 export * from './relay-messages.ts';
+
+export * from './secure-push-messages.ts';

@@ -3,11 +3,13 @@ import {
   type AnswerMessage,
   type AnswerResultOutcome,
   type HelloAckMessage,
+  type NativeAnswerMessage,
   type ProtocolMessage,
   type SessionListResponseMessage,
   createHello,
   createSessionListRequest,
   deserialize,
+  relayV2,
   serialize,
 } from '@remi/shared';
 import { capabilityWsOptions } from '../cli/capability-client.ts';
@@ -59,30 +61,74 @@ export class ChildProxy {
       questionId: string;
       ws?: WebSocket;
       resolve: (outcome: AnswerResultOutcome) => void;
+      result: Promise<AnswerResultOutcome>;
+      nativeDigest?: string;
     }
   >();
   async answer(message: AnswerMessage): Promise<AnswerResultOutcome> {
+    return this.forwardAnswer(message);
+  }
+  async nativeAnswer(input: NativeAnswerMessage): Promise<AnswerResultOutcome> {
+    try {
+      const message = relayV2.decodeNativeAnswer(relayV2.encodeNativeAnswer(input));
+      const digest = await relayV2.nativeAnswerDigest(message);
+      if (Date.now() >= message.expiresAt * 1000) return 'stale';
+      return this.forwardAnswer(message, digest);
+    } catch {
+      return 'stale';
+    }
+  }
+  private async forwardAnswer(
+    message: AnswerMessage | NativeAnswerMessage,
+    nativeDigest?: string,
+  ): Promise<AnswerResultOutcome> {
+    if (this.closed || !this.authorized()) return 'uncertain';
+    const previous = this.answers.get(message.id);
+    if (previous) {
+      // Register only one waiter for an id. Ordinary request collisions cannot
+      // overwrite a native proof's correlation; an exact proof shares its wait.
+      return nativeDigest !== undefined &&
+        previous.nativeDigest === nativeDigest &&
+        previous.sessionId === message.sessionId &&
+        previous.questionId === message.questionId
+        ? previous.result
+        : 'conflict';
+    }
     if (this.answers.size >= 32) return 'busy';
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let complete!: (outcome: AnswerResultOutcome) => void;
     const result = new Promise<AnswerResultOutcome>((resolve) => {
-      this.answers.set(message.id, {
-        sessionId: message.sessionId,
-        questionId: message.questionId,
-        resolve,
-      });
-      timer = setTimeout(() => resolve('uncertain'), 10000);
+      complete = resolve;
     });
+    const entry = {
+      sessionId: message.sessionId,
+      questionId: message.questionId,
+      resolve: complete,
+      result,
+      ...(nativeDigest !== undefined ? { nativeDigest } : {}),
+    };
+    this.answers.set(message.id, entry);
+    const remaining =
+      message.type === 'native_answer' ? Math.max(0, message.expiresAt * 1000 - Date.now()) : 10000;
+    timer = setTimeout(() => complete('uncertain'), Math.min(10000, remaining));
+    let outcome: AnswerResultOutcome;
     try {
       await this.send(message.sessionId, message);
-      return await result;
+      outcome = await result;
     } catch (error) {
-      return error instanceof Error && error.message === 'SESSION_NOT_FOUND'
-        ? 'session-not-found'
-        : 'uncertain';
+      outcome =
+        error instanceof Error && error.message === 'SESSION_NOT_FOUND'
+          ? 'session-not-found'
+          : 'uncertain';
     } finally {
       if (timer) clearTimeout(timer);
-      this.answers.delete(message.id);
+      if (this.answers.get(message.id) === entry) this.answers.delete(message.id);
     }
+    // Every coalesced waiter shares `result` (#1201). A send that fails before any child
+    // answer_result leaves it unsettled, and its timer is cleared above, so settle it with
+    // the first caller's outcome on every exit path. Settling an already settled result is a no-op.
+    complete(outcome);
+    return outcome;
   }
   private refuseAnswers(sessionId?: string, ws?: WebSocket): void {
     for (const entry of this.answers.values())
@@ -241,7 +287,11 @@ export class ChildProxy {
     if (pendingList) pendingList.ws = child.ws;
     if (message.type === 'hello') {
       if (child.hello) this.receive(child.hello);
-    } else child.ws.send(serialize(message));
+    } else {
+      if (message.type === 'native_answer' && Date.now() >= message.expiresAt * 1000)
+        throw new Error('CHILD_PROOF_EXPIRED');
+      child.ws.send(serialize(message));
+    }
   }
   close(): void {
     this.closed = true;

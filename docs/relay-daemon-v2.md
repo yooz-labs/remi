@@ -4,8 +4,17 @@ This source implements the machine-owned relay daemon. It is off by default and
 runs only in the session-less hub. R4 web/native client integration, R5/R6 push
 privacy, deployment and owner hardware acceptance are separate gates. This is
 not a claim that a released phone app or the deployed Worker supports this path.
-The existing `/push` path still carries plaintext notification text to the Worker
-and APNS. Direct transport behavior remains separate.
+R5 adds signed, sealed push content through `/v2/push/<rid>`; native verification
+and the background answer path still have separate acceptance gates. The daemon
+builds the sealed-push sender only with a push secret (`--push-secret` or
+`REMI_PUSH_SECRET`; a hub hands it to the session daemons it spawns through their
+environment), which it sends as the Worker's bearer; without one the hub answers
+`secure_push_register_request` with `UNSUPPORTED`. Plaintext `/push` stays on by
+default (`notifications.legacy_push_enabled = true`) until the R7 gate, and still
+needs a push secret. A durable, machine-wide activation latch retires it the first
+time any device enrolls over the relay: from then on the machine sends no plaintext
+push to any device, directly connected phones included (#1200). Direct transport
+behavior remains separate.
 
 ## Opt-in and local authority
 
@@ -15,7 +24,12 @@ register with the Worker. The default `signaling_url` is the Worker origin,
 `wss://remi-signaling.yooz.workers.dev`, with v2 routes appended by `relay-url.ts`.
 The recognized official old `/connect` URL (with or without a trailing slash)
 refuses startup with explicit configuration guidance. User TOML is never rewritten.
-Custom proxy prefixes retain their meaning.
+Custom proxy prefixes retain their meaning for the interactive WebSocket relay.
+Secure push accepts only an HTTPS or WSS root origin with an optional root slash;
+it refuses credentials, a path prefix, query or fragment with a fixed startup
+notice. It creates no secure-push service in that case and never posts to a
+guessed root route. Supporting proxy-prefixed push needs an explicit deployment
+route; the signed canonical path remains `/v2/push/<rid>` (#1200).
 
 `remi pair` requires a local interactive terminal. Its private control connection
 requires both actual TCP loopback and the daemon capability; forwarded headers or

@@ -515,6 +515,7 @@ export class HookEventBridge {
     let promptText: string;
     let options: QuestionOption[];
     let optionsAreFallback = false;
+    let inputDetail: string | undefined;
     if (toolQuestion) {
       // Already phrased as a question, so no "Allow" prefix. A subagent prompt
       // still names the agent so the user knows WHO is asking.
@@ -524,6 +525,9 @@ export class HookEventBridge {
       options = toolQuestion.options;
     } else {
       const inputSummary = summarizeToolInput(toolName, input.tool_input);
+      const complete = summarizeToolInput(toolName, input.tool_input, { complete: true });
+      // Preserve hidden input explicitly; preview text is never evidence of completeness (#1200).
+      if (complete !== null && complete !== inputSummary) inputDetail = complete;
       // The action carries the command/path/pattern context (#497).
       const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
       // A subagent prompt names the agent, e.g.
@@ -537,6 +541,7 @@ export class HookEventBridge {
     return {
       id: generateId(),
       text: promptText,
+      ...(inputDetail === undefined ? {} : { detail: inputDetail }),
       options,
       allowsFreeText: false,
       isAnswered: false,

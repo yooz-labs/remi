@@ -66,6 +66,11 @@ export interface DisplayConfig {
  * DURATION so it only fires when the user plausibly walked away.
  */
 export interface NotificationsConfig {
+  /** Plaintext legacy push through the signaling Worker; it also needs a push secret.
+   * ON by default until secure push ships end to end; the default flips at the R7 gate
+   * (#1200). `false` disables it. Independent of this flag, the machine-wide activation
+   * latch refuses it for good once any device enrolls over the relay. */
+  readonly legacy_push_enabled: boolean;
   /** Master on/off for the turn-complete push. */
   readonly on_turn_complete: boolean;
   /**
@@ -228,6 +233,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     transcript_binder_enabled: true,
   },
   notifications: {
+    legacy_push_enabled: true,
     on_turn_complete: true,
     // 60s: long enough that a normal interactive turn (seconds) never fires
     // it, short enough to still be useful for "went to get coffee" absences.
@@ -460,6 +466,11 @@ function validateDaemon(cfg: DaemonConfig, configPath: string): void {
 
 /** Validate `[notifications]` has correct runtime types (#914). */
 function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (typeof cfg.legacy_push_enabled !== 'boolean') {
+    throw new Error(
+      `Invalid notifications.legacy_push_enabled in ${configPath}: must be a boolean (true/false).`,
+    );
+  }
   if (
     !Array.isArray(cfg.subagent_alert) ||
     !cfg.subagent_alert.every((p: unknown) => typeof p === 'string')
@@ -661,6 +672,11 @@ authorized_chat_ids = []
 authorized_user_ids = []
 
 [notifications]
+# Plaintext legacy push is on by default until secure push ships end to end
+# (the default flips at the R7 gate, #1200); it also needs a push secret.
+# Set false to disable it. Once any device enrolls over the relay, this
+# machine never sends plaintext push again, whatever this setting says.
+legacy_push_enabled = ${DEFAULT_CONFIG.notifications.legacy_push_enabled}
 # Push "<session>: turn complete" with Claude's actual last message when a
 # turn runs long (#914). Stop fires on EVERY turn, including two-second
 # interactive ones, so this is gated on duration: below the threshold you are
@@ -755,6 +771,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
   lines.push('');
   lines.push('[notifications]');
+  lines.push(`  legacy_push_enabled = ${config.notifications.legacy_push_enabled}`);
   lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
   lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
   lines.push(

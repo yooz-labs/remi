@@ -31,7 +31,9 @@ import {
   setupHookBridge,
   terminalNoticeReason,
 } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import type { AnswerCommit } from '../../../src/harness/decision.ts';
 import { ClaudeHarness } from '../../../src/harness/index.ts';
+import type { DecisionChannel } from '../../../src/harness/types.ts';
 import { HookServer } from '../../../src/hooks/hook-server.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { PermissionDecision, StopFailureHookInput } from '../../../src/hooks/index.ts';
@@ -563,6 +565,8 @@ describe('setupHookBridge', () => {
     });
 
     test('an admitted StopFailure reaches pushTurnFailed once, with this session id and the payload (#1153)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
       const pushed: Array<{ sessionId: UUID; input: StopFailureHookInput }> = [];
       build({ pushTurnFailed: (sessionId, input) => pushed.push({ sessionId, input }) });
       lock('claude-A');
@@ -571,6 +575,7 @@ describe('setupHookBridge', () => {
       expect(pushed[0]?.sessionId).toBe(SID);
       expect(pushed[0]?.input.error).toBe('rate_limit');
       expect(pushed[0]?.input.last_assistant_message).toBe("You've hit your session limit");
+      expect(logs.filter((line) => line.includes('Turn failed'))).toEqual(['[Hooks] Turn failed']);
     });
 
     test('a throwing pushTurnFailed never escapes into the hook dispatch loop (#1153)', () => {
@@ -636,7 +641,11 @@ describe('setupHookBridge', () => {
           {
             sessionRegistry,
             deviceTokens,
-            pushConfig: () => ({ signalingUrl: 'ws://x' }),
+            pushConfig: () => ({
+              signalingUrl: 'ws://x',
+              legacyEnabled: true,
+              pushSecret: 'owned-test-secret',
+            }),
             getPrimarySessionId: () => SID,
             pushFn,
           },
@@ -2163,6 +2172,29 @@ describe('setupHookBridge', () => {
       expect(await hook).toBe('deny');
       expect(ptySubmits).toEqual([]);
       expect(cards()).toHaveLength(0);
+    });
+
+    test('the bridge handle forwards the final authority commit to the gate (#1201)', async () => {
+      const { card, hook, handle } = held('claude-held-commit');
+      // Read the handle the way its consumers do: through the channel's wider signature.
+      const answerHeld: DecisionChannel['answerHeld'] = handle.gate.answerHeld;
+      let refusals = 0;
+      const refusing: AnswerCommit = () => {
+        refusals++;
+        return { kind: 'refused' };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, refusing)).toBe('authority-refused');
+      expect(refusals).toBe(1);
+      expect(handle.gate.isHeld(card.id)).toBe(true);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      let commits = 0;
+      const committing: AnswerCommit = <T>(effect: () => T) => {
+        commits++;
+        return { kind: 'committed', value: effect() };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, committing)).toBe('resolved');
+      expect(commits).toBe(1);
+      expect(await hook).toBe('deny');
     });
 
     test('a duplicate delivery of the same tap resolves once and reports delivered (#752)', async () => {
@@ -4374,7 +4406,7 @@ describe('setupHookBridge', () => {
       expect(subagentViews.resolvePath('sub-1')).toBe(derived);
     });
 
-    test('Stop logs the truncated last_assistant_message (turn genuinely complete)', () => {
+    test('Stop logs only the operation when the turn genuinely completes', () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       build();
@@ -4388,15 +4420,13 @@ describe('setupHookBridge', () => {
       });
       const turnCompleteLines = logs.filter((l) => l.includes('Turn complete'));
       expect(turnCompleteLines.length).toBe(1);
-      // The log line is keyed by remi's daemon-side session id (SID), not the
-      // raw Claude session_id from the hook payload -- same convention every
-      // other [Hooks] log line in this file uses.
-      expect(turnCompleteLines[0]).toContain(SID);
-      // Truncated: the 300+ char filler must not appear in full, and whitespace
-      // (including the embedded newlines) is collapsed to single spaces.
+      expect(turnCompleteLines[0]).toBe('[Hooks] Turn complete');
+      expect(turnCompleteLines[0]).not.toContain(SID);
+      expect(turnCompleteLines[0]).not.toContain('claude-891-stop');
       expect(turnCompleteLines[0]?.includes('x'.repeat(300))).toBe(false);
       expect(turnCompleteLines[0]).not.toContain('\n');
-      expect(turnCompleteLines[0]).toContain('Line one. Line two with lots of detail.');
+      expect(turnCompleteLines[0]).not.toContain('Line one.');
+      expect(turnCompleteLines[0]).not.toContain('Line two with lots of detail.');
     });
 
     test('Stop does NOT log when stop_hook_active is true (turn is not actually done)', () => {

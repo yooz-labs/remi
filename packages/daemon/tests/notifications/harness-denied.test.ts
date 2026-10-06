@@ -69,6 +69,8 @@ describe('pushHarnessDenied', () => {
       {
         deviceTokens: tokens,
         signalingUrl: 'https://signal.example',
+        legacyEnabled: true,
+        pushSecret: 'owned-test-secret',
         sessionId: SESSION,
         sessionName: 'remi',
         send: async (_url, token, opts) => {

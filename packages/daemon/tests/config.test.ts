@@ -359,6 +359,39 @@ describe('terminal config (#513)', () => {
 });
 
 describe('notifications config (#914)', () => {
+  test('plaintext legacy push is ON for missing and generated configs until the R7 gate (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(true);
+    expect(DEFAULT_CONFIG.notifications.legacy_push_enabled).toBe(true);
+    expect(generateDefaultConfig()).toContain('legacy_push_enabled = true');
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain(
+      'legacy_push_enabled = true',
+    );
+  });
+
+  test('an explicit legacy_push_enabled = false still disables plaintext legacy push (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = true\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(true);
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = false\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain(
+      'legacy_push_enabled = false',
+    );
+    // A config written by `remi config init` and edited to false keeps it false.
+    fs.writeFileSync(
+      TEST_CONFIG,
+      generateDefaultConfig().replace('legacy_push_enabled = true', 'legacy_push_enabled = false'),
+    );
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+  });
+
+  test('plaintext legacy push refuses malformed compatibility settings (#1200)', () => {
+    for (const invalid of ['"true"', '1', '[]']) {
+      fs.writeFileSync(TEST_CONFIG, `[notifications]\nlegacy_push_enabled = ${invalid}\n`);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.legacy_push_enabled/);
+    }
+  });
+
   test('defaults: on_turn_complete true, 60s threshold', () => {
     expect(DEFAULT_CONFIG.notifications.on_turn_complete).toBe(true);
     expect(DEFAULT_CONFIG.notifications.turn_complete_min_seconds).toBe(60);

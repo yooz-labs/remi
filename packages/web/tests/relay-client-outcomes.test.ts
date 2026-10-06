@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import {
   type AnswerResultMessage,
   type ProtocolMessage,
+  type SecurePushRegisterResponseMessage,
   createAnswer,
   createHello,
   createSessionListRequest,
@@ -47,7 +48,7 @@ async function pair(
     signer,
     identityCurrent,
     {
-      onReady: () => ready.push(true),
+      onPhase: phase => { if (phase === 'connected') ready.push(true); },
       onMessage: receive,
       onClose,
       onError: (error) => errors.push(error),
@@ -71,6 +72,45 @@ async function pair(
   expect(client.send(createHello('owned-r4', '2'))).toBe(true);
   return { client, signer, errors };
 }
+
+// The owned hub signals over a loopback ws:// URL, which cannot be a secure push audience (a root
+// HTTPS origin is required), so the real hub has no secure sender and refuses a subscription with
+// UNSUPPORTED instead of acknowledging one nothing could serve (#1200, B5). A real sender needs a
+// TLS ingress that also carries the relay WebSocket and a push secret; the daemon's own
+// packages/daemon/tests/remote/hub-relay-secure-push.test.ts covers a registration that succeeds.
+test('actual encrypted native push subscription waiter accepts only its correlated current channel outcome', async () => {
+  const local = await ownedRelayOffer();
+  const messages = new Mailbox<ProtocolMessage>();
+  const paired = await pair(local, message => messages.push(message));
+  const requests = new RelayRequests(message => paired.client.send(message), () => {});
+  const recipient = await relayV2.generateEcPair();
+  try {
+    await nextType(messages, 'hello_ack');
+    const reply = requests.registerPush({token:'ab'.repeat(32),environment:'sandbox',pushPublicKey:relayV2.b64u(recipient.publicKey),keyVersion:1});
+    let settled = false;
+    void reply.then(() => {settled = true}, () => {settled = true});
+    await Bun.sleep(20);
+    expect(settled, 'The real encrypted request must wait for its actual response').toBe(false);
+    const wire = await nextType(messages, 'secure_push_register_response') as SecurePushRegisterResponseMessage;
+    expect(requests.receive({...wire,requestId:generateId()})).toBe(false);
+    expect(wire).toMatchObject({success:false,error:'UNSUPPORTED'});
+    expect(settled).toBe(false);
+    expect(requests.receive(wire)).toBe(true);
+    expect(await reply).toMatchObject({success:false,error:'UNSUPPORTED'});
+    expect(requests.receive(wire)).toBe(false);
+    const removed = requests.unregisterPush();
+    const removal = await nextType(messages, 'secure_push_unregister_response');
+    expect(requests.receive(removal)).toBe(true);
+    expect(await removed).toMatchObject({success:true});
+    const lost = requests.registerPush({token:'ab'.repeat(32),environment:'sandbox',pushPublicKey:relayV2.b64u(recipient.publicKey),keyVersion:1});
+    void lost.catch(() => undefined);
+    const delayed = await nextType(messages, 'secure_push_register_response');
+    requests.closed();
+    await expect(lost).rejects.toThrow('Disconnected');
+    expect(requests.receive(delayed)).toBe(false);
+    expect(paired.errors).toHaveLength(0);
+  } finally {requests.closed();await paired.client.close();}
+}, 25000);
 
 test('real child resolution does not settle this answer until exact correlated delivered result', async () => {
   const local = await ownedRelayOffer();

@@ -168,7 +168,7 @@ describe('createMessageApiForSession', () => {
     expect(emitted).not.toContain('harnessSessionId');
   });
 
-  test('the log line for a detected question names its text, and only its length when told to redact it (#1178)', () => {
+  test('actual question and status callbacks never log personal text, even with an old opt-out (#1200)', () => {
     const lines: string[] = [];
     configureLogger({ writeLog: (line) => lines.push(line) });
     const sessionId = sessionRegistry.createSessionId();
@@ -178,7 +178,7 @@ describe('createMessageApiForSession', () => {
       handleStatusChange: () => {},
     } as never);
     const q = { ...questionWith([yesOpt, noOpt]), text: 'Allow Codex to run: sk-command-secret' };
-    for (const redactQuestionLogs of [false, true]) {
+    for (const redactQuestionLogs of [undefined, false, true]) {
       const { messageApi } = createMessageApiForSession(
         {
           sessionRegistry,
@@ -188,17 +188,18 @@ describe('createMessageApiForSession', () => {
           updateRemiStatus: () => {},
           maxBulletLength: 4000,
           sendMessage: () => {},
-          redactQuestionLogs,
+          ...(redactQuestionLogs === undefined ? {} : { redactQuestionLogs }),
         },
         sessionId,
       );
       messageApi.handleQuestion(q, { held: true });
+      messageApi.handleStatusChange('executing', 'sk-private-status-context');
     }
     const detected = lines.filter((l) => l.includes('Question detected'));
-    expect(detected).toHaveLength(2);
-    expect(detected[0]).toContain('Allow Codex to run: sk-command-secret');
-    expect(detected[1]).toContain(`(${q.text.length} chars)`);
-    expect(detected[1]).not.toContain('sk-command-secret');
+    expect(detected).toHaveLength(3);
+    expect(detected.every((line) => line.includes(`(${q.text.length} chars)`))).toBe(true);
+    expect(lines.join('\n')).not.toContain('sk-command-secret');
+    expect(lines.join('\n')).not.toContain('sk-private-status-context');
   });
 
   test('a held push is stamped held on the wire and in the registry', () => {

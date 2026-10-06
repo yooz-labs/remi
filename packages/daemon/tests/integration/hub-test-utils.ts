@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { DeviceTokenStore } from '../../src/notifications/device-token-store.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
@@ -33,6 +34,24 @@ export async function pollUntil(
     if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/** Observe the shipping store's durable registration, independent of diagnostic wording. */
+export async function waitForRegisteredDeviceToken(
+  home: string,
+  token: string,
+  timeoutMs: number,
+): Promise<void> {
+  const store = new DeviceTokenStore(path.join(home, '.remi', 'device-tokens.json'));
+  await pollUntil(
+    () => {
+      store.refreshFromDisk();
+      const entry = store.map.get(token);
+      return entry?.platform === 'ios' && entry.connectionId.length > 0;
+    },
+    timeoutMs,
+    'the device token to persist',
+  );
 }
 
 export function makeIsolatedDirs(): { home: string; work: string } {

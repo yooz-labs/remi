@@ -92,12 +92,11 @@ import type { QuestionPresenceTracker } from '../../api/question-presence-tracke
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate, subagentCall } from '../../auto-approve/index.ts';
 import type {
-  HeldAnswer,
-  HeldAnswerOutcome,
   SubagentAlert,
   SubagentAlertSink,
   TerminalReleaseCause,
 } from '../../auto-approve/index.ts';
+import type { AnswerValidity } from '../../harness/decision.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -107,7 +106,6 @@ import type {
   StopFailureHookInput,
 } from '../../hooks/index.ts';
 import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
-import { describeTurnFailure } from '../../notifications/turn-failed.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -117,16 +115,6 @@ import { TranscriptBinder } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
-
-/**
- * Cap for the Stop-turn log line (#891). `last_assistant_message` can run
- * several paragraphs (real captures in `~/.remi/hook-diag.jsonl` include
- * multi-paragraph reviewer summaries); this is a LOG line, not a client
- * surface, so it is bounded so one verbose turn cannot dominate the daemon
- * log. Whitespace (including embedded newlines) is collapsed for the same
- * reason `notification-dispatcher.ts` normalizes push text.
- */
-const STOP_LOG_MESSAGE_MAX = 200;
 
 /**
  * The notice wording for a hold released to the terminal (#1126): why
@@ -139,12 +127,6 @@ export function terminalNoticeReason(
 ): TerminalNoticeReason {
   if (cause === 'deadline') return hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal';
   return hasLocalTerminal ? 'released' : 'released_no_terminal';
-}
-
-/** Truncate + collapse whitespace in a hook-carried message for a single log line. */
-function summarizeForLog(text: string, max: number): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim();
-  return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
 }
 
 /**
@@ -291,14 +273,20 @@ export interface HookBridgeArgs {
  * `remi unstick` reach the RIGHT session's gate.
  */
 export interface SessionGateHandle {
+  /** Held-hook validity; null only when this gate never held the id (#1200). */
+  answerValidity: (questionId: UUID) => AnswerValidity | null;
   /** Another path already removed and dismissed `questionId` (a user answer,
    *  a superseded render): stop tracking its signature so a later matching
    *  tool event does not resolve (and dismiss) it again. Forwards to
    *  `retireQuestion`. */
   retireQuestion: (questionId: UUID) => void;
   /** Apply a phone answer to a held prompt (#1126). Forwards to
-   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
-  answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. Typed as the gate's
+   *  own method and never re-declared here: TypeScript accepts a function with
+   *  fewer parameters wherever one with more is expected, so a hand-written
+   *  signature once dropped the final authority `commit` and the answer ran
+   *  without the subscription lock (#1201). Forward with `(...args)`. */
+  answerHeld: AutoApproveGate['answerHeld'];
   /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
    *  Forwards to `AutoApproveGate.hasMainHold`. */
   hasMainHold: () => boolean;
@@ -590,7 +578,9 @@ export function setupHookBridge(
     // the whole surface. Guarded here, not in the bridge: a throw must not
     // escape into the hook dispatch loop.
     onTurnFailed: (input) => {
-      log(`[Hooks] Turn failed (${sessionId}): ${describeTurnFailure(input.error)}`);
+      // #1200: failure strings may contain private content. Keep the payload
+      // for the notification sink, but omit it and the session id from logs.
+      log('[Hooks] Turn failed');
       try {
         deps.pushTurnFailed?.(sessionId, input);
       } catch (err) {
@@ -1023,17 +1013,12 @@ export function setupHookBridge(
     // #1153: a turn that finished well supersedes an earlier "Claude stopped"
     // notice. Not for a stop-hook re-entry (the turn is still going).
     if (!input.stop_hook_active && !isSubagentEvent(input)) dismissTurnFailedNotice();
-    // #891: Stop now carries the turn's real content (last_assistant_message),
-    // previously dropped entirely. There is no client-facing surface to carry
-    // it to a phone/lock-screen yet -- `Session`/`SessionUpdateMessage` have no
-    // text field, and adding one is a protocol change out of scope here (see
-    // PR body). Until that lands, at least stop discarding it at the point it
-    // enters the daemon: log it (truncated) so the real turn-complete content
-    // is observable operationally instead of a bare "Status: idle".
+    // #1200: #891's completion text now reaches the notification sink through
+    // cli.ts's onTurnStop listener. Diagnostics record only the operation,
+    // never its private text or session id; truncating a message does not
+    // make it safe to log.
     if (!input.stop_hook_active && input.last_assistant_message) {
-      log(
-        `[Hooks] Turn complete (${sessionId}): ${summarizeForLog(input.last_assistant_message, STOP_LOG_MESSAGE_MAX)}`,
-      );
+      log('[Hooks] Turn complete');
     }
     handlers.onStop?.(input);
   });
@@ -1300,8 +1285,9 @@ export function setupHookBridge(
       autoApproveGate.cancelStale('session_closed');
     },
     gate: {
+      answerValidity: (questionId) => autoApproveGate.answerValidity(questionId),
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
-      answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
+      answerHeld: (...args) => autoApproveGate.answerHeld(...args),
       hasMainHold: () => autoApproveGate.hasMainHold(),
       hasOpenHookPrompt: () => autoApproveGate.hasOpenHookPrompt(),
       noteTerminalEscape: () => autoApproveGate.noteTerminalEscape(),

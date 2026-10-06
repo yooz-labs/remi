@@ -34,7 +34,9 @@
  * while admission handlers await a ticket burn. With conforming v2 endpoints,
  * session payloads and device names are encrypted; private keys and the pairing
  * secret never reach it. It sees public keys, admission metadata and the plaintext
- * hello/hello_ack handshake. The Worker's separate legacy /push route receives plaintext.
+ * hello/hello_ack handshake. R5 stores bounded signed-push nonce outcomes and internal enrollment
+ * epochs, but never notification plaintext. Legacy /push is bearer-authenticated and on by default
+ * until the R7 gate (#1200).
  */
 
 import {
@@ -57,7 +59,11 @@ import {
   parseWorkerPath,
 } from '@remi/shared/relay/index.ts';
 import { type PairingWindow, clientProofHolds, hostProofHolds, matchTicket } from './admission.ts';
+import { type ApnsRequest, createApnsJwt } from './apns.ts';
+import { enrollment, freshEpoch } from './enrollment.ts';
 import { type LimitEnv, limit } from './limits.ts';
+import { PushGateway, pushResponse, rejected } from './push-gateway.ts';
+import type { PushEnv, PushStorage } from './push-storage.ts';
 import { RateLimiter } from './rate-limiter.ts';
 
 /** What the room uses of a Worker WebSocket (hibernation API). */
@@ -68,7 +74,7 @@ export interface RoomSocket {
   deserializeAttachment(): unknown;
 }
 
-interface RoomStorage {
+interface RoomStorage extends PushStorage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<boolean>;
@@ -86,7 +92,7 @@ export interface RoomState {
   setWebSocketAutoResponse(pair: unknown): void;
 }
 
-export type RoomEnv = LimitEnv;
+export type RoomEnv = LimitEnv & PushEnv;
 
 type Role = 'host' | 'client' | 'pipe';
 /**
@@ -181,7 +187,47 @@ export class ConnectionRoom {
 
   // -- Upgrade --
 
+  protected pushAudience(): string | null {
+    const value = this.env.PUSH_AUDIENCE;
+    if (!value) return null;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && url.origin === value ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  protected pushJwt(refresh = false): Promise<string> {
+    return createApnsJwt(
+      {
+        keyId: this.env.APNS_KEY_ID ?? '',
+        teamId: this.env.APNS_TEAM_ID ?? '',
+        privateKey: this.env.APNS_PRIVATE_KEY ?? '',
+      },
+      refresh,
+    );
+  }
+  protected sendPushRequest(request: ApnsRequest, signal: AbortSignal): Promise<Response> {
+    return fetch(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: request.body,
+      signal,
+    });
+  }
+
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const push = /^\/v2\/push\/([0-9a-f]{32})$/.exec(url.pathname);
+    if (push && request.method === 'POST') {
+      if (url.search || url.hash) return pushResponse(rejected('MALFORMED'));
+      return new PushGateway(this.state.storage, this.env, {
+        now: () => this.now(),
+        audience: () => this.pushAudience(),
+        jwt: (refresh) => this.pushJwt(refresh),
+        send: (r, signal) => this.sendPushRequest(r, signal),
+      }).submit(request, push[1] as string);
+    }
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('Expected WebSocket', { status: 426 });
     }
@@ -431,20 +477,26 @@ export class ConnectionRoom {
   private async enroll(key: Uint8Array): Promise<boolean> {
     if (isSmallOrderPublicKey(key)) return false;
     const row = `dev:${hex(key)}`;
-    if ((await this.state.storage.get(row)) !== undefined) return true;
-    const max = limit(this.env, 'MAX_ENROLLED');
-    if ((await this.state.storage.list({ prefix: 'dev:', limit: max })).size >= max) return false;
-    await this.state.storage.put(row, { at: this.now() });
-    return true;
+    const accepted = this.state.storage.transactionSync(() => {
+      if (enrollment(this.state.storage.kv.get(row)) !== undefined) return true;
+      const max = limit(this.env, 'MAX_ENROLLED');
+      if (new Map(this.state.storage.kv.list({ prefix: 'dev:', limit: max })).size >= max)
+        return false;
+      this.state.storage.kv.put(row, { at: this.now(), epoch: freshEpoch() });
+      return true;
+    });
+    await this.state.storage.sync();
+    return accepted;
   }
 
   /** Removes the key and closes its admitted or verifying connections at the edge. */
   private async revoke(key: Uint8Array): Promise<void> {
     const k = hex(key);
-    await this.state.storage.delete(`dev:${k}`);
+    this.state.storage.transactionSync(() => this.state.storage.kv.delete(`dev:${k}`));
     for (const e of this.socketsTagged('client')) {
       if (e.att.k === k) this.discard(e.ws, e.att);
     }
+    await this.state.storage.sync();
   }
 
   private async windows(): Promise<PairingWindow[]> {

@@ -22,8 +22,12 @@
  * to the room named `<rid>`.
  */
 
+import type { ApnsRequest } from '../../src/apns.ts';
 import type { RoomEnv, RoomSocket, RoomState } from '../../src/connection-room.ts';
-import worker, { ConnectionRoom as RealRoom } from '../../src/index.ts';
+import worker, {
+  ConnectionRoom as RealRoom,
+  GlobalLimiter as RealLimiter,
+} from '../../src/index.ts';
 
 interface Seen {
   readonly role: string;
@@ -48,6 +52,7 @@ export class ConnectionRoom extends RealRoom {
   private readonly seen: Seen[] = [];
   private barrierSize = 0;
   private readonly held: (() => void)[] = [];
+  private readonly pushBarrier: { stage: string | null; reached: boolean; held: (() => void)[] };
   private readonly readBarrier: {
     key: string | null;
     reached: boolean;
@@ -56,10 +61,51 @@ export class ConnectionRoom extends RealRoom {
 
   constructor(state: RoomState, env: RoomEnv) {
     const barrier = { key: null as string | null, reached: false, held: [] as (() => void)[] };
+    const pushBarrier = {
+      stage: null as string | null,
+      reached: false,
+      held: [] as (() => void)[],
+    };
     // Delegate every operation to real SQLite storage. Only the delivery of a selected read's
     // result waits: this tests a possible await interleaving, not current workerd scheduling.
     const storage = new Proxy(state.storage, {
       get(target, name) {
+        if (name === 'sync')
+          return async () => {
+            // Delegate REAL storage.sync first, then control delivery of that I/O completion.
+            await target.sync();
+            const pending = [
+              ...target.kv.list<{ result?: unknown }>({ prefix: 'push-nonce:', limit: 4097 }),
+            ];
+            const match =
+              pushBarrier.stage === 'initial-sync' ||
+              (pushBarrier.stage === 'consume-sync' &&
+                pending.some(([, v]) => v.result === undefined));
+            if (match && !pushBarrier.reached) {
+              pushBarrier.reached = true;
+              await new Promise<void>((resolve) => pushBarrier.held.push(resolve));
+            }
+            if (pushBarrier.stage === 'initial-sync-error' && !pushBarrier.reached) {
+              pushBarrier.reached = true;
+              throw new Error('owned initial sync completion delivery error');
+            }
+            if (
+              pushBarrier.stage === 'consume-sync-error' &&
+              !pushBarrier.reached &&
+              pending.some(([, v]) => v.result === undefined)
+            ) {
+              pushBarrier.reached = true;
+              throw new Error('owned sync completion delivery error');
+            }
+            if (
+              pushBarrier.stage === 'completed-sync-error' &&
+              !pushBarrier.reached &&
+              pending.some(([, v]) => v.result !== undefined)
+            ) {
+              pushBarrier.reached = true;
+              throw new Error('owned completed sync delivery error');
+            }
+          };
         if (name === 'get') {
           return async (key: string) => {
             const value = await target.get(key);
@@ -83,6 +129,39 @@ export class ConnectionRoom extends RealRoom {
     });
     super(wrapped, env);
     this.readBarrier = barrier;
+    this.pushBarrier = pushBarrier;
+  }
+
+  protected override async pushJwt(refresh = false): Promise<string> {
+    const jwt = await super.pushJwt(refresh);
+    // Actual import/sign/cache operation completes; only its result delivery is paused.
+    if (this.pushBarrier.stage === 'jwt') {
+      this.pushBarrier.reached = true;
+      await new Promise<void>((resolve) => this.pushBarrier.held.push(resolve));
+    }
+    return jwt;
+  }
+
+  /** Test-only deployment scheme: exact configured owned listener origin; production is HTTPS-only. */
+  protected override pushAudience(): string | null {
+    const value = this.env.PUSH_AUDIENCE;
+    if (!value) return null;
+    const url = new URL(value);
+    if (url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.origin === value)
+      return value;
+    return super.pushAudience();
+  }
+
+  /** ONLY network destination differs: actual request/JWT/proof/storage logic stays real. */
+  protected override sendPushRequest(request: ApnsRequest, signal: AbortSignal): Promise<Response> {
+    const endpoint = (this.env as unknown as Record<string, string>)['TEST_APNS_ENDPOINT'];
+    if (!endpoint) return super.sendPushRequest(request, signal);
+    return fetch(`${endpoint}${new URL(request.url).pathname}`, {
+      method: 'POST',
+      headers: { ...request.headers, 'x-owned-apns-url': request.url },
+      body: request.body,
+      signal,
+    });
   }
 
   protected override now(): number {
@@ -124,6 +203,17 @@ export class ConnectionRoom extends RealRoom {
 
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path.endsWith('/__productionaudience'))
+      return Response.json({ audience: super.pushAudience() });
+    if (path.endsWith('/__pushbarrier')) {
+      if (request.method === 'POST') {
+        this.pushBarrier.stage = ((await request.json()) as { stage: string | null }).stage;
+        this.pushBarrier.reached = false;
+        if (this.pushBarrier.stage === null)
+          for (const release of this.pushBarrier.held.splice(0)) release();
+      }
+      return Response.json({ stage: this.pushBarrier.stage, reached: this.pushBarrier.reached });
+    }
     if (path.endsWith('/__state')) {
       return Response.json({
         storage: Object.fromEntries(await this.state.storage.list({ prefix: '' })),
@@ -180,10 +270,49 @@ export class ConnectionRoom extends RealRoom {
   }
 }
 
-export { GlobalLimiter } from '../../src/index.ts';
+export class GlobalLimiter extends RealLimiter {
+  private skew = 0;
+  protected override now(): number {
+    return Date.now() + this.skew;
+  }
+  override async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path.endsWith('/__state'))
+      return Response.json({
+        storage: Object.fromEntries(this.state?.storage.kv.list({ prefix: '' }) ?? []),
+      });
+    if (path.endsWith('/__clock')) {
+      this.skew += ((await request.json()) as { advanceMs: number }).advanceMs;
+      return Response.json({ skew: this.skew });
+    }
+    return super.fetch(request);
+  }
+}
 
+// Test-only ingress observation; requests and responses still use the real Worker.
+const ownedAnswerRequests: { method: string; path: string; body: string }[] = [];
 export default {
-  fetch(request: Request, env: { CONNECTIONS: unknown }): Promise<Response> | Response {
+  async fetch(request: Request, env: { CONNECTIONS: unknown }): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === '/__answerrequests') return Response.json(ownedAnswerRequests);
+    if (path === '/answer' || path === '/auth-info') {
+      ownedAnswerRequests.push({
+        method: request.method,
+        path,
+        body: await request.clone().text(),
+      });
+    }
+    if (new URL(request.url).pathname.startsWith('/__limiter/')) {
+      const ns = (
+        env as unknown as {
+          LIMITER: {
+            idFromName(name: string): unknown;
+            get(id: unknown): { fetch(request: Request): Promise<Response> };
+          };
+        }
+      ).LIMITER;
+      return ns.get(ns.idFromName('global')).fetch(request);
+    }
     const m = new URL(request.url).pathname.match(/^\/__room\/([0-9a-f]{32})(\/__[a-z]+)$/);
     if (m) {
       // biome-ignore lint/suspicious/noExplicitAny: Cloudflare namespace type

@@ -470,12 +470,14 @@ sealed = E (65) || nonce (12) || AES-256-GCM(key, nonce, aad, plaintext)
 ```
 
 In this section the HKDF `info` is `lps("remi-relay-v2 seal", R)`, which is length-prefixed, unlike the raw labels of section 6.2.
-For a push, `aad = rid || question_id` where `rid` is the 16 bytes above and `question_id` is 1 to 64 bytes of UTF-8 (the same string is the APNS collapse id).
+For a push, `aad = rid || collapse_id` where `rid` is the 16 bytes above and `collapse_id` is the push's 16 random bytes (base64url in the carrier, and the APNs collapse id) (#1200).
+The question id is not in the AAD: it is inside the signed content, whose machine signature covers the collapse id and the question id together.
 Plaintext is 1 to `MAX_PUSH_PLAINTEXT` bytes; APNS allows 4096 bytes per payload in total, and R5 sets the exact budget.
-On the sealing side a plaintext of 0 or more than `MAX_PUSH_PLAINTEXT` bytes, a `question_id` outside 1 to 64 bytes, a `rid` that is not 16 bytes and a recipient key that is not a valid point are refused (`MALFORMED`, `OVERSIZE` for the over-long plaintext); no vector covers the sealing side.
+On the sealing side a plaintext of 0 or more than `MAX_PUSH_PLAINTEXT` bytes, a collapse id that is not 16 bytes, a `rid` that is not 16 bytes and a recipient key that is not a valid point are refused (`MALFORMED`, `OVERSIZE` for the over-long plaintext).
+The push vectors (`packages/shared/tests/fixtures/relay-v2/push-vectors.json`) cover the sealing side; `uv run --with cryptography python scripts/verify-push-vectors.py` checks them independently.
 The opener rejects a sealed value shorter than `65 + 12 + 16 + 1` or longer than `65 + 12 + 16 + MAX_PUSH_PLAINTEXT`, imports `E` (which validates the point), derives the key and decrypts; any failure is `DECRYPT`.
 
-The AAD makes a sealed push unusable for a different room or question.
+The AAD makes a sealed push unusable for a different room or collapse id; the inner machine signature makes it unusable for a different question.
 Base-mode ECIES does not authenticate the sender; see "Issues found while specifying".
 
 ## 11. Metadata the Worker sees
@@ -490,6 +492,10 @@ Stated plainly, because the protocol hides content and does not hide this:
 - During pairing, the ticket `A`.
 
 The Worker does not see: any session id, any device name, any frame content, the pairing secret, the keys, or the fingerprint.
+
+For a sealed push (`POST /v2/push/<rid>`, R5, #1200) the Worker also sees the deployment's bearer secret, the machine and device public keys, the APNs token and environment, the collapse id, the push class (`alert` or `background`), the nonce, the issue, expiry and store-until times (store-until reveals the lifetime class: 300 s for an informational push, 3600 s for a question or a dismissal), the size of the sealed bytes and the machine signature.
+It does not see the event kind, the key version, the revision, the push public key or any content.
+APNs receives the generic alert text (none for a background push), `mutable-content`, the carrier `{v, rid, collapseId, sealed}`, the token and the timing.
 An active Worker (or any network position between the peers) can drop, delay, duplicate, reorder or inject frames, refuse service, admit or refuse devices, and close either socket.
 Duplicates, reordering and injection are detected and close the channel; a delay is not detected; a drop followed by a later frame is detected as a gap; a drop of the tail together with its BYE followed by a close is reported as an unclean end (section 7), while a tail withheld with the socket left open is not detected by the library.
 The 25-byte binary frame is a BYE, so the Worker can see when a stream ends cleanly, and that a side has no more to send.
@@ -610,7 +616,7 @@ That is the job of the independent cryptography review of this pull request (202
 R5 MUST carry the device push key from the device to the daemon over the authenticated channel and bind it to the enrolled device that sent it, and MUST NOT put a push key in the QR: the token's optional key is the daemon's answer-sealing key (deviation 7 in section 15.1), and a regression that moves a push key into the token would let anyone who sees the QR seal pushes to a device.
 
 **R6 (answers)**: signed answers need question ids that are globally unique per prompt, a session nonce or an expiry, and single-accept by the daemon, because the channel cannot detect delay and a late or replayed answer is a valid frame.
-The seal's AAD already binds `rid || question_id`.
+The seal's AAD binds `rid || collapse_id`, and the push content's machine signature binds the collapse id to the question id (section 10, as implemented in R5).
 
 **Exact list of v1 modules R3 deletes** (nothing is deleted in R1):
 
@@ -971,12 +977,21 @@ That holds because every v2 signed message is `lps(label, ...)`:
 
 - at least 54 bytes (the host transcript input is the shortest: 2 + 18 + 2 + 32), so it can never equal a 32-byte challenge;
 - the first byte is zero (the high byte of a label length below 256), while the v1 key exchange input and the answer message begin with a printable ASCII byte;
-- the first part is its own label (`remi-relay-v2 host`, `client`, `admit host`, `admit client`, `signer check`), distinct and none a prefix of another's length-prefixed form, so a signature over one input never verifies as another.
+- the first part is its own label (`remi-relay-v2 host`, `client`, `admit host`, `admit client`, `signer check`, `push content`, `push submit`, `native answer`), distinct and none a prefix of another's length-prefixed form, so a signature over one input never verifies as another.
 
 The fifth input is the probe `signerFromKey` signs once to prove a key pair matches: `lps("remi-relay-v2 signer check", 32 zero bytes)`, 62 bytes, whose signature never leaves the function.
 
+R5 and R6 add three inputs, each `lps(label, SHA-256(tuple))` with a fixed-length digest, so each is at least 62 bytes and starts with a zero byte:
+
+- `push content` (#1200): the machine signs the push content the device verifies after decryption (room, machine, device and push keys, key version, collapse id, revision, kind, nonce, times, payload).
+- `push submit` (#1200): the machine signs what the Worker checks on `/v2/push` (method, path, audience, machine key, room, device key, token, environment, collapse id, push class, nonce, issue, expiry and store-until times, and the SHA-256 of the sealed bytes).
+- `native answer` (#1201): the device signs a lock-screen answer bound to the session, runtime, question, collapse id, revision, content digest, offered value, nonce and times.
+
+Issue #1200 named one sixth message, `lps("remi-relay-v2 push", rid, be64(time), SHA-256(body))`.
+The code splits it into the two push inputs above, each a strict superset of that tuple: the Worker needs the submit's routing fields signed, and the device needs a signature the Worker cannot strip or reuse.
+
 The invariant is implicit in the construction.
-`signing-inputs.test.ts` makes it explicit: it builds all five inputs and the real v1 `kexSigningInput` and challenge, asserts the three properties above, asserts that a signature over one input does not verify as another, and has a source guard requiring every `.sign(` call in the library to pass one of the five builders, so a future signed message with another shape fails the test.
+`signing-inputs.test.ts` makes it explicit: it builds all eight inputs and the real v1 `kexSigningInput` and challenge, asserts the three properties above, asserts that a signature over one input does not verify as another, and has a source guard requiring every `.sign(` call in the library to pass one of the builders, so a future signed message with another shape fails the test.
 
 ## 19. Gates carried to later phases
 

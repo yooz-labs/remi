@@ -59,10 +59,22 @@ From `packages/signaling`:
 bunx wrangler deploy
 ```
 
-- The secrets are unchanged and are not in the repository: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_PRIVATE_KEY`, and `PUSH_SECRET` if you use it (`bunx wrangler secret put <NAME>`).
+- The secrets are not in the repository: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_PRIVATE_KEY` and `PUSH_SECRET` (`bunx wrangler secret put <NAME>`).
   Which of them the deployed Worker has is unknown from the repository.
-- The legacy `POST /push` is unchanged and keeps working with the same secrets.
-- Optional variables (`src/limits.ts` documents each default): set one in `wrangler.toml` `[vars]`, for example `LIMIT_IP_CLIENT = "10"`.
+  `PUSH_SECRET` is **required for sealed push**: `POST /v2/push/<rid>` checks `Authorization: Bearer <PUSH_SECRET>` before it reads anything else, and an unset or blank secret refuses every submit with `UNAUTHORIZED` (HTTP 401).
+  The Worker trims the stored value, so a trailing newline from `echo` does no harm; set the same value as `--push-secret` / `REMI_PUSH_SECRET` on each daemon.
+  A daemon with no push secret builds no secure push service and logs one line saying so.
+- `PUSH_AUDIENCE` is a **required variable** for `POST /v2/push` and is not in `wrangler.toml` because there is no safe default: set it to the Worker's own canonical HTTPS origin, exactly the root the daemon's signaling URL names (no path, query, fragment or credentials), for example `PUSH_AUDIENCE = "https://<your-worker-host>"` in `[vars]`.
+  The Worker never infers it from the request host.
+  Without it every v2 push answers `WRONG_AUDIENCE`, and a deploy that skips this step silently breaks sealed push.
+- `LEGACY_PUSH_ENABLED` controls the legacy plaintext `POST /push`.
+  It is **on by default**: unset, empty or any value other than an explicit false (`false`, `0`, `no` or `off`, trimmed, any case) leaves it on, so a deployment that sets only `PUSH_SECRET` keeps working as before.
+  It still requires the `PUSH_SECRET` bearer (compared in constant time); an unset or blank secret refuses every request.
+  To turn it off now, set `LEGACY_PUSH_ENABLED = "false"` in `[vars]`.
+- Optional limit variables (`src/limits.ts` documents each default): set one in `wrangler.toml` `[vars]`, for example `LIMIT_IP_CLIENT = "10"`.
+  The push budgets (`PUSH_SEND_*`, `PUSH_ATTEMPT_*`, `PUSH_NONCES`) can only be lowered, never raised past their defaults.
+  Dismissals (background pushes) are counted apart from alerts so a burst of alerts cannot leave answered cards on lock screens (#723): per room 300 per minute (`PUSH_SEND_RID_BACKGROUND`, alerts 30) and per device token 100 per minute (`PUSH_SEND_TOKEN_BACKGROUND`, alerts 10), about ten times the alert budget as in the legacy route.
+  The per-address and aggregate budgets are shared by both classes.
   The defaults are unmeasured.
 
 ## Smoke test after deploy
@@ -86,7 +98,37 @@ ws.onclose = (e) => console.log("closed", e.code);'
 ```
 
 The last command shows the Worker answers an upgrade with a nonce; it admits nothing.
+
+Two checks of the push configuration (neither sends a notification):
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<worker>/v2/push/00000000000000000000000000000000
+# 401: no bearer, refused before anything is read; 400 here would mean PUSH_SECRET is not enforced
+
+curl -s -X POST -H "Authorization: Bearer $PUSH_SECRET" -d '{}' https://<worker>/v2/push/00000000000000000000000000000000
+# {"v":2,...,"reason":"MALFORMED",...}: the bearer is accepted and the empty body is refused
+```
 A 429 on a repeat means a rate limit counted you (`LIMIT_IP_CLIENT` is 10 per minute per address by default).
+
+## Retiring the legacy plaintext `POST /push` route
+
+The route receives notification text, session ids and option labels in plaintext, so it is a stopgap: it stays only because app builds that registered no push key still depend on it (plan section 3.5, owner decision D).
+It is on by default until the **R7 gate** (plan section 4) and is removed, not merely switched off, when every condition below holds.
+Each one is checked by the owner; none is established by this repository's tests.
+
+1. **R7 gate passed.**
+   The full end-to-end suite and soak of plan section 4 passed, including a push decrypted by the Notification Service Extension on a real iPhone (plan section 6, gate 2).
+2. **No legacy sender is left.**
+   Every daemon in use sends sealed push (a push key registered, a `--push-secret` configured): Cloudflare's request analytics (or `bunx wrangler tail`) show no `POST /push` for a full release cycle, or the owner has stopped the last pre-R5 daemon.
+   The Worker itself logs nothing.
+3. **No app build still depends on it.**
+   The oldest TestFlight and App Store build that registered no push key is past its support window, or the owner accepts that those users lose lock-screen notifications until they update.
+4. **The default is flipped first.**
+   Before deletion the daemon's `legacy_push_enabled` default and the Worker's default (`LEGACY_PUSH_ENABLED`) are changed to off in one release, and `LEGACY_PUSH_ENABLED = "false"` is deployed for one release cycle with no complaint.
+5. **Then delete.**
+   The route, `LEGACY_PUSH_ENABLED`, the per-isolate `RateLimiter` budgets for it and its tests are deleted, and this section and the legacy statements in [relay-worker-v2.md](relay-worker-v2.md) are removed in the same change.
+
+Until then `LEGACY_PUSH_ENABLED = "false"` is the owner's switch for any deployment that wants it off today.
 
 ## Measurements to take (nothing here is measured)
 
@@ -114,4 +156,4 @@ A 429 on a repeat means a rate limit counted you (`LIMIT_IP_CLIENT` is 10 per mi
 
 No agent runs `wrangler deploy`, `wrangler login`, `wrangler secret` or anything that contacts a Cloudflare account, and none reads or holds a Cloudflare or Apple credential.
 The v2 relay protocol does not read or transmit the host harness's login credentials.
-The Worker uses the owner's deployment secrets for the separate legacy push path: `PUSH_SECRET` and the APNS key material configured above.
+The Worker uses the owner's deployment secrets for its push routes: `PUSH_SECRET` as the bearer both require, and the APNS key material configured above to reach Apple.

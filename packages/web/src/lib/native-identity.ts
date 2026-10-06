@@ -48,7 +48,7 @@ function ingress(): Ingress {
   return value;
 }
 
-async function request(
+export async function nativeIdentityRequest(
   value: Readonly<Record<string, unknown>>,
   signal?: AbortSignal,
 ): Promise<unknown> {
@@ -105,7 +105,7 @@ async function publicReply(value: unknown, extra: readonly string[] = []): Promi
 }
 
 async function read(signal?: AbortSignal): Promise<Reply | null> {
-  const value = await publicReply(await request({ op: 'public' }, signal));
+  const value = await publicReply(await nativeIdentityRequest({ op: 'public' }, signal));
   signal?.throwIfAborted();
   return value;
 }
@@ -120,7 +120,7 @@ function signer(record: Reply): NativeSigningIdentity {
     async sign(message: Uint8Array): Promise<Base64> {
       if (restartRequired || message.byteLength < 1 || message.byteLength > 4096)
         throw new Error('Native signing refused.');
-      const result = await request({
+      const result = await nativeIdentityRequest({
         op: 'sign',
         revision: record.revision,
         publicKey: record.publicKey,
@@ -185,7 +185,7 @@ export async function inspectNativeIdentity(signal?: AbortSignal): Promise<Nativ
       throw new Error('Legacy identity changed during setup.');
     return { kind: 'migration', native, legacy, legacyFingerprint };
   }
-  if (!native) native = await publicReply(await request({ op: 'create' }, signal));
+  if (!native) native = await publicReply(await nativeIdentityRequest({ op: 'create' }, signal));
   if (signal?.aborted || !native || revision !== getIdentityRevision() || loadIdentity())
     throw new Error('Identity changed during setup.');
   return selected(native);
@@ -217,7 +217,7 @@ export async function chooseNativeIdentity(
     chosen =
       isEncrypted(legacy) && !current.requiresAppUnlock
         ? await publicReply(
-            await request({
+            await nativeIdentityRequest({
               op: 'protect',
               revision: current.revision,
               publicKey: current.publicKey,
@@ -232,7 +232,7 @@ export async function chooseNativeIdentity(
     try {
       if (!valid()) throw new Error('Legacy identity changed during export.');
       chosen = await publicReply(
-        await request({
+        await nativeIdentityRequest({
           op: 'import',
           pkcs8: toBase64(pkcs8),
           publicKey: legacy.publicKey,
@@ -275,7 +275,7 @@ export async function unlockNativeIdentity(
   signal?: AbortSignal,
 ): Promise<NativeIdentityState> {
   const result = await publicReply(
-    await request({ op: 'unlock', revision: record.revision, publicKey: record.publicKey }, signal),
+    await nativeIdentityRequest({ op: 'unlock', revision: record.revision, publicKey: record.publicKey }, signal),
   );
   if (signal?.aborted || !result || result.revision !== record.revision || result.locked)
     throw new Error('Native identity unlock failed.');

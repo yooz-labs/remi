@@ -40,6 +40,12 @@ export const PAIRING_TTL_SECONDS = 600;
 export const PAIRING_SKEW_SECONDS = 60;
 
 export const MAX_PUSH_PLAINTEXT = 2048;
+export const MAX_PUSH_SUBMIT_BYTES = 8192;
+export const MAX_APNS_PAYLOAD_BYTES = 4096;
+export const PUSH_SUBMIT_TTL_SECONDS = 60;
+export const PUSH_CONTENT_TTL_SECONDS = 3600;
+export const PUSH_INFORMATIONAL_TTL_SECONDS = 300;
+export const PUSH_CLOCK_SKEW_SECONDS = 60;
 export const MAX_QUESTION_ID = 64;
 
 /** What every failure sends on the wire: the same code and reason, always. */
@@ -63,4 +69,7 @@ export const LABEL = {
   fingerprint: 'remi-relay-v2 fingerprint',
   signerCheck: 'remi-relay-v2 signer check',
   seal: 'remi-relay-v2 seal',
+  pushContent: 'remi-relay-v2 push content',
+  pushSubmit: 'remi-relay-v2 push submit',
+  nativeAnswer: 'remi-relay-v2 native answer',
 } as const;

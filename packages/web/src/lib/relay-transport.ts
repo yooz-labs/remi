@@ -77,12 +77,13 @@ export class RelayTransport implements ConnectionTransport {
             if (generation !== this.generation || this.stopped) return;
             if (phase === 'handshake' || phase === 'confirmation')
               this.events.onStatus('authenticating');
+            if (phase === 'connected') this.events.onStatus('connected');
             this.events.onPhase?.(phase, fingerprint);
           },
-          onReady: (pin: RelayMachinePin) => {
+          onReady: async (pin: RelayMachinePin) => {
             if (generation !== this.generation || this.stopped) return;
             try {
-              this.events.onReady?.(pin);
+              await this.events.onReady?.(pin);
             } catch (cause) {
               // A verified handshake is not a durable saved connection. Keep this
               // storage/capacity failure visible and never enter the resume loop.
@@ -93,9 +94,9 @@ export class RelayTransport implements ConnectionTransport {
               this.events.onStatus('disconnected');
               throw cause;
             }
+            if (generation !== this.generation || this.stopped || !this.identityCurrent()) return;
             this.enrolled = true;
             this.attempts = 0;
-            this.events.onStatus('connected');
           },
           onMessage: (message) => {
             if (generation === this.generation && !this.stopped) this.events.onMessage?.(message);

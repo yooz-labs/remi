@@ -21,7 +21,7 @@
  * NOT `d2c` -- packages/shared/src/protocol.ts), this sends the checked-in
  * golden fixture from the real client and asserts the daemon's real
  * `AdapterEvents` callback fires with the right connection id. `hello`,
- * `auth_response`, `ping`, `pong`, `ack`, and relay device requests have no app-level event (by
+ * `auth_response`, `ping`, `pong`, `ack`, relay device and secure push requests have no app-level event (by
  * design -- see `connection.ts`'s handler map) and get dedicated tests
  * instead of a generic "some event fired" assertion.
  */
@@ -77,7 +77,18 @@ const C2D_TYPES = (Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[
 /** Types with no app-level `AdapterEvents` callback by design (connection
  *  setup, liveness, or acknowledgment) -- covered by dedicated tests below
  *  instead of the generic per-type loop. */
-const NO_EVENT_TYPES = new Set(['hello', 'auth_response', 'ping', 'pong', 'ack', 'relay_devices_request', 'relay_device_revoke_request']);
+const NO_EVENT_TYPES = new Set([
+  'native_answer',
+  'hello',
+  'auth_response',
+  'ping',
+  'pong',
+  'ack',
+  'relay_devices_request',
+  'relay_device_revoke_request',
+  'secure_push_register_request',
+  'secure_push_unregister_request',
+]);
 
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
  *  name `connection.ts`'s (and the unified router's) handler map invokes. */
@@ -161,7 +172,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 20 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 23 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -169,7 +180,30 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(20);
+    expect(C2D_TYPES.length).toBe(23);
+  });
+
+  test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
+    const fixture = loadFixture('native_answer');
+    if (fixture.type !== 'native_answer') throw new Error('invalid native fixture');
+    const before = eventCalls.length;
+    const results = () =>
+      received.filter((m) => m.type === 'answer_result' && m.requestId === fixture.id);
+    for (let count = 1; count <= 2; count++) {
+      client.send(fixture);
+      await waitFor(() => results().length === count);
+    }
+    for (const result of results()) {
+      expect(result).toMatchObject({
+        type: 'answer_result',
+        requestId: fixture.id,
+        sessionId: fixture.sessionId,
+        questionId: fixture.questionId,
+        outcome: 'stale',
+      });
+    }
+    expect(eventCalls.length).toBe(before);
+    expect(received.some((m) => m.type === 'ack' && m.ack.messageId === fixture.id)).toBe(false);
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
@@ -247,7 +281,30 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     }
   });
 
-  // --- Dedicated tests for the 7 no-app-event types ---
+  // --- Dedicated tests for the 10 no-app-event types ---
+
+  test.each(['register', 'unregister'] as const)(
+    'secure push %s from the real direct client returns a correlated UNSUPPORTED response and no application event',
+    async (operation) => {
+      const fixture = { ...loadFixture(`secure_push_${operation}_request`), id: generateId() };
+      const beforeReceived = received.length;
+      const beforeCalls = eventCalls.length;
+      client.send(fixture);
+      const responseType = `secure_push_${operation}_response`;
+      await waitFor(() =>
+        received.slice(beforeReceived).some((message) => message.type === responseType),
+      );
+      const response = received.slice(beforeReceived).find((message) => message.type === responseType);
+      expect(response).toMatchObject({
+        type: responseType,
+        requestId: fixture.id,
+        success: false,
+        error: 'UNSUPPORTED',
+      });
+      expect(eventCalls.slice(beforeCalls)).toEqual([]);
+      expect(received.slice(beforeReceived).some((message) => message.type === 'error')).toBe(false);
+    },
+  );
 
   test.each(['relay_devices_request', 'relay_device_revoke_request'] as const)('%s from the real direct client is explicitly unsupported and invokes no application event', async (type) => {
     // Static relay fixtures share an id; a new request needs a fresh dedupe identity.

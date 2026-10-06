@@ -1,6 +1,22 @@
 /** Worker v2 endpoints use an origin or an explicit proxy prefix, never the retired v1 route. */
 export const DEFAULT_RELAY_URL = 'wss://remi-signaling.yooz.workers.dev';
 
+/** #1200: push has a signed root route; never infer a proxy mapping from a relay prefix. */
+export function relaySecurePushAudience(base: string): string | null {
+  // Check the original spelling before URL normalizes dot segments, backslashes,
+  // empty queries/fragments or surrounding whitespace into a root URL.
+  if (!/^(?:https|wss):\/\/[^\\/?#\s]+\/?$/i.test(base)) return null;
+  try {
+    const url = new URL(base);
+    if (url.username || url.password || !['https:', 'wss:'].includes(url.protocol)) return null;
+    if (url.pathname !== '/' || url.search || url.hash) return null;
+    url.protocol = 'https:';
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 export function legacyRelayUrlNotice(base: string): string | null {
   try {
     const url = new URL(base);

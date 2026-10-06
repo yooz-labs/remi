@@ -72,14 +72,12 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
       // message, so the stored value is a resolved, definitely-boolean pair and
       // nothing downstream has to re-decide what a missing field means.
       const resolved = sanitizePushPreferences(pushPrefs);
-      log(
-        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete}, harnessDenied=${resolved.harnessDenied}, turnFailed=${resolved.turnFailed})`,
-      );
+      log('[DeviceTokens] registration requested');
       registerDeviceToken(token, platform, connectionId, resolved);
     },
 
-    onUnregisterDeviceToken: (connectionId: UUID, token: string): void => {
-      log(`Device token unregistered from ${connectionId}: ${token.slice(0, 20)}...`);
+    onUnregisterDeviceToken: (_connectionId: UUID, token: string): void => {
+      log('[DeviceTokens] removal requested');
       unregisterDeviceToken(token);
     },
 

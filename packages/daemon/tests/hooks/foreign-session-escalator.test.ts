@@ -76,7 +76,11 @@ describe('ForeignSessionEscalator (#672)', () => {
       liveSessionsRegistry,
       bindingStore,
       deviceTokens,
-      pushConfig: () => ({ signalingUrl: 'https://example.test' }),
+      pushConfig: () => ({
+        signalingUrl: 'https://example.test',
+        legacyEnabled: true,
+        pushSecret: 'owned-test-secret',
+      }),
       currentPort: () => 8765,
       pushFn: async (_signalingUrl, token, opts) => {
         pushCalls.push({ token, opts });
@@ -313,6 +317,43 @@ describe('ForeignSessionEscalator (#672)', () => {
       expect(opts.options).toBeUndefined();
       expect(opts.questionId).toBeUndefined();
       expect(opts.sessionId).toBe(OUR_SESSION_ID);
+    });
+
+    test('a latched machine retires the plaintext send: no error-level failure (#1200)', async () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (message) => logs.push(message) });
+      fs.writeFileSync(
+        path.join(tmpDir, 'secure_push_activation.json'),
+        JSON.stringify({ version: 1, activated: true }),
+        { mode: 0o600 },
+      );
+      registerToken();
+      // The real sender (no pushFn override): the latch refuses it before any request is made.
+      const { pushFn: _capturingFake, ...realSender } = deps({
+        pushConfig: () => ({
+          signalingUrl: 'https://example.test',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+          authorityDirectory: tmpDir,
+        }),
+      });
+      const escalator = new ForeignSessionEscalator(realSender);
+      escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
+      await Bun.sleep(100);
+      // Only this escalator's lines: the logger is process-wide, so other files' timers can log.
+      expect(logs.filter((line) => line.startsWith('[error] [ForeignSession]'))).toEqual([]);
+    });
+
+    test('a real legacy failure is still logged at error level', async () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (message) => logs.push(message) });
+      registerToken();
+      const escalator = new ForeignSessionEscalator(
+        deps({ pushFn: async () => Promise.reject(new Error('LEGACY_PUSH_REJECTED')) }),
+      );
+      escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
+      await flush();
+      expect(logs.filter((line) => line.startsWith('[error] [ForeignSession]'))).toHaveLength(1);
     });
 
     test('no device tokens registered -> no push attempted, no throw', async () => {

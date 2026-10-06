@@ -4,10 +4,11 @@
  * authentication. They are green before and after R2; if R2 breaks one, the
  * break is a decision and not an accident.
  *
- * The legacy `/push` stays until push privacy (R5) ships: a daemon built before
- * then still POSTs a plaintext push with `Authorization: Bearer <PUSH_SECRET>`.
- * What stays exactly: the route, the bearer check (only when `PUSH_SECRET` is
- * set), the body shape, the per-isolate rate limiters and the APNS forwarding.
+ * The legacy `/push` stays until push privacy ships end to end (the default flips at the R7
+ * gate): a daemon built before then still POSTs a plaintext push with
+ * `Authorization: Bearer <PUSH_SECRET>`. What stays exactly: the route, the bearer check (an
+ * unset or blank `PUSH_SECRET` refuses everything), the body shape, the per-isolate rate limiters
+ * and the APNS forwarding. It is on unless `LEGACY_PUSH_ENABLED` is explicitly false (#1200).
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -51,7 +52,7 @@ describe('unchanged routes', () => {
 describe('legacy /push authentication', () => {
   const body = JSON.stringify({ token: 'device-token', title: 'T', body: 'B' });
   const post = (headers: Record<string, string>, env: object) =>
-    call('/push', { method: 'POST', headers, body }, env);
+    call('/push', { method: 'POST', headers, body }, { ...env, LEGACY_PUSH_ENABLED: 'true' });
 
   test('with PUSH_SECRET set, a request with no Authorization header is refused', async () => {
     const res = await post({ 'CF-Connecting-IP': '203.0.113.50' }, { ...ENV, PUSH_SECRET: 's1' });
@@ -78,9 +79,29 @@ describe('legacy /push authentication', () => {
     expect(((await res.json()) as { error: string }).error).toBe('APNS_NOT_CONFIGURED');
   });
 
-  test('with no PUSH_SECRET, authentication is skipped (the unauthenticated fallback)', async () => {
+  test('explicit legacy opt-in without PUSH_SECRET is refused', async () => {
     const res = await post({ 'CF-Connecting-IP': '203.0.113.53' }, ENV);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe('UNAUTHORIZED');
+  });
+  // #1200 (owner decision): the route is ON by default until the R7 gate, so a deployment that
+  // sets only PUSH_SECRET keeps working; an explicit false value is what turns it off.
+  test('a deployment that sets only PUSH_SECRET keeps the plaintext route', async () => {
+    const res = await call(
+      '/push',
+      { method: 'POST', headers: { Authorization: 'Bearer owned' }, body },
+      { ...ENV, PUSH_SECRET: 'owned' },
+    );
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toBe('APNS_NOT_CONFIGURED');
+  });
+  test('an explicit false LEGACY_PUSH_ENABLED turns the plaintext route off even with the bearer', async () => {
+    const res = await call(
+      '/push',
+      { method: 'POST', headers: { Authorization: 'Bearer owned' }, body },
+      { ...ENV, PUSH_SECRET: 'owned', LEGACY_PUSH_ENABLED: 'false' },
+    );
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { error: string }).toEqual({ error: 'LEGACY_PUSH_DISABLED' });
   });
 });

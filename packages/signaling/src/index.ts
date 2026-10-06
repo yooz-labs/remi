@@ -6,25 +6,30 @@
  * host's pipe and forwards bytes it never parses. With conforming v2 endpoints,
  * session payloads and device names are encrypted; private keys and the pairing
  * secret never reach it. Public keys, admission metadata and hello/hello_ack are
- * visible. The separate legacy /push route still receives plaintext notification data.
+ * visible. R5 /v2/push receives sealed notification bytes and public delivery/proof metadata.
+ * Legacy /push receives plaintext until it is turned off; it is bearer-authenticated.
  *
  * Routes (the version is part of the path and is never negotiated):
  * - GET /v2/host/<rid>: the machine's control socket (WebSocket upgrade)
  * - GET /v2/client/<rid>: an enrolled device, or one pairing with a ticket
  * - GET /v2/pipe/<rid>/<cid>: the host's socket for one client connection
  * - GET /health: health check
- * - POST /push: the LEGACY plaintext push, unchanged until push privacy (R5) ships
+ * - POST /v2/push/<rid>: signed sealed push with durable nonce/budget authority; it needs the
+ *   per-deployment `Authorization: Bearer <PUSH_SECRET>` (#1200) before anything else is read
+ * - POST /push: legacy plaintext, ON by default until the R7 gate (#1200); needs the PUSH_SECRET
+ *   bearer, and an explicit false LEGACY_PUSH_ENABLED turns it off
  *
  * Deleted by R2: the code-named room `/connect/<code>`, the `/answer/<code>`
  * relay and the offer, answer and ice-candidate forwarding.
  */
 
-import { errorToString } from '@remi/shared';
 import { parseWorkerPath } from '@remi/shared/relay/index.ts';
 import { sendApnsPush } from './apns.ts';
+import { bearerAuthorized } from './bearer.ts';
 import { ConnectionRoom } from './connection-room.ts';
-import { GlobalLimiter, withinBudget } from './limiter.ts';
+import { GlobalLimiter, withinBudget, withinPushBudget } from './limiter.ts';
 import { type LimitEnv, limit } from './limits.ts';
+import { hashPublic, pushResponse, readPushBody, rejected } from './push-gateway.ts';
 import { RateLimiter } from './rate-limiter.ts';
 
 // Cloudflare-specific types
@@ -42,6 +47,8 @@ interface Env extends LimitEnv {
   APNS_PRIVATE_KEY?: string;
   APNS_BUNDLE_ID?: string;
   PUSH_SECRET?: string;
+  LEGACY_PUSH_ENABLED?: string;
+  PUSH_AUDIENCE?: string;
   /** Set to 'true' to use APNS sandbox endpoint for development builds */
   APNS_SANDBOX?: string;
 }
@@ -91,19 +98,10 @@ interface PushRequestBody {
   kind?: string;
 }
 
-/**
- * Push budget (epic #603 Phase 2, R3). The old single per-IP limiter (5/60s)
- * was shared across every daemon behind one NAT and across alert + dismiss
- * pushes, each fanned out per device token — so a power user running several
- * worktree daemons hit 429 and silently dropped notifications. Now:
- *   - AUTHENTICATED callers (they hold PUSH_SECRET, so they are trusted) are
- *     keyed by identity, not IP, with a ceiling well above
- *     (device tokens x concurrent sessions). Sharing a NAT no longer throttles.
- *   - UNAUTHENTICATED callers (only possible when no PUSH_SECRET is configured)
- *     keep the original tight per-IP fallback to limit abuse.
- *   - DISMISS pushes get their own budget so quiet resolutions never starve
- *     alert pushes.
- */
+/** The only `LEGACY_PUSH_ENABLED` values (trimmed, lowercased) that turn the legacy route off. */
+const LEGACY_OFF: ReadonlySet<string> = new Set(['false', '0', 'no', 'off']);
+
+/** Legacy compatibility retains its existing per-isolate alert/dismiss budgets. */
 const PUSH_AUTH_LIMIT = 60;
 /**
  * Dismiss ceiling (#723). Sharing PUSH_AUTH_LIMIT starved dismissals in
@@ -116,7 +114,6 @@ const PUSH_AUTH_LIMIT = 60;
  */
 const DISMISS_AUTH_LIMIT = 300;
 const pushAuthRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
-const pushIpRateLimiter = new RateLimiter(5, 60_000);
 const dismissRateLimiter = new RateLimiter(DISMISS_AUTH_LIMIT, 60_000);
 
 /**
@@ -197,6 +194,39 @@ export default {
       return env.CONNECTIONS.get(env.CONNECTIONS.idFromName(route.ridHex)).fetch(request);
     }
 
+    // R5: precrypto durable attempts bound expensive proof and per-room work.
+    if (url.pathname.startsWith('/v2/push/') && request.method === 'POST') {
+      // #1200: plan 3.2 asks for the machine-key signature PLUS a per-deployment secret. The
+      // secret is checked first, before the path, the body or any budget, so a stranger can
+      // neither enroll-and-submit through an open relay nor drain the shared attempt budget.
+      if (!(await bearerAuthorized(request.headers.get('Authorization'), env.PUSH_SECRET)))
+        return pushResponse(rejected('UNAUTHORIZED'));
+      const match = /^\/v2\/push\/([0-9a-f]{32})$/.exec(url.pathname);
+      if (!match || url.search || url.hash) return pushResponse(rejected('MALFORMED'));
+      let body: string;
+      try {
+        body = await readPushBody(request);
+      } catch (e) {
+        return pushResponse(
+          rejected(e instanceof Error && e.message === 'OVERSIZE' ? 'OVERSIZE' : 'MALFORMED'),
+        );
+      }
+      const attempt = await withinPushBudget(env.LIMITER, 'attempt', {
+        ip: await hashPublic(request.headers.get('CF-Connecting-IP') ?? 'unknown'),
+      });
+      if (!attempt.ok)
+        return pushResponse(
+          rejected(attempt.reason ?? 'STORE_ERROR', null, true),
+          attempt.retryAfter,
+        );
+      // The room authenticates by the machine signature alone; the bearer stops here.
+      const forwarded = new Headers(request.headers);
+      forwarded.delete('authorization');
+      return env.CONNECTIONS.get(env.CONNECTIONS.idFromName(match[1])).fetch(
+        new Request(request.url, { method: 'POST', headers: forwarded, body }),
+      );
+    }
+
     // Push notification trigger endpoint (authenticated, rate-limited)
     if (url.pathname === '/push' && request.method === 'POST') {
       const corsHeaders = {
@@ -204,16 +234,21 @@ export default {
         'Content-Type': 'application/json',
       };
 
-      // Authenticate: daemon must provide the shared secret
-      if (env.PUSH_SECRET) {
-        const authHeader = request.headers.get('Authorization');
-        if (authHeader !== `Bearer ${env.PUSH_SECRET}`) {
-          return new Response(
-            JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
-            { status: 401, headers: corsHeaders },
-          );
-        }
-      }
+      // The legacy route stays ON by default until secure push ships end to end; the default flips
+      // at the R7 gate (#1200, owner decision). Only an explicit false value turns it off. The flag
+      // is trimmed: `echo false | wrangler secret put` stores a trailing newline.
+      if (LEGACY_OFF.has((env.LEGACY_PUSH_ENABLED ?? '').trim().toLowerCase()))
+        return new Response(JSON.stringify({ error: 'LEGACY_PUSH_DISABLED' }), {
+          status: 403,
+          headers: corsHeaders,
+        });
+      // It is plaintext, so it needs the configured secret, compared in constant time; an unset or
+      // blank secret refuses every request.
+      if (!(await bearerAuthorized(request.headers.get('Authorization'), env.PUSH_SECRET)))
+        return new Response(
+          JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
+          { status: 401, headers: corsHeaders },
+        );
 
       if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY) {
         return new Response(
@@ -248,29 +283,9 @@ export default {
         );
       }
 
-      // Rate limit (epic #603 Phase 2, R3). Authenticated callers are keyed by
-      // identity with a generous ceiling (a shared NAT IP no longer throttles
-      // them); dismiss pushes draw from a separate budget so they cannot starve
-      // alerts. Malformed/auth-failed requests above never reach here, so they
-      // do not consume budget.
-      // `authed` must mean "this request proved possession of the secret", not
-      // merely "a secret is configured" — re-check the bearer so a future
-      // refactor of the auth block above cannot silently grant the trusted
-      // budget to an unauthenticated caller.
-      const authed =
-        Boolean(env.PUSH_SECRET) &&
-        request.headers.get('Authorization') === `Bearer ${env.PUSH_SECRET}`;
-      const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-      const rlKey = authed ? authBucketKey(env.PUSH_SECRET as string) : `ip:${pushClientIp}`;
-      // Unauthenticated callers (only when no PUSH_SECRET is configured) always
-      // use the tight per-IP fallback — INCLUDING dismisses, which must not get
-      // the raised budget. Authenticated alert vs dismiss draw from separate
-      // raised budgets so a dismiss flood cannot starve alerts.
-      const limiter = !authed
-        ? pushIpRateLimiter
-        : isDismiss
-          ? dismissRateLimiter
-          : pushAuthRateLimiter;
+      // Explicit authenticated legacy mode retains its per-isolate alert/dismiss counters.
+      const rlKey = authBucketKey((env.PUSH_SECRET ?? '').trim());
+      const limiter = isDismiss ? dismissRateLimiter : pushAuthRateLimiter;
       if (!limiter.check(rlKey)) {
         return new Response(
           JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),
@@ -356,9 +371,8 @@ export default {
           },
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );
-      } catch (err) {
-        const msg = errorToString(err);
-        result = { success: false, error: `APNS internal error: ${msg}` };
+      } catch {
+        result = { success: false, error: 'APNS_REJECTED' };
       }
 
       if (result.success) {
@@ -377,10 +391,13 @@ export default {
       const tokenInvalid = /BadDeviceToken|Unregistered|DeviceTokenNotForTopic/i.test(
         result.error ?? '',
       );
-      return new Response(JSON.stringify({ success: false, error: result.error, tokenInvalid }), {
-        status: 502,
-        headers: corsHeaders,
-      });
+      return new Response(
+        JSON.stringify({ success: false, error: 'APNS_REJECTED', tokenInvalid }),
+        {
+          status: 502,
+          headers: corsHeaders,
+        },
+      );
     }
 
     return new Response('Not found', { status: 404 });

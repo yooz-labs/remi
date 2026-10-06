@@ -10,9 +10,48 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import * as ts from 'typescript';
 
 const DIR = join(import.meta.dir, '..', '..', 'src', 'relay');
 const FILES = readdirSync(DIR).filter((f) => f.endsWith('.ts'));
+
+/** Parse expressions: new Date(value) is pure conversion; Date() reads the clock. */
+function clockUses(source: string): string[] {
+  const file = ts.createSourceFile('relay.ts', source, ts.ScriptTarget.Latest, true);
+  const hits: string[] = [];
+  const root = (node: ts.Expression): string | undefined => {
+    if (ts.isParenthesizedExpression(node)) return root(node.expression);
+    if (ts.isIdentifier(node)) return node.text;
+    // Keep the original conservative ban on statically named qualified clocks.
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression))
+      return node.argumentExpression.text;
+    return undefined;
+  };
+  const visit = (node: ts.Node): void => {
+    const member = ts.isPropertyAccessExpression(node)
+      ? [root(node.expression), node.name.text]
+      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+        ? [root(node.expression), node.argumentExpression.text]
+        : undefined;
+    if (
+      (ts.isIdentifier(node) && ['setTimeout', 'setInterval'].includes(node.text)) ||
+      (ts.isElementAccessExpression(node) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        ['setTimeout', 'setInterval'].includes(node.argumentExpression.text)) ||
+      (member && ['Date.now', 'performance.now', 'Math.random'].includes(member.join('.'))) ||
+      (ts.isNewExpression(node) &&
+        root(node.expression) === 'Date' &&
+        ((node.arguments?.length ?? 0) === 0 || node.arguments?.some(ts.isSpreadElement))) ||
+      (ts.isCallExpression(node) &&
+        ['Date', 'setTimeout', 'setInterval'].includes(root(node.expression) ?? ''))
+    )
+      hits.push(node.getText(file));
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return hits;
+}
 
 /** Code lines only: comments are prose and may name what the code forbids. */
 function codeLines(file: string): string[] {
@@ -40,12 +79,12 @@ describe('relay v2 source guards', () => {
   });
 
   test('no file reads a clock, and only systemRandom reads the platform random source', () => {
-    const clock = /Date\.now|new Date\(|performance\.now|Math\.random|setTimeout|setInterval/;
     const offenders: string[] = [];
     const randomUses: string[] = [];
     for (const f of FILES) {
+      for (const use of clockUses(readFileSync(join(DIR, f), 'utf8')))
+        offenders.push(`${f}: ${use}`);
       for (const line of codeLines(f)) {
-        if (clock.test(line)) offenders.push(`${f}: ${line.trim()}`);
         if (line.includes('getRandomValues')) randomUses.push(`${f}: ${line.trim()}`);
       }
     }
@@ -53,6 +92,38 @@ describe('relay v2 source guards', () => {
     expect(randomUses).toEqual([
       'primitives.ts: export const systemRandom: Rng = (n) => crypto.getRandomValues(new Uint8Array(n));',
     ]);
+  });
+
+  test('clock guard distinguishes explicit date conversion and rejects real clock reads', () => {
+    expect(clockUses('new Date(issuedAt * 1000).toISOString()')).toEqual([]);
+    expect(clockUses('// Date.now(); new Date();\nconst note = "Date.now()";')).toEqual([]);
+    for (const source of [
+      'Date.now()',
+      'Date["now"]()',
+      'globalThis.Date.now()',
+      '(globalThis).Date.now()',
+      'self.Date.now()',
+      'window.Math.random()',
+      'globalThis["Date"]["now"]()',
+      'new Date()',
+      'new Date(\n)',
+      'new globalThis.Date()',
+      'new (globalThis).Date()',
+      'new Date(...[])',
+      'Date(issuedAt)',
+      'performance.now()',
+      'globalThis.performance.now()',
+      'Math.random()',
+      'globalThis.Math.random()',
+      'setTimeout(callback, 1)',
+      'setInterval(callback, 1)',
+      'globalThis.setTimeout(callback, 1)',
+      'globalThis["setInterval"](callback, 1)',
+      'globalThis[`setTimeout`](callback, 1)',
+      'globalThis[`setInterval`](callback, 1)',
+      'new Date(Date.now())',
+    ])
+      expect(clockUses(source).length, source).toBeGreaterThan(0);
   });
 
   test('no file logs or touches the process, the network or storage', () => {

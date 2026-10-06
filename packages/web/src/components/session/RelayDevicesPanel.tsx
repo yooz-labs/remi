@@ -12,7 +12,7 @@ interface Props {
   readonly list: () => Promise<RelayDevicesResponseMessage>;
   readonly revoke: (fingerprint: string) => Promise<RelayDeviceRevokeResponseMessage>;
   readonly onClose: () => void;
-  readonly forget: () => void;
+  readonly forget: () => void | Promise<void>;
 }
 /** Separate enrolled-key narrowing requests. This view never holds local pairing capability. */
 export function RelayDevicesPanel({
@@ -90,6 +90,17 @@ export function RelayDevicesPanel({
       if (generation === lifetime.current) setBusy(false);
     }
   };
+  const forgetMachine = async () => {
+    if (!window.confirm('Forget this machine on this client? This does not revoke authorization on the daemon.')) return;
+    const generation = lifetime.current;
+    setBusy(true); setNotice('');
+    try {
+      await forget();
+      if (generation === lifetime.current) onClose();
+    } catch (error) {
+      if (generation === lifetime.current) setNotice(error instanceof Error ? error.message : 'The machine could not be forgotten.');
+    } finally { if (generation === lifetime.current) setBusy(false); }
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60">
       <div className="max-h-[88dvh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-[var(--color-surface)] p-5 pb-[max(env(safe-area-inset-bottom),20px)]">
@@ -134,16 +145,8 @@ export function RelayDevicesPanel({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Forget this machine on this client? This does not revoke authorization on the daemon.',
-                )
-              ) {
-                forget();
-                onClose();
-              }
-            }}
+            disabled={busy}
+            onClick={() => void forgetMachine()}
           >
             Forget machine locally
           </button>

@@ -17,7 +17,13 @@ import {
 } from '@/lib/identity-client';
 import { ConnectionApproval } from '@/lib/connection-approval';
 import { DAEMON_BASE_PORT, errorToString, type relayV2 } from '@remi/shared';
-import type { RelayDevicesResponseMessage, RelayDeviceRevokeResponseMessage } from '@remi/shared';
+import type {
+  RelayDevicesResponseMessage,
+  RelayDeviceRevokeResponseMessage,
+  SecurePushRegisterResponseMessage,
+  SecurePushRegistration,
+  SecurePushUnregisterResponseMessage,
+} from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
@@ -26,6 +32,7 @@ import { isNative } from '@/lib/platform';
 import { RelayMachineChannel, type RelayMachinePin } from '@/lib/relay-machine-channel';
 import { RelayTransport, type ConnectionTransport } from '@/lib/relay-transport';
 import { rememberRelayPin } from '@/lib/relay-pins';
+import { beginNativePairingTrust, cancelNativePairingTrust, commitNativePairingTrust, type NativePairingAttempt } from '@/lib/native-push-trust';
 import { RelayRequests, type RelayAnswerStatus } from '@/lib/relay-requests';
 import {
   allocateStaggerSlot,
@@ -147,6 +154,8 @@ export interface UseConnectionManagerReturn {
   requestSessionAttach: (connectionId: ConnectionId, sessionId: string) => boolean;
   listRelayDevices: (connectionId: ConnectionId) => Promise<RelayDevicesResponseMessage>;
   revokeRelayDevice: (connectionId: ConnectionId, fingerprint: string) => Promise<RelayDeviceRevokeResponseMessage>;
+  registerRelayPush: (connectionId: ConnectionId, registration: SecurePushRegistration) => Promise<SecurePushRegisterResponseMessage>;
+  unregisterRelayPush: (connectionId: ConnectionId) => Promise<SecurePushUnregisterResponseMessage>;
   /** Disconnect a specific connection */
   disconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection by re-running port discovery against its host (#435). */
@@ -839,11 +848,24 @@ export function useConnectionManager(
       serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
     };
     const alive = () => currentIdentity() && connectionsMapRef.current.get(connectionId) === mc;
+    let nativeAttempt: NativePairingAttempt | null = null;
+    const cancelNativeAttempt = () => {
+      const pending = nativeAttempt; nativeAttempt = null;
+      // A failed cancel cannot authorize a later commit: native attempts also bind
+      // document, identity, generation and deadline, and this channel is closed.
+      if (pending) void cancelNativePairingTrust(pending).catch(() => {});
+    };
     const messages = createMessageHandler(mc);
     mc.relayRequests = new RelayRequests(message => mc.client.send(message), status => {
       if (connectionsMapRef.current.get(connectionId) === mc) answerOutcomeRef.current?.(connectionId, status);
     });
     mc.client = new RelayTransport(async (events, resume) => {
+      cancelNativeAttempt();
+      if ('kind' in signedIdentity) {
+        const pending = await beginNativePairingTrust(signedIdentity);
+        if (!alive()) { await cancelNativePairingTrust(pending); throw new Error('Pairing canceled or identity changed.'); }
+        nativeAttempt = pending;
+      }
       // The initial unconfirmed token is used once. No retry retains it or its secret.
       if (!resume && first) {
         const initialPin = first.pin;
@@ -860,9 +882,20 @@ export function useConnectionManager(
         if (!alive()) return;
         mc.relayConfirmation = phase === 'confirmation' ? fingerprint : undefined; syncState();
       },
-      onReady: verifiedPin => { if (alive()) { rememberRelayPin(verifiedPin); mc.relayCancel?.(); mc.relayPin = verifiedPin; } },
+      onReady: async verifiedPin => {
+        if (!alive()) throw new Error('Pairing canceled or identity changed.');
+        if ('kind' in signedIdentity) {
+          const pending = nativeAttempt;
+          if (!pending) throw new Error('Native pairing attempt is no longer available.');
+          await commitNativePairingTrust(pending, verifiedPin);
+          if (!alive() || nativeAttempt !== pending) throw new Error('Pairing canceled or identity changed.');
+          nativeAttempt = null;
+        } else rememberRelayPin(verifiedPin);
+        if (!alive()) throw new Error('Pairing canceled or identity changed.');
+        mc.relayCancel?.(); mc.relayPin = verifiedPin;
+      },
       onError: error => { if (alive()) { mc.error = error; syncState(); } },
-      onClose: () => { if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
+      onClose: () => { cancelNativeAttempt(); if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
       onStatus: status => {
         if (!alive()) return;
         mc.status = status;
@@ -874,6 +907,7 @@ export function useConnectionManager(
     connectionsMapRef.current.set(connectionId, mc);
     if (signal && typeof tokenOrPin === 'string') {
       const cancel = () => {
+        cancelNativeAttempt();
         mc.relayCancel?.();
         mc.relayRequests?.closed(); mc.client.disconnect();
         void first?.close(); first = null; tokenOrPin = pin;
@@ -902,6 +936,15 @@ export function useConnectionManager(
     const requests = mc?.relayRequests;
     if (mc && identityRef.current?.fingerprint === fingerprint) (mc.client as RelayTransport).suspendResume();
     return requests ? requests.revoke(fingerprint) : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
+  // Secure push subscription for this device on one relay machine (#1200).
+  const registerRelayPush = useCallback((connectionId: ConnectionId, registration: SecurePushRegistration) => {
+    const requests = connectionsMapRef.current.get(connectionId)?.relayRequests;
+    return requests ? requests.registerPush(registration) : Promise.reject(new Error('Relay connection unavailable.'));
+  }, []);
+  const unregisterRelayPush = useCallback((connectionId: ConnectionId) => {
+    const requests = connectionsMapRef.current.get(connectionId)?.relayRequests;
+    return requests ? requests.unregisterPush() : Promise.reject(new Error('Relay connection unavailable.'));
   }, []);
 
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
@@ -1241,6 +1284,8 @@ export function useConnectionManager(
     requestSessionAttach,
     listRelayDevices,
     revokeRelayDevice,
+    registerRelayPush,
+    unregisterRelayPush,
     disconnect,
     reconnect,
     disconnectAll,

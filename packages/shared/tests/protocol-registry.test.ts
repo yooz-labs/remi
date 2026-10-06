@@ -8,7 +8,7 @@
  * message — `deserialize()` silently returns `null` for it repo-wide, and
  * nothing fails loudly (the daemon logs `INVALID_MESSAGE` and moves on).
  *
- * `GOLDEN_TYPES` below is the independent original 45-entry `validTypes` array plus the five R3 types
+ * `GOLDEN_TYPES` below is the independent original 45-entry `validTypes` array plus the five R3, four R5 and one R6 types
  * in `packages/shared/src/protocol.ts` (lines 1005-1051) before the registry
  * was introduced, copied by hand from that array. It is intentionally NOT
  * derived from anything else in this codebase, so it cannot silently drift
@@ -17,8 +17,13 @@
 import { describe, expect, test } from 'bun:test';
 import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
-/** The Independent golden types: original #895 list plus explicit R3 additions (#1198). */
+/** The Independent golden types: original #895 list plus explicit R3/R5/R6 additions. */
 const GOLDEN_TYPES = [
+  'native_answer',
+  'secure_push_register_request',
+  'secure_push_register_response',
+  'secure_push_unregister_request',
+  'secure_push_unregister_response',
   'hello',
   'hello_ack',
   'agent_output',
@@ -72,12 +77,12 @@ const GOLDEN_TYPES = [
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 50 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(50);
-    expect(new Set(GOLDEN_TYPES).size).toBe(50);
+  test('GOLDEN_TYPES has exactly 55 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(55);
+    expect(new Set(GOLDEN_TYPES).size).toBe(55);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 50 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 55 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -107,6 +112,9 @@ describe('protocol registry golden equality (#895)', () => {
    * UNKNOWN_MESSAGE.
    */
   const INBOUND_ROUTED = [
+    'native_answer',
+    'secure_push_register_request',
+    'secure_push_unregister_request',
     'hello',
     'user_input',
     'answer',

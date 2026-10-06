@@ -19,6 +19,7 @@
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Miniflare } from 'miniflare';
@@ -92,35 +93,59 @@ function bundle(): Promise<string> {
  * variables and the Durable Object bindings come from wrangler.toml so they
  * cannot drift from what is deployed.
  */
-export async function startWorker(vars: Record<string, string> = {}): Promise<TestWorker> {
+export async function startWorker(
+  vars: Record<string, string> = {},
+  pinPushAudience = false,
+  ownedPersistence?: { path: string; port?: number },
+): Promise<TestWorker> {
   const cfg = Bun.TOML.parse(await Bun.file(`${PKG}/wrangler.toml`).text()) as WranglerConfig;
   const sqlite = new Set(cfg.migrations.flatMap((m) => m.new_sqlite_classes ?? []));
-  const mf = new Miniflare({
+  // Configure the exact owned audience BEFORE the first runtime start. Reserving an
+  // ephemeral loopback port avoids restarting workerd solely to learn its origin.
+  let port = ownedPersistence?.port ?? 0;
+  if (pinPushAudience && port === 0) {
+    const listener = createServer();
+    await new Promise<void>((resolve, reject) => {
+      listener.once('error', reject);
+      listener.listen(0, '127.0.0.1', resolve);
+    });
+    const address = listener.address();
+    if (!address || typeof address === 'string') throw new Error('owned listener unavailable');
+    port = address.port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((e) => (e ? reject(e) : resolve())),
+    );
+  }
+  const audience = `http://127.0.0.1:${port}`;
+  const options = {
     modules: true,
     script: await bundle(),
     compatibilityDate: cfg.compatibility_date,
-    bindings: { ...cfg.vars, ...vars },
+    bindings: { ...cfg.vars, ...vars, ...(pinPushAudience ? { PUSH_AUDIENCE: audience } : {}) },
     durableObjects: Object.fromEntries(
       cfg.durable_objects.bindings.map((b) => [
         b.name,
         { className: b.class_name, useSQLite: sqlite.has(b.class_name) },
       ]),
     ),
-    port: 0,
-  });
+    port,
+    ...(ownedPersistence ? { durableObjectsPersist: ownedPersistence.path } : {}),
+  };
+  const mf = new Miniflare(options);
+  let url: string;
   try {
-    const url = String((await mf.ready) as URL).replace(/\/$/, '');
-    return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
-  } catch (error) {
-    // Startup can leave its real loopback listener open even after workerd exits.
-    // Dispose before rejecting, while the owner still has the Miniflare handle.
+    url = String((await mf.ready) as URL).replace(/\/$/, '');
+    if (pinPushAudience && url !== audience) throw new Error('owned audience listener mismatch');
+  } catch (e) {
+    // Retain the R4 owned-startup cleanup without masking its original failure.
     try {
       await mf.dispose();
     } catch {
       /* preserve the original readiness failure */
     }
-    throw error;
+    throw e;
   }
+  return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
 }
 
 /** `fetch` without keep-alive: Miniflare closes idle keep-alive connections after 5 s. */

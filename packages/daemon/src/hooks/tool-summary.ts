@@ -5,8 +5,9 @@
  *
  * Its own module since #976, when auto-approve precedent needed an untruncated
  * signature form of the same extraction (`forSignature`, #990). Precedent was
- * deleted with the rest of the auto-approve judgment in #1125 (ADR 0030), so
- * only the DISPLAY form remains.
+ * deleted with the rest of the auto-approve judgment in #1125 (ADR 0030).
+ * Complete display input is retained as question detail when the short summary
+ * hides text, so secure push sizing cannot grant an action over unseen meaning (#1200).
  */
 
 /** Longest summary emitted verbatim, so a lock-screen card or terminal
@@ -46,17 +47,20 @@ export function truncateSummary(value: string): string {
 export function summarizeToolInput(
   toolName: string,
   toolInput: Record<string, unknown>,
+  options: { readonly complete?: boolean } = {},
 ): string | null {
   if (!toolInput || typeof toolInput !== 'object') return null;
   const lower = toolName.toLowerCase();
 
   const get = (key: string): unknown => toolInput[key];
+  const display = (value: string): string =>
+    options.complete === true ? value : truncateSummary(value);
 
   // Bash: show the command
   if (lower === 'bash' || lower === 'terminal') {
     const cmd = get('command') ?? get('cmd');
     if (typeof cmd === 'string') {
-      return truncateSummary(cmd);
+      return display(cmd);
     }
   }
 
@@ -82,7 +86,7 @@ export function summarizeToolInput(
   for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
     const val = get(key);
     if (typeof val === 'string' && val.length > 0) {
-      return truncateSummary(val);
+      return display(val);
     }
   }
 

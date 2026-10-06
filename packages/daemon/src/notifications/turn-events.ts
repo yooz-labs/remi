@@ -35,8 +35,14 @@
 import type { UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
-import type { PushTriggerOptions } from './push-client.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
+import { type PushTriggerOptions, isLegacyPushRetired } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
+import type { SecureSessionPush } from './secure-push-service.ts';
 import {
   type TurnFailedInput,
   type TurnFailedNotifier,
@@ -46,6 +52,8 @@ import { buildTurnCompleteText, shouldNotifyTurnComplete } from './turn-timer.ts
 
 export interface TurnCompletedEvent {
   readonly sessionId: UUID;
+  /** Actual harness occurrence, retained across duplicate frames; never sent in outer metadata. */
+  readonly eventId?: string;
   /** How long the turn ran. Undefined when unknown, which fails toward silence. */
   readonly elapsedMs: number | undefined;
   /** What the agent said last. Empty or absent means nothing to show, so no push. */
@@ -82,6 +90,10 @@ export interface TurnEventSinkDeps {
   notifiers: ReadonlyMap<UUID, TurnFailedNotifier>;
   signalingUrl: () => string;
   pushSecret: () => string | undefined;
+  /** Per-session secure fan-out, resolved fresh for each completed event (#1200). */
+  securePush?: (sessionId: UUID) => SecureSessionPush | undefined;
+  /** Explicit plaintext compatibility only; resolved fresh with the event. */
+  legacyPolicy?: () => LegacyPushPolicy;
   send: (signalingUrl: string, token: string, opts: PushTriggerOptions) => Promise<void>;
   log: (message: string) => void;
   /** A push that failed; never thrown (a notification bug must not delay or break the caller). */
@@ -98,7 +110,13 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
       // exists": a machine whose every device muted turn-complete stops at the gate instead of
       // building text and fanning out to nobody. The machine-wide switch still wins over any
       // per-device preference; the gate checks it first.
-      const wanting = tokensWanting(deps.deviceTokens(), 'turn_complete');
+      const legacy = { ...deps.legacyPolicy?.(), pushSecret: deps.pushSecret() };
+      // A legacy channel that is off or has no secret has no recipients (#1200, B6).
+      const wanting = legacyChannelOpen(legacy)
+        ? tokensWanting(deps.deviceTokens(), 'turn_complete')
+        : [];
+      const secure = deps.securePush?.(event.sessionId);
+      const secureRecipients = secure?.hasRecipients('turn_complete') === true;
       const { onTurnComplete, turnCompleteMinSeconds } = deps.config();
       if (
         !shouldNotifyTurnComplete({
@@ -107,7 +125,7 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
           elapsedMs: event.elapsedMs,
           minSeconds: turnCompleteMinSeconds,
           lastAssistantMessage: event.lastAssistantMessage,
-          hasDeviceTokens: wanting.length > 0,
+          hasDeviceTokens: wanting.length > 0 || secureRecipients,
         })
       ) {
         return;
@@ -116,10 +134,25 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
       const sessionName = deps.sessionName(event.sessionId) || 'Agent';
       // Non-empty: shouldNotifyTurnComplete already required a message.
       const { title, body } = buildTurnCompleteText(sessionName, event.lastAssistantMessage ?? '');
-      deps.log(`[TurnComplete] ${title}`);
+      deps.log('[TurnComplete] push requested');
+
+      if (secureRecipients) {
+        void secure
+          ?.send({
+            kind: 'turn_complete',
+            logicalId: `turn-complete-${event.sessionId}`,
+            ...(event.eventId === undefined ? {} : { eventId: event.eventId }),
+            title,
+            body,
+          })
+          .then((outcome) => {
+            if (outcome === 'failed') deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED'));
+          })
+          .catch(() => deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED')));
+      }
 
       const signalingUrl = deps.signalingUrl();
-      const pushSecret = deps.pushSecret();
+      const legacyFields = legacyPushFields(legacy);
       for (const device of wanting) {
         // Dismiss-only: no `category` or `questionId`, it answers nothing. `kind` is what makes it
         // distinguishable from a subagent alert, which is otherwise identical on the wire (#968).
@@ -127,10 +160,12 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
           .send(signalingUrl, device.token, {
             title,
             body,
-            ...(pushSecret !== undefined ? { pushSecret } : {}),
+            ...legacyFields,
             kind: 'turn_complete',
           })
-          .catch(deps.onError);
+          .catch((error) => {
+            if (!isLegacyPushRetired(error)) deps.onError(new Error('TURN_COMPLETE_PUSH_FAILED'));
+          });
       }
     },
 

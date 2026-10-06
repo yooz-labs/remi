@@ -13,17 +13,23 @@
  * reset whenever the agent leaves the 'waiting' state.
  */
 
-import type { Question, QuestionOption, UUID } from '@remi/shared';
+import { type Question, type QuestionOption, type UUID, generateId } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
-import { sendPushTrigger } from './push-client.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
+import { LegacyPushError, isLegacyPushRetired, sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
+import type { SecureSessionPush } from './secure-push-service.ts';
 import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
 
-export interface PushConfig {
+export interface PushConfig extends LegacyPushPolicy {
   /**
    * Signaling server base URL. Always provided by the caller; `sendPushTrigger`'s
    * `string | undefined` first parameter is wider (it has its own fallback), but
@@ -127,12 +133,15 @@ function isOneTapAskUserQuestion(question: Question): boolean {
 }
 
 /**
- * A card that carries more than its push can show (#1178): a permission card with `detail`, which
- * only a Codex command longer than the push budget has (the text is cut head and tail, the whole
- * command is in `detail`). Its Yes must not be one tap on a locked phone, because the person has
- * not seen what the command does in between, so it gets no category and no dynamic buttons and
- * is answered in the app, where `detail` is shown in full. A plan approval has `detail` too and
- * already gets neither (`pushCategoryFor`).
+ * A card that carries more than its push can show (#1178, #1200): a permission card with `detail`.
+ * Two sources fill it. A Codex command longer than the push budget is cut head and tail and the
+ * whole command is in `detail`. A Claude tool input whose summary was shortened to `SUMMARY_MAX`
+ * (120 characters: a long Bash command, or a long `command`, `path`, `url` or `description`
+ * field) keeps the complete text in `detail` (`hook-event-bridge.ts`), so every such Claude card
+ * has it too, on the legacy and the secure path alike. Its Yes must not be one tap on a locked
+ * phone, because the person has not seen what the command does in between, so it gets no
+ * category and no dynamic buttons and is answered in the app, where `detail` is shown in full. A
+ * plan approval has `detail` too and already gets neither (`pushCategoryFor`).
  */
 function hasUnseenDetail(question: Question): boolean {
   return question.kind !== 'plan_approval' && (question.detail?.length ?? 0) > 0;
@@ -262,8 +271,9 @@ export function buildPushText(
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   // #1127: a card about a long text (a plan) shows the start of that text;
   // the app shows all of it, and the options are chosen there.
-  // A plan's push shows the start of the plan; a permission card's `detail` (a long Codex command)
-  // is not shown from its start, because the cut text above already shows both of its ends.
+  // A plan's push shows the start of the plan; a permission card's `detail` (a long Codex command,
+  // or a Claude tool input shortened to 120 characters) is not shown from its start, because the
+  // cut text above already shows both of its ends.
   const detail =
     question.kind === 'plan_approval' && question.detail !== undefined
       ? normalizeNotificationText(question.detail)
@@ -272,6 +282,20 @@ export function buildPushText(
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
   return { title, body };
+}
+
+/** Full secure display input. Contexts alone decides whether it fits an action (#1200).
+ * Legacy preview limits must not hide the actual target while retaining a one-tap grant. */
+export function buildSecurePushText(
+  sessionName: string,
+  question: Question,
+): { title: string; body: string } {
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
+  const detail = question.detail === undefined ? '' : normalizeNotificationText(question.detail);
+  return {
+    title: `${sessionName}: question`,
+    body: detail && detail !== ask ? `${ask}\n${detail}` : ask,
+  };
 }
 
 /** Why the phone is told to answer at the terminal (#1126); see
@@ -306,10 +330,27 @@ export type PushFn = typeof sendPushTrigger;
  *   - `pushed`     at least one APNS push returned 2xx.
  *   - `deduped`    the push was suppressed because an identical one already went
  *                  out (the earlier push is the delivery).
- *   - `no_channel` no client attached AND no device tokens — nobody can be told.
+ *   - `no_channel` no client attached AND no device tokens — nobody can be told. A legacy
+ *                  channel that is disabled, has no push secret or is latched off by secure
+ *                  enrollment counts as no tokens (#1200).
  *   - `failed`     tokens exist but every push failed (e.g. BadDeviceToken).
+ *   - `uncertain`  no push was accepted and at least one result is unknown;
+ *                  a lost response is never permission to send a fresh event.
  */
-export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
+export type DeliveryOutcome =
+  | 'in_app'
+  | 'pushed'
+  | 'deduped'
+  | 'no_channel'
+  | 'failed'
+  | 'uncertain';
+
+function fanoutOutcome(results: readonly (boolean | DeliveryOutcome)[]): DeliveryOutcome {
+  if (results.some((result) => result === true || result === 'pushed')) return 'pushed';
+  if (results.includes('uncertain')) return 'uncertain';
+  // A channel that refused on policy (`no_channel`) is not a failed delivery.
+  return results.every((result) => result === 'no_channel') ? 'no_channel' : 'failed';
+}
 
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
@@ -324,54 +365,39 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 /**
- * Whether a failed push is worth retrying (epic #603 Phase 1). The signaling
- * Worker wraps a permanent APNS token rejection (BadDeviceToken / Unregistered /
- * DeviceTokenNotForTopic) as an HTTP 502, so a naive "retry all 5xx" would spin
- * on a dead token. Treat those reasons as permanent (no retry -> fail open
- * fast); retry only a genuine rate-limit (429) or a transient 5xx with no
- * permanent reason.
+ * Whether a failed legacy push is worth retrying (epic #603 Phase 1, #1200). It reads the
+ * `LegacyPushError` the sender actually throws, never its message: the client keeps the HTTP
+ * status of a refusal and the Worker's `tokenInvalid` flag as fields. The Worker wraps a permanent
+ * APNS token rejection as an HTTP 502 with `tokenInvalid: true`, so "retry all 5xx" would spin on
+ * a dead token: that flag wins. Retry a rate limit (429) or a 5xx with no permanent reason.
+ * `LEGACY_PUSH_UNCERTAIN` (the request may or may not have been accepted) is deliberately not
+ * retried, since a repeat could deliver the same notification twice; the policy, secret and
+ * latch refusals are not transient either.
  */
 export function isRetriablePushError(err: unknown): boolean {
-  const msg = String(err instanceof Error ? err.message : err);
-  // Permanent APNS token rejections (the Worker wraps these as HTTP 502): never
-  // retry. `Unregistered` is word-boundaried so a generic 5xx body that happens
-  // to contain the word is not misclassified as a permanent token failure.
-  if (/BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)) return false;
-  // Network-level failures (no HTTP response received at all) are transient —
-  // a Worker cold-start, a brief flap, DNS hiccup — so retry them.
-  if (
-    err instanceof TypeError ||
-    /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|Failed to fetch/i.test(msg)
-  ) {
-    return true;
-  }
-  const m = msg.match(/failed: (\d{3})/);
-  if (!m) return false;
-  const status = Number(m[1]);
-  return status === 429 || (status >= 500 && status < 600);
+  if (!(err instanceof LegacyPushError) || err.code !== 'LEGACY_PUSH_REJECTED') return false;
+  if (err.tokenInvalid || err.status === undefined) return false;
+  return err.status === 429 || (err.status >= 500 && err.status < 600);
 }
 
 /**
- * Whether a push error means the DEVICE TOKEN itself is permanently invalid
- * (epic #603 Phase 6) — so the daemon should PRUNE it, not just stop retrying.
- * Matches the Worker's structured `tokenInvalid` flag (#603 Phase 2) and the raw
- * APNS reasons. Distinct from `isRetriablePushError`: a 401/auth error or an
+ * Whether a legacy push error means the DEVICE TOKEN itself is permanently invalid (epic #603
+ * Phase 6), so the daemon should PRUNE it, not just stop retrying: the Worker's structured
+ * `tokenInvalid` verdict, kept by the sender. Distinct from `isRetriablePushError`: a 401 or an
  * exhausted transient failure is non-retriable but does NOT invalidate the token.
  */
 export function isTokenInvalidError(err: unknown): boolean {
-  const msg = String(err instanceof Error ? err.message : err);
-  return (
-    /"tokenInvalid"\s*:\s*true/.test(msg) ||
-    /BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)
-  );
+  return err instanceof LegacyPushError && err.tokenInvalid;
 }
 
 export interface NotificationDispatcherDeps {
+  /** Verified relay subscriptions; never inferred from legacy device tokens. */
+  securePush?: SecureSessionPush;
   sessionRegistry: SessionRegistry;
   deviceTokens: Map<string, DeviceTokenEntry>;
   /**
    * Prune a permanently-invalid device token (epic #603 Phase 6). Called when a
-   * push fails with `isTokenInvalidError` (BadDeviceToken / Unregistered), so the
+   * push fails with `isTokenInvalidError` (the Worker flagged the token permanently invalid), so the
    * daemon stops retrying a dead token on every future escalation. Wired to
    * `DeviceTokenStore.prune` (removes + persists). Absent => no pruning (the
    * token stays in the map; tests / old callers). */
@@ -407,6 +433,8 @@ export class NotificationDispatcher {
    *  In memory only: after a daemon restart a stale notice stays until the
    *  user clears it, which is the safe direction. */
   private turnFailedOutstanding = false;
+  /** A new failure after dismissal must not reopen its absorbing context (#1200). */
+  private turnFailedSecureId: string | undefined;
   /** Resolved once at construction: the real sendPushTrigger unless a test
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
@@ -474,29 +502,29 @@ export class NotificationDispatcher {
     //
     // Reporting `pushed` for a fan-out of zero would claim a card reached a
     // lock screen it never appears on; `no_channel` is the honest outcome.
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    //
+    // A legacy channel that is off or has no secret is not a channel at all (#1200, B6): its old
+    // device tokens are not recipients.
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
+    const secure = this.deps.securePush;
     // No reachable device: nobody can be pushed. If a client is attached the
     // user is still reachable in-app (held case); otherwise there is no channel.
-    if (wanting.length === 0) {
+    if (wanting.length === 0 && !secure?.hasRecipients('question')) {
       if (!hasActiveClient) {
-        log(
-          deviceTokens.size === 0
-            ? `Push skipped: no device tokens for session ${questionSessionId}`
-            : `Push skipped: all ${deviceTokens.size} device token(s) muted question pushes for session ${questionSessionId}`,
-        );
+        log('[QuestionPush] no recipient');
       }
       return Promise.resolve(hasActiveClient ? 'in_app' : 'no_channel');
     }
 
     if (!held && !this.pushDedup.shouldPush(question)) {
-      log(`Push suppressed by dedup for session ${questionSessionId}`);
+      log('[QuestionPush] duplicate suppressed');
       // An identical push already went out; the earlier one is the delivery.
       return Promise.resolve('deduped');
     }
 
     const session = sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     // #626, #1127: an AskUserQuestion with several questions or a
     // multi-select, and a plan approval, get no category at all: none can be
@@ -521,7 +549,7 @@ export class NotificationDispatcher {
     const opts = {
       title,
       body,
-      ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+      ...legacyPushFields(cfg),
       sessionId: pushSessionId,
       questionId: question.id,
       ...(pushCategory !== undefined ? { category: pushCategory } : {}),
@@ -530,40 +558,43 @@ export class NotificationDispatcher {
       kind: 'question' as const,
     };
 
-    const perToken = wanting.map((dt) =>
+    const perToken: Promise<boolean | DeliveryOutcome>[] = wanting.map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, {
-        sent: `Push notification sent for session ${pushSessionId}`,
-        failed: `Push notification failed for session ${pushSessionId}`,
+        sent: '[QuestionPush] legacy accepted',
+        failed: '[QuestionPush] legacy failed',
       }),
     );
-    // Delivered if ANY registered device accepted the push. For a HELD
-    // escalation we gate on THIS push result — not on socket-attachment —
-    // because the attached client may be backgrounded (that is WHY we push). A
-    // failed push therefore fails the hold open fast rather than stalling on an
-    // unreliable `in_app`; the in-app answer path still works, routing via the
-    // PTY to the native prompt after fail-open. (The no-token branch above falls
-    // back to the socket signal since there is no push channel at all; Phase 7's
-    // presence signal hardens that remaining `in_app` trust.)
-    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+    if (secure)
+      perToken.push(
+        secure.send({
+          kind: 'question',
+          logicalId: question.id,
+          question,
+          ...buildSecurePushText(sessionName, question),
+        }),
+      );
+    // Diagnostic APNs acceptance only. Held hooks keep their own captured
+    // deadline and resolve only through the harness's human-answer paths (#1126).
+    return Promise.all(perToken).then(fanoutOutcome);
   }
 
   /**
-   * Push to one device token, retrying a TRANSIENT failure (429 / transient
-   * 5xx) with short backoff (epic #603 Phase 1). A permanent token rejection
-   * (BadDeviceToken etc., which the Worker wraps as 502) is NOT retried — it
-   * fails fast so the gate can fail the hold open. Resolves true on a 2xx.
+   * Push to one device token, retrying a TRANSIENT failure (a 429 or a 5xx the Worker did not
+   * mark as a dead token) with short backoff (epic #603 Phase 1). A permanent token rejection
+   * (`tokenInvalid`, which the Worker wraps as 502) is NOT retried: it fails fast and prunes the
+   * token. Delivery never resolves a held hook (#1200). A 2xx means acceptance, not handset
+   * delivery. The sender refusing on the secure activation latch (`LEGACY_PUSH_NOT_ELIGIBLE`) is
+   * policy, not a failure: it resolves `no_channel` and logs without an error level.
    *
    * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
-   * `logCtx` carries the caller's exact success/failure messages, so message
-   * wording is owned by each caller (this helper never invents log formats —
-   * changing a caller's strings is a deliberate, greppable act at the call site).
+   * `logCtx` carries fixed operation/result messages, never personal selectors.
    */
   private async pushOnceWithRetry(
     signalingUrl: string,
     token: string,
     opts: Parameters<PushFn>[2],
     logCtx: { sent: string; failed: string },
-  ): Promise<boolean> {
+  ): Promise<boolean | DeliveryOutcome> {
     for (let attempt = 0; ; attempt++) {
       try {
         await this.pushFn(signalingUrl, token, opts);
@@ -572,21 +603,23 @@ export class NotificationDispatcher {
       } catch (err) {
         if (isRetriablePushError(err) && attempt < MAX_PUSH_RETRIES) {
           const delay = PUSH_RETRY_BASE_MS * 2 ** attempt;
-          log(
-            `Push transient failure (retry ${attempt + 1}/${MAX_PUSH_RETRIES} in ${delay}ms): ${err}`,
-          );
+          log(`Legacy push retry ${attempt + 1}/${MAX_PUSH_RETRIES}`);
           await sleep(delay);
           continue;
+        }
+        if (isLegacyPushRetired(err)) {
+          log('Legacy push not eligible; secure push is active on this machine');
+          return 'no_channel';
         }
         // Loud: a real push attempt failed (permanent token rejection, network
         // error, or exhausted retries). This is the root cause behind a card
         // that never reached the phone, so it must be visible at error level,
         // not buried.
-        logError(`${logCtx.failed}: ${err}`);
-        // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
-        // unregistered / wrong-app) is pruned so it is never retried again. A
-        // network error or exhausted-transient failure is NOT a token problem,
-        // so the token survives.
+        logError(logCtx.failed);
+        // Self-heal (epic #603 Phase 6): a token the Worker reported as PERMANENTLY invalid
+        // (dead / unregistered / wrong-app) is pruned so it is never retried again. A
+        // network error or exhausted-transient failure is NOT a token problem, so the token
+        // survives.
         if (isTokenInvalidError(err)) {
           this.deps.pruneToken?.(token);
         }
@@ -632,8 +665,10 @@ export class NotificationDispatcher {
   ): void {
     const { deviceTokens, pushConfig } = this.deps;
     this.deps.refreshDeviceTokens?.();
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
-    if (wanting.length === 0) return;
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
+    const secure = this.deps.securePush;
+    if (wanting.length === 0 && !secure?.hasRecipients('question')) return;
     const session = this.deps.sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
     const ask = normalizeNotificationText(question.text) || 'a permission request';
@@ -654,8 +689,9 @@ export class NotificationDispatcher {
     const body = (
       reason === 'subagent' ? ask : `${why}; if it is still open, ${how}: ${ask}`
     ).slice(0, BODY_MAX);
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    if (secure)
+      void secure.send({ kind: 'question', logicalId: terminalNoticeId(question.id), title, body });
     for (const dt of wanting) {
       void this.pushOnceWithRetry(
         cfg.signalingUrl,
@@ -663,14 +699,14 @@ export class NotificationDispatcher {
         {
           title,
           body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId: terminalNoticeId(question.id),
           kind: 'question' as const,
         },
         {
-          sent: `Push terminal notice (${reason}) sent for question ${question.id}`,
-          failed: `Push terminal notice (${reason}) failed for question ${question.id}`,
+          sent: '[TerminalNoticePush] legacy accepted',
+          failed: '[TerminalNoticePush] legacy failed',
         },
       );
     }
@@ -706,39 +742,48 @@ export class NotificationDispatcher {
     // #690: pick up a device a sibling daemon removed or muted since our last
     // read, as every other push does.
     this.deps.refreshDeviceTokens?.();
-    const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
-    if (wanting.length === 0) {
-      log(
-        deviceTokens.size === 0
-          ? `Turn-failed push skipped: no device tokens for session ${this.sessionId}`
-          : `Turn-failed push skipped: all ${deviceTokens.size} device token(s) muted turn_failed for session ${this.sessionId}`,
-      );
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg)
+      ? tokensWanting(deviceTokens.values(), 'turn_failed')
+      : [];
+    const secure = this.deps.securePush;
+    if (wanting.length === 0 && !secure?.hasRecipients('turn_failed')) {
+      log('[TurnFailedPush] no recipient');
       return Promise.resolve('no_channel');
     }
+    if (!this.turnFailedOutstanding) this.turnFailedSecureId = `turn-failed-${generateId()}`;
     this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
     const { title, body } = buildTurnFailedText(sessionName, input, agentName);
-    const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    const perToken = wanting.map((dt) =>
+    const perToken: Promise<boolean | DeliveryOutcome>[] = wanting.map((dt) =>
       this.pushOnceWithRetry(
         cfg.signalingUrl,
         dt.token,
         {
           title,
           body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId: turnFailedCollapseId(this.sessionId),
           kind: 'turn_failed' as const,
         },
         {
-          sent: `Turn-failed push sent for session ${pushSessionId}`,
-          failed: `Turn-failed push failed for session ${pushSessionId}`,
+          sent: '[TurnFailedPush] legacy accepted',
+          failed: '[TurnFailedPush] legacy failed',
         },
       ),
     );
-    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+    if (secure)
+      perToken.push(
+        secure.send({
+          kind: 'turn_failed',
+          logicalId: this.turnFailedSecureId as string,
+          title,
+          body,
+        }),
+      );
+    return Promise.all(perToken).then(fanoutOutcome);
   }
 
   /**
@@ -753,7 +798,12 @@ export class NotificationDispatcher {
   dismissTurnFailed(): void {
     if (!this.turnFailedOutstanding) return;
     this.turnFailedOutstanding = false;
-    this.dismiss(this.sessionId, turnFailedCollapseId(this.sessionId) as UUID);
+    this.dismiss(
+      this.sessionId,
+      turnFailedCollapseId(this.sessionId) as UUID,
+      this.turnFailedSecureId,
+    );
+    this.turnFailedSecureId = undefined;
   }
 
   /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
@@ -780,10 +830,12 @@ export class NotificationDispatcher {
    * `questionSessionId` is the primary id the client knows (from hello_ack), kept
    * symmetric with `maybePush` so the dismissal carries the same routing id.
    */
-  dismiss(questionSessionId: UUID, questionId: UUID): void {
+  dismiss(questionSessionId: UUID, questionId: UUID, secureLogicalId: string = questionId): void {
     const { deviceTokens, pushConfig } = this.deps;
-    if (deviceTokens.size === 0) return;
+    if (this.deps.securePush)
+      void this.deps.securePush.send({ kind: 'dismiss', logicalId: secureLogicalId });
     const cfg = pushConfig();
+    if (!legacyChannelOpen(cfg) || deviceTokens.size === 0) return;
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     for (const dt of deviceTokens.values()) {
       // #723: same transient-retry path as alert pushes — a 429/5xx dismissal
@@ -796,15 +848,15 @@ export class NotificationDispatcher {
         {
           // No title/body: a dismissal is a silent content-available push, and
           // the relay skips the title/body requirement for it (#585, P7).
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: pushSessionId,
           questionId,
           dismiss: true,
           kind: 'dismiss' as const,
         },
         {
-          sent: `Push dismissal sent for question ${questionId}`,
-          failed: `Push dismissal failed for question ${questionId}`,
+          sent: '[DismissPush] legacy accepted',
+          failed: '[DismissPush] legacy failed',
         },
       );
     }
