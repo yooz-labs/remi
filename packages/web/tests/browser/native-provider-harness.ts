@@ -10,6 +10,7 @@ import {
 /** Runs the actual provider inside WKWebView; the Swift host supplies real guarded ingress. */
 import { readNativePairingQR } from '../../src/lib/native-pairing-qr';
 import { beginNativePairingTrust, cancelNativePairingTrust, commitNativePairingTrust, forgetNativeRelayPin, loadNativeRelayPins } from '../../src/lib/native-push-trust';
+import { enableNativeSecurePush, prepareNativePushRegistration, validateNativePushRegistration } from '../../src/lib/native-push-registration';
 
 Object.assign(window, {
   nativeProviderTest: {
@@ -24,6 +25,9 @@ Object.assign(window, {
     cancelNativePairingTrust,
     loadNativeRelayPins,
     forgetNativeRelayPin,
+    enableNativeSecurePush,
+    prepareNativePushRegistration,
+    validateNativePushRegistration,
     async freshQRToken() {
       const { signer } = await relayV2.generateIdentity();
       return relayV2.encodePairingToken({

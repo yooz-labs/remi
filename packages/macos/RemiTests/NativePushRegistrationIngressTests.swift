@@ -12,6 +12,7 @@ final class NativePushRegistrationIngressTests: XCTestCase {
     private var keys: NativePushKeyStore!
     private var identity: ClientIdentity!
     private var rid = Data()
+    private var machine = Data()
     private var keyQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service + ".push", kSecAttrAccount as String: "owned"]
     }
@@ -30,7 +31,7 @@ final class NativePushRegistrationIngressTests: XCTestCase {
         state = try NativePushState(file: directory.appendingPathComponent("public.sqlite"))
         keys = NativePushKeyStore(service: service + ".push", account: "owned", accessGroup: nil)
         identity = try ClientIdentityStore.loadOrCreate(authority: state, accessGroup: nil, service: service, account: "owned-dpk")
-        let machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
         rid = Data(SHA256.hash(data: machine).prefix(16))
         try state.installMachineTrust(.init(rid: rid, machinePublicKey: machine, endpoint: "https://relay.example.invalid",
             authority: XCTUnwrap(state.currentAuthority()), relayUrl: "wss://relay.example.invalid"), generation: state.authorityGeneration())
@@ -66,6 +67,33 @@ final class NativePushRegistrationIngressTests: XCTestCase {
             "try { return await window.webkit.messageHandlers.remiIdentity.postMessage(request) } catch { return {refused:true} }",
             arguments: ["request": request], in: nil, contentWorld: .page)
         return try XCTUnwrap(result as? [String: Any])
+    }
+    @MainActor func testActualBundledWebProviderPreparesAndConsumesNativeRegistrationTicket() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([0, 15, 255]))
+        var registrations = 0
+        let web = try await web(tokens: tokens, register: { registrations += 1 })
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["REMI_TEST_NATIVE_PROVIDER_BUNDLE"])
+        let script = try String(contentsOfFile: path, encoding: .utf8)
+        let evaluated = try await web.callAsyncJavaScript(script + ";return true;", arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(evaluated as? Bool, true)
+        let result = try await web.callAsyncJavaScript("""
+            try {
+              const provider = window.nativeProviderTest;
+              const current = await provider.inspectNativeIdentity();
+              await provider.enableNativeSecurePush(current.identity);
+              const prepared = await provider.prepareNativePushRegistration(current.identity, machine);
+              await provider.validateNativePushRegistration(prepared);
+              let reused = false;
+              try { await provider.validateNativePushRegistration(prepared); reused = true } catch {}
+              return {accepted:true,token:prepared.metadata.token,fields:Object.keys(prepared.metadata).sort().join(','),reused};
+            } catch { return {accepted:false}; }
+            """, arguments: ["machine": machine.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")], in: nil, contentWorld: .page)
+        let reply = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(reply["accepted"] as? Bool, true, "The actual bundled web provider must use the native OS registration owner")
+        XCTAssertEqual(reply["token"] as? String, "000fff")
+        XCTAssertEqual(reply["fields"] as? String, "environment,keyVersion,pushPublicKey,token")
+        XCTAssertEqual(reply["reused"] as? Bool, false)
+        XCTAssertEqual(registrations, 1)
     }
     @MainActor func testActualBundledIngressReturnsOnlyNativeSecureMetadata() async throws {
         let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([0, 15, 255]))
