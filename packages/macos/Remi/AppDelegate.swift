@@ -18,6 +18,13 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowObservers: [NSObjectProtocol] = []
+    private let pushTokens: NativePushTokenOwner
+    override init() { pushTokens = .shared; super.init() }
+    init(pushTokens: NativePushTokenOwner) { self.pushTokens = pushTokens; super.init() }
+
+    // Constructible OS-delegate boundary scaffold; the next pin drives capture.
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {}
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // LSUIElement in Info.plist already makes this an accessory app

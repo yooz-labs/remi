@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000090000000000000008 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54; };
         120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000006; };
         120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000004; };
         120000090000000000000002 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
@@ -412,6 +413,7 @@
                 120000080000000000000004 /* NativePushNotificationConsumerTests.swift in Sources */,
                 120000090000000000000005 /* NativePushRegistrationTests.swift in Sources */,
                 120000090000000000000007 /* NativePushRegistrationIngressTests.swift in Sources */,
+                120000090000000000000008 /* AppDelegate.swift in Sources */,
                 120000010000000000000005 /* NativePushStateTests.swift in Sources */,
                 120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */,
 				120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */,
