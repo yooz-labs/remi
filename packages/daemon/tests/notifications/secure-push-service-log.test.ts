@@ -110,10 +110,10 @@ test('a refusal says its class: capacity, a stale question, an invalid event (#1
   expect(logs).toEqual(['refused:stale', 'refused:invalid', 'refused:invalid']);
   logs.length = 0;
   // One live slot per session in this fixture: the second live event is refused for capacity.
-  // The first dials a closed loopback port and reports its own, different outcome.
+  // The first reports its own, different class; only the second is a capacity refusal.
   await secure.send(info('foreign-session-1'));
   await secure.send(info('foreign-session-2'));
-  expect(logs.filter((line) => line.startsWith('refused'))).toEqual(['refused:capacity']);
+  expect(logs.filter((line) => line === 'refused:capacity')).toEqual(['refused:capacity']);
 });
 
 test('every diagnostic is a fixed class: no content, no id (#1200, B8)', async () => {

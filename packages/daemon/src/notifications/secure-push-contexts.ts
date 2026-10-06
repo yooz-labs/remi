@@ -103,6 +103,23 @@ export interface SecurePushContext {
   readonly content: Omit<relayV2.PushContentMetadata, 'machinePublicKey' | 'rid'>;
   readonly payload: relayV2.SecurePushPayload;
 }
+/**
+ * Why `capture` produced nothing. Fixed classes, so a log line can say which without carrying
+ * content or an id (#1200, B8). `no_prior_push` is not a failure: a dismissal arrived for a slot
+ * nothing was ever pushed on (an in-app answer), so there is nothing to clear.
+ */
+export type CaptureRefusal =
+  | 'invalid'
+  | 'stale'
+  | 'expired'
+  | 'dismissed'
+  | 'capacity'
+  | 'no_prior_push'
+  | 'error';
+export type CaptureResult =
+  | { readonly context: SecurePushContext }
+  | { readonly refused: CaptureRefusal };
+const refuse = (refused: CaptureRefusal): CaptureResult => ({ refused });
 export interface SecurePushContextDeps {
   readonly questionFor: (sessionId: UUID, questionId: UUID) => Question | null;
   readonly validityFor: (sessionId: UUID, questionId: UUID) => AnswerValidity;
@@ -146,9 +163,18 @@ export class SecurePushContexts {
     snapshot: SecurePushSnapshot,
     event: SecurePushEvent,
   ): SecurePushContext | null {
+    const result = this.captureResult(runtime, snapshot, event);
+    return 'context' in result ? result.context : null;
+  }
+  /** `capture` with the class of a refusal; the service logs it (#1200, B8). */
+  captureResult(
+    runtime: SecurePushRuntime,
+    snapshot: SecurePushSnapshot,
+    event: SecurePushEvent,
+  ): CaptureResult {
     try {
+      if (this.runtimes.get(runtime.sessionId) !== runtime) return refuse('stale');
       if (
-        this.runtimes.get(runtime.sessionId) !== runtime ||
         new TextEncoder().encode(event.logicalId).length > 256 ||
         !event.logicalId ||
         (event.eventId !== undefined &&
@@ -156,7 +182,7 @@ export class SecurePushContexts {
             !event.eventId ||
             new TextEncoder().encode(event.eventId).length > 256))
       )
-        return null;
+        return refuse('invalid');
       this.prune();
       // An explicit occurrence id names one occurrence (a duplicate frame of it coalesces);
       // without one, a kind that legacy never collapsed gets a slot of its own per capture.
@@ -165,11 +191,11 @@ export class SecurePushContexts {
         (OWN_SLOT_KINDS.has(event.kind) ? relayV2.b64u(relayV2.systemRandom(16)) : '');
       const key = this.key(runtime, event.logicalId, occurrence, snapshot.publicKey);
       const previous = this.entries.get(key);
-      if (previous?.dismissed)
-        return event.kind === 'dismiss' && this.isCurrent(previous.context)
-          ? previous.context
-          : null;
-      if (event.kind === 'dismiss' && !previous) return null;
+      if (previous?.dismissed) {
+        if (event.kind !== 'dismiss') return refuse('dismissed');
+        return this.isCurrent(previous.context) ? { context: previous.context } : refuse('stale');
+      }
+      if (event.kind === 'dismiss' && !previous) return refuse('no_prior_push');
       const now = seconds();
       const title = boundedText(event.title ?? 'Remi', 128);
       const body = boundedText(event.body ?? '', 512);
@@ -181,12 +207,13 @@ export class SecurePushContexts {
       let qid: UUID | undefined;
       let qMeaning: string | undefined;
       if (event.question) {
-        if (event.kind !== 'question' || event.logicalId !== event.question.id) return null;
+        if (event.kind !== 'question' || event.logicalId !== event.question.id)
+          return refuse('invalid');
         const current = this.deps.questionFor(runtime.sessionId, event.question.id);
-        if (!current || current.isAnswered) return null;
+        if (!current || current.isAnswered) return refuse('stale');
         qid = current.id;
         qMeaning = questionMeaning(current);
-        if (qMeaning !== questionMeaning(event.question)) return null;
+        if (qMeaning !== questionMeaning(event.question)) return refuse('stale');
         const validity = this.deps.validityFor(runtime.sessionId, current.id);
         const category = pushCategoryFor(current);
         if (
@@ -252,14 +279,14 @@ export class SecurePushContexts {
       // event is a LATER occurrence of something that happened again: it advances the revision
       // and pushes, as legacy did, instead of being coalesced and then dropped (B2).
       if (previous?.meaning === meaning && (event.question || event.eventId !== undefined))
-        return this.isCurrent(previous.context) ? previous.context : null;
+        return this.isCurrent(previous.context) ? { context: previous.context } : refuse('expired');
       // Capacity refuses new live work; it never evicts a live entry (#1200). Only a LIVE slot
       // (not dismissed, not expired) counts against the per-session cap: a resolved or expired
       // entry stays retained for dismissal and replay correctness but holds no slot (B1), so a
       // session's 33rd question is not refused because 32 earlier ones were answered.
       if (!previous) {
         if (this.entries.size >= this.capacity) this.evictDead(now);
-        if (this.entries.size >= this.capacity) return null;
+        if (this.entries.size >= this.capacity) return refuse('capacity');
       }
       if (!previous || !this.isLive(previous, now)) {
         const liveSlots = new Set<string>();
@@ -270,10 +297,10 @@ export class SecurePushContexts {
           !liveSlots.has(`${event.logicalId}\0${occurrence}`) &&
           liveSlots.size >= this.perSessionCapacity
         )
-          return null;
+          return refuse('capacity');
       }
       const revision = (previous?.context.content.revision ?? 0) + 1;
-      if (!Number.isSafeInteger(revision)) return null;
+      if (!Number.isSafeInteger(revision)) return refuse('invalid');
       const context: SecurePushContext = Object.freeze({
         runtime,
         snapshot: captured,
@@ -301,9 +328,9 @@ export class SecurePushContexts {
         retainUntil: Math.max(previous?.retainUntil ?? 0, now + 3600 + DELIVERY_GRACE_SECONDS),
         dismissed: event.kind === 'dismiss',
       });
-      return context;
+      return { context };
     } catch {
-      return null;
+      return refuse('error');
     }
   }
   isCurrent(context: SecurePushContext): boolean {

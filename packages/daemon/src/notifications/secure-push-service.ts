@@ -3,25 +3,37 @@ import type { UUID, relayV2 } from '@remi/shared';
 import type { DeliveryOutcome } from './notification-dispatcher.ts';
 import { sanitizePushPreferences, wantsPush } from './push-preferences.ts';
 import type {
+  CaptureRefusal,
   SecurePushContext,
   SecurePushContexts,
   SecurePushEvent,
   SecurePushRuntime,
 } from './secure-push-contexts.ts';
 import type { SecurePushStore } from './secure-push-store.ts';
-import type { SecurePushTransport } from './secure-push-transport.ts';
+import type { SecurePushRefusal, SecurePushTransport } from './secure-push-transport.ts';
 
 export interface SecureSessionPush {
   hasRecipients(kind: relayV2.SecurePushKind): boolean;
   send(event: SecurePushEvent): Promise<DeliveryOutcome>;
 }
+/**
+ * What the service reports for each delivery step: a fixed class, never content or an id
+ * (#1200, B8). `refused:<why>` names the refusal (a capture class or a transport preparation
+ * class); `skipped:no_prior_push` is a dismissal with nothing to clear, which is not a refusal.
+ */
+export type SecurePushLog =
+  | 'accepted'
+  | 'rejected'
+  | 'uncertain'
+  | 'skipped:no_prior_push'
+  | `refused:${CaptureRefusal | 'store' | Lowercase<SecurePushRefusal>}`;
 export interface SecurePushServiceOptions {
   readonly store: SecurePushStore;
   readonly transport: SecurePushTransport;
   readonly contexts: SecurePushContexts;
   readonly machinePublicKey: string;
   readonly rid: string;
-  readonly log: (outcome: 'accepted' | 'rejected' | 'uncertain' | 'refused') => void;
+  readonly log: (outcome: SecurePushLog) => void;
 }
 export class SecurePushService {
   private readonly options: SecurePushServiceOptions;
@@ -36,7 +48,7 @@ export class SecurePushService {
           return this.recipients(kind).length > 0;
         } catch {
           // Unknown storage is a failed channel, not a claimed empty recipient list.
-          this.report('refused');
+          this.report('refused:store');
           return true;
         }
       },
@@ -55,11 +67,13 @@ export class SecurePushService {
       const recipients = this.recipients(event.kind);
       if (recipients.length === 0) return Promise.resolve('no_channel');
       const tasks = recipients.map((snapshot) => {
-        const context = this.options.contexts.capture(runtime, snapshot, event);
-        if (!context) {
-          this.report('refused');
-          return Promise.resolve('failed' as const);
+        const captured = this.options.contexts.captureResult(runtime, snapshot, event);
+        if (!('context' in captured)) {
+          const nothingToClear = captured.refused === 'no_prior_push';
+          this.report(nothingToClear ? 'skipped:no_prior_push' : `refused:${captured.refused}`);
+          return Promise.resolve(nothingToClear ? ('no_channel' as const) : ('failed' as const));
         }
+        const { context } = captured;
         let delivery = this.deliveries.get(context);
         if (!delivery) {
           delivery = this.deliver(context);
@@ -72,10 +86,12 @@ export class SecurePushService {
           ? 'pushed'
           : outcomes.includes('uncertain')
             ? 'uncertain'
-            : 'failed',
+            : outcomes.every((outcome) => outcome === 'no_channel')
+              ? 'no_channel'
+              : 'failed',
       );
     } catch {
-      this.report('refused');
+      this.report('refused:error');
       return Promise.resolve('failed');
     }
   }
@@ -102,27 +118,32 @@ export class SecurePushService {
         context.payload,
         isCurrent,
       );
-      if (
-        preparation.outcome !== 'prepared' ||
-        !contexts.bindDigest(context, preparation.prepared.contentDigest)
-      ) {
-        this.report('refused');
+      if (preparation.outcome !== 'prepared') {
+        this.report(`refused:${preparation.reason.toLowerCase() as Lowercase<SecurePushRefusal>}`);
+        return 'failed';
+      }
+      if (!contexts.bindDigest(context, preparation.prepared.contentDigest)) {
+        this.report('refused:stale');
         return 'failed';
       }
       bound.digest = preparation.prepared.contentDigest;
       const result = await transport.sendPrepared(preparation.prepared);
-      this.report(result.outcome);
+      this.report(
+        result.outcome === 'refused'
+          ? `refused:${result.reason.toLowerCase() as Lowercase<SecurePushRefusal>}`
+          : result.outcome,
+      );
       return result.outcome === 'accepted'
         ? 'pushed'
         : result.outcome === 'uncertain'
           ? 'uncertain'
           : 'failed';
     } catch {
-      this.report('refused');
+      this.report('refused:error');
       return 'failed';
     }
   }
-  private report(outcome: 'accepted' | 'rejected' | 'uncertain' | 'refused'): void {
+  private report(outcome: SecurePushLog): void {
     try {
       this.options.log(outcome);
     } catch {
