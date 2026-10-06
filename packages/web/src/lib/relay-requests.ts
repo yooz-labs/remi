@@ -4,9 +4,11 @@ import {
   type ProtocolMessage,
   type RelayDeviceRevokeResponseMessage,
   type RelayDevicesResponseMessage,
-  type SecurePushRegistration,
   type SecurePushRegisterResponseMessage,
+  type SecurePushRegistration,
   type SecurePushUnregisterResponseMessage,
+  createSecurePushRegisterRequest,
+  createSecurePushUnregisterRequest,
   generateId,
   now,
 } from '@remi/shared';
@@ -17,7 +19,8 @@ export interface RelayAnswerStatus {
   readonly questionId: string;
   readonly outcome: AnswerResultOutcome;
 }
-type DeviceResponse = RelayDevicesResponseMessage | RelayDeviceRevokeResponseMessage;
+type DeviceResponse = RelayDevicesResponseMessage | RelayDeviceRevokeResponseMessage |
+  SecurePushRegisterResponseMessage | SecurePushUnregisterResponseMessage;
 interface Pending {
   readonly request: ProtocolMessage;
   readonly timer: ReturnType<typeof setTimeout>;
@@ -72,7 +75,8 @@ export class RelayRequests {
     // A question resolution may be from another client or the terminal. Keep this
     // request's waiter until its correlated result or deadline; resolution is not delivery.
     if (
-      !['answer_result', 'relay_devices_response', 'relay_device_revoke_response'].includes(
+      !['answer_result', 'relay_devices_response', 'relay_device_revoke_response',
+        'secure_push_register_response', 'secure_push_unregister_response'].includes(
         message.type,
       )
     )
@@ -110,6 +114,17 @@ export class RelayRequests {
       pending.resolve?.(message);
       return true;
     }
+    if ((message.type === 'secure_push_register_response' && request.type === 'secure_push_register_request') ||
+        (message.type === 'secure_push_unregister_response' && request.type === 'secure_push_unregister_request')) {
+      if (message.success !== true && (message.success !== false ||
+          !['UNSUPPORTED','NOT_AUTHORIZED','NOT_ENROLLED','INVALID_SUBSCRIPTION','STALE_KEY_VERSION','CAPACITY','STORE_ERROR'].includes(message.error))) return false;
+      if (message.type === 'secure_push_register_response' && request.type === 'secure_push_register_request' &&
+          message.success && message.keyVersion !== request.keyVersion) return false;
+      clearTimeout(pending.timer);
+      this.pending.delete(request.id);
+      pending.resolve?.(message);
+      return true;
+    }
     return false;
   }
   devices(): Promise<RelayDevicesResponseMessage> {
@@ -129,11 +144,11 @@ export class RelayRequests {
       fingerprint,
     }) as Promise<RelayDeviceRevokeResponseMessage>;
   }
-  registerPush(_metadata: SecurePushRegistration): Promise<SecurePushRegisterResponseMessage> {
-    return Promise.reject(new Error('Secure subscription unavailable.'));
+  registerPush(metadata: SecurePushRegistration): Promise<SecurePushRegisterResponseMessage> {
+    return this.request(createSecurePushRegisterRequest(metadata)) as Promise<SecurePushRegisterResponseMessage>;
   }
   unregisterPush(): Promise<SecurePushUnregisterResponseMessage> {
-    return Promise.reject(new Error('Secure subscription unavailable.'));
+    return this.request(createSecurePushUnregisterRequest()) as Promise<SecurePushUnregisterResponseMessage>;
   }
   private request(request: ProtocolMessage): Promise<DeviceResponse> {
     if (this.pending.size >= 128)
@@ -157,7 +172,7 @@ export class RelayRequests {
       else {
         clearTimeout(pending.timer);
         pending.reject?.(
-          new Error('Disconnected: device outcome and edge acknowledgment unverified.'),
+          new Error('Disconnected: relay request outcome unverified.'),
         );
       }
     }

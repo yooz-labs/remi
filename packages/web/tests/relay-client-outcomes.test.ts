@@ -3,10 +3,10 @@ import { expect, test } from 'bun:test';
 import {
   type AnswerResultMessage,
   type ProtocolMessage,
+  type SecurePushRegisterResponseMessage,
   createAnswer,
   createHello,
   createSessionListRequest,
-  type SecurePushRegisterResponseMessage,
   generateId,
   now,
   relayV2,
@@ -88,6 +88,7 @@ test('actual encrypted native push subscription waiter accepts only its correlat
     expect(settled, 'The real encrypted request must wait for its actual response').toBe(false);
     const wire = await nextType(messages, 'secure_push_register_response') as SecurePushRegisterResponseMessage;
     expect(requests.receive({...wire,requestId:generateId()})).toBe(false);
+    if (wire.success) expect(requests.receive({...wire,keyVersion:wire.keyVersion+1})).toBe(false);
     expect(settled).toBe(false);
     expect(requests.receive(wire)).toBe(true);
     expect(await reply).toMatchObject({success:true,keyVersion:1});
