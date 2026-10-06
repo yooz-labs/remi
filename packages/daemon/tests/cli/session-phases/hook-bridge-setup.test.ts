@@ -798,7 +798,7 @@ describe('setupHookBridge', () => {
           }
         });
 
-        test('the next main UserPromptSubmit clears it the same way', async () => {
+        test('a new prompt does not clear it: at a usage limit every prompt fails too (#1226)', async () => {
           const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
           lock('claude-A');
           hookServer.fire('StopFailure', stopFailure());
@@ -807,9 +807,7 @@ describe('setupHookBridge', () => {
           hookServer.fire('UserPromptSubmit', prompt());
           await flush();
 
-          expect(dismissals(sent).map((p) => p.opts['questionId'])).toEqual([
-            turnFailedCollapseId(SID),
-          ]);
+          expect(dismissals(sent)).toEqual([]);
         });
 
         test('nothing is sent when no failure is outstanding, and only once per failure', async () => {
@@ -852,15 +850,50 @@ describe('setupHookBridge', () => {
           expect(dismissals(sent)).toEqual([]);
         });
 
-        test('a failing repeat replaces the notice: dismiss, then a fresh alert under the same key', async () => {
+        test('a retry loop at a usage limit alerts once: no dismiss, no second alert (#1226)', async () => {
           const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
           lock('claude-A');
           hookServer.fire('StopFailure', stopFailure());
           await Promise.all(outcomes);
 
-          // The user retries and it fails again at once.
-          hookServer.fire('UserPromptSubmit', prompt());
-          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'retry' }));
+          // Each retry fails again at once.
+          for (let i = 0; i < 5; i++) {
+            hookServer.fire('UserPromptSubmit', prompt());
+            hookServer.fire('StopFailure', stopFailure({ prompt_id: `retry-${i}` }));
+          }
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual(['turn_failed']);
+        });
+
+        test('subagents failing at the same limit add no alert to the main one (#1226)', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+
+          hookServer.fire(
+            'StopFailure',
+            stopFailure({ agent_id: 'agent-1', agent_type: 'Explore' }),
+          );
+          hookServer.fire(
+            'StopFailure',
+            stopFailure({ agent_id: 'agent-2', agent_type: 'Explore' }),
+          );
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual(['turn_failed']);
+        });
+
+        test('after a turn that finishes well, the same failure alerts again (#1226)', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('Stop', stop());
+          hookServer.fire('StopFailure', stopFailure());
           await Promise.all(outcomes);
           await flush();
 
