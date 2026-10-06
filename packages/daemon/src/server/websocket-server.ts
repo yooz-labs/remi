@@ -663,10 +663,11 @@ export class WebSocketServer {
     if (connection) {
       let data: string;
       try {
+        // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).
         data =
           typeof message === 'string'
             ? message
-            : new TextDecoder('utf-8', { fatal: true }).decode(message);
+            : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(message);
       } catch {
         connection.send(createError('INVALID_MESSAGE', 'Failed to parse message'));
         return;

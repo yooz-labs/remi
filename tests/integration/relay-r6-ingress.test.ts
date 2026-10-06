@@ -56,6 +56,7 @@ const invalid: [string, string][] = [
     ),
   ],
   ['native-unknown-field', JSON.stringify({ ...native, injected: true })],
+  ['native-leading-bom', `\uFEFF${rawNative}`],
   ['native-json-cap', `${' '.repeat(16384)}${rawNative}`],
 ];
 
@@ -213,6 +214,14 @@ test('actual WebSocketServer rejects malformed binary UTF8 before replacement an
     expect(running.legacy).toEqual([]);
     running.socket.sendText(serialize(createPing()));
     expect((await running.socket.json())['type']).toBe('pong');
+    // Preserve the original bytes: a leading BOM is not valid native JSON,
+    // and must not disappear before the strict decoder sees the message.
+    running.socket.sendBinary(new TextEncoder().encode(`\uFEFF${rawNative}`));
+    expect(await running.socket.json()).toMatchObject({
+      type: 'error',
+      code: 'INVALID_MESSAGE',
+      message: 'Failed to parse message',
+    });
     // Correct binary UTF8 remains supported.
     running.socket.sendBinary(new TextEncoder().encode(rawNative));
     expect(await running.socket.json()).toMatchObject({
