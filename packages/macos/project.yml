@@ -11,6 +11,9 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: 9DQ459HAZB
+    # NativeAPNsEnvironment.swift calls the Objective-C self-entitlement query
+    # (#1200); both the app and the un-hosted tests compile it.
+    SWIFT_OBJC_BRIDGING_HEADER: Remi/NativePush/NativePush-Bridging-Header.h
 targets:
   Remi:
     type: application
@@ -19,6 +22,7 @@ targets:
       - path: Remi
         excludes:
           - "Resources/web/**"
+          - "NativePush/README.md"
       # Staged web bundle (scripts/stage-macos-web.sh). Folder reference so
       # the whole dist tree lands in Resources/web verbatim.
       - path: Remi/Resources/web
@@ -38,6 +42,13 @@ targets:
         CURRENT_PROJECT_VERSION: 4
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      # Remi.entitlements signs $(APNS_ENVIRONMENT). The runtime query, not this
+      # value, chooses the environment a push registration reports (#1200).
+      configs:
+        Debug:
+          APNS_ENVIRONMENT: development
+        Release:
+          APNS_ENVIRONMENT: production
     preBuildScripts:
       - name: Verify staged web bundle
         script: |
@@ -55,12 +66,20 @@ targets:
     # run loop (observed live: a failed assert hung xcodebuild forever) —
     # unacceptable for CI. Plain xctest bundles fail fast.
     sources:
+      # Fixtures are read by path (#filePath) or compiled by a test at run time
+      # (NativePushStateProcess/main.swift is a standalone helper executable),
+      # so none belongs in the bundle.
       - path: RemiTests
+        excludes:
+          - "fixtures/**"
       - path: Remi
         excludes:
           - "RemiApp.swift"
-          - "AppDelegate.swift"
           - "Resources/web/**"
+          - "NativePush/README.md"
+      # The shipping iOS notification service extension, so tests construct the
+      # actual class (#1200). It is also compiled by packages/web/ios.
+      - path: ../web/ios/App/RemiNotificationService/NotificationService.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: live.yooz.remi.tests
