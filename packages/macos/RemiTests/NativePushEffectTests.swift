@@ -166,6 +166,7 @@ final class NativePushEffectTests: XCTestCase {
         guard let first = prepared(e, "question"), let dismiss = prepared(e, "dismiss") else { return }
         XCTAssertEqual(dismiss.outcome, .dismiss)
         XCTAssertTrue(dismiss.actions.isEmpty)
+        XCTAssertNoThrow(try e.recheck(dismiss), "Current signed terminal digest must authorize actual delayed dismiss after recheck")
         XCTAssertThrowsError(try e.recheck(first))
         XCTAssertThrowsError(try e.prepare(userInfo: info("question-yn")), "A later question revision cannot reopen the signed terminal collapse")
     }
@@ -226,9 +227,10 @@ final class NativePushEffectTests: XCTestCase {
         forged["sessionId"] = "foreign-session"
         forged["opt_0"] = "deny"
         forged["verified"] = true
-        let result = try e.action(userInfo: forged, identifier: "OPT_0")
-        XCTAssertEqual(result.option.value, "allow")
-        XCTAssertEqual(result.question.questionId, "synthetic-question")
+        var originalAction: NativePushEffect.Action?
+        XCTAssertNoThrow(originalAction = try e.action(userInfo: forged, identifier: "OPT_0"))
+        XCTAssertEqual(originalAction?.option.value, "allow")
+        XCTAssertEqual(originalAction?.question.questionId, "synthetic-question")
         let later = prepared(e, "dismiss")
         XCTAssertNotNil(later)
         XCTAssertThrowsError(try e.action(userInfo: signed, identifier: "OPT_0"), "An old signed card cannot act after durable dismiss")
