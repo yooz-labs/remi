@@ -20,6 +20,12 @@ final class NativePushPresentationTests: XCTestCase {
             deliveries += 1
         }
         service.serviceExtensionTimeWillExpire()
+        service.serviceExtensionTimeWillExpire()
+        XCTAssertEqual(delivered?.title, "Remi needs your attention")
+        XCTAssertEqual(delivered?.body, "Open Remi to view this notification.")
+        XCTAssertNil(delivered?.userInfo["sessionId"])
+        XCTAssertNil(delivered?.userInfo["questionId"])
+        XCTAssertNil(delivered?.userInfo["opt_0"])
         XCTAssertEqual(deliveries, 1, "The actual extension must complete exactly once")
         XCTAssertEqual(delivered?.categoryIdentifier, "",
                        "Unsigned outer category must never grant notification actions")

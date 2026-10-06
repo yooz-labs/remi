@@ -25,6 +25,7 @@ final class NativePushEffect {
          now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) }) {
         self.state = state; self.keys = keys; self.now = now
     }
+    static func actionTitle(_ option: NativePushCodec.Option) -> String { option.label }
     /// Independently opens ORIGINAL carrier bytes and commits replay/lifecycle
     /// before any consumer can publish content or remove a delivered card.
     func prepare(userInfo: [AnyHashable: Any]) throws -> Prepared {
