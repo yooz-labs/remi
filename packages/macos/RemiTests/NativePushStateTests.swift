@@ -267,6 +267,36 @@ final class NativePushStateTests: XCTestCase {
         }
     }
 
+    func testOnlyCompleteCanonicalNativeRoutesCanRestoreMachines() throws {
+        let file = directory.appendingPathComponent("native-route.sqlite")
+        let state = try NativePushState(file: file)
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let original = try machine(state)
+        let generation = try state.authorityGeneration()
+        try state.installMachineTrust(original, generation: generation)
+        XCTAssertTrue(try state.completedMachineTrusts().isEmpty, "Incomplete old trust is not restored as a native connection")
+        let complete = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+            endpoint: original.endpoint, authority: original.authority, relayUrl: "wss://relay.example.invalid/prefix")
+        XCTAssertNoThrow(try state.installMachineTrust(complete, generation: generation))
+        XCTAssertEqual(try NativePushState(file: file).completedMachineTrusts(), [complete], "Verified public route must survive actual SQLite reopen")
+        for route in ["ws://relay.example.invalid/prefix", "wss://other.example.invalid/prefix",
+                      "wss://user@relay.example.invalid/prefix", "wss://relay.example.invalid/prefix?query=1",
+                      "wss://relay.example.invalid/prefix#fragment", "wss://relay.example.invalid/%70refix",
+                      "wss://relay.example.invalid:00443/prefix"] {
+            let bad = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+                endpoint: original.endpoint, authority: original.authority, relayUrl: route)
+            XCTAssertThrowsError(try state.installMachineTrust(bad, generation: generation), "Native route must match the exact canonical HTTPS endpoint")
+            XCTAssertEqual(try state.completedMachineTrusts(), [complete])
+        }
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(file.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, "ALTER TABLE machine_trust DROP COLUMN relay_url; PRAGMA user_version=4", nil, nil, nil), SQLITE_OK)
+        let migrated = try NativePushState(file: file)
+        XCTAssertTrue(try migrated.completedMachineTrusts().isEmpty, "Schema migration cannot manufacture a completed native route")
+        XCTAssertNotNil(try migrated.machineTrust(rid: original.rid), "Migration preserves the public old record without promoting it")
+    }
+
     func testIdentityMutationClosesCompletedMachineTrustAndWriterCannotRestoreIt() throws {
         let state = try NativePushState(file: directory.appendingPathComponent("trust-close.sqlite"))
         try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)

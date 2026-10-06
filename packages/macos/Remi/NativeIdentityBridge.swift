@@ -21,6 +21,15 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let account: String
     private let accessGroup: String?
     private let authority: NativeIdentityAuthorityBarrier
+    private let pushState: () throws -> NativePushState
+    private struct PairingAttempt {
+        let id: String
+        let identity: NativePushState.Authority
+        let authorityGeneration: Int64
+        let documentGeneration: UInt64
+        let deadline: TimeInterval
+    }
+    private var pairingAttempt: PairingAttempt?
     private let unlockLifetime = NativeUnlockLifetime()
     private let foreground: @MainActor () -> Bool
     private let authorization: @MainActor () async -> Bool
@@ -37,6 +46,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var documentObserver: NSKeyValueObservation?
 
     init(authority: NativeIdentityAuthorityBarrier, accessGroup: String?, scheme: String, service: String, account: String,
+         pushState: @escaping () throws -> NativePushState = NativePushConfiguration.sharedState,
          foreground: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() },
          authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
          selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
@@ -44,6 +54,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         self.service = service
         self.account = account
         self.authority = authority
+        self.pushState = pushState
         self.accessGroup = accessGroup
         self.foreground = foreground
         self.authorization = authorization
@@ -54,6 +65,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                 MainActor.assumeIsolated {
                     self?.unlockedRevision = nil
                     self?.documentGeneration &+= 1
+                    self?.pairingAttempt = nil
                     self?.cancelQR()
                     // Public-only lifecycle notice lets the web owner discard derived relay keys.
                     self?.webView?.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-identity-locked'))")
@@ -61,7 +73,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
             object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.cancelQR() }
+                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.pairingAttempt = nil; self?.cancelQR() }
             }
     }
 
@@ -91,9 +103,10 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         if webView !== message.webView {
             cancelQR()
             documentGeneration &+= 1
+            pairingAttempt = nil
             webView = message.webView
             documentObserver = message.webView?.observe(\.isLoading, options: [.new]) { [weak self] web, _ in
-                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.cancelQR() } }
+                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.pairingAttempt = nil; self?.cancelQR() } }
             }
         }
         if let request = message.body as? [String: Any],
@@ -194,6 +207,16 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+    private func pairingIdentity(_ request: [String: Any]) throws -> NativePushState.Authority {
+        guard foreground(), let web = webView, !web.isLoading,
+              Self.isBundledDocument(web.url, scheme: scheme),
+              let identity = try ClientIdentityStore.load(authority: mutationAuthority(), accessGroup: accessGroup, service: service, account: account),
+              request["revision"] as? String == identity.revision,
+              try bytes(request["publicKey"], count: 32...32) == identity.publicKeyRaw,
+              !identity.requiresAppUnlock || unlockedRevision == identity.revision else { throw NativeIdentityError.changed }
+        return .init(publicKey: identity.publicKeyRaw, revision: identity.revision, requiresAppUnlock: identity.requiresAppUnlock)
+    }
+
     private func handle(_ body: Any) throws -> [String: Any] {
         guard let request = body as? [String: Any],
               JSONSerialization.isValidJSONObject(request),
@@ -201,6 +224,67 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
               let op = request["op"] as? String
         else { throw NativeIdentityError.malformed }
         switch op {
+        case "beginPushPairing":
+            guard Set(request.keys) == ["op", "publicKey", "revision"] else { throw NativeIdentityError.malformed }
+            let identity = try pairingIdentity(request)
+            let state = try pushState()
+            let attempt = PairingAttempt(id: UUID().uuidString, identity: identity,
+                authorityGeneration: try state.authorityGeneration(), documentGeneration: documentGeneration,
+                deadline: ProcessInfo.processInfo.systemUptime + 120)
+            pairingAttempt = attempt
+            return ["attempt": attempt.id, "publicKey": identity.publicKey.base64EncodedString(), "revision": identity.revision]
+        case "cancelPushPairing":
+            guard Set(request.keys) == ["op", "attempt"], let id = request["attempt"] as? String else { throw NativeIdentityError.malformed }
+            if pairingAttempt?.id == id { pairingAttempt = nil }
+            return ["cancelled": true]
+        case "commitPushPairing":
+            guard Set(request.keys) == ["op", "attempt", "publicKey", "revision", "machinePublicKey", "rid", "endpoint", "relayUrl"],
+                  let attempt = pairingAttempt, request["attempt"] as? String == attempt.id else { throw NativeIdentityError.changed }
+            pairingAttempt = nil
+            guard attempt.documentGeneration == documentGeneration,
+                  ProcessInfo.processInfo.systemUptime < attempt.deadline,
+                  try pairingIdentity(request) == attempt.identity,
+                  let endpoint = request["endpoint"] as? String, let relay = request["relayUrl"] as? String else { throw NativeIdentityError.changed }
+            let state = try pushState()
+            guard try state.authorityGeneration() == attempt.authorityGeneration else { throw NativeIdentityError.changed }
+            let lease = try mutationAuthority().acquireIdentityMutation()
+            defer { lease.release() }
+            do {
+                guard try pairingIdentity(request) == attempt.identity,
+                      attempt.documentGeneration == documentGeneration,
+                      try state.authorityGeneration() == attempt.authorityGeneration else { throw NativeIdentityError.changed }
+            } catch {
+                // A changed private record under this writer lock must close authority;
+                // read-only reconciliation cannot recursively acquire the same lock.
+                _ = try lease.invalidateIdentityAuthority()
+                throw error
+            }
+            if try state.currentAuthority() == nil {
+                // Explicit verified pairing recovery, never an implicit get/sign restore.
+                try lease.installIdentityAuthority(publicKey: attempt.identity.publicKey, revision: attempt.identity.revision,
+                    requiresAppUnlock: attempt.identity.requiresAppUnlock, generation: attempt.authorityGeneration)
+            }
+            guard try state.currentAuthority() == attempt.identity else { throw NativeIdentityError.changed }
+            let trust = NativePushState.MachineTrust(rid: try bytes(request["rid"], count: 16...16),
+                machinePublicKey: try bytes(request["machinePublicKey"], count: 32...32), endpoint: endpoint,
+                authority: attempt.identity, relayUrl: relay)
+            try state.installMachineTrust(trust, generation: attempt.authorityGeneration)
+            return ["saved": true, "publicKey": attempt.identity.publicKey.base64EncodedString(), "revision": attempt.identity.revision]
+        case "listPushMachines":
+            guard Set(request.keys) == ["op", "publicKey", "revision"] else { throw NativeIdentityError.malformed }
+            let identity = try pairingIdentity(request)
+            let machines = try pushState().completedMachineTrusts().filter { $0.authority == identity }
+            let records = machines.compactMap { trust -> [String: String]? in
+                guard let relay = trust.relayUrl else { return nil }
+                return ["rid": trust.rid.base64EncodedString(), "machinePublicKey": trust.machinePublicKey.base64EncodedString(),
+                        "endpoint": trust.endpoint, "relayUrl": relay]
+            }
+            return ["machines": records]
+        case "forgetPushMachine":
+            guard Set(request.keys) == ["op", "publicKey", "revision", "rid"] else { throw NativeIdentityError.malformed }
+            _ = try pairingIdentity(request)
+            try pushState().forgetMachine(rid: bytes(request["rid"], count: 16...16))
+            return ["forgotten": true]
         case "public":
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }
             guard let identity = try ClientIdentityStore.load(authority: mutationAuthority(), accessGroup: accessGroup, service: service, account: account) else {

@@ -2,7 +2,7 @@
 
 This directory currently implements the native persistence and APNs environment
 boundaries. Secure registration, original-byte capsule verification, the verified
-READY trust bridge, and NSE/action consumers still need to be connected. The
+READY web caller, and NSE/action consumers still need to be connected. The
 existing notification extension is not yet the secure-push decoder.
 
 `NativePushState` stores public identity authority and completed machine trust in
@@ -13,6 +13,12 @@ only for its own invalidation generation. Failure never restores older machine
 trust. SQLite and Keychain are separate operations, not a distributed transaction.
 The bundled WebKit bridge checks foreground and document lifetime again after
 acquiring this lock; loads that migrate an older native seed use that same guard.
+Native pairing ingress issues a one-use, two-minute monotonic attempt bound to the
+current private identity, protection revision, bundled document, and durable
+authority generation. Commit rechecks these contexts after the actual writer lock.
+An explicit completed pairing may recover public identity authority for that same
+generation; ordinary get/sign operations still never restore it. The verified web
+READY callback is not connected to these new ingress operations yet.
 
 Read-only identity observation invalidates installed authority if the actual
 record is unavailable, deleted, corrupt, or differs in public key, revision, or
@@ -35,6 +41,11 @@ Completed machine trust pins a canonical HTTPS origin: ports are bounded and
 re-emitted without zero prefixes; public IP parsers verify exact dotted IPv4 and
 lowercase IPv6 with the longest first zero run. The actual shared submission
 validator is checked against the native store for the same origin corpus.
+Completed machine trust stores the verified public WSS route and its matching
+HTTPS origin. The route preserves the bounded relay path; credentials, query,
+fragment, noncanonical spelling, and a different origin are refused. Schema-five
+migration leaves older route-less rows incomplete. Native listings restore only
+complete rows and never import browser localStorage pins.
 Completed machine trust is limited to 32 saved machines. Replay state has 2048
 rows total across nonce and collapse tables; it never evicts live rows. The
 preverified tuple/digest storage boundary commits before publication or deletion.

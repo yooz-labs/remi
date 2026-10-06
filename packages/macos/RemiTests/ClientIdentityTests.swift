@@ -646,7 +646,7 @@ final class ClientIdentityTests: XCTestCase {
         config.setURLSchemeHandler(DistSchemeHandler(webRoot: root), forURLScheme: "remi-app")
         config.userContentController.addScriptMessageHandler(
             NativeIdentityBridge(authority: authority, accessGroup: nil, scheme: "remi-app", service: service, account: account,
-                foreground: { true }), contentWorld: .page, name: NativeIdentityBridge.handlerName)
+                pushState: { self.authority }, foreground: { true }), contentWorld: .page, name: NativeIdentityBridge.handlerName)
         let web = WKWebView(frame: .zero, configuration: config)
         web.load(URLRequest(url: try XCTUnwrap(URL(string: "remi-app://localhost/index.html"))))
         for _ in 0..<250 where web.isLoading { try await Task.sleep(nanoseconds: 20_000_000) }
@@ -675,6 +675,31 @@ final class ClientIdentityTests: XCTestCase {
             catch { return false; }
             """, arguments: [:], in: nil, contentWorld: .page)
         XCTAssertEqual(reused as? Bool, false, "Completed native attempt cannot be reused")
+        let restored = try await web.callAsyncJavaScript("""
+            const result = await window.webkit.messageHandlers.remiIdentity.postMessage({op:'listPushMachines',publicKey,revision});
+            return result.machines.map(machine => machine.relayUrl);
+            """, arguments: ["publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision], in: nil, contentWorld: .page)
+        XCTAssertEqual(restored as? [String], ["wss://relay.example.invalid/prefix"], "Native restore must retain the verified relay path")
+        let cancelled = try await web.callAsyncJavaScript("""
+            const next = await window.webkit.messageHandlers.remiIdentity.postMessage({op:'beginPushPairing',publicKey,revision});
+            await window.webkit.messageHandlers.remiIdentity.postMessage({op:'cancelPushPairing',attempt:next.attempt});
+            try { await window.webkit.messageHandlers.remiIdentity.postMessage({...window.completedRequest,attempt:next.attempt}); return true; }
+            catch { return false; }
+            """, arguments: ["publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision], in: nil, contentWorld: .page)
+        XCTAssertEqual(cancelled as? Bool, false, "Cancelled native attempt cannot install later READY trust")
+        let pending = try await web.callAsyncJavaScript("""
+            const next = await window.webkit.messageHandlers.remiIdentity.postMessage({op:'beginPushPairing',publicKey,revision});
+            window.completedRequest.attempt = next.attempt; return true;
+            """, arguments: ["publicKey": identity.publicKeyRaw.base64EncodedString(), "revision": identity.revision], in: nil, contentWorld: .page)
+        XCTAssertEqual(pending as? Bool, true)
+        _ = try ClientIdentityStore.requireAppUnlock(authority: authority, accessGroup: nil, revision: identity.revision,
+            publicKey: identity.publicKeyRaw, service: service, account: account)
+        let stale = try await web.callAsyncJavaScript("""
+            try { await window.webkit.messageHandlers.remiIdentity.postMessage(window.completedRequest); return true; }
+            catch { return false; }
+            """, arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(stale as? Bool, false, "A private identity policy revision must invalidate the captured native pairing attempt")
+        XCTAssertNil(try authority.machineTrust(rid: rid), "Stale READY cannot restore trust after identity mutation")
     }
 
     @MainActor
