@@ -38,6 +38,8 @@ export interface SecurePushServiceOptions {
 export class SecurePushService {
   private readonly options: SecurePushServiceOptions;
   private readonly deliveries = new WeakMap<SecurePushContext, Promise<DeliveryOutcome>>();
+  /** Sends not yet settled, per runtime, so a teardown can wait for its dismissals. */
+  private readonly inflight = new Map<SecurePushRuntime, Set<Promise<unknown>>>();
   constructor(options: SecurePushServiceOptions) {
     this.options = Object.freeze({ ...options });
   }
@@ -62,7 +64,36 @@ export class SecurePushService {
         wantsPush({ pushPrefs: sanitizePushPreferences(snapshot.pushPrefs) }, kind),
       );
   }
+  /**
+   * Wait, for at most `maxMs`, for the sends of `runtime` that are still in flight (#1200, B3).
+   * A teardown retires the runtime, lets the session dispose emit its dismissals, drains here and
+   * only then finishes the runtime. Never rejects.
+   */
+  async drain(runtime: SecurePushRuntime, maxMs: number): Promise<void> {
+    const pending = this.inflight.get(runtime);
+    if (!pending || pending.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...pending]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, maxMs);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
+  }
   private send(runtime: SecurePushRuntime, event: SecurePushEvent): Promise<DeliveryOutcome> {
+    const task = this.fanOut(runtime, event);
+    const set = this.inflight.get(runtime) ?? new Set<Promise<unknown>>();
+    this.inflight.set(runtime, set);
+    set.add(task);
+    void task.finally(() => {
+      set.delete(task);
+      if (set.size === 0 && this.inflight.get(runtime) === set) this.inflight.delete(runtime);
+    });
+    return task;
+  }
+  private fanOut(runtime: SecurePushRuntime, event: SecurePushEvent): Promise<DeliveryOutcome> {
     try {
       const recipients = this.recipients(event.kind);
       if (recipients.length === 0) return Promise.resolve('no_channel');
@@ -96,6 +127,13 @@ export class SecurePushService {
     }
   }
   private async deliver(context: SecurePushContext): Promise<DeliveryOutcome> {
+    const outcome = await this.deliverOnce(context);
+    // A dismissal that did not go out may be sent again by the next dismissal event (B3).
+    if (context.payload.type === 'dismiss' && outcome !== 'pushed')
+      this.options.contexts.allowDismissRetry(context);
+    return outcome;
+  }
+  private async deliverOnce(context: SecurePushContext): Promise<DeliveryOutcome> {
     try {
       const { contexts, transport } = this.options;
       const bound: { digest: string | undefined } = { digest: undefined };

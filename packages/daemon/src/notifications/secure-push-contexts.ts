@@ -12,6 +12,8 @@ type Entry = {
   questionMeaning: string | undefined;
   retainUntil: number;
   dismissed: boolean;
+  /** A dismissal that did not go out: the next dismissal event sends a fresh one (B3). */
+  retry?: boolean;
   digest?: string;
 };
 /**
@@ -128,6 +130,8 @@ const slotOf = (context: SecurePushContext): string =>
   `${context.logicalId}\0${context.occurrence}`;
 export class SecurePushContexts {
   private readonly runtimes = new Map<UUID, SecurePushRuntime>();
+  /** Runtimes being torn down: only dismissals may still be captured or stay current (B3). */
+  private readonly closing = new Set<SecurePushRuntime>();
   private readonly entries = new Map<string, Entry>();
   constructor(
     private readonly deps: SecurePushContextDeps,
@@ -152,7 +156,27 @@ export class SecurePushContexts {
     this.runtimes.set(sessionId, runtime);
     return runtime;
   }
+  /**
+   * Begin tearing a runtime down (#1200, B3): nothing new and nothing actionable can be sent from
+   * it any more (every context but a dismissal stops being current, every capture but a dismissal
+   * is refused), while the dismissals of cards it already pushed still can be. `finish` ends it,
+   * after those dismissals are out. Closing a session cancels its held prompts, and each of those
+   * dismisses its card; finishing first dropped them all and left a pushed card with action
+   * buttons on the lock screen for up to the hold deadline.
+   */
+  retire(runtime: SecurePushRuntime): void {
+    if (this.runtimes.get(runtime.sessionId) === runtime) this.closing.add(runtime);
+  }
+  /** The service reports a dismissal that did not go out; the next dismissal event retries it. */
+  allowDismissRetry(context: SecurePushContext): void {
+    if (context.payload.type !== 'dismiss') return;
+    const entry = this.entries.get(
+      this.key(context.runtime, context.logicalId, context.occurrence, context.snapshot.publicKey),
+    );
+    if (entry?.context === context) entry.retry = true;
+  }
   finish(runtime: SecurePushRuntime): void {
+    this.closing.delete(runtime);
     if (this.runtimes.get(runtime.sessionId) === runtime) this.runtimes.delete(runtime.sessionId);
     for (const [key, entry] of this.entries) {
       if (entry.context.runtime === runtime) this.entries.delete(key);
@@ -174,6 +198,7 @@ export class SecurePushContexts {
   ): CaptureResult {
     try {
       if (this.runtimes.get(runtime.sessionId) !== runtime) return refuse('stale');
+      if (this.closing.has(runtime) && event.kind !== 'dismiss') return refuse('stale');
       if (
         new TextEncoder().encode(event.logicalId).length > 256 ||
         !event.logicalId ||
@@ -193,7 +218,10 @@ export class SecurePushContexts {
       const previous = this.entries.get(key);
       if (previous?.dismissed) {
         if (event.kind !== 'dismiss') return refuse('dismissed');
-        return this.isCurrent(previous.context) ? { context: previous.context } : refuse('stale');
+        // A dismissal that went out is absorbing; one that did not (uncertain, refused, a store
+        // error) is sent again with a fresh nonce, since a repeated dismissal is harmless (B3).
+        if (!previous.retry)
+          return this.isCurrent(previous.context) ? { context: previous.context } : refuse('stale');
       }
       if (event.kind === 'dismiss' && !previous) return refuse('no_prior_push');
       const now = seconds();
@@ -288,7 +316,7 @@ export class SecurePushContexts {
         if (this.entries.size >= this.capacity) this.evictDead(now);
         if (this.entries.size >= this.capacity) return refuse('capacity');
       }
-      if (!previous || !this.isLive(previous, now)) {
+      if (event.kind !== 'dismiss' && (!previous || !this.isLive(previous, now))) {
         const liveSlots = new Set<string>();
         for (const e of this.entries.values())
           if (e.context.runtime === runtime && this.isLive(e, now))
@@ -337,7 +365,8 @@ export class SecurePushContexts {
     try {
       if (
         this.runtimes.get(context.runtime.sessionId) !== context.runtime ||
-        context.content.expiresAt <= seconds()
+        context.content.expiresAt <= seconds() ||
+        (this.closing.has(context.runtime) && context.payload.type !== 'dismiss')
       )
         return false;
       const entry = this.entries.get(

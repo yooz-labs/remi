@@ -1113,6 +1113,30 @@ function finishSecurePushRuntime(sessionId: UUID, expected?: SecurePushRuntime):
   securePushContexts.finish(runtime);
   securePushRuntimes.delete(sessionId);
 }
+/** How long a teardown waits for the dismissals its session's disposal emitted (#1200, B3). */
+const SECURE_TEARDOWN_WAIT_MS = 3000;
+/**
+ * First step of every teardown: nothing new and nothing actionable can be pushed from the
+ * runtime, but the dismissals of cards it already pushed still can (B3). The session's disposal
+ * emits those dismissals; `closeSecurePushRuntime` follows it.
+ */
+function retireSecurePushRuntime(sessionId: UUID): void {
+  const runtime = securePushRuntimes.get(sessionId);
+  if (runtime) securePushContexts.retire(runtime);
+}
+/** Last step of a teardown, after the disposal: wait (bounded) for its dismissals, then finish. */
+async function closeSecurePushRuntime(
+  sessionId: UUID,
+  expected?: SecurePushRuntime,
+): Promise<void> {
+  const runtime = securePushRuntimes.get(sessionId);
+  if (!runtime || (expected && runtime !== expected)) return;
+  try {
+    await securePushService?.drain(runtime, SECURE_TEARDOWN_WAIT_MS);
+  } finally {
+    finishSecurePushRuntime(sessionId, runtime);
+  }
+}
 function legacyPushPolicy(): LegacyPushPolicy {
   return {
     legacyEnabled: remiConfig.notifications.legacy_push_enabled,
@@ -1189,7 +1213,7 @@ const sessionRegistry = new SessionRegistry(
       log(`Session created: ${sessionId}`);
     },
     onSessionClosed: (sessionId, reason) => {
-      finishSecurePushRuntime(sessionId);
+      retireSecurePushRuntime(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1200,6 +1224,9 @@ const sessionRegistry = new SessionRegistry(
       // The session's dispose() also drops its #914 admits filter, so a closed
       // session's binder can never keep admitting turns on its behalf.
       harnessSessions.get(sessionId)?.dispose();
+      // The disposal cancelled the session's held prompts and dismissed their cards through the
+      // runtime retired above; finish it once those dismissals are out (#1200, B3).
+      void closeSecurePushRuntime(sessionId);
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
       // QuestionPresenceTracker (#920): a stale entry would make
@@ -1723,7 +1750,7 @@ async function createNewSession(
 
     return ptySession;
   } catch (error) {
-    finishSecurePushRuntime(sessionId, runtime);
+    retireSecurePushRuntime(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
     } catch {
@@ -1732,6 +1759,7 @@ async function createNewSession(
       harnessSessions.delete(sessionId);
       sessionNotifiers.delete(sessionId);
     }
+    void closeSecurePushRuntime(sessionId, runtime);
     throw error;
   }
 }
@@ -2445,7 +2473,7 @@ let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
-  for (const sessionId of securePushRuntimes.keys()) finishSecurePushRuntime(sessionId);
+  for (const sessionId of securePushRuntimes.keys()) retireSecurePushRuntime(sessionId);
 
   cancelOrphanTimeout();
 
@@ -2503,6 +2531,8 @@ async function cleanup(): Promise<void> {
   for (const session of harnessSessions.values()) {
     session.dispose();
   }
+  // The disposals above dismissed their cards through the retired runtimes (#1200, B3).
+  await Promise.all([...securePushRuntimes.keys()].map((id) => closeSecurePushRuntime(id)));
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
