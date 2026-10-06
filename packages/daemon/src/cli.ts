@@ -116,7 +116,7 @@ import {
   createSessionUpdate,
 } from '@remi/shared';
 import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
-import { isEncrypted, unlockIdentity } from '@remi/shared';
+import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -221,8 +221,16 @@ import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decisi
 import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
+import { type LegacyPushPolicy, legacyPushFields } from './notifications/legacy-push-policy.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
+import {
+  SecurePushContexts,
+  type SecurePushRuntime,
+} from './notifications/secure-push-contexts.ts';
+import { SecurePushService, type SecureSessionPush } from './notifications/secure-push-service.ts';
+import { SecurePushStore } from './notifications/secure-push-store.ts';
+import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
@@ -1077,6 +1085,31 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
+// Created before the message API or harness can emit; removed before teardown (#1200).
+const securePushContexts = new SecurePushContexts({
+  questionFor: (sessionId, questionId) => sessionRegistry.getQuestion(sessionId, questionId),
+  validityFor: (sessionId, questionId) =>
+    harnessSessions.get(sessionId)?.decisions.answerValidity(questionId) ?? { kind: 'closed' },
+});
+const securePushRuntimes = new Map<UUID, SecurePushRuntime>();
+let securePushService: SecurePushService | undefined;
+function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
+  const runtime = securePushRuntimes.get(sessionId);
+  return runtime ? securePushService?.forRuntime(runtime) : undefined;
+}
+function finishSecurePushRuntime(sessionId: UUID, expected?: SecurePushRuntime): void {
+  const runtime = securePushRuntimes.get(sessionId);
+  if (!runtime || (expected && runtime !== expected)) return;
+  securePushContexts.finish(runtime);
+  securePushRuntimes.delete(sessionId);
+}
+function legacyPushPolicy(): LegacyPushPolicy {
+  return {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    authorityDirectory: REMI_DIR,
+    ...(cliPushSecret === undefined ? {} : { pushSecret: cliPushSecret }),
+  };
+}
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when cards are stuck. Each gate resolves and dismisses every
@@ -1138,14 +1171,15 @@ const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
-    // A Codex card's text is a command (#1178): the registry's log lines leave it out.
-    redactQuestionLogs: harnessId === 'codex',
+    // Every harness may carry personal command or question text (#1200).
+    redactQuestionLogs: true,
   },
   {
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
     onSessionClosed: (sessionId, reason) => {
+      finishSecurePushRuntime(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1273,8 +1307,9 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   deviceTokens,
   pushConfig: () => ({
     signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
-    ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+    ...legacyPushPolicy(),
   }),
+  securePush: securePushForSession,
   currentPort: () => PORT,
 });
 
@@ -1292,11 +1327,11 @@ const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_al
 function deliverSubagentAlert(alert: SubagentAlert): void {
   const title = alertTitle(alert);
   const body = alertBody(alert);
-  // Log unconditionally: the push can fail or be throttled downstream, and the
-  // local record is what makes a silent background decision auditable.
-  log(`[SubagentAlert] ${title} - ${body}`);
-
-  if (deviceTokens.size === 0) return;
+  log('[SubagentAlert] push requested');
+  const sessionId = getPrimarySessionId();
+  const secure = sessionId ? securePushForSession(sessionId) : undefined;
+  if (secure)
+    void secure.send({ kind: 'subagent_alert', logicalId: 'subagent-alert', title, body });
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   for (const dt of deviceTokens.values()) {
     // Deliberately no `category` / `options` / `questionId`: this is
@@ -1304,10 +1339,10 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
     void sendPushTrigger(signalingUrl, dt.token, {
       title,
       body,
-      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      ...legacyPushFields(legacyPushPolicy()),
       kind: 'subagent_alert',
-    }).catch((err) => {
-      logError('[SubagentAlert] push failed:', err);
+    }).catch(() => {
+      logError('[SubagentAlert] push failed');
     });
   }
 }
@@ -1318,23 +1353,26 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
 function onHarnessDenied(input: PermissionDeniedHookInput): void {
   const primarySessionId = getPrimarySessionId();
   const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
-  log(`[HarnessDenied] auto mode blocked ${input.tool_name}: ${input.reason ?? '(no reason)'}`);
+  log('[HarnessDenied] notice requested');
   // Pick up a device removed or muted by a sibling daemon since our last
   // read (#690), as the question push does.
   try {
     deviceTokenStore.refreshFromDisk();
-  } catch (err) {
-    logError('[HarnessDenied] device token refresh failed:', err);
+  } catch {
+    logError('[HarnessDenied] device token refresh failed');
   }
   pushHarnessDenied(
     {
       deviceTokens: deviceTokens.values(),
       sessionId: primarySessionId ?? 'unbound',
       signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
-      pushSecret: cliPushSecret,
+      ...legacyPushPolicy(),
+      ...(primarySessionId && securePushForSession(primarySessionId)
+        ? { securePush: securePushForSession(primarySessionId) as SecureSessionPush }
+        : {}),
       sessionName: session?.name || 'Agent',
       send: sendPushTrigger,
-      onError: (err) => logError('[HarnessDenied] push failed:', err),
+      onError: () => logError('[HarnessDenied] push failed'),
     },
     input,
   );
@@ -1370,9 +1408,11 @@ const turnEvents = createTurnEventSink({
   notifiers: sessionNotifiers,
   signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,
   pushSecret: () => cliPushSecret,
+  legacyPolicy: legacyPushPolicy,
+  securePush: securePushForSession,
   send: sendPushTrigger,
   log,
-  onError: (err) => logError('[TurnComplete] push failed:', err),
+  onError: () => logError('[TurnComplete] push failed'),
 });
 
 /**
@@ -1543,128 +1583,140 @@ async function createNewSession(
   passThrough = false,
   reservedRows = 0,
 ): Promise<PTYSession> {
-  const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
-    {
-      sessionRegistry,
-      transcriptWatchers,
-      deviceTokens,
-      // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
-      // daemon stops retrying it; the store removes + persists it.
-      pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
-      // #690: pick up a sibling daemon's removal/registration before deciding
-      // whether to push.
-      refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
-      pushConfig: () => ({
-        signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
-        ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-      }),
-      updateRemiStatus: (patch) => updateRemiStatus(patch),
-      maxBulletLength: MAX_BULLET_LENGTH,
-      sendMessage,
-      // A Codex card's text is a command (#1178): the log line for it leaves the text out.
-      redactQuestionLogs: harnessId === 'codex',
-      // Lazy disk-backed read so the identity seen on each question emission is
-      // the current value: it survives /resume rotation via the hook bridge's
-      // bindingStore.update write, and a Codex session's thread id once learned.
-      // Wrapped in try/catch so a transient sessions.json I/O hiccup cannot kill
-      // question emission (the dep contract is non-throwing).
-      getIdentity: () => {
-        try {
-          return bindingStore.getIdentity(sessionId);
-        } catch (err) {
-          logError(`[Binding] getIdentity lookup failed: ${errorToString(err)}`);
-          return null;
-        }
+  const runtime = securePushContexts.begin(sessionId);
+  securePushRuntimes.set(sessionId, runtime);
+  try {
+    const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
+      {
+        sessionRegistry,
+        transcriptWatchers,
+        deviceTokens,
+        // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
+        // daemon stops retrying it; the store removes + persists it.
+        pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
+        // #690: pick up a sibling daemon's removal/registration before deciding
+        // whether to push.
+        refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
+        pushConfig: () => ({
+          signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+          ...legacyPushPolicy(),
+        }),
+        ...(securePushForSession(sessionId)
+          ? { securePush: securePushForSession(sessionId) as SecureSessionPush }
+          : {}),
+        updateRemiStatus: (patch) => updateRemiStatus(patch),
+        maxBulletLength: MAX_BULLET_LENGTH,
+        sendMessage,
+        redactQuestionLogs: true,
+        // Lazy disk-backed read so the identity seen on each question emission is
+        // the current value: it survives /resume rotation via the hook bridge's
+        // bindingStore.update write, and a Codex session's thread id once learned.
+        // Wrapped in try/catch so a transient sessions.json I/O hiccup cannot kill
+        // question emission (the dep contract is non-throwing).
+        getIdentity: () => {
+          try {
+            return bindingStore.getIdentity(sessionId);
+          } catch (err) {
+            logError(`[Binding] getIdentity lookup failed: ${errorToString(err)}`);
+            return null;
+          }
+        },
       },
-    },
-    sessionId,
-  );
-  // Register this session's APNS dispatcher before the harness builds
-  // anything that can fire a decision: the question-resolved path and the
-  // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
-  // dismiss or push through the same device-token fan-out (#585, P7, #1165 E).
-  // It is neutral work (a per-session dispatcher, nothing Claude's), so the
-  // shell does it once for every harness.
-  sessionNotifiers.set(sessionId, notifications);
-  // Everything Claude-specific (the question tracker, the PTY output parser,
-  // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
-  // built behind the harness seam, in `harness/claude-session.ts`.
-  const session = harness.createSession({
-    sessionId,
-    workingDirectory,
-    extraArgs,
-    passThrough,
-    reservedRows,
-    messageApi,
-    sendAndRecord,
-    sendMessage,
-  });
-  harnessSessions.set(sessionId, session);
-  const ptySession = session.pty;
+      sessionId,
+    );
+    // Register this session's APNS dispatcher before the harness builds
+    // anything that can fire a decision: the question-resolved path and the
+    // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
+    // dismiss or push through the same device-token fan-out (#585, P7, #1165 E).
+    // It is neutral work (a per-session dispatcher, nothing Claude's), so the
+    // shell does it once for every harness.
+    sessionNotifiers.set(sessionId, notifications);
+    // Everything Claude-specific (the question tracker, the PTY output parser,
+    // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
+    // built behind the harness seam, in `harness/claude-session.ts`.
+    const session = harness.createSession({
+      sessionId,
+      workingDirectory,
+      extraArgs,
+      passThrough,
+      reservedRows,
+      messageApi,
+      sendAndRecord,
+      sendMessage,
+    });
+    harnessSessions.set(sessionId, session);
+    const ptySession = session.pty;
 
-  const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
-  // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
-  // default so a session created from the app survives until Claude exits or it
-  // is explicitly stopped (#637). Wrapper-mode sessions are locallyOwned and
-  // already never time out, so the flag only applies to daemon-mode sessions.
-  const persistent = !passThrough && remiConfig.daemon.persist_sessions;
-  sessionRegistry.registerSession(
-    sessionId,
-    workingDirectory,
-    ptySession,
-    messageApi,
-    locallyOwned,
-    persistent,
-  );
+    const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+    // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
+    // default so a session created from the app survives until Claude exits or it
+    // is explicitly stopped (#637). Wrapper-mode sessions are locallyOwned and
+    // already never time out, so the flag only applies to daemon-mode sessions.
+    const persistent = !passThrough && remiConfig.daemon.persist_sessions;
+    sessionRegistry.registerSession(
+      sessionId,
+      workingDirectory,
+      ptySession,
+      messageApi,
+      locallyOwned,
+      persistent,
+    );
 
-  // #576: give clients a defined pill state from the first hello_ack. Without
-  // this, no status reaches the client until the first hook fires (Claude can
-  // take tens of seconds to its first PreToolUse), so the session shows no
-  // signal. Recorded via sendAndRecord so a client that connects later replays
-  // it. Wrapped so a send hiccup can never abort session creation.
-  try {
-    sendAndRecord(createSessionUpdate(sessionId, 'starting'));
-  } catch (err) {
-    logError(`[Session ${sessionId}] Failed to emit starting status:`, err);
-  }
-
-  // If the spawn or any post-spawn wiring throws, mark the pre-saved
-  // store entry as exited so sibling daemons reading the store don't
-  // see a phantom "live" session with our claudeSessionId reserved.
-  // Without this, the failed-spawn entry stays exitedAt=null and the
-  // pid-aliveness self-heal in SessionStore only fires after our
-  // daemon process itself exits.
-  try {
-    await session.start();
-  } catch (err) {
+    // #576: give clients a defined pill state from the first hello_ack. Without
+    // this, no status reaches the client until the first hook fires (Claude can
+    // take tens of seconds to its first PreToolUse), so the session shows no
+    // signal. Recorded via sendAndRecord so a client that connects later replays
+    // it. Wrapped so a send hiccup can never abort session creation.
     try {
-      sessionStore.markExited(sessionId, null);
-    } catch (persistErr) {
-      logError(`[Session ${sessionId}] Failed to persist failed spawn:`, persistErr);
+      sendAndRecord(createSessionUpdate(sessionId, 'starting'));
+    } catch (err) {
+      logError(`[Session ${sessionId}] Failed to emit starting status:`, err);
     }
-    throw err;
+
+    // If the spawn or any post-spawn wiring throws, mark the pre-saved
+    // store entry as exited so sibling daemons reading the store don't
+    // see a phantom "live" session with our claudeSessionId reserved.
+    // Without this, the failed-spawn entry stays exitedAt=null and the
+    // pid-aliveness self-heal in SessionStore only fires after our
+    // daemon process itself exits.
+    try {
+      await session.start();
+    } catch (err) {
+      try {
+        sessionStore.markExited(sessionId, null);
+      } catch (persistErr) {
+        logError(`[Session ${sessionId}] Failed to persist failed spawn:`, persistErr);
+      }
+      throw err;
+    }
+
+    // Record the spawned Claude child pid in the live-sessions entry now that the
+    // PTY is up. Co-located daemons use it to tell a live sibling from a zombie
+    // (daemon process alive, its Claude long dead) so a leftover daemon can no
+    // longer permanently wedge our rotation handling (#451).
+    const claudeChildPid = ptySession.childPid;
+    if (claudeChildPid !== null) {
+      liveSessionsRegistry.setClaudeChildPid(sessionId, claudeChildPid);
+    } else {
+      // Unreachable after a successful start() (the child pid is assigned
+      // synchronously by the spawn). Log rather than silently skip: without the
+      // pid the entry stays "unknown" and peers keep treating this live session
+      // as a zombie's sibling, re-opening the wedge this fix closes (#451).
+      logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
+    }
+
+    // The TranscriptBinder's start() (inside setupHookBridge) already armed BOTH
+    // the fallback poll and the #452 rotation dir-watch; calling
+    // startTranscriptFallback again here would double-arm the same fallback timer.
+
+    return ptySession;
+  } catch (error) {
+    finishSecurePushRuntime(sessionId, runtime);
+    harnessSessions.get(sessionId)?.dispose();
+    harnessSessions.delete(sessionId);
+    sessionNotifiers.delete(sessionId);
+    throw error;
   }
-
-  // Record the spawned Claude child pid in the live-sessions entry now that the
-  // PTY is up. Co-located daemons use it to tell a live sibling from a zombie
-  // (daemon process alive, its Claude long dead) so a leftover daemon can no
-  // longer permanently wedge our rotation handling (#451).
-  const claudeChildPid = ptySession.childPid;
-  if (claudeChildPid !== null) {
-    liveSessionsRegistry.setClaudeChildPid(sessionId, claudeChildPid);
-  } else {
-    // Unreachable after a successful start() (the child pid is assigned
-    // synchronously by the spawn). Log rather than silently skip: without the
-    // pid the entry stays "unknown" and peers keep treating this live session
-    // as a zombie's sibling, re-opening the wedge this fix closes (#451).
-    logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
-  }
-
-  // The TranscriptBinder's start() (inside setupHookBridge) already armed BOTH
-  // the fallback poll and the #452 rotation dir-watch; calling
-  // startTranscriptFallback again here would double-arm the same fallback timer.
-
-  return ptySession;
 }
 
 // ---------------------------------------------------------------------------
@@ -2062,6 +2114,8 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
     if (cliAuth === true) args.push('--auth');
     if (cliAuth === false) args.push('--no-auth');
     if (cliNoRelay) args.push('--no-relay');
+    else if (parsedArgs.relay) args.push('--relay');
+    if (cliSignalingUrl !== undefined) args.push('--signaling-url', cliSignalingUrl);
     if (cliNoMdns) args.push('--no-mdns');
     // Always forwarded, never "only when non-default" (#880). This used to
     // compare against a hardcoded '0.0.0.0', which silently stopped meaning
@@ -2330,6 +2384,29 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 const relayWanted = !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay);
 if (serveMode && relayWanted && !authenticator)
   console.error('Relay startup refused: enable authentication before using --relay.');
+if (relayWanted && relayIdentity) {
+  try {
+    const endpoint = new URL(cliSignalingUrl ?? remiConfig.network.signaling_url);
+    if (endpoint.username || endpoint.password || !['https:', 'wss:'].includes(endpoint.protocol))
+      throw new Error('SECURE_PUSH_AUDIENCE');
+    endpoint.protocol = 'https:';
+    const signer = await relayV2.signerFromKey(
+      relayIdentity.privateKey,
+      new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
+    );
+    const store = new SecurePushStore(REMI_DIR, relayTrust);
+    securePushService = new SecurePushService({
+      store,
+      transport: new SecurePushTransport({ store, signer, audience: endpoint.origin }),
+      contexts: securePushContexts,
+      machinePublicKey: relayV2.b64u(signer.publicKey),
+      rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+      log: (outcome) => log(`[SecurePush] ${outcome}`),
+    });
+  } catch {
+    logError('[SecurePush] initialization refused');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Cleanup helper
@@ -2338,6 +2415,7 @@ let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
+  for (const sessionId of securePushRuntimes.keys()) finishSecurePushRuntime(sessionId);
 
   cancelOrphanTimeout();
 

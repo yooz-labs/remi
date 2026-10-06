@@ -13,7 +13,7 @@
  * reset whenever the agent leaves the 'waiting' state.
  */
 
-import type { Question, QuestionOption, UUID } from '@remi/shared';
+import { type Question, type QuestionOption, type UUID, generateId } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
@@ -329,8 +329,8 @@ const sleep = (ms: number): Promise<void> =>
  * Whether a failed push is worth retrying (epic #603 Phase 1). The signaling
  * Worker wraps a permanent APNS token rejection (BadDeviceToken / Unregistered /
  * DeviceTokenNotForTopic) as an HTTP 502, so a naive "retry all 5xx" would spin
- * on a dead token. Treat those reasons as permanent (no retry -> fail open
- * fast); retry only a genuine rate-limit (429) or a transient 5xx with no
+ * on a dead token. Treat those historical reasons as permanent (no retry);
+ * retry only a genuine rate-limit (429) or a transient 5xx with no
  * permanent reason.
  */
 export function isRetriablePushError(err: unknown): boolean {
@@ -411,6 +411,8 @@ export class NotificationDispatcher {
    *  In memory only: after a daemon restart a stale notice stays until the
    *  user clears it, which is the safe direction. */
   private turnFailedOutstanding = false;
+  /** A new failure after dismissal must not reopen its absorbing context (#1200). */
+  private turnFailedSecureId: string | undefined;
   /** Resolved once at construction: the real sendPushTrigger unless a test
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
@@ -484,17 +486,13 @@ export class NotificationDispatcher {
     // user is still reachable in-app (held case); otherwise there is no channel.
     if (wanting.length === 0 && !secure?.hasRecipients('question')) {
       if (!hasActiveClient) {
-        log(
-          deviceTokens.size === 0
-            ? `Push skipped: no device tokens for session ${questionSessionId}`
-            : `Push skipped: all ${deviceTokens.size} device token(s) muted question pushes for session ${questionSessionId}`,
-        );
+        log('[QuestionPush] no recipient');
       }
       return Promise.resolve(hasActiveClient ? 'in_app' : 'no_channel');
     }
 
     if (!held && !this.pushDedup.shouldPush(question)) {
-      log(`Push suppressed by dedup for session ${questionSessionId}`);
+      log('[QuestionPush] duplicate suppressed');
       // An identical push already went out; the earlier one is the delivery.
       return Promise.resolve('deduped');
     }
@@ -537,8 +535,8 @@ export class NotificationDispatcher {
 
     const perToken = wanting.map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, {
-        sent: `Push notification sent for session ${pushSessionId}`,
-        failed: `Push notification failed for session ${pushSessionId}`,
+        sent: '[QuestionPush] legacy accepted',
+        failed: '[QuestionPush] legacy failed',
       }),
     );
     if (secure)
@@ -556,12 +554,11 @@ export class NotificationDispatcher {
    * Push to one device token, retrying a TRANSIENT failure (429 / transient
    * 5xx) with short backoff (epic #603 Phase 1). A permanent token rejection
    * (BadDeviceToken etc., which the Worker wraps as 502) is NOT retried — it
-   * fails fast so the gate can fail the hold open. Resolves true on a 2xx.
+   * fails fast. Delivery never resolves a held hook (#1200).
+   * A 2xx means acceptance, not handset delivery.
    *
    * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
-   * `logCtx` carries the caller's exact success/failure messages, so message
-   * wording is owned by each caller (this helper never invents log formats —
-   * changing a caller's strings is a deliberate, greppable act at the call site).
+   * `logCtx` carries fixed operation/result messages, never personal selectors.
    */
   private async pushOnceWithRetry(
     signalingUrl: string,
@@ -675,8 +672,8 @@ export class NotificationDispatcher {
           kind: 'question' as const,
         },
         {
-          sent: `Push terminal notice (${reason}) sent for question ${question.id}`,
-          failed: `Push terminal notice (${reason}) failed for question ${question.id}`,
+          sent: '[TerminalNoticePush] legacy accepted',
+          failed: '[TerminalNoticePush] legacy failed',
         },
       );
     }
@@ -715,13 +712,10 @@ export class NotificationDispatcher {
     const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
     const secure = this.deps.securePush;
     if (wanting.length === 0 && !secure?.hasRecipients('turn_failed')) {
-      log(
-        deviceTokens.size === 0
-          ? `Turn-failed push skipped: no device tokens for session ${this.sessionId}`
-          : `Turn-failed push skipped: all ${deviceTokens.size} device token(s) muted turn_failed for session ${this.sessionId}`,
-      );
+      log('[TurnFailedPush] no recipient');
       return Promise.resolve('no_channel');
     }
+    if (!this.turnFailedOutstanding) this.turnFailedSecureId = `turn-failed-${generateId()}`;
     this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
     const { title, body } = buildTurnFailedText(sessionName, input, agentName);
@@ -740,8 +734,8 @@ export class NotificationDispatcher {
           kind: 'turn_failed' as const,
         },
         {
-          sent: `Turn-failed push sent for session ${pushSessionId}`,
-          failed: `Turn-failed push failed for session ${pushSessionId}`,
+          sent: '[TurnFailedPush] legacy accepted',
+          failed: '[TurnFailedPush] legacy failed',
         },
       ),
     );
@@ -750,7 +744,7 @@ export class NotificationDispatcher {
         secure
           .send({
             kind: 'turn_failed',
-            logicalId: turnFailedCollapseId(this.sessionId),
+            logicalId: this.turnFailedSecureId as string,
             title,
             body,
           })
@@ -771,7 +765,12 @@ export class NotificationDispatcher {
   dismissTurnFailed(): void {
     if (!this.turnFailedOutstanding) return;
     this.turnFailedOutstanding = false;
-    this.dismiss(this.sessionId, turnFailedCollapseId(this.sessionId) as UUID);
+    this.dismiss(
+      this.sessionId,
+      turnFailedCollapseId(this.sessionId) as UUID,
+      this.turnFailedSecureId,
+    );
+    this.turnFailedSecureId = undefined;
   }
 
   /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
@@ -798,10 +797,10 @@ export class NotificationDispatcher {
    * `questionSessionId` is the primary id the client knows (from hello_ack), kept
    * symmetric with `maybePush` so the dismissal carries the same routing id.
    */
-  dismiss(questionSessionId: UUID, questionId: UUID): void {
+  dismiss(questionSessionId: UUID, questionId: UUID, secureLogicalId: string = questionId): void {
     const { deviceTokens, pushConfig } = this.deps;
     if (this.deps.securePush)
-      void this.deps.securePush.send({ kind: 'dismiss', logicalId: questionId });
+      void this.deps.securePush.send({ kind: 'dismiss', logicalId: secureLogicalId });
     if (deviceTokens.size === 0) return;
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
@@ -823,8 +822,8 @@ export class NotificationDispatcher {
           kind: 'dismiss' as const,
         },
         {
-          sent: `Push dismissal sent for question ${questionId}`,
-          failed: `Push dismissal failed for question ${questionId}`,
+          sent: '[DismissPush] legacy accepted',
+          failed: '[DismissPush] legacy failed',
         },
       );
     }

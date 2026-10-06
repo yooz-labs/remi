@@ -180,9 +180,7 @@ export class DeviceTokenStore {
       if (existingToken !== token && entry.connectionId === connectionId) {
         this.tokens.delete(existingToken);
         this.tombstones.set(existingToken, monotonicNow());
-        log(
-          `[DeviceTokens] Pruned stale token from ${connectionId} (rotated): ${existingToken.slice(0, 20)}...`,
-        );
+        log('[DeviceTokens] rotated token removed');
       }
     }
     // Last registration wins on `pushPrefs` (#968), including when it widens
@@ -206,11 +204,11 @@ export class DeviceTokenStore {
    * token locally) so the removal reaches every daemon sharing the file on
    * their next merge/refresh. Returns true iff the token was present here.
    */
-  prune(token: string, reason: string): boolean {
+  prune(token: string, _reason: string): boolean {
     const had = this.tokens.delete(token);
     this.tombstones.set(token, monotonicNow());
     if (had) {
-      log(`[DeviceTokens] Pruned dead token (${reason}): ${token.slice(0, 20)}...`);
+      log('[DeviceTokens] rejected token removed');
     }
     this.persist();
     return had;
@@ -228,7 +226,7 @@ export class DeviceTokenStore {
     const had = this.tokens.delete(token);
     this.tombstones.set(token, monotonicNow());
     if (had) {
-      log(`[DeviceTokens] Unregistered by device: ${token.slice(0, 20)}...`);
+      log('[DeviceTokens] device token removed');
     }
     this.persist();
     return had;
@@ -331,10 +329,10 @@ export class DeviceTokenStore {
         }),
       );
       fs.renameSync(tmp, this.filePath);
-    } catch (err) {
+    } catch {
       // Persistence is best-effort: the in-memory map is still authoritative for
       // this process, so a write failure must not break push delivery.
-      logError(`[DeviceTokens] Failed to persist registry: ${err}`);
+      logError('[DeviceTokens] registry persistence failed');
     }
   }
 }

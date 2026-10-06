@@ -193,7 +193,7 @@ describe('createMessageApiForSession', () => {
         sessionId,
       );
       messageApi.handleQuestion(q, { held: true });
-      messageApi.handleStatusChange('working', 'sk-private-status-context');
+      messageApi.handleStatusChange('executing', 'sk-private-status-context');
     }
     const detected = lines.filter((l) => l.includes('Question detected'));
     expect(detected).toHaveLength(3);
