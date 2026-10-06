@@ -319,6 +319,44 @@ describe('ForeignSessionEscalator (#672)', () => {
       expect(opts.sessionId).toBe(OUR_SESSION_ID);
     });
 
+    test('a latched machine retires the plaintext send: no error-level failure (#1200)', async () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (message) => logs.push(message) });
+      fs.writeFileSync(
+        path.join(tmpDir, 'secure_push_activation.json'),
+        JSON.stringify({ version: 1, activated: true }),
+        { mode: 0o600 },
+      );
+      registerToken();
+      // The real sender: the latch refuses it before any request is made.
+      const escalator = new ForeignSessionEscalator({
+        ...deps({
+          pushConfig: () => ({
+            signalingUrl: 'https://example.test',
+            legacyEnabled: true,
+            pushSecret: 'owned-test-secret',
+            authorityDirectory: tmpDir,
+          }),
+        }),
+        pushFn: undefined,
+      });
+      escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
+      await Bun.sleep(100);
+      expect(logs.filter((line) => line.startsWith('[error]'))).toEqual([]);
+    });
+
+    test('a real legacy failure is still logged at error level', async () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (message) => logs.push(message) });
+      registerToken();
+      const escalator = new ForeignSessionEscalator(
+        deps({ pushFn: async () => Promise.reject(new Error('LEGACY_PUSH_REJECTED')) }),
+      );
+      escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
+      await flush();
+      expect(logs.filter((line) => line.startsWith('[error]'))).toHaveLength(1);
+    });
+
     test('no device tokens registered -> no push attempted, no throw', async () => {
       const escalator = new ForeignSessionEscalator(deps());
       expect(() => escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID)).not.toThrow();
