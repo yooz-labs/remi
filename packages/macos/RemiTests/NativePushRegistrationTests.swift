@@ -133,4 +133,105 @@ final class NativePushRegistrationTests: XCTestCase {
         catch {}
         XCTAssertNil(try keys.load())
     }
+    @MainActor private func pendingMutation(_ mutate: (NativePushTokenOwner, inout Bool) throws -> Void) async throws {
+        _ = try keys.loadOrCreate()
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        var current = true
+        var completions: [Bool: (NativeAPNsEnvironment.Match) -> Void] = [:]
+        let r = NativePushRegistration(state: state, keys: keys, tokens: tokens, environment: {
+            NativeAPNsEnvironment(query: { production, completion in completions[production] = completion; return {} })
+        })
+        let task = Task { () -> NativePushRegistration.Prepared? in
+            do { return try await r.prepare(rid: self.rid, authority: self.authority, stillCurrent: { current }) }
+            catch { return nil }
+        }
+        for _ in 0..<50 where completions.count != 2 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(completions.count, 2, "Actual preparation must reach both pending public OS queries")
+        try mutate(tokens, &current)
+        completions[true]?(.match); completions[false]?(.mismatch)
+        let result = await task.value
+        XCTAssertNil(result, "A changed native context during the real OS wait cannot publish registration metadata")
+    }
+    @MainActor func testOSTokenCallbackDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { tokens, _ in tokens.recordFromOS(Data([2])) }
+    }
+    @MainActor func testDocumentLossDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { _, current in current = false }
+    }
+    @MainActor func testForgottenTrustDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { _, _ in try self.state.forgetMachine(rid: self.rid) }
+    }
+    private func recoverSameAuthority() throws {
+        let trust = try XCTUnwrap(state.machineTrust(rid: rid))
+        let lease = try state.acquireIdentityMutation()
+        let generation = try lease.invalidateIdentityAuthority()
+        try lease.installIdentityAuthority(publicKey: authority.publicKey, revision: authority.revision,
+            requiresAppUnlock: authority.requiresAppUnlock, generation: generation)
+        lease.release()
+        try state.installMachineTrust(trust, generation: generation)
+    }
+    @MainActor func testSamePublicFreshGenerationDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { _, _ in try self.recoverSameAuthority() }
+    }
+    private func replaceRecipient() throws {
+        let key = P256.KeyAgreement.PrivateKey()
+        struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
+        let data = try JSONEncoder().encode(Record(version: 1, privateDER: key.derRepresentation,
+            publicKey: key.publicKey.x963Representation, keyVersion: 1))
+        XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary), errSecSuccess)
+    }
+    @MainActor func testActualRecipientRotationDuringEnvironmentAwaitRefuses() async throws {
+        try await pendingMutation { _, _ in try self.replaceRecipient() }
+    }
+    @MainActor func testRecipientRotationRefusesPreparedRegistration() async throws {
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let r = registration(tokens)
+        guard let p = await prepare(r) else { return }
+        try replaceRecipient()
+        XCTAssertThrowsError(try r.recheck(p, stillCurrent: { true }))
+    }
+    @MainActor func testAuthorityRecheckOccursAfterFinalActualKeychainRead() async throws {
+        _ = try keys.loadOrCreate()
+        var changeDuringRead = false
+        var operations = NativeKeychainOperations.system
+        operations.copyMatching = { request, result in
+            let status = SecItemCopyMatching(request, result)
+            if changeDuringRead {
+                changeDuringRead = false
+                do { try self.recoverSameAuthority() } catch { XCTFail("Owned authority recovery failed: \(error)") }
+            }
+            return status
+        }
+        let observed = NativePushKeyStore(service: service, account: "owned-push-p256", accessGroup: nil, operations: operations)
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        let r = NativePushRegistration(state: state, keys: observed, tokens: tokens, environment: {
+            NativeAPNsEnvironment(query: { production, complete in complete(production ? .match : .mismatch); return {} })
+        })
+        guard let p = await prepare(r) else { return }
+        changeDuringRead = true
+        XCTAssertThrowsError(try r.recheck(p, stillCurrent: { true }), "The same public authority recovered inside the actual final OS read has a new generation")
+        XCTAssertFalse(changeDuringRead)
+    }
+    @MainActor func testTwoMachinesOwnIndependentEnvironmentAttempts() async throws {
+        let machine = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let otherRid = Data(SHA256.hash(data: machine).prefix(16))
+        try state.installMachineTrust(.init(rid: otherRid, machinePublicKey: machine,
+            endpoint: "https://relay.example.invalid", authority: authority, relayUrl: "wss://relay.example.invalid"),
+            generation: state.authorityGeneration())
+        let tokens = NativePushTokenOwner(); tokens.recordFromOS(Data([1]))
+        var completions: [(Bool, (NativeAPNsEnvironment.Match) -> Void)] = []
+        let r = NativePushRegistration(state: state, keys: keys, tokens: tokens, environment: {
+            NativeAPNsEnvironment(query: { production, complete in completions.append((production, complete)); return {} })
+        })
+        let first = Task { try? await r.prepare(rid: self.rid, authority: self.authority, stillCurrent: { true }) }
+        let second = Task { try? await r.prepare(rid: otherRid, authority: self.authority, stillCurrent: { true }) }
+        for _ in 0..<50 where completions.count != 4 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(completions.count, 4)
+        for (production, complete) in completions { complete(production ? .match : .mismatch) }
+        let a = await first.value; let b = await second.value
+        XCTAssertNotNil(a, "The first restored machine cannot be cancelled by a second resolver")
+        XCTAssertNotNil(b)
+        XCTAssertEqual(a?.pushPublicKey, b?.pushPublicKey)
+        XCTAssertNotEqual(a?.trust.rid, b?.trust.rid)
+    }
 }
