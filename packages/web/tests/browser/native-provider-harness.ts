@@ -10,6 +10,11 @@ import {
 /** Runs the actual provider inside WKWebView; the Swift host supplies real guarded ingress. */
 import { readNativePairingQR } from '../../src/lib/native-pairing-qr';
 import { beginNativePairingTrust, cancelNativePairingTrust, commitNativePairingTrust, forgetNativeRelayPin, loadNativeRelayPins } from '../../src/lib/native-push-trust';
+import { enableNativeSecurePush, prepareNativePushRegistration, validateNativePushRegistration } from '../../src/lib/native-push-registration';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { SettingsPanel } from '../../src/components/settings/SettingsPanel';
+import { DEFAULT_SETTINGS } from '../../src/types';
 
 Object.assign(window, {
   nativeProviderTest: {
@@ -24,6 +29,17 @@ Object.assign(window, {
     cancelNativePairingTrust,
     loadNativeRelayPins,
     forgetNativeRelayPin,
+    enableNativeSecurePush,
+    prepareNativePushRegistration,
+    validateNativePushRegistration,
+    async renderNativeSettings() {
+      const state = await inspectNativeIdentity();
+      if (state.kind !== 'ready') throw new Error('Owned fixture identity unavailable.');
+      const element = document.createElement('div');document.body.append(element);
+      createRoot(element).render(createElement(SettingsPanel, {open:true,settings:DEFAULT_SETTINGS,onChange:()=>{},onClose:()=>{},
+        onEnableSecurePush:()=>enableNativeSecurePush(state.identity)}));
+      return true;
+    },
     async freshQRToken() {
       const { signer } = await relayV2.generateIdentity();
       return relayV2.encodePairingToken({

@@ -27,6 +27,7 @@ interface SettingsPanelProps {
   readonly settings: AppSettings;
   readonly onClose: () => void;
   readonly onChange: (settings: AppSettings) => void;
+  readonly onEnableSecurePush?: () => Promise<void>;
 }
 
 function ThemeButton({
@@ -361,7 +362,47 @@ function IdentitySection() {
   );
 }
 
-export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPanelProps) {
+/**
+ * Explicit native secure-push enable (#1200). Asking is the only effect: the OS
+ * permission prompt and APNs registration happen natively, and a relay
+ * subscription is sent only after the OS delivers a token.
+ */
+function SecurePushSection({ onEnable }: { readonly onEnable: () => Promise<void> }) {
+  const [state, setState] = useState<'idle' | 'pending' | 'requested'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const enable = async () => {
+    setState('pending');
+    setError(null);
+    try {
+      await onEnable();
+      setState('requested');
+    } catch (err) {
+      setState('idle');
+      setError(err instanceof Error ? err.message : 'Secure notifications are unavailable.');
+    }
+  };
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
+        Relay notifications
+      </h3>
+      <button
+        type="button"
+        onClick={() => void enable()}
+        disabled={state === 'pending'}
+        className="w-full rounded-lg bg-[var(--color-surface-light)] py-2 text-sm text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-elevated)] disabled:opacity-50"
+      >
+        Enable secure relay notifications
+      </button>
+      {state === 'requested' && (
+        <p className="mt-2 text-xs text-[var(--color-text-muted)]">Notifications requested.</p>
+      )}
+      {error && <p className="mt-2 text-xs text-[var(--color-error)]">{error}</p>}
+    </section>
+  );
+}
+
+export function SettingsPanel({ open, settings, onClose, onChange, onEnableSecurePush }: SettingsPanelProps) {
   // Close on Escape key
   useEffect(() => {
     if (!open) return;
@@ -518,6 +559,8 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
               />
             </div>
           </section>
+
+          {onEnableSecurePush && <SecurePushSection onEnable={onEnableSecurePush} />}
 
           {/* About */}
           <section>
