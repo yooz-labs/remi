@@ -13,8 +13,11 @@ cleanup invalidate the captured runtime before asynchronous disposal. Failed
 cleanup retains the original setup error and removes its notifier/harness maps.
 
 With relay enabled, the stable unlocked machine identity supplies the real signer.
-The CLI constructs the durable `SecurePushStore`, production HTTPS-only transport
-and `SecurePushService`. Hub-created children inherit explicit relay opt-in and
+For a root-origin signaling URL, the CLI constructs the durable `SecurePushStore`,
+production HTTPS-only transport and `SecurePushService`. A path prefix, query,
+fragment or credentials refuses service initialization with a fixed notice; it
+does not infer the signed push route by dropping those components. Interactive
+relay prefixes still work. Hub-created children inherit explicit relay opt-in and
 the configured signaling URL. The service reaches question, terminal notice,
 turn-failure/recovery, turn-complete, foreign-session, harness-denied and subagent
 notification callers. Secure fan-out occurs once outside the legacy-token loop.

@@ -236,7 +236,7 @@ import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
-import { legacyRelayUrlNotice } from './remote/relay-url.ts';
+import { legacyRelayUrlNotice, relaySecurePushAudience } from './remote/relay-url.ts';
 import {
   AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
@@ -2390,26 +2390,27 @@ const relayWanted = !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay
 if (serveMode && relayWanted && !authenticator)
   console.error('Relay startup refused: enable authentication before using --relay.');
 if (relayWanted && relayIdentity) {
-  try {
-    const endpoint = new URL(cliSignalingUrl ?? remiConfig.network.signaling_url);
-    if (endpoint.username || endpoint.password || !['https:', 'wss:'].includes(endpoint.protocol))
-      throw new Error('SECURE_PUSH_AUDIENCE');
-    endpoint.protocol = 'https:';
-    const signer = await relayV2.signerFromKey(
-      relayIdentity.privateKey,
-      new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
-    );
-    const store = new SecurePushStore(REMI_DIR, relayTrust);
-    securePushService = new SecurePushService({
-      store,
-      transport: new SecurePushTransport({ store, signer, audience: endpoint.origin }),
-      contexts: securePushContexts,
-      machinePublicKey: relayV2.b64u(signer.publicKey),
-      rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
-      log: (outcome) => log(`[SecurePush] ${outcome}`),
-    });
-  } catch {
-    logError('[SecurePush] initialization refused');
+  const audience = relaySecurePushAudience(cliSignalingUrl ?? remiConfig.network.signaling_url);
+  if (audience === null) {
+    logError('[SecurePush] unsupported signaling URL; secure push requires a root origin');
+  } else {
+    try {
+      const signer = await relayV2.signerFromKey(
+        relayIdentity.privateKey,
+        new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
+      );
+      const store = new SecurePushStore(REMI_DIR, relayTrust);
+      securePushService = new SecurePushService({
+        store,
+        transport: new SecurePushTransport({ store, signer, audience }),
+        contexts: securePushContexts,
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+        log: (outcome) => log(`[SecurePush] ${outcome}`),
+      });
+    } catch {
+      logError('[SecurePush] initialization refused');
+    }
   }
 }
 

@@ -11,9 +11,42 @@ import {
 import { join, resolve } from 'node:path';
 import { relayV2 } from '@remi/shared';
 import { DEFAULT_CONFIG } from '../../packages/daemon/src/config/config.ts';
+import { relaySecurePushAudience } from '../../packages/daemon/src/remote/relay-url.ts';
 import { reserveRange } from '../../packages/daemon/tests/session/port-test-helpers.ts';
 import { Socket } from '../../packages/signaling/tests/e2e/endpoints.ts';
 import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
+
+test.each([
+  ['wss://relay.example', 'https://relay.example'],
+  ['wss://relay.example/', 'https://relay.example'],
+  ['https://relay.example/', 'https://relay.example'],
+  ['wss://relay.example:443/', 'https://relay.example'],
+  ['wss://127.0.0.1:18443', 'https://127.0.0.1:18443'],
+  ['wss://[::1]:18443/', 'https://[::1]:18443'],
+])('secure push accepts root audience %s', (base, audience) => {
+  expect(relaySecurePushAudience(base)).toBe(audience);
+});
+
+test.each([
+  'wss://relay.example/remi-prefix',
+  'wss://relay.example/remi-prefix/',
+  'wss://relay.example/remi-prefix/..',
+  'wss://relay.example/.',
+  'wss://relay.example//',
+  'wss://relay.example/?token=private',
+  'wss://relay.example/?',
+  'wss://relay.example/#private',
+  'wss://relay.example/#',
+  'wss://relay.example\\remi-prefix',
+  'wss://user:private@relay.example',
+  'ws://relay.example',
+  'http://relay.example',
+  ' wss://relay.example',
+  'wss://relay.example ',
+  'not a URL',
+])('secure push refuses ambiguous or unsupported route %s', (base) => {
+  expect(relaySecurePushAudience(base)).toBeNull();
+});
 
 test('actual default relay endpoint construction reaches the real R2 nonce route, preserving custom prefixes', async () => {
   expect(new URL(DEFAULT_CONFIG.network.signaling_url).pathname).toBe('/');
