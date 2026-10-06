@@ -1,5 +1,4 @@
 /** Signed native answers (#1201): one exact tuple, no independent outer choice. */
-import type { AnswerSelection } from '../protocol.ts';
 import { type Bytes, be64, concat, fromB64u, lps, utf8 } from './bytes.ts';
 import { LABEL } from './constants.ts';
 import { RelayError } from './errors.ts';
@@ -11,6 +10,13 @@ export const MAX_NATIVE_ANSWER_BODY = 8192;
 export const MAX_NATIVE_ANSWER_JSON = 16384;
 export const NATIVE_ANSWER_TTL_SECONDS = 30;
 export const NATIVE_ANSWER_FUTURE_SECONDS = 5;
+
+// Keep the relay library independent of the application protocol (#1201).
+interface NativeSelection {
+  readonly questionIndex: number;
+  readonly optionIndices: readonly number[];
+  readonly text?: string;
+}
 
 export interface UnsignedNativeAnswer {
   readonly type: 'native_answer';
@@ -31,7 +37,7 @@ export interface UnsignedNativeAnswer {
   readonly expiresAt: number;
   readonly answer: string;
   readonly claudeSessionId?: string;
-  readonly selections?: readonly AnswerSelection[];
+  readonly selections?: readonly NativeSelection[];
   readonly cancel?: boolean;
   readonly message?: string;
 }
@@ -116,7 +122,7 @@ function rid(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{32}$/.test(value)) return malformed();
   return value;
 }
-function selections(value: unknown): readonly AnswerSelection[] {
+function selections(value: unknown): readonly NativeSelection[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) return malformed();
   let previous = -1;
   return Object.freeze(
@@ -164,7 +170,7 @@ function validated(value: unknown, requireSignature: boolean): UnsignedNativeAns
   const answer = text(o['answer'], 128, false);
   const extra: {
     claudeSessionId?: string;
-    selections?: readonly AnswerSelection[];
+    selections?: readonly NativeSelection[];
     cancel?: boolean;
     message?: string;
   } = {};
@@ -206,7 +212,7 @@ function validated(value: unknown, requireSignature: boolean): UnsignedNativeAns
 }
 const u16 = (n: number): Bytes => Uint8Array.of(n >> 8, n & 255);
 const optionalText = (
-  o: UnsignedNativeAnswer | AnswerSelection,
+  o: UnsignedNativeAnswer | NativeSelection,
   key: 'claudeSessionId' | 'message' | 'text',
 ): Bytes => {
   if (!own(o, key)) return Uint8Array.of(0);
