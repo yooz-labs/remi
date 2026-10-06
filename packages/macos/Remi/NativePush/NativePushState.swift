@@ -83,10 +83,15 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                     try execute("DELETE FROM identity_authority")
                     try execute("UPDATE authority_generation SET generation=generation+1 WHERE slot=1")
                     try execute("PRAGMA user_version=2")
-                } else if ![2, 3].contains(version) || application != 1380798514 { throw NativePushStateError.corrupt }
+                } else if ![2, 3, 4].contains(version) || application != 1380798514 { throw NativePushStateError.corrupt }
                 if try integer("PRAGMA user_version") == 2 {
                     try execute("CREATE TABLE machine_trust (rid BLOB PRIMARY KEY CHECK(length(rid)=16), machine_key BLOB NOT NULL CHECK(length(machine_key)=32), endpoint TEXT NOT NULL, device_key BLOB NOT NULL CHECK(length(device_key)=32), identity_revision TEXT NOT NULL CHECK(length(identity_revision)=36), requires_unlock INTEGER NOT NULL CHECK(requires_unlock IN(0,1)), generation INTEGER NOT NULL CHECK(generation>0))")
                     try execute("PRAGMA user_version=3")
+                }
+                if try integer("PRAGMA user_version") == 3 {
+                    try execute("CREATE TABLE push_nonce (rid BLOB NOT NULL CHECK(length(rid)=16), nonce BLOB NOT NULL CHECK(length(nonce)=32), digest BLOB NOT NULL CHECK(length(digest)=32), retain_until INTEGER NOT NULL, PRIMARY KEY(rid,nonce))")
+                    try execute("CREATE TABLE push_collapse (rid BLOB NOT NULL CHECK(length(rid)=16), collapse_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0), digest BLOB NOT NULL CHECK(length(digest)=32), terminal INTEGER NOT NULL CHECK(terminal IN(0,1)), max_expiry INTEGER NOT NULL, retain_until INTEGER NOT NULL, PRIMARY KEY(rid,collapse_id))")
+                    try execute("PRAGMA user_version=4")
                 }
                 guard try integer("SELECT generation FROM authority_generation WHERE slot=1") >= 0 else {
                     throw NativePushStateError.corrupt
@@ -108,14 +113,14 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             if status == SQLITE_DONE { return nil }
             guard status == SQLITE_ROW, sqlite3_column_type(stmt, 0) == SQLITE_BLOB,
                   sqlite3_column_bytes(stmt, 0) == 32, let bytes = sqlite3_column_blob(stmt, 0),
-                  sqlite3_column_type(stmt, 1) == SQLITE_TEXT, let text = sqlite3_column_text(stmt, 1) else {
+                  sqlite3_column_type(stmt, 1) == SQLITE_TEXT else {
                 throw NativePushStateError.corrupt
             }
             guard sqlite3_column_type(stmt, 2) == SQLITE_INTEGER,
                   [0, 1].contains(sqlite3_column_int(stmt, 2)) else { throw NativePushStateError.corrupt }
             let protected = sqlite3_column_int(stmt, 2) == 1
             let key = Data(bytes: bytes, count: 32)
-            let revision = String(cString: text)
+            let revision = try self.text(stmt, 1)
             try Self.validate(key, revision)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
             return Authority(publicKey: key, revision: revision, requiresAppUnlock: protected)
@@ -175,11 +180,108 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
             // Replay and terminal records are deliberately retained through re-pair.
         }
     }
+    /// The original-byte cryptographic decoder must verify before this boundary.
+    /// This transaction commits replay/lifecycle state before publication/deletion.
+    /// It does not treat an outer field or notification category as verification.
     func recordVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws -> ContentOutcome {
-        throw NativePushStateError.unavailable
+        try Self.validateContent(content, now: now)
+        return try transaction {
+            try requireCurrentTrust(trust, rid: content.rid)
+            try pruneExpired(now: now)
+            if let digest = try nonceDigest(content) {
+                guard digest == content.digest else { throw NativePushStateError.changed }
+                return .duplicate
+            }
+            let previous = try collapse(content)
+            if let previous {
+                guard content.revision > previous.revision,
+                      !previous.terminal || content.kind == 6 else { throw NativePushStateError.changed }
+            }
+            let needed: Int64 = previous == nil ? 2 : 1
+            let count = try integer("SELECT (SELECT count(*) FROM push_nonce)+(SELECT count(*) FROM push_collapse)")
+            guard count + needed <= Int64(maximumEntries) else { throw NativePushStateError.capacity }
+            let terminal = content.kind == 6 || previous?.terminal == true
+            let maxExpiry = max(content.expiresAt, previous?.maxExpiry ?? 0)
+            let retention = max(maxExpiry + 60, previous?.retention ?? 0,
+                                terminal ? content.issuedAt + 3600 + 120 : 0)
+            try statement("INSERT INTO push_nonce VALUES(?,?,?,?)") { stmt in
+                try bind(content.rid, to: stmt, at: 1); try bind(content.nonce, to: stmt, at: 2)
+                try bind(content.digest, to: stmt, at: 3); try bind(content.expiresAt + 60, to: stmt, at: 4)
+                try complete(stmt)
+            }
+            try statement("INSERT INTO push_collapse VALUES(?,?,?,?,?,?,?) ON CONFLICT(rid,collapse_id) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,terminal=excluded.terminal,max_expiry=excluded.max_expiry,retain_until=excluded.retain_until") { stmt in
+                try bind(content.rid, to: stmt, at: 1); try bind(content.collapseId, to: stmt, at: 2)
+                try bind(content.revision, to: stmt, at: 3); try bind(content.digest, to: stmt, at: 4)
+                try bind(terminal ? Int64(1) : 0, to: stmt, at: 5); try bind(maxExpiry, to: stmt, at: 6)
+                try bind(retention, to: stmt, at: 7); try complete(stmt)
+            }
+            return terminal ? .dismiss : .publish
+        }
     }
+    /// Actions reverify the same capsule independently and require the identical
+    /// latest LIVE durable digest; an accepted older nonce grants no authority.
     func reverifyLatestContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws {
-        throw NativePushStateError.unavailable
+        try Self.validateContent(content, now: now)
+        try transaction {
+            try requireCurrentTrust(trust, rid: content.rid)
+            guard content.kind != 6, let latest = try collapse(content), !latest.terminal,
+                  latest.retention > now, latest.revision == content.revision,
+                  latest.digest == content.digest, try nonceDigest(content) == content.digest else {
+                throw NativePushStateError.changed
+            }
+        }
+    }
+
+    private struct CollapseRecord {
+        let revision: Int64; let digest: Data; let terminal: Bool; let maxExpiry: Int64; let retention: Int64
+    }
+    private func requireCurrentTrust(_ trust: MachineTrust, rid: Data) throws {
+        guard rid == trust.rid, try currentAuthority() == trust.authority,
+              try machineTrust(rid: rid) == trust else { throw NativePushStateError.changed }
+    }
+    private static func validateContent(_ content: ContentRecord, now: Int64) throws {
+        let safe: Int64 = 9_007_199_254_740_991
+        let encoded = content.collapseId.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=="
+        guard content.rid.count == 16, content.nonce.count == 32, content.digest.count == 32,
+              content.collapseId.utf8.count == 22, let collapse = Data(base64Encoded: encoded), collapse.count == 16,
+              collapse.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") == content.collapseId,
+              content.revision > 0, content.revision <= safe, (1...6).contains(content.kind),
+              now >= 0, now <= safe - 4000, content.issuedAt >= 0, content.issuedAt <= now + 60,
+              content.expiresAt > content.issuedAt, content.expiresAt > now, content.expiresAt <= safe - 4000,
+              content.expiresAt - content.issuedAt <= 3600 else { throw NativePushStateError.invalid }
+    }
+    private func pruneExpired(now: Int64) throws {
+        for table in ["push_nonce", "push_collapse"] {
+            try statement("DELETE FROM \(table) WHERE retain_until<=?") { stmt in
+                try bind(now, to: stmt, at: 1); try complete(stmt)
+            }
+        }
+    }
+    private func nonceDigest(_ content: ContentRecord) throws -> Data? {
+        try statement("SELECT digest FROM push_nonce WHERE rid=? AND nonce=?") { stmt in
+            try bind(content.rid, to: stmt, at: 1); try bind(content.nonce, to: stmt, at: 2)
+            let status = sqlite3_step(stmt)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW else { throw NativePushStateError.corrupt }
+            let result = try blob(stmt, 0)
+            guard result.count == 32, sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
+            return result
+        }
+    }
+    private func collapse(_ content: ContentRecord) throws -> CollapseRecord? {
+        try statement("SELECT revision,digest,terminal,max_expiry,retain_until FROM push_collapse WHERE rid=? AND collapse_id=?") { stmt in
+            try bind(content.rid, to: stmt, at: 1); try bind(content.collapseId, to: stmt, at: 2)
+            let status = sqlite3_step(stmt)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW, [0,2,3,4].allSatisfy({ sqlite3_column_type(stmt, Int32($0)) == SQLITE_INTEGER }),
+                  [0,1].contains(sqlite3_column_int(stmt, 2)) else { throw NativePushStateError.corrupt }
+            let value = CollapseRecord(revision: sqlite3_column_int64(stmt, 0), digest: try blob(stmt, 1),
+                terminal: sqlite3_column_int(stmt, 2) == 1, maxExpiry: sqlite3_column_int64(stmt, 3), retention: sqlite3_column_int64(stmt, 4))
+            guard value.revision > 0, value.revision <= 9_007_199_254_740_991, value.digest.count == 32,
+                  value.maxExpiry >= 0, value.maxExpiry <= 9_007_199_254_736_991, value.retention <= 9_007_199_254_740_991,
+                  value.retention >= value.maxExpiry + 60, sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
+            return value
+        }
     }
 
     /// An observed deletion, corruption, read failure or different revision
@@ -252,12 +354,15 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     private func bind(_ value: String, to stmt: OpaquePointer, at index: Int32) throws {
         guard sqlite3_bind_text(stmt, index, value, -1, Self.transient) == SQLITE_OK else { throw NativePushStateError.unavailable }
     }
+    private func bind(_ value: Int64, to stmt: OpaquePointer, at index: Int32) throws {
+        guard sqlite3_bind_int64(stmt, index, value) == SQLITE_OK else { throw NativePushStateError.unavailable }
+    }
     private func blob(_ stmt: OpaquePointer, _ index: Int32) throws -> Data {
-        guard sqlite3_column_type(stmt, index) == SQLITE_BLOB, let bytes = sqlite3_column_blob(stmt, index) else { throw NativePushStateError.corrupt }
+        guard sqlite3_column_type(stmt, index) == SQLITE_BLOB, (1...32).contains(sqlite3_column_bytes(stmt, index)), let bytes = sqlite3_column_blob(stmt, index) else { throw NativePushStateError.corrupt }
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, index)))
     }
     private func text(_ stmt: OpaquePointer, _ index: Int32) throws -> String {
-        guard sqlite3_column_type(stmt, index) == SQLITE_TEXT, let bytes = sqlite3_column_text(stmt, index),
+        guard sqlite3_column_type(stmt, index) == SQLITE_TEXT, (1...2048).contains(sqlite3_column_bytes(stmt, index)), let bytes = sqlite3_column_text(stmt, index),
               let value = String(bytes: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(stmt, index))), encoding: .utf8) else {
             throw NativePushStateError.corrupt
         }
