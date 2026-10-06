@@ -673,6 +673,80 @@ describe('ClaudeHarness.createSession', () => {
       }
     }, 15000);
   }
+  for (const path of ['service', 'dispatcher'] as const) {
+    test(`secure-only ${path} preserves real socket-loss uncertainty without resend or hook settlement`, async () => {
+      const { decisions, card, sessionId, response } = await holdPrompt(false);
+      const { store, trust } = await pushRecipient();
+      const { createServer } = await import('node:http');
+      let effects = 0;
+      const receiver = createServer(async (request) => {
+        for await (const _chunk of request) {
+          /* Consume the actual submitted request. */
+        }
+        effects++;
+        request.socket.destroy();
+      });
+      await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+      const address = receiver.address();
+      if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+      try {
+        const machine = await trust.unlock();
+        const signer = await relayV2.signerFromKey(
+          machine.privateKey,
+          new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+        );
+        const contexts = new SecurePushContexts({
+          questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+          validityFor: (_sid, qid) => decisions.answerValidity(qid),
+        });
+        const runtime = contexts.begin(sessionId);
+        const origin = `http://127.0.0.1:${address.port}`;
+        const logs: string[] = [];
+        const service = new SecurePushService({
+          store,
+          contexts,
+          transport: SecurePushTransport.forOwnedLoopbackTest({
+            store,
+            signer,
+            audience: origin,
+            ownedOrigin: origin,
+          }),
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+          log: (outcome) => logs.push(outcome),
+        });
+        const secure = service.forRuntime(runtime);
+        const dispatcher = new ActualNotificationDispatcher(
+          {
+            sessionRegistry,
+            deviceTokens: new Map(),
+            pushConfig: () => ({ signalingUrl: origin }),
+            getPrimarySessionId: () => sessionId,
+            securePush: secure,
+          },
+          sessionId,
+        );
+        const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
+        const deliver = () =>
+          path === 'service'
+            ? secure.send({ kind: 'question', logicalId: card.id, question: card, ...text })
+            : dispatcher.maybePush(sessionId, card, { held: true });
+        const first = await deliver();
+        const duplicate = await deliver();
+        expect(effects).toBe(1);
+        expect(logs).toEqual(['uncertain']);
+        expect(decisions.isHeld(card.id)).toBe(true);
+        expect(duplicate).toBe(first);
+        expect(first).toBe('uncertain');
+      } finally {
+        decisions.answerHeld(card.id, { kind: 'cancel' });
+        await response;
+        receiver.closeAllConnections();
+        await new Promise<void>((resolve) => receiver.close(() => resolve()));
+      }
+    }, 10000);
+  }
+
   test('secure push context real held slot fans out without eviction and dismissal remains absorbing', async () => {
     const { decisions, card, sessionId, response } = await holdPrompt(false);
     const contexts = new SecurePushContexts(
