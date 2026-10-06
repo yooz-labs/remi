@@ -16,6 +16,15 @@ import type { SecurePushSnapshot, SecurePushStore } from '../notifications/secur
 
 const MAX_RETAINED = 1024;
 const MAX_PENDING_PER_SESSION = 32;
+/** Seconds a completed record outlives its proof (#1201). This is not a result window: a retained
+ * outcome is served only while the proof itself is unexpired (`verifyNativeAnswer` and
+ * `currentProof` refuse an expired one before any lookup), so a client that lost the result and
+ * asks again after expiry reads `stale` although the answer was delivered. What the extra seconds
+ * keep are the (device, id) and (device, nonce) claims, so a different tuple that reuses either is a
+ * `conflict`, never a new answer. Serving an expired proof's result was decided against: the hub
+ * (`routeNativeAnswer`), the proxy (`nativeAnswer`, `send`), this ledger and the shared verifier
+ * each refuse an expired proof by design (the plan: "a late answer is refused"), and a longer
+ * retention horizon is an owner decision. */
 const RETAIN_SECONDS = 5;
 const seconds = (): number => Math.floor(Date.now() / 1000);
 type RecordEntry = {
@@ -293,6 +302,7 @@ export class NativeAnswerLedger {
     return record.outcome;
   }
 
+  /** Unexpired and for the live runtime. A retained result is not exempt (see `RETAIN_SECONDS`). */
   private currentProof(message: NativeAnswerMessage, runtime: SecurePushRuntime): boolean {
     const now = seconds();
     return (

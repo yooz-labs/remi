@@ -546,6 +546,23 @@ test('native ledger never evicts a real queued PTY answer after proof retention 
   expect(f.resolved).toHaveLength(1025);
 }, 30000);
 
+test('native ledger serves a retained result only while its proof is unexpired (#1201)', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const complete = await f.proof(held.question);
+  const proof = await f.sign({ ...complete, expiresAt: complete.issuedAt + 2 });
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+  expect(await f.ledger.answer(proof)).toBe('delivered');
+  while (Math.floor(Date.now() / 1000) < proof.expiresAt) await Bun.sleep(20);
+  // The documented limit: after expiry the exact proof reads stale although it was delivered,
+  // and nothing is applied twice.
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  expect(f.resolved).toEqual([held.question.id]);
+  expect(f.logs.filter((line) => line.includes('[NativeAnswer]'))).toEqual([
+    '[NativeAnswer] refused (EXPIRED)',
+  ]);
+}, 10000);
+
 /** A lock owned by a live foreign process, exactly what a concurrent `remi authorize` leaves. */
 function holdForeignLock(directory: string): () => void {
   const lockPath = join(directory, 'authorized_keys.json.lock');
