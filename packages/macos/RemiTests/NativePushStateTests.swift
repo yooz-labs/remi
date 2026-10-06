@@ -239,6 +239,33 @@ final class NativePushStateTests: XCTestCase {
         }
     }
 
+    func testCompletedMachineTrustRequiresCanonicalIPAddressHost() throws {
+        let file = directory.appendingPathComponent("canonical-host.sqlite")
+        let state = try NativePushState(file: file)
+        try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
+        let original = try machine(state)
+        let generation = try state.authorityGeneration()
+        for endpoint in ["https://127.0.0.1", "https://[::1]", "https://[2001:db8::1]",
+                         "https://[::ffff:7f00:1]", "https://xn--bcher-kva.example"] {
+            let trust = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+                endpoint: endpoint, authority: original.authority)
+            XCTAssertNoThrow(try state.installMachineTrust(trust, generation: generation),
+                             "Canonical shared-compatible IP or DNS origin must persist: \(endpoint)")
+            XCTAssertEqual(try NativePushState(file: file).machineTrust(rid: trust.rid), trust)
+        }
+        let saved = try XCTUnwrap(state.machineTrust(rid: original.rid))
+        for endpoint in ["https://127.1", "https://0127.0.0.1", "https://0x7f.0.0.1",
+                         "https://[0:0:0:0:0:0:0:1]", "https://[2001:0db8::1]",
+                         "https://[::ffff:127.0.0.1]", "https://example.123"] {
+            let refused = NativePushState.MachineTrust(rid: original.rid, machinePublicKey: original.machinePublicKey,
+                endpoint: endpoint, authority: original.authority)
+            XCTAssertThrowsError(try state.installMachineTrust(refused, generation: generation),
+                                 "Noncanonical IP or invalid numeric host must be refused: \(endpoint)")
+            XCTAssertEqual(try NativePushState(file: file).machineTrust(rid: saved.rid), saved,
+                           "Refused host must preserve the durable completed pair")
+        }
+    }
+
     func testIdentityMutationClosesCompletedMachineTrustAndWriterCannotRestoreIt() throws {
         let state = try NativePushState(file: directory.appendingPathComponent("trust-close.sqlite"))
         try install(state, publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation, revision: UUID().uuidString)
