@@ -95,7 +95,7 @@ class NotificationService: UNNotificationServiceExtension {
     }
     private static func category(_ prepared: NativePushEffect.Prepared) -> UNNotificationCategory {
         let actions = prepared.actions.enumerated().map { index, option in
-            var options: UNNotificationActionOptions = option.isNo ? [.destructive] : []
+            var options: UNNotificationActionOptions = option.isNo ? [.foreground, .destructive] : [.foreground]
             if option.standingGrant != nil { options.insert(.authenticationRequired) }
             return UNNotificationAction(identifier: "OPT_\(index)", title: NativePushEffect.actionTitle(option), options: options)
         }

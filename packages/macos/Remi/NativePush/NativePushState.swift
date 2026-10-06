@@ -212,8 +212,19 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     /// This transaction commits replay/lifecycle state before publication/deletion.
     /// It does not treat an outer field or notification category as verification.
     func recordVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64) throws -> ContentOutcome {
+        try persistVerifiedContent(content, trust: trust, now: now, expectedGeneration: nil)
+    }
+    /// Effect consumers bind the codec's captured lifetime inside the SAME
+    /// durable transaction; equal public fields do not imply equal generation.
+    func recordVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64, generation: Int64) throws -> ContentOutcome {
+        try persistVerifiedContent(content, trust: trust, now: now, expectedGeneration: generation)
+    }
+    private func persistVerifiedContent(_ content: ContentRecord, trust: MachineTrust, now: Int64, expectedGeneration: Int64?) throws -> ContentOutcome {
         try Self.validateContent(content, now: now)
         return try transaction {
+            if let expectedGeneration {
+                guard try authorityGeneration() == expectedGeneration else { throw NativePushStateError.changed }
+            }
             try requireCurrentTrust(trust, rid: content.rid)
             try pruneExpired(now: now)
             if let digest = try nonceDigest(content) {
@@ -253,6 +264,27 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         try transaction {
             try requireCurrentTrust(trust, rid: content.rid)
             guard content.kind != 6, let latest = try collapse(content), !latest.terminal,
+                  latest.retention > now, latest.revision == content.revision,
+                  latest.digest == content.digest, try nonceDigest(content) == content.digest else {
+                throw NativePushStateError.changed
+            }
+        }
+    }
+
+    /// Final effect checks include the captured generation in this transaction.
+    /// A terminal dismiss is a distinct boundary; live-content checks never admit it.
+    func reverifyLatestContent(_ content: ContentRecord, trust: MachineTrust, now: Int64, generation: Int64) throws {
+        try reverifyEffect(content, trust: trust, now: now, generation: generation, terminal: false)
+    }
+    func reverifyLatestDismiss(_ content: ContentRecord, trust: MachineTrust, now: Int64, generation: Int64) throws {
+        try reverifyEffect(content, trust: trust, now: now, generation: generation, terminal: true)
+    }
+    private func reverifyEffect(_ content: ContentRecord, trust: MachineTrust, now: Int64, generation: Int64, terminal: Bool) throws {
+        try Self.validateContent(content, now: now)
+        try transaction {
+            guard try authorityGeneration() == generation else { throw NativePushStateError.changed }
+            try requireCurrentTrust(trust, rid: content.rid)
+            guard (content.kind == 6) == terminal, let latest = try collapse(content), latest.terminal == terminal,
                   latest.retention > now, latest.revision == content.revision,
                   latest.digest == content.digest, try nonceDigest(content) == content.digest else {
                 throw NativePushStateError.changed
