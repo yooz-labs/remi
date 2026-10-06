@@ -23,11 +23,12 @@ import {
   decodeNativeAnswer,
   encodeNativeAnswer,
 } from './relay/native-answer.ts';
-import type {
-  SecurePushRegisterRequestMessage,
-  SecurePushRegisterResponseMessage,
-  SecurePushUnregisterRequestMessage,
-  SecurePushUnregisterResponseMessage,
+import {
+  type SecurePushRegisterRequestMessage,
+  type SecurePushRegisterResponseMessage,
+  type SecurePushUnregisterRequestMessage,
+  type SecurePushUnregisterResponseMessage,
+  isValidSecurePushResponse,
 } from './secure-push-messages.ts';
 import type {
   Acknowledgment,
@@ -1460,6 +1461,13 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
       return false;
     }
   }
+
+  // The subscription responses have no other validator on their way to a client (#1200).
+  if (
+    obj['type'] === 'secure_push_register_response' ||
+    obj['type'] === 'secure_push_unregister_response'
+  )
+    return isValidSecurePushResponse(obj);
 
   return VALID_TYPES.has(obj['type']);
 }

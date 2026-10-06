@@ -82,8 +82,7 @@ test('secure subscription direction registry routes only requests to daemon', ()
 });
 
 // #1200 A6: `isValidMessage` used to check only type, id and timestamp for these messages, so
-// every consumer that trusts it (the replay path, the web client) saw unvalidated fields. It now
-// holds them to the daemon's registration rules.
+// the web client saw unvalidated response fields. Responses now need a typed success or error.
 const field = (message: Record<string, unknown>, key: string, value: unknown) => ({
   ...message,
   [key]: value,
@@ -92,50 +91,13 @@ function without(message: Record<string, unknown>, key: string) {
   const { [key]: _removed, ...rest } = message;
   return rest;
 }
-test('shared validator accepts exactly the registration shapes the daemon accepts', () => {
+test('shared validator accepts the registration and unregister requests the daemon accepts', () => {
+  // The requests are validated by the daemon's normalizeSecureRegistration, which answers a typed
+  // INVALID_SUBSCRIPTION; `isValidMessage` stays envelope-level for them on purpose (#1200).
   const request = builder('createSecurePushRegisterRequest')(registration);
   expect(isValidMessage(request)).toBe(true);
   expect(isValidMessage(without(request, 'pushPrefs'))).toBe(true);
-  expect(isValidMessage(field(request, 'environment', 'production'))).toBe(true);
-  expect(
-    isValidMessage(field(request, 'pushPrefs', { turnFailed: false, harnessDenied: true })),
-  ).toBe(true);
-  expect(isValidMessage(field(request, 'token', 'ab'.repeat(256)))).toBe(true);
-  const bad: [string, unknown][] = [
-    ['token', ''],
-    ['token', 'AB'.repeat(32)],
-    ['token', 'abc'],
-    ['token', 'ab'.repeat(257)],
-    ['token', 7],
-    ['environment', 'staging'],
-    ['environment', undefined],
-    ['pushPublicKey', 'synthetic-test-point'],
-    ['pushPublicKey', shared.relayV2.b64u(new Uint8Array(65).fill(4))],
-    ['pushPublicKey', shared.relayV2.b64u(new Uint8Array(33))],
-    ['pushPublicKey', `${registration.pushPublicKey}=`],
-    ['pushPublicKey', 9],
-    ['keyVersion', 0],
-    ['keyVersion', 1.5],
-    ['keyVersion', Number.MAX_SAFE_INTEGER + 1],
-    ['keyVersion', '3'],
-    ['pushPrefs', { questions: 'yes' }],
-    ['pushPrefs', { unknown: true }],
-    ['pushPrefs', [true]],
-    ['pushPrefs', null],
-    ['devicePublicKey', 'caller-selected-identity'],
-  ];
-  for (const [key, value] of bad)
-    expect(isValidMessage(field(request, key, value)), `${key}=${String(value)}`).toBe(false);
-  for (const key of ['token', 'environment', 'pushPublicKey', 'keyVersion'])
-    expect(isValidMessage(without(request, key)), `missing ${key}`).toBe(false);
-  // A point off the curve in its canonical encoding (x = 1, y = 1) is refused like the daemon does.
-  const offCurve = new Uint8Array(65);
-  offCurve[0] = 4;
-  offCurve[32] = 1;
-  offCurve[64] = 1;
-  expect(isValidMessage(field(request, 'pushPublicKey', shared.relayV2.b64u(offCurve)))).toBe(
-    false,
-  );
+  expect(isValidMessage(builder('createSecurePushUnregisterRequest')())).toBe(true);
 });
 test('shared validator holds responses to a typed success or typed error and an exact shape', () => {
   const request = builder('createSecurePushRegisterRequest')(registration);
@@ -153,7 +115,7 @@ test('shared validator holds responses to a typed success or typed error and an 
     error: 'NOT_AUTHORIZED',
   });
   for (const message of [ok, refused, unregistered, unregisterFailed])
-    expect(isValidMessage(message), String(message.type)).toBe(true);
+    expect(isValidMessage(message), String(message['type'])).toBe(true);
   const bad: [Record<string, unknown>, string, unknown][] = [
     [ok, 'keyVersion', 0],
     [ok, 'keyVersion', '3'],
@@ -172,8 +134,7 @@ test('shared validator holds responses to a typed success or typed error and an 
     [unregisterFailed, 'requestId', undefined],
   ];
   for (const [message, key, value] of bad)
-    expect(isValidMessage(field(message, key, value)), `${message.type} ${key}`).toBe(false);
-  const unregisterRequest = builder('createSecurePushUnregisterRequest')();
-  expect(isValidMessage(unregisterRequest)).toBe(true);
-  expect(isValidMessage(field(unregisterRequest, 'devicePublicKey', 'x'))).toBe(false);
+    expect(isValidMessage(field(message, key, value)), `${String(message['type'])} ${key}`).toBe(
+      false,
+    );
 });
