@@ -34,6 +34,7 @@ const BUILDERS: [string, string, Uint8Array][] = [
   ['signer self-check', r.LABEL.signerCheck, r.SIGNER_CHECK],
   ['push content', r.LABEL.pushContent, r.lps(r.LABEL.pushContent, H)],
   ['push submit', r.LABEL.pushSubmit, r.lps(r.LABEL.pushSubmit, H)],
+  ['native answer', r.LABEL.nativeAnswer, r.lps(r.LABEL.nativeAnswer, H)],
 ];
 
 const startsWith = (bytes: Uint8Array, prefix: Uint8Array): boolean =>
@@ -108,7 +109,7 @@ describe('v2 signing inputs are disjoint from every other signed message', () =>
     expect(calls.length).toBeGreaterThanOrEqual(4);
     for (const call of calls) {
       const allowed =
-        /(hostSigningInput|clientSigningInput|admissionInput|buildPushContentSigningInput|buildPushSubmitSigningInput)\(|SIGNER_CHECK/;
+        /(hostSigningInput|clientSigningInput|admissionInput|buildPushContentSigningInput|buildPushSubmitSigningInput|buildNativeAnswerSigningInput)\(|SIGNER_CHECK/;
       expect([call, allowed.test(call)]).toEqual([call, true]);
     }
     // And the raw primitive is only reached through `signerFromKey`'s `sign`.

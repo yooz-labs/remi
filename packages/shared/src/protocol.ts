@@ -18,6 +18,11 @@ import type {
   RelayDevicesRequestMessage,
   RelayDevicesResponseMessage,
 } from './relay-messages.ts';
+import {
+  type NativeAnswer,
+  decodeNativeAnswer,
+  encodeNativeAnswer,
+} from './relay/native-answer.ts';
 import type {
   SecurePushRegisterRequestMessage,
   SecurePushRegisterResponseMessage,
@@ -85,6 +90,7 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  native_answer: NativeAnswerMessage;
   secure_push_register_request: SecurePushRegisterRequestMessage;
   secure_push_register_response: SecurePushRegisterResponseMessage;
   secure_push_unregister_request: SecurePushUnregisterRequestMessage;
@@ -175,6 +181,9 @@ void _discriminantsMatch;
  */
 export type ProtocolMessage = ProtocolMessageMap[keyof ProtocolMessageMap];
 
+/** The signed tuple is the complete wire message; there is no outer choice (#1201). */
+export type NativeAnswerMessage = NativeAnswer;
+
 /** The message interface registered for wire discriminant `K`. */
 export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
 
@@ -200,6 +209,7 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  native_answer: 'c2d',
   secure_push_register_request: 'c2d',
   secure_push_register_response: 'd2c',
   secure_push_unregister_request: 'c2d',
@@ -1359,6 +1369,16 @@ export function serialize(message: ProtocolMessage): string {
 export function deserialize(data: string): ProtocolMessage | null {
   try {
     const parsed: unknown = JSON.parse(data);
+    // Inspect the original spelling before choosing a protocol. JSON.parse's
+    // last-key-wins behavior must not hide native_answer under legacy answer.
+    if (!hasUniqueRootType(data)) return null;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)['type'] === 'native_answer'
+    ) {
+      return decodeNativeAnswer(data);
+    }
     if (!isValidMessage(parsed)) {
       return null;
     }
@@ -1366,6 +1386,39 @@ export function deserialize(data: string): ProtocolMessage | null {
   } catch {
     return null;
   }
+}
+
+/** Grammar was validated by JSON.parse; scan only root member names, iteratively.
+ * Native size/depth limits must not restrict legacy transcripts (#1201). */
+function hasUniqueRootType(data: string): boolean {
+  let depth = 0;
+  let rootKey = false;
+  let typeSeen = false;
+  for (let i = 0; i < data.length; i++) {
+    const character = data[i];
+    if (character === '"') {
+      const start = i;
+      for (i++; i < data.length; i++) {
+        if (data[i] === '\\') i++;
+        else if (data[i] === '"') break;
+      }
+      if (depth === 1 && rootKey) {
+        if (JSON.parse(data.slice(start, i + 1)) === 'type') {
+          if (typeSeen) return false;
+          typeSeen = true;
+        }
+        rootKey = false;
+      }
+    } else if (character === '{' || character === '[') {
+      depth++;
+      if (depth === 1 && character === '{') rootKey = true;
+    } else if (character === '}' || character === ']') {
+      depth--;
+    } else if (character === ',' && depth === 1) {
+      rootKey = true;
+    }
+  }
+  return true;
 }
 
 /**
@@ -1398,6 +1451,15 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['type'] !== 'string') return false;
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
+
+  if (obj['type'] === 'native_answer') {
+    try {
+      decodeNativeAnswer(encodeNativeAnswer(obj as unknown as NativeAnswer));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   return VALID_TYPES.has(obj['type']);
 }

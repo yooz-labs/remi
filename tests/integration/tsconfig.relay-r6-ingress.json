@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": ["relay-r6-ingress.test.ts", "../../packages/daemon/src/cli/qrcode.d.ts"],
+  "exclude": []
+}

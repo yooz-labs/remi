@@ -20,7 +20,7 @@ import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } 
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/index.ts';
-import type { AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
+import type { AnswerCommit, AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
 /**
  * Everything one session launch needs from the neutral shell in `cli.ts`
@@ -68,7 +68,7 @@ export interface DecisionChannel {
   /** The current card's answer window; delivery cannot extend it (#1200). */
   answerValidity(questionId: UUID): AnswerValidity;
   /** Apply a phone answer to a held prompt; `unknown` when none is held for it. */
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome;
   /** Another path already removed and dismissed `questionId`; stop tracking it. */
   retireQuestion(questionId: UUID): void;
   /** Is `questionId`'s prompt held for the phone? */

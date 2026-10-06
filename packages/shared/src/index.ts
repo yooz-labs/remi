@@ -77,6 +77,7 @@ export type {
   EditMessage,
   QuestionMessage,
   AnswerMessage,
+  NativeAnswerMessage,
   AnswerSelection,
   AnswerExtras,
   SessionUpdateMessage,

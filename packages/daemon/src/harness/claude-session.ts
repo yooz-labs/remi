@@ -69,7 +69,7 @@ import type {
   SessionStore,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
-import type { AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
+import type { AnswerCommit, AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 import type {
   DecisionChannel,
   DecisionScreen,
@@ -165,8 +165,8 @@ class ClaudeDecisions implements DecisionChannel {
     this.gate = gate;
   }
 
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
-    return this.gate.answerHeld(questionId, answer);
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
+    return this.gate.answerHeld(questionId, answer, commit);
   }
 
   retireQuestion(questionId: UUID): void {

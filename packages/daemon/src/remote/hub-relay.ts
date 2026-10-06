@@ -4,12 +4,14 @@ import {
   MESSAGE_DIRECTION,
   type Message,
   MessageIdTracker,
+  type NativeAnswerMessage,
   type ProtocolMessage,
   type RelayDeviceRevokeResponseMessage,
   type SessionListRequestMessage,
   type SessionListResponseMessage,
   type UnlockedIdentity,
   createAgentOutput,
+  createAnswerResult,
   createError,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
@@ -471,7 +473,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               await this.closePeer(peer, true);
               return;
             }
-            const message = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+            // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).
+            const message = deserialize(
+              new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+            );
             if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
               throw new Error('RELAY_INVALID_MESSAGE');
             if (peer.pendingApplications >= 32) {
@@ -650,6 +655,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
       throw new Error('RELAY_REVOKED');
+    if (message.type === 'native_answer') {
+      await this.routeNativeAnswer(peer, message);
+      return;
+    }
     if (message.type === 'secure_push_register_request') {
       const authority = peer.pushAuthority;
       if (!authority) throw new Error('RELAY_REVOKED');
@@ -805,6 +814,41 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }
     } else peer.connection?.handleMessage(serialize(message));
   }
+  private async routeNativeAnswer(peer: Peer, message: NativeAnswerMessage): Promise<void> {
+    const machine = this.machine;
+    const key = peer.key;
+    try {
+      if (!machine || !key) throw new Error('RELAY_NOT_READY');
+      await relayV2.verifyNativeAnswer(
+        message,
+        {
+          rid: Buffer.from(this.rid).toString('hex'),
+          machinePublicKey: relayV2.b64u(machine.publicKey),
+          devicePublicKey: Buffer.from(key, 'base64').toString('base64url'),
+        },
+        Math.floor(Date.now() / 1000),
+      );
+    } catch {
+      this.sendRaw(
+        peer.cid,
+        createAnswerResult(message.id, message.sessionId, message.questionId, 'stale'),
+      );
+      return;
+    }
+    if (!this.current(peer) || !this.enrolled(peer) || this.machine !== machine || peer.key !== key)
+      return;
+    let outcome: import('@remi/shared').AnswerResultOutcome = 'uncertain';
+    try {
+      outcome = (await peer.proxy?.nativeAnswer(message)) ?? 'uncertain';
+    } catch {
+      // A lost child result never grants permission to send a second answer.
+    }
+    this.sendRaw(
+      peer.cid,
+      createAnswerResult(message.id, message.sessionId, message.questionId, outcome),
+    );
+  }
+
   private closePeer(peer: Peer, orderly = false): Promise<void> {
     if (peer.closing) return peer.closing;
     // Cancel synchronously, before crypto/storage may resume; only BYE may leave afterward.

@@ -410,6 +410,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       ack: 'ignore',
       edit: 'ignore',
       answer: 'ignore',
+      native_answer: 'ignore',
       ping: 'ignore',
       pong: 'ignore',
       bullet_expand_request: 'ignore',
