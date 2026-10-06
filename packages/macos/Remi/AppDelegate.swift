@@ -22,9 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() { pushTokens = .shared; super.init() }
     init(pushTokens: NativePushTokenOwner) { self.pushTokens = pushTokens; super.init() }
 
-    // Constructible OS-delegate boundary scaffold; the next pin drives capture.
-    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {}
-    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+        pushTokens.recordFromOS(token)
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
+    }
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        pushTokens.clearFromOS()
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // LSUIElement in Info.plist already makes this an accessory app

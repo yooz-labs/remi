@@ -1,11 +1,23 @@
 # Native secure-push persistence and environment query (#1200)
 
-This directory currently implements the native persistence and APNs environment
-boundaries. Secure registration and NSE/action consumers still need to be
-connected. The
-notification extension now clears unsigned outer authority, but its effect
-coordinator is still a fail-closed scaffold; verified publication/actions are not
-yet implemented.
+This directory implements native persistence, original-capsule verification,
+notification publication, quiet dismissal, and foreground action verification.
+Verified actions open the app; native answer transport is still pending #1201.
+The registration coordinator and guarded bundled-WebKit operations are connected
+to actual OS token callbacks. Web subscription requests and the visible enable
+control still need to be connected.
+
+Registration reads only an actual OS delegate token, captures its epoch, and
+resolves the runtime APNs environment for each attempt. The bundled main document
+may request permission explicitly, prepare public subscription metadata, and
+validate a one-use native ticket immediately before sending it. These operations
+recheck foreground, document, private identity, durable authority, completed
+machine trust, sealing key, and token lifetime. Pending requests and tickets share
+a 32-entry bound without live eviction; tickets and permission requests expire
+after thirty seconds. Losing the foreground or document cancels continuations;
+late system callbacks cannot regain authority. No permission prompt runs at macOS
+startup. Build entitlement declarations do not replace the runtime query or prove
+signed registration.
 
 `NativePushState` stores public identity authority and completed machine trust in
 SQLite. A nonblocking advisory file lock serializes identity writers. Every

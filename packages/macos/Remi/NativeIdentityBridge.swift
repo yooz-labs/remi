@@ -27,6 +27,16 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let pushEnvironment: @MainActor () -> NativeAPNsEnvironment
     private let notificationAuthorization: @MainActor () async throws -> Bool
     private let remoteRegistration: @MainActor () -> Void
+    private struct RegistrationTicket {
+        let prepared: NativePushRegistration.Prepared
+        let registration: NativePushRegistration
+        let documentGeneration: UInt64
+        let deadline: TimeInterval
+    }
+    private var registrationTickets: [String: RegistrationTicket] = [:]
+    private var pushTasks: [String: Task<Void, Never>] = [:]
+    private var registrationExpirations: [String: Task<Void, Never>] = [:]
+    private var enablingPush: String?
     private struct PairingAttempt {
         let id: String
         let identity: NativePushState.Authority
@@ -42,6 +52,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var unlockedRevision: String?
     private var inactiveObserver: NSObjectProtocol?
     private var replacedObserver: NSObjectProtocol?
+    private var tokenObserver: NSObjectProtocol?
     private let qrPicker = NativeQRImagePicker()
     private let selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)?
     private var documentGeneration: UInt64 = 0
@@ -55,8 +66,8 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
          pushKeys: @escaping () throws -> NativePushKeyStore = NativePushConfiguration.sharedKeyStore,
          pushTokens: NativePushTokenOwner = .shared,
          pushEnvironment: @escaping @MainActor () -> NativeAPNsEnvironment = { NativeAPNsEnvironment() },
-         notificationAuthorization: @escaping @MainActor () async throws -> Bool = { throw NativePushStateError.unavailable },
-         remoteRegistration: @escaping @MainActor () -> Void = {},
+         notificationAuthorization: @escaping @MainActor () async throws -> Bool = { await NativePushPermission.request() },
+         remoteRegistration: @escaping @MainActor () -> Void = { NativePushPermission.register() },
          foreground: @escaping @MainActor () -> Bool = { NativeForegroundUnlock.isActive() },
          authorization: @escaping @MainActor () async -> Bool = NativeForegroundUnlock.authenticate,
          selectedQRImage: (@MainActor (WKWebView) async throws -> Data?)? = nil) {
@@ -81,6 +92,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
                     self?.unlockedRevision = nil
                     self?.documentGeneration &+= 1
                     self?.pairingAttempts.removeAll()
+                    self?.cancelPushRequests()
                     self?.cancelQR()
                     // Public-only lifecycle notice lets the web owner discard derived relay keys.
                     self?.webView?.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-identity-locked'))")
@@ -88,11 +100,20 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         replacedObserver = NotificationCenter.default.addObserver(forName: .nativeIdentityReplaced,
             object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelQR() }
+                MainActor.assumeIsolated { self?.unlockedRevision = nil; self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelPushRequests(); self?.cancelQR() }
             }
+        tokenObserver = NotificationCenter.default.addObserver(forName: .nativePushTokenChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.foreground(), let web = self.webView, !web.isLoading,
+                      Self.isBundledDocument(web.url, scheme: self.scheme) else { return }
+                // Availability only: a guarded request reads the token.
+                web.evaluateJavaScript("window.dispatchEvent(new Event('remi:native-push-token-changed'))")
+            }
+        }
     }
 
     deinit {
+        if let tokenObserver { NotificationCenter.default.removeObserver(tokenObserver) }
         if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
         if let replacedObserver { NotificationCenter.default.removeObserver(replacedObserver) }
     }
@@ -119,10 +140,70 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             cancelQR()
             documentGeneration &+= 1
             pairingAttempts.removeAll()
+            cancelPushRequests()
             webView = message.webView
             documentObserver = message.webView?.observe(\.isLoading, options: [.new]) { [weak self] web, _ in
-                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelQR() } }
+                if web.isLoading { MainActor.assumeIsolated { self?.documentGeneration &+= 1; self?.pairingAttempts.removeAll(); self?.cancelPushRequests(); self?.cancelQR() } }
             }
+        }
+        if let request = message.body as? [String: Any],
+           ["enableSecurePush", "preparePushRegistration"].contains(request["op"] as? String ?? "") {
+            do {
+                guard JSONSerialization.isValidJSONObject(request),
+                      try JSONSerialization.data(withJSONObject: request).count <= 8192,
+                      let web = message.webView else { throw NativeIdentityError.malformed }
+                let enabling = request["op"] as? String == "enableSecurePush"
+                guard Set(request.keys) == (enabling ? ["op", "publicKey", "revision"] : ["op", "publicKey", "revision", "rid"]),
+                      pushTasks.count + registrationTickets.count < 32,
+                      !enabling || enablingPush == nil else { throw NativePushStateError.busy }
+                let identity = try pairingIdentity(request)
+                let generation = documentGeneration
+                let state = try pushState()
+                let nativeGeneration = try state.authorityGeneration()
+                let deadline = ProcessInfo.processInfo.systemUptime + 30
+                let id = UUID().uuidString
+                if enabling { enablingPush = id }
+                pushTasks[id] = Task { @MainActor [weak self, weak web] in
+                    guard let self, let web else { replyHandler(nil, "Secure push setup unavailable"); return }
+                    defer { pushTasks.removeValue(forKey: id); if enablingPush == id { enablingPush = nil } }
+                    let current = { @MainActor [weak self, weak web] () -> Bool in
+                        guard let self, let web, !Task.isCancelled, foreground(), webView === web,
+                              documentGeneration == generation, !web.isLoading,
+                              ProcessInfo.processInfo.systemUptime < deadline,
+                              Self.isBundledDocument(web.url, scheme: scheme) else { return false }
+                        return (try? pairingIdentity(request)) == identity &&
+                            (try? state.authorityGeneration()) == nativeGeneration &&
+                            (try? state.currentAuthority()) == identity
+                    }
+                    do {
+                        if enabling {
+                            let environment = await pushEnvironment().resolve(stillCurrent: current)
+                            guard environment != .unavailable, current(), try await notificationAuthorization(), current() else {
+                                throw NativePushStateError.unavailable
+                            }
+                            remoteRegistration()
+                            replyHandler(["requested": true], nil)
+                        } else {
+                            let r = NativePushRegistration(state: try pushState(), keys: try pushKeys(), tokens: pushTokens,
+                                environment: pushEnvironment)
+                            let prepared = try await r.prepare(rid: bytes(request["rid"], count: 16...16), authority: identity,
+                                stillCurrent: current)
+                            guard current() else { throw NativeIdentityError.changed }
+                            try r.recheck(prepared, stillCurrent: current)
+                            registrationTickets[id] = RegistrationTicket(prepared: prepared, registration: r,
+                                documentGeneration: generation, deadline: ProcessInfo.processInfo.systemUptime + 30)
+                            registrationExpirations[id] = Task { @MainActor [weak self] in
+                                do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
+                                self?.registrationTickets.removeValue(forKey: id)
+                                self?.registrationExpirations.removeValue(forKey: id)
+                            }
+                            replyHandler(["token": prepared.token, "environment": prepared.environment,
+                                "pushPublicKey": prepared.pushPublicKey, "keyVersion": prepared.keyVersion, "ticket": id], nil)
+                        }
+                    } catch { replyHandler(nil, "Secure push setup unavailable. Enable notifications and check the signed app setup.") }
+                }
+            } catch { replyHandler(nil, "Secure push setup unavailable") }
+            return
         }
         if let request = message.body as? [String: Any],
            ["scanQR", "cancelQR"].contains(request["op"] as? String ?? "") {
@@ -199,6 +280,16 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
         qrPicker.cancel()
     }
 
+    private func cancelPushRequests() {
+        for task in pushTasks.values { task.cancel() }
+        // Keep cancelled continuations counted until their own completion. A
+        // document replacement cannot evict a still-retained live OS request.
+        enablingPush = nil
+        registrationTickets.removeAll()
+        for task in registrationExpirations.values { task.cancel() }
+        registrationExpirations.removeAll()
+    }
+
     private func bytes(_ value: Any?, count: ClosedRange<Int>) throws -> Data {
         guard let value = value as? String, let bytes = Data(base64Encoded: value),
               bytes.base64EncodedString() == value, count.contains(bytes.count)
@@ -244,6 +335,19 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
               let op = request["op"] as? String
         else { throw NativeIdentityError.malformed }
         switch op {
+        case "validatePushRegistration":
+            guard Set(request.keys) == ["op", "publicKey", "revision", "ticket"],
+                  let id = request["ticket"] as? String,
+                  let ticket = registrationTickets.removeValue(forKey: id) else { throw NativeIdentityError.changed }
+            registrationExpirations.removeValue(forKey: id)?.cancel()
+            guard ticket.documentGeneration == documentGeneration,
+                  ticket.deadline > ProcessInfo.processInfo.systemUptime,
+                  try pairingIdentity(request) == ticket.prepared.authority else { throw NativeIdentityError.changed }
+            try ticket.registration.recheck(ticket.prepared, stillCurrent: {
+                self.documentGeneration == ticket.documentGeneration &&
+                    (try? self.pairingIdentity(request)) == ticket.prepared.authority
+            })
+            return ["current": true]
         case "beginPushPairing":
             guard Set(request.keys) == ["op", "publicKey", "revision"] else { throw NativeIdentityError.malformed }
             let identity = try pairingIdentity(request)
@@ -314,6 +418,7 @@ final class NativeIdentityBridge: NSObject, WKScriptMessageHandlerWithReply {
             // Begin has no machine selector. Close every pending READY lifetime
             // after durable forget so an earlier reconnect cannot restore trust.
             pairingAttempts.removeAll()
+            cancelPushRequests()
             return ["forgotten": true]
         case "public":
             guard Set(request.keys) == ["op"] else { throw NativeIdentityError.malformed }

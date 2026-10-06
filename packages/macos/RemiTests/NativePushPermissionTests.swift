@@ -22,6 +22,7 @@ final class NativePushPermissionTests: XCTestCase {
         for _ in 0..<50 where completion == nil { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertNotNil(completion)
         task.cancel()
+        completion?(true)
         let result = await task.value
         XCTAssertFalse(result)
         completion?(true)
