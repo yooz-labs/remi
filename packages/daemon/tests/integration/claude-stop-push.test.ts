@@ -102,6 +102,7 @@ interface Session {
   workName: string;
   ws: WebSocket;
   submit(promptId: string, sessionId?: string): Promise<void>;
+  failure(error: string): Promise<{ status: number; body: unknown }>;
   stop(
     promptId: string,
     message: string,
@@ -214,6 +215,21 @@ async function startSession(legacyEnabled: boolean): Promise<Session> {
     claudeSessionId,
     workName: path.basename(fs.realpathSync(work)),
     ws,
+    failure: async (error) => {
+      const response = await fetch(`http://127.0.0.1:${hookPort}/hooks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'StopFailure',
+          session_id: claudeSessionId,
+          cwd: fs.realpathSync(work),
+          transcript_path: '/x.jsonl',
+          permission_mode: 'default',
+          error,
+        }),
+      });
+      return { status: response.status, body: await response.json() };
+    },
     submit: (promptId, sessionId = claudeSessionId) =>
       post({
         hook_event_name: 'UserPromptSubmit',
@@ -258,6 +274,26 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
       await sleep(SETTLE_MS);
       expect(s.pushes).toEqual([]);
       expect(s.daemon.output.text).not.toContain('DEFAULT-OFF-ANSWER');
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
+  test('a valid StopFailure reaches the sink without logging its unknown private error', async () => {
+    const s = await startSession(false);
+    try {
+      const sentinel = 'PRIVATE-STOP-FAILURE-SENTINEL';
+      const response = await s.failure(sentinel);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({});
+      await pollUntil(
+        () => s.daemon.output.text.includes('[TurnFailedPush] legacy failed'),
+        10000,
+        'the actual turn-failed dispatcher to report its disabled legacy attempt',
+      );
+      await sleep(SETTLE_MS);
+      expect(s.pushes).toEqual([]);
+      expect(s.daemon.output.text).not.toContain(sentinel);
     } finally {
       s.ws.close();
     }
