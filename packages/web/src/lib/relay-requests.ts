@@ -4,6 +4,9 @@ import {
   type ProtocolMessage,
   type RelayDeviceRevokeResponseMessage,
   type RelayDevicesResponseMessage,
+  type SecurePushRegistration,
+  type SecurePushRegisterResponseMessage,
+  type SecurePushUnregisterResponseMessage,
   generateId,
   now,
 } from '@remi/shared';
@@ -125,6 +128,12 @@ export class RelayRequests {
       timestamp: now(),
       fingerprint,
     }) as Promise<RelayDeviceRevokeResponseMessage>;
+  }
+  registerPush(_metadata: SecurePushRegistration): Promise<SecurePushRegisterResponseMessage> {
+    return Promise.reject(new Error('Secure subscription unavailable.'));
+  }
+  unregisterPush(): Promise<SecurePushUnregisterResponseMessage> {
+    return Promise.reject(new Error('Secure subscription unavailable.'));
   }
   private request(request: ProtocolMessage): Promise<DeviceResponse> {
     if (this.pending.size >= 128)
