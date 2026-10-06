@@ -68,7 +68,8 @@ enum NativePushCodec {
         let recipient: NativePushKeyStore.Key
         let generation: Int64
         do {
-            guard let currentTrust = try state.machineTrust(rid: rid), let currentKey = try keys.load() else { throw NativePushCodecError.unavailable }
+            guard let currentTrust = try state.machineTrust(rid: rid), currentTrust.relayUrl != nil,
+                  let currentKey = try keys.load() else { throw NativePushCodecError.unavailable }
             trust = currentTrust; recipient = currentKey; generation = try state.authorityGeneration()
             guard generation > 0, try state.currentAuthority() == trust.authority else { throw NativePushCodecError.changed }
         } catch let error as NativePushCodecError { throw error }
