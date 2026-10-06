@@ -93,6 +93,12 @@ final class NativePushNotificationConsumer {
             finish(id, outcome: .removed(identifiers.count))
         } catch { finish(id, outcome: .unavailable) }
     }
+    /// Constructible fail-closed routing/presentation scaffold; adapters remain
+    /// unwired until their actual capsule/caller pins pass.
+    static func routeAction(userInfo: [AnyHashable: Any], identifier: String,
+                            consumerFactory: () throws -> NativePushNotificationConsumer = configured,
+                            legacy: () -> Void) -> Bool { false }
+    func allowsPresentation(_ content: UNNotificationContent) -> Bool { false }
     func receiveAction(userInfo: [AnyHashable: Any], identifier: String) -> ActionOutcome {
         do {
             _ = try effectFactory().action(userInfo: userInfo, identifier: identifier)
