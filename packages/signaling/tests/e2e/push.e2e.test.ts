@@ -492,6 +492,39 @@ test('real low nonce capacity refuses without live eviction and reclaims only at
   expect((await roomState(w, m.ridHex)).storage).not.toHaveProperty(`push-nonce:${first.nonce}`);
 }, 15000);
 
+// #1200 A2 (#723): dismissals are quiet pushes that must not queue behind alerts. A shared
+// per-room budget left answered cards on lock screens, which is why legacy gave dismissals their
+// own, larger ceiling.
+test('a dismissal has its own per-room budget: exhausting the alert budget does not refuse it', async () => {
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({ PUSH_SEND_RID: '1' });
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  expect(await post(w, await submission(w, m, d, p))).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+  });
+  const dismissal = await post(w, await submission(w, m, d, p, { pushClass: 'background' }));
+  expect(dismissal.outcome).toBe('accepted');
+  expect(requests.map((q) => q.headers['apns-push-type'])).toEqual(['alert', 'background']);
+}, 15000);
+
+test('alerts do not consume the dismissal budget and the dismissal budget is its own ceiling', async () => {
+  const {
+    worker: w,
+    machine: m,
+    device: d,
+    recipient: p,
+  } = await setup({ PUSH_SEND_RID_BACKGROUND: '1' });
+  const dismiss = () => submission(w, m, d, p, { pushClass: 'background' });
+  expect((await post(w, await dismiss())).outcome).toBe('accepted');
+  expect(await post(w, await dismiss())).toMatchObject({
+    outcome: 'rejected',
+    reason: 'RATE_LIMITED',
+    retryable: true,
+  });
+  expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
+  expect(requests.length).toBe(2);
+}, 15000);
+
 for (const name of ['PUSH_SEND_IP', 'PUSH_SEND_RID', 'PUSH_SEND_TOKEN', 'PUSH_SEND_AGGREGATE'])
   test(`actual durable ${name} low policy counts without APNs second send`, async () => {
     const { worker: w, machine: m, device: d, recipient: p } = await setup({ [name]: '1' });
