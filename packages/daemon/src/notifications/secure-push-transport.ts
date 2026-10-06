@@ -273,6 +273,9 @@ export class SecurePushTransport {
         nonce: r.b64u(r.systemRandom(32)),
         issuedAt,
         expiresAt,
+        // #1200: APNs keeps the notification for an offline phone until the content expires, not
+        // just for the 60 s the Worker accepts this submit; never past the content TTL.
+        storeUntil: Math.min(content.expiresAt, issuedAt + r.PUSH_CONTENT_TTL_SECONDS),
         sealed: r.b64u(sealed),
       };
       const input = await r.buildPushSubmitSigningInput(unsigned);

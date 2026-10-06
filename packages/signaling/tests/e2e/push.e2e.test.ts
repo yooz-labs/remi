@@ -135,6 +135,7 @@ async function submission(
     r.systemRandom,
   );
   // The Worker's view (#1200): the class, never the sealed kind or key metadata.
+  const expiresAt = changes.expiresAt ?? now + 50;
   const unsigned: r.UnsignedPushSubmit = {
     v: 2,
     audience: w.url,
@@ -147,7 +148,8 @@ async function submission(
     pushClass: 'alert',
     nonce: r.b64u(r.systemRandom(32)),
     issuedAt: now,
-    expiresAt: now + 50,
+    expiresAt,
+    storeUntil: changes.storeUntil ?? expiresAt,
     sealed: r.b64u(sealed),
     ...changes,
   };

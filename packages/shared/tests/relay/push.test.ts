@@ -295,6 +295,7 @@ async function signedSubmission() {
     nonce: r.b64u(seed('submit nonce')),
     issuedAt: content.issuedAt,
     expiresAt: 1050,
+    storeUntil: content.expiresAt,
     sealed: r.b64u(sealed),
   };
   const signature = r.b64u(await machine.sign(await build(unsigned)));
@@ -319,6 +320,7 @@ test('the submit hands the Worker only what it needs; kind and key metadata stay
     'rid',
     'sealed',
     'signature',
+    'storeUntil',
     'token',
     'v',
   ]);
@@ -367,6 +369,7 @@ test('actual outer machine proof binds every submission field and distinguishes 
     nonce: r.b64u(seed('other nonce')),
     issuedAt: 999,
     expiresAt: 1049,
+    storeUntil: 1101,
     sealed: r.b64u(new Uint8Array(r.fromB64u(signed.sealed).length)),
     signature: r.b64u(new Uint8Array(64)),
   };
@@ -509,7 +512,12 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
   ).toBe('MALFORMED');
   for (const skew of [60, 61]) {
     const actual = await signedSubmission();
-    const matching = { ...actual.unsigned, issuedAt: now + skew, expiresAt: now + skew + 60 };
+    const matching = {
+      ...actual.unsigned,
+      issuedAt: now + skew,
+      expiresAt: now + skew + 60,
+      storeUntil: now + skew + 60,
+    };
     const proof = {
       ...matching,
       signature: r.b64u(await actual.machine.sign(await r.buildPushSubmitSigningInput(matching))),

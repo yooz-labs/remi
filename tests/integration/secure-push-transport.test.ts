@@ -176,6 +176,7 @@ test('secure transport binds actual signer, signs each tuple once and reuses imm
     'rid',
     'sealed',
     'signature',
+    'storeUntil',
     'token',
     'v',
   ]);
@@ -204,7 +205,8 @@ test('secure transport signs an APNs storage deadline that follows the content e
     ownedOrigin: received.server.url.origin,
   });
   const now = Math.floor(Date.now() / 1000);
-  const long = { ...f.metadata, issuedAt: now, expiresAt: now + 600 };
+  // An informational event lives up to 300 s; the Worker still accepts the submit for 60 s only.
+  const long = { ...f.metadata, issuedAt: now, expiresAt: now + 250 };
   const prepared = await transport.prepare(f.snapshot, long, f.payload, () => true);
   if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
   expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });

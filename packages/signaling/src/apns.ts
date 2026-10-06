@@ -324,7 +324,9 @@ export function buildSecureApnsRequest(
       'apns-push-type': background ? 'background' : 'alert',
       'apns-priority': background ? '5' : '10',
       'apns-collapse-id': s.collapseId,
-      'apns-expiration': String(s.expiresAt),
+      // #1200: Apple stores the notification for an offline phone until the signed storage
+      // deadline (the content expiry), which is not the 60 second window the submit was valid in.
+      'apns-expiration': String(s.storeUntil),
     },
     body,
   };

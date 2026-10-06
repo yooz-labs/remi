@@ -155,6 +155,8 @@ export async function buildPushVectors() {
       nonce: r.b64u(seed(`push vector submit nonce ${i}`)),
       issuedAt: content.issuedAt,
       expiresAt: 1700000050,
+      // APNs may keep the notification until the content itself expires (#1200).
+      storeUntil: content.expiresAt,
       sealed: r.b64u(sealed),
     };
     const submitInput = await r.buildPushSubmitSigningInput(unsigned);

@@ -21,6 +21,7 @@ test('largest canonical carrier framing fits actual4096 APNs JSON without unsign
       sealed: r.b64u(new Uint8Array(2141)),
       issuedAt: Number.MAX_SAFE_INTEGER - 60,
       expiresAt: Number.MAX_SAFE_INTEGER,
+      storeUntil: Number.MAX_SAFE_INTEGER,
     }),
   );
   const built = buildSecureApnsRequest(maximum, 'owned.jwt', 'owned.topic');

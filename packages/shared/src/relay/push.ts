@@ -149,7 +149,14 @@ export interface UnsignedPushSubmit {
   readonly pushClass: PushClass;
   readonly nonce: string;
   readonly issuedAt: number;
+  /** Last second the Worker may accept this submit: at most 60 s after `issuedAt`. */
   readonly expiresAt: number;
+  /**
+   * Until when APNs may store the notification for an offline phone (`apns-expiration`, #1200):
+   * the content expiry, never before `expiresAt` and never more than the content TTL after
+   * `issuedAt`. It does not widen the acceptance window above.
+   */
+  readonly storeUntil: number;
   readonly sealed: string;
 }
 export interface PushSubmit extends UnsignedPushSubmit {
@@ -206,6 +213,7 @@ const SUBMIT_KEYS = [
   'nonce',
   'issuedAt',
   'expiresAt',
+  'storeUntil',
   'sealed',
   'signature',
 ] as const;
@@ -585,6 +593,8 @@ function submission(value: unknown, signed: boolean): PushSubmit | UnsignedPushS
   const issuedAt = integer(o['issuedAt']);
   const expiresAt = integer(o['expiresAt']);
   lifetime(issuedAt, expiresAt, PUSH_SUBMIT_TTL_SECONDS);
+  const storeUntil = integer(o['storeUntil']);
+  if (storeUntil < expiresAt || storeUntil - issuedAt > PUSH_CONTENT_TTL_SECONDS) malformed();
   const audience = str(o['audience'], 1, 512);
   try {
     const url = new URL(audience);
@@ -616,6 +626,7 @@ function submission(value: unknown, signed: boolean): PushSubmit | UnsignedPushS
     nonce: o['nonce'] as string,
     issuedAt,
     expiresAt,
+    storeUntil,
     sealed: o['sealed'],
   };
   if (!signed) return result;
@@ -638,6 +649,7 @@ async function submitBody(value: UnsignedPushSubmit): Promise<Bytes> {
     binary(s.nonce, 32),
     be64(s.issuedAt),
     be64(s.expiresAt),
+    be64(s.storeUntil),
     await sha256(fromB64u(s.sealed)),
   );
 }
