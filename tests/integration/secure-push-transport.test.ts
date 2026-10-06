@@ -412,6 +412,61 @@ test('secure transport finite remaining-expiry wait aborts a real stalled receiv
   expect(received.bodies).toHaveLength(1);
 });
 
+// #1200 A1: the Worker refuses a submit that lacks its per-deployment secret, so the transport
+// must send it on every attempt, and only in the Authorization header.
+test('secure transport sends the deployment secret as a bearer on every attempt and nowhere else', async () => {
+  const f = await fixture();
+  const secret = 'owned-deployment-secret-9f2c';
+  const authorizations: (string | null)[] = [];
+  const received = receiver(async (req, body, count) => {
+    authorizations.push(req.headers.get('authorization'));
+    const { requestDigest } = await r.verifyPushSubmit(
+      r.decodePushSubmit(body),
+      { rid: f.metadata.rid, audience: new URL(req.url).origin },
+      Math.floor(Date.now() / 1000),
+    );
+    return new Response(
+      r.encodePushSubmitResult(
+        count === 1
+          ? { v: 2, outcome: 'rejected', requestDigest, reason: 'RATE_LIMITED', retryable: true }
+          : { v: 2, outcome: 'accepted', requestDigest },
+      ),
+    );
+  });
+  const Transport = await transportClass();
+  const transport = Transport.forOwnedLoopbackTest({
+    store: f.store,
+    signer: f.signer,
+    audience: received.server.url.origin,
+    ownedOrigin: received.server.url.origin,
+    pushSecret: secret,
+    retryDelayMs: 1,
+  });
+  const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+  if (prepared.outcome !== 'prepared') throw new Error('expected prepared capability');
+  const delivery = await transport.sendPrepared(prepared.prepared);
+  expect(delivery).toMatchObject({ outcome: 'accepted', attempts: 2 });
+  expect(authorizations).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  expect(received.bodies.join('')).not.toContain(secret);
+  expect(JSON.stringify(delivery)).not.toContain(secret);
+  expect(JSON.stringify(prepared.prepared)).not.toContain(secret);
+});
+test('secure transport refuses a deployment secret fetch could not send as a header', async () => {
+  const f = await fixture();
+  const received = receiver(() => Response.json({}));
+  const Transport = await transportClass();
+  for (const pushSecret of ['', '   ', 'line\nbreak', 'caf\u00e9', 'tab\there'])
+    expect(() =>
+      Transport.forOwnedLoopbackTest({
+        store: f.store,
+        signer: f.signer,
+        audience: received.server.url.origin,
+        ownedOrigin: received.server.url.origin,
+        pushSecret,
+      }),
+    ).toThrow('SECURE_PUSH_SECRET');
+});
+
 test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 effect', async () => {
   const f = await fixture();
   const { createServer } = await import('node:http');
@@ -440,6 +495,7 @@ test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 
       APNS_PRIVATE_KEY: pem,
       APNS_BUNDLE_ID: 'owned.synthetic.topic',
       TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      PUSH_SECRET: 'owned-deployment-secret-9f2c',
     },
     true,
   );
@@ -459,6 +515,7 @@ test('secure transport real Worker and SQLite DO accept one owned APNs HTTP/1.1 
       signer: f.signer,
       audience: worker.url,
       ownedOrigin: worker.url,
+      pushSecret: 'owned-deployment-secret-9f2c',
     });
     const prepared = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
     expect(prepared.outcome).toBe('prepared');
