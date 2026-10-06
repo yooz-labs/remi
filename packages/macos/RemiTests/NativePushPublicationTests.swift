@@ -148,21 +148,17 @@ final class NativePushPublicationTests: XCTestCase {
         wait(for: [probe.activity], timeout: 3)
         return (service, probe)
     }
-    func testActualNSECommitsBeforeCategoryWaitAndPublishesOnlySignedContent() throws {
+    func testActualNSECommitsLifecycleBeforePublishingOnlySignedContent() throws {
         let (service, probe) = try begin()
         defer { service.serviceExtensionTimeWillExpire() }
-        guard let category = probe.installedCategory() else { XCTFail("Actual signed YN must reach native category installation"); return }
-        XCTAssertTrue(probe.snapshot().isEmpty, "No delivery before the asynchronous category boundary")
+        wait(for: [probe.completed], timeout: 3)
         let opened = try NativePushCodec.open(userInfo: info("question-yn"), state: state, keys: keys, now: clock)
         let other = try NativePushState(file: directory.appendingPathComponent("public.sqlite"))
-        XCTAssertNoThrow(try other.reverifyLatestContent(opened.record, trust: opened.trust, now: clock), "NSE must durably commit before waiting")
-        XCTAssertEqual(category.actions.map(\.identifier), ["OPT_0", "OPT_1"])
-        XCTAssertTrue(category.actions.allSatisfy { $0.options.contains(.foreground) }, "R5 actions open app until R6 has a native submission owner")
-        probe.release(true); wait(for: [probe.completed], timeout: 3)
+        XCTAssertNoThrow(try other.reverifyLatestContent(opened.record, trust: opened.trust, now: clock), "NSE must durably commit before publishing")
         let result = try XCTUnwrap(probe.snapshot().first)
         guard case .question(let question) = opened.payload else { XCTFail("Shared fixture must be a real question"); return }
         XCTAssertEqual(result.title, question.title); XCTAssertEqual(result.body, question.body)
-        XCTAssertEqual(result.categoryIdentifier, category.identifier)
+        XCTAssertEqual(result.categoryIdentifier, "")
         XCTAssertEqual(Set(result.userInfo.keys.compactMap { $0 as? String }), ["remiPush"])
         let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock })
         XCTAssertTrue(consumer.allowsPresentation(result), "The actual foreground consumer must verify the original NSE capsule and signed text")
@@ -171,13 +167,11 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertFalse(consumer.allowsPresentation(forged))
         forged.title = result.title; forged.categoryIdentifier = "REMI_YNA"
         XCTAssertFalse(consumer.allowsPresentation(forged), "An unverified static category cannot grant native foreground actions")
-
     }
     func testActualNSEForegroundRejectsUnsignedSubtitleOnVerifiedAndFallbackContent() throws {
         let (service, probe) = try begin()
         defer { service.serviceExtensionTimeWillExpire() }
-        guard probe.installedCategory() != nil else { XCTFail("Signed capsule must reach actual NSE category boundary"); return }
-        probe.release(true); wait(for: [probe.completed], timeout: 3)
+        wait(for: [probe.completed], timeout: 3)
         let content = try XCTUnwrap(probe.snapshot().first)
         let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock })
         XCTAssertTrue(consumer.allowsPresentation(content), "Unaltered actual NSE result remains presentable")
@@ -197,63 +191,22 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertFalse(NativePushNotificationConsumer.isGenericFallback(alteredFallback), "Generic fallback must contain only its fixed text")
         XCTAssertFalse(consumer.allowsPresentation(alteredFallback), "Missing keys cannot authenticate an extra subtitle")
     }
-    func testActualNSECategoryRefusalPreservesVerifiedTextWithoutActions() throws {
-        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
-        guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
-        probe.release(false); wait(for: [probe.completed], timeout: 3)
-        let result = try XCTUnwrap(probe.snapshot().first)
-        XCTAssertNotEqual(result.title, "FORGED outer title")
-        XCTAssertNotEqual(result.title, "Remi needs your attention")
-        XCTAssertEqual(result.categoryIdentifier, "")
-    }
-    func testActualNSEExpirationSuppressesLateCategoryCallback() throws {
-        let (service, probe) = try begin()
-        guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
-        service.serviceExtensionTimeWillExpire(); wait(for: [probe.completed], timeout: 3)
-        let result = try XCTUnwrap(probe.snapshot().first)
-        probe.release(true); service.serviceExtensionTimeWillExpire()
-        XCTAssertEqual(result.title, "Remi needs your attention"); XCTAssertEqual(result.categoryIdentifier, "")
-        XCTAssertEqual(probe.snapshot().count, 1, "Late callback cannot deliver a second notification")
-    }
-    func testActualNSESamePublicRecoveryAfterWaitRefusesPublication() throws {
-        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
-        guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
-        let old = try XCTUnwrap(state.currentAuthority())
-        let trust = try XCTUnwrap(state.machineTrust(rid: hex(XCTUnwrap((cases[0]["content"] as? [String: Any])?["rid"] as? String))))
-        let lease = try state.acquireIdentityMutation()
-        let generation = try lease.invalidateIdentityAuthority()
-        try lease.installIdentityAuthority(publicKey: old.publicKey, revision: old.revision,
-            requiresAppUnlock: old.requiresAppUnlock, generation: generation)
-        try state.installMachineTrust(trust, generation: generation); lease.release()
-        XCTAssertEqual(try state.currentAuthority(), old)
-        probe.release(true); wait(for: [probe.completed], timeout: 3)
+    func testActualNSEExpiryBeforePreparationDeliversTheFallbackAndLateWorkCannotPublish() throws {
+        let release = DispatchSemaphore(value: 0)
+        let probe = DeliveryProbe(self)
+        let service = NotificationService(effectFactory: { release.wait(); return self.effect() }, installCategory: probe.installed)
+        let content = UNMutableNotificationContent()
+        content.userInfo = try info("question-yn")
+        service.didReceive(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil),
+                           withContentHandler: probe.delivered)
+        service.serviceExtensionTimeWillExpire()
+        wait(for: [probe.activity, probe.completed], timeout: 3)
+        release.signal()
+        service.serviceExtensionTimeWillExpire()
+        Thread.sleep(forTimeInterval: 0.3)
         let result = try XCTUnwrap(probe.snapshot().first)
         XCTAssertEqual(result.title, "Remi needs your attention"); XCTAssertEqual(result.categoryIdentifier, "")
-    }
-    func testActualNSERecipientRotationAfterWaitRefusesPublication() throws {
-        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
-        guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
-        let next = P256.KeyAgreement.PrivateKey()
-        struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
-        let bytes = try JSONEncoder().encode(Record(version: 1, privateDER: next.derRepresentation,
-            publicKey: next.publicKey.x963Representation, keyVersion: 3))
-        XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: bytes] as CFDictionary), errSecSuccess)
-        probe.release(true); wait(for: [probe.completed], timeout: 3)
-        let result = try XCTUnwrap(probe.snapshot().first)
-        XCTAssertEqual(result.title, "Remi needs your attention"); XCTAssertEqual(result.categoryIdentifier, "")
-    }
-    func testActualNSESignedDismissDuringWaitRefusesOldCard() throws {
-        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
-        guard probe.installedCategory() != nil else { XCTFail("Signed YN must reach the real category boundary"); return }
-        let original = try NativePushCodec.open(userInfo: info("question-yn"), state: state, keys: keys, now: clock)
-        let dismiss = try reseal(vector("dismiss")) { fields in
-            fields[5] = Data(original.record.collapseId.utf8); fields[6] = self.be64(UInt64(original.record.revision + 1))
-        }
-        let terminal = try effect().prepare(userInfo: ["remiPush": dismiss])
-        XCTAssertEqual(terminal.outcome, .dismiss)
-        probe.release(true); wait(for: [probe.completed], timeout: 3)
-        let result = try XCTUnwrap(probe.snapshot().first)
-        XCTAssertEqual(result.title, "Remi needs your attention"); XCTAssertEqual(result.categoryIdentifier, "")
+        XCTAssertEqual(probe.snapshot().count, 1, "Late preparation cannot deliver a second notification")
     }
     func testActualNSEDuplicateCannotReinstallPermissionCard() throws {
         var prepared: NativePushEffect.Prepared?

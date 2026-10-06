@@ -4,9 +4,11 @@ import CryptoKit
 import UIKit
 import Capacitor
 
-/// #1200 v2 actions are consumed by the independent native verifier and open
-/// the app until R6 supplies its sole native submission owner. #591's direct
-/// signed relay remains only for explicitly legacy notifications.
+/// #1200: a v2 notification offers no answer actions until R6 supplies its sole
+/// native submission owner, so every response to one (the default tap, which the
+/// OS opens the app for, or a stale action) is consumed here without running the
+/// legacy relay or the wrapped Capacitor handler. #591's direct signed relay
+/// remains only for explicitly legacy notifications.
 ///
 /// For legacy notifications, wraps Capacitor's push `NotificationHandlerProtocol`
 /// so a direct lock-screen Yes/No/Always tap is signed
@@ -78,8 +80,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     func didReceive(response: UNNotificationResponse) {
         // The v2 router runs before ANY outer IDs/options are read. Its legacy
         // closure is never called for v2, including malformed or unavailable.
-        _ = NativePushNotificationConsumer.routeAction(
-            userInfo: response.notification.request.content.userInfo, identifier: response.actionIdentifier,
+        NativePushNotificationConsumer.routeResponse(
+            userInfo: response.notification.request.content.userInfo,
             legacy: { [self] in
                 relay(response: response)
                 wrapped?.didReceive(response: response)

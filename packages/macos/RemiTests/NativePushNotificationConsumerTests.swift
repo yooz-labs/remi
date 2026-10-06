@@ -199,18 +199,6 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         wait(for: [probe.activity, probe.completed], timeout: 3)
         XCTAssertEqual(probe.snapshot().0, .unavailable); XCTAssertFalse(probe.wasRead()); XCTAssertTrue(probe.snapshot().1.isEmpty)
     }
-    func testActualV2ActionOwnerIndependentlyVerifiesOriginalChoiceAndOnlyOpensApp() throws {
-        _ = try effect().prepare(userInfo: info("question-yn"))
-        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock }, readDelivered: { _ in XCTFail("Actions must not scan notifications") }, removeDelivered: { _ in XCTFail("Actions must not remove a card") })
-        var original = try info("question-yn"); original["opt_0"] = "FORGED ANSWER"; original["questionId"] = "FORGED ROUTE"; original["verified"] = false
-        XCTAssertEqual(consumer.receiveAction(userInfo: original, identifier: "OPT_0"), .verifiedOpenApp,
-            "Verified v2 choice is owned natively and opens app; no legacy or independent JS submission")
-        XCTAssertEqual(consumer.receiveAction(userInfo: original, identifier: "OPT_00"), .unavailable)
-        XCTAssertEqual(consumer.receiveAction(userInfo: ["verified": true, "opt_0": "allow"], identifier: "OPT_0"), .unavailable)
-        _ = try effect().prepare(userInfo: terminalInfo())
-        XCTAssertEqual(consumer.receiveAction(userInfo: original, identifier: "OPT_0"), .unavailable,
-            "An independently verified dismiss closes an old notification action")
-    }
     func testActualQuietDismissDeliveredScanCapacityRefusesAllDeletion() throws {
         let (consumer, probe, _) = try beginDismiss(); _ = consumer
         guard probe.wasRead() else { XCTFail("Actual signed dismiss must reach delivered-card read"); return }
@@ -246,23 +234,6 @@ final class NativePushNotificationConsumerTests: XCTestCase {
         XCTAssertEqual(try effect().prepare(userInfo: info("question-yn")).outcome, .publish,
             "A background question wake must not consume the notification's lifecycle nonce")
     }
-    func testActualV2RoutingConsumesOriginalActionWithoutLegacyOrWrappedSend() throws {
-        _ = try effect().prepare(userInfo: info("question-yn"))
-        let consumer = NativePushNotificationConsumer(state: state, keys: keys, now: { self.clock }, readDelivered: { _ in XCTFail("Action routing does not read cards") }, removeDelivered: { _ in XCTFail("Action routing does not remove cards") })
-        var legacySends = 0; var factoryCalls = 0
-        let consumed = NativePushNotificationConsumer.routeAction(userInfo: try info("question-yn"), identifier: "OPT_0",
-            consumerFactory: { factoryCalls += 1; return consumer }, legacy: { legacySends += 1 })
-        XCTAssertTrue(consumed, "The actual v2 router owns the action before the legacy/wrapped sender")
-        XCTAssertEqual(factoryCalls, 1, "The actual native verifier must be invoked")
-        XCTAssertEqual(legacySends, 0)
-        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
-        XCTAssertTrue(NativePushNotificationConsumer.routeAction(userInfo: try info("question-yn"), identifier: "OPT_0",
-            consumerFactory: { consumer }, legacy: { legacySends += 1 }), "Missing native key cannot fall through to another answer owner")
-        XCTAssertEqual(legacySends, 0)
-        XCTAssertTrue(NativePushNotificationConsumer.routeAction(userInfo: ["remiPush": NSNull(), "opt_0": "forged", "verified": true], identifier: "OPT_0",
-            consumerFactory: { consumer }, legacy: { legacySends += 1 }), "Malformed capsule cannot select legacy routing")
-        XCTAssertEqual(legacySends, 0)
-    }
     func testForegroundRefusesAnyCategoryOnASignedCard() throws {
         let prepared = try effect().prepare(userInfo: info("question-yn"))
         guard case .question(let question) = prepared.push.payload else { XCTFail("Shared fixture must be a real question"); return }
@@ -278,11 +249,23 @@ final class NativePushNotificationConsumerTests: XCTestCase {
     private func carrierRid() throws -> String? {
         (try info("question-yn")["remiPush"] as? [String: Any])?["rid"] as? String
     }
-    func testActualLegacyNotificationRouteRemainsExplicitlySeparate() {
+    func testV2ResponsesNeverReachTheLegacyOrWrappedSender() throws {
         var legacySends = 0
-        XCTAssertFalse(NativePushNotificationConsumer.routeAction(userInfo: ["sessionId": "old-direct"], identifier: "OPT_0",
-            consumerFactory: { XCTFail("A legacy notification must not load native secure groups"); throw NativePushStateError.unavailable },
-            legacy: { legacySends += 1 }))
+        // The default tap on a signed card, one with a forged outer route, a
+        // stale action identifier, and a malformed carrier: all stay v2.
+        var forged = try info("question-yn"); forged["opt_0"] = "FORGED ANSWER"; forged["questionId"] = "FORGED ROUTE"; forged["verified"] = false
+        for userInfo in [try info("question-yn"), forged, ["remiPush": NSNull(), "opt_0": "forged", "verified": true],
+                         ["remiPush": ["v": 2], "sessionId": "old-direct"]] as [[AnyHashable: Any]] {
+            NativePushNotificationConsumer.routeResponse(userInfo: userInfo, legacy: { legacySends += 1 })
+        }
+        XCTAssertEqual(legacySends, 0, "A v2 marker never falls through to another answer owner")
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
+        NativePushNotificationConsumer.routeResponse(userInfo: try info("question-yn"), legacy: { legacySends += 1 })
+        XCTAssertEqual(legacySends, 0, "A missing native key cannot fall through either")
+    }
+    func testLegacyNotificationRouteRemainsExplicitlySeparate() {
+        var legacySends = 0
+        NativePushNotificationConsumer.routeResponse(userInfo: ["sessionId": "old-direct"], legacy: { legacySends += 1 })
         XCTAssertEqual(legacySends, 1)
     }
 }
