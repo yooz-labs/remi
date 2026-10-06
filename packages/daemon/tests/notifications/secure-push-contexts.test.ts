@@ -115,3 +115,12 @@ test('expired informational events free their slot, and 32 live ones still bound
     contexts.capture(runtime, snapshot, info('question', 'foreign-session-32')),
   ).not.toBeNull();
 });
+
+test('a question that left the registry without a dismissal holds no slot either (#1200, B1)', () => {
+  for (let i = 0; i < 40; i++) {
+    const q = ask();
+    questions.add(q);
+    expect(contexts.capture(runtime, snapshot, questionEvent(q)), `question ${i}`).not.toBeNull();
+    questions.remove(q.id);
+  }
+});

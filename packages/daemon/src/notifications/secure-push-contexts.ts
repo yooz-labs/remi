@@ -14,6 +14,8 @@ type Entry = {
   digest?: string;
 };
 const seconds = (): number => Math.floor(Date.now() / 1000);
+/** In-flight deliveries may still read a context this long after its expiry. */
+const DELIVERY_GRACE_SECONDS = 120;
 function boundedText(text: string, max: number): string {
   let result = '';
   let size = 0;
@@ -215,14 +217,20 @@ export class SecurePushContexts {
       });
       if (previous?.meaning === meaning)
         return this.isCurrent(previous.context) ? previous.context : null;
+      // Capacity refuses new live work; it never evicts a live entry (#1200). Only a LIVE slot
+      // (not dismissed, not expired) counts against the per-session cap: a resolved or expired
+      // entry stays retained for dismissal and replay correctness but holds no slot (B1), so a
+      // session's 33rd question is not refused because 32 earlier ones were answered.
       if (!previous) {
+        if (this.entries.size >= this.capacity) this.evictDead(now);
         if (this.entries.size >= this.capacity) return null;
-        const logicalSlots = new Set(
-          [...this.entries.values()]
-            .filter((e) => e.context.runtime === runtime)
-            .map((e) => e.context.logicalId),
-        );
-        if (!logicalSlots.has(event.logicalId) && logicalSlots.size >= this.perSessionCapacity)
+      }
+      if (!previous || !this.isLive(previous, now)) {
+        const liveSlots = new Set<string>();
+        for (const e of this.entries.values())
+          if (e.context.runtime === runtime && this.isLive(e, now))
+            liveSlots.add(e.context.logicalId);
+        if (!liveSlots.has(event.logicalId) && liveSlots.size >= this.perSessionCapacity)
           return null;
       }
       const revision = (previous?.context.content.revision ?? 0) + 1;
@@ -250,7 +258,7 @@ export class SecurePushContexts {
         meaning,
         questionId: qid,
         questionMeaning: qMeaning,
-        retainUntil: Math.max(previous?.retainUntil ?? 0, now + 3600 + 120),
+        retainUntil: Math.max(previous?.retainUntil ?? 0, now + 3600 + DELIVERY_GRACE_SECONDS),
         dismissed: event.kind === 'dismiss',
       });
       return context;
@@ -306,6 +314,28 @@ export class SecurePushContexts {
     return entry?.digest && entry.context.payload.actionable && this.isCurrent(entry.context)
       ? Object.freeze({ context: entry.context, contentDigest: entry.digest })
       : null;
+  }
+  /**
+   * Not dismissed, not past its own expiry and, for a question, still registered: the only
+   * entries that can still deliver or be answered.
+   */
+  private isLive(entry: Entry, now: number): boolean {
+    return (
+      !entry.dismissed &&
+      entry.context.content.expiresAt > now &&
+      (!entry.questionId ||
+        this.deps.questionFor(entry.context.runtime.sessionId, entry.questionId) !== null)
+    );
+  }
+  /**
+   * Drop informational entries that expired (or were dismissed) more than the delivery grace ago.
+   * Question entries are never dropped here: a registered question keeps its original ceiling
+   * (`prune`). Called only when the global cap would otherwise refuse new work (#1200, B1).
+   */
+  private evictDead(now: number): void {
+    for (const [key, entry] of this.entries)
+      if (!entry.questionId && entry.context.content.expiresAt + DELIVERY_GRACE_SECONDS <= now)
+        this.entries.delete(key);
   }
   private key(runtime: SecurePushRuntime, logicalId: string, devicePublicKey: string): string {
     return JSON.stringify([runtime.instance, logicalId, devicePublicKey]);
