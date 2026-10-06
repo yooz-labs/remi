@@ -97,6 +97,7 @@ final class NativePushEffectTests: XCTestCase {
         let key = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: ephemeral.publicKey.x963Representation,
             sharedInfo: lps([Data("remi-relay-v2 seal".utf8), recipient.publicKey]), outputByteCount: 32)
         var outer = try carrier(vector)
+        outer["collapseId"] = try XCTUnwrap(String(data: fields[5], encoding: .utf8))
         let aad = try hex(XCTUnwrap(outer["rid"] as? String)) + Data(XCTUnwrap(outer["collapseId"] as? String).utf8)
         let box = try AES.GCM.seal(inner, using: key, nonce: AES.GCM.Nonce(data: hex(XCTUnwrap(vector["sealNonceHex"] as? String))), authenticating: aad)
         outer["sealed"] = b64url(ephemeral.publicKey.x963Representation + box.nonce.withUnsafeBytes { Data($0) } + box.ciphertext + box.tag)
@@ -155,7 +156,11 @@ final class NativePushEffectTests: XCTestCase {
     }
     func testLatestSignedDigestSupersedesOldPreparedEffect() throws {
         let e = effect()
-        guard let first = prepared(e, "question"), let later = prepared(e, "question-reordered") else { return }
+        guard let first = prepared(e, "question") else { return }
+        let successor = try reseal(vector("question-reordered")) { $0[5] = Data(first.push.record.collapseId.utf8) }
+        var later: NativePushEffect.Prepared?
+        XCTAssertNoThrow(later = try e.prepare(userInfo: ["remiPush": successor]))
+        guard let later else { return }
         XCTAssertEqual(first.push.record.collapseId, later.push.record.collapseId)
         XCTAssertNotEqual(first.push.record.digest, later.push.record.digest)
         XCTAssertThrowsError(try e.recheck(first), "An accepted older nonce cannot publish after a newer signed meaning")
@@ -163,12 +168,20 @@ final class NativePushEffectTests: XCTestCase {
     }
     func testActualSignedDismissIsAbsorbingAndCarriesNoActions() throws {
         let e = effect()
-        guard let first = prepared(e, "question"), let dismiss = prepared(e, "dismiss") else { return }
+        guard let first = prepared(e, "question") else { return }
+        let terminal = try reseal(vector("dismiss")) { $0[5] = Data(first.push.record.collapseId.utf8) }
+        var dismiss: NativePushEffect.Prepared?
+        XCTAssertNoThrow(dismiss = try e.prepare(userInfo: ["remiPush": terminal]))
+        guard let dismiss else { return }
+        XCTAssertEqual(first.push.record.collapseId, dismiss.push.record.collapseId)
+        XCTAssertGreaterThan(dismiss.push.record.revision, first.push.record.revision)
+        XCTAssertNotEqual(first.push.record.nonce, dismiss.push.record.nonce)
         XCTAssertEqual(dismiss.outcome, .dismiss)
         XCTAssertTrue(dismiss.actions.isEmpty)
         XCTAssertNoThrow(try e.recheck(dismiss), "Current signed terminal digest must authorize actual delayed dismiss after recheck")
         XCTAssertThrowsError(try e.recheck(first))
-        XCTAssertThrowsError(try e.prepare(userInfo: info("question-yn")), "A later question revision cannot reopen the signed terminal collapse")
+        let reopening = try reseal(vector("question-yn")) { $0[5] = Data(first.push.record.collapseId.utf8) }
+        XCTAssertThrowsError(try e.prepare(userInfo: ["remiPush": reopening]), "A later question revision cannot reopen the signed terminal collapse")
     }
     func testDeadlineBoundaryInvalidatesPreparedEffect() throws {
         let e = effect()
@@ -231,7 +244,12 @@ final class NativePushEffectTests: XCTestCase {
         XCTAssertNoThrow(originalAction = try e.action(userInfo: forged, identifier: "OPT_0"))
         XCTAssertEqual(originalAction?.option.value, "allow")
         XCTAssertEqual(originalAction?.question.questionId, "synthetic-question")
-        let later = prepared(e, "dismiss")
+        let terminal = try reseal(vector("dismiss")) {
+            $0[5] = Data(p.push.record.collapseId.utf8)
+            $0[6] = be64(UInt64(p.push.record.revision + 1))
+        }
+        var later: NativePushEffect.Prepared?
+        XCTAssertNoThrow(later = try e.prepare(userInfo: ["remiPush": terminal]))
         XCTAssertNotNil(later)
         XCTAssertThrowsError(try e.action(userInfo: signed, identifier: "OPT_0"), "An old signed card cannot act after durable dismiss")
     }
