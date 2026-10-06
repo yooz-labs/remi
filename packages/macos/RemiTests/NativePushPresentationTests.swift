@@ -4,12 +4,14 @@ import XCTest
 final class NativePushPresentationTests: XCTestCase {
     func testUnsignedOuterCategoryCannotGrantNotificationActions() {
         // Construct the shipping extension. This request is never delivered to
-        // the OS, and lacks dynCategory so no global categories are registered.
+        // the OS. Its remiPush carrier is unverifiable, so it is a secure push
+        // and gets the generic fallback; a push with NO carrier is the legacy
+        // plaintext path and passes through (NativePushPublicationTests, #1200).
         let content = UNMutableNotificationContent()
         content.title = "Unverified outer title"
         content.body = "Unverified outer body"
         content.categoryIdentifier = "REMI_YN"
-        content.userInfo = ["sessionId": UUID().uuidString, "questionId": UUID().uuidString,
+        content.userInfo = ["remiPush": ["v": 2], "sessionId": UUID().uuidString, "questionId": UUID().uuidString,
                             "opt_0": "Yes", "opt_1": "No"]
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         let service = NotificationService()
