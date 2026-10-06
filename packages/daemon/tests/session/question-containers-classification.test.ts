@@ -236,6 +236,11 @@ const EXCLUSIONS: readonly ExcludedEntry[] = [
     note: 'Holds a PushDedup INSTANCE. That instance owns its own container (notifications/push-dedup.ts, field "last"), classified separately above; this field is a wiring reference, not itself Question data.',
   },
   {
+    file: 'notifications/notification-dispatcher.ts',
+    field: 'turnFailedReasons',
+    note: 'NEW (#1226). The turn_failed reasons (describeTurnFailure phrases) already alerted since the last successful turn. A failed turn is never a card (#1153): no Question exists, and the set is keyed by the failure reason, never by a question id.',
+  },
+  {
     file: 'parser/output-processor.ts',
     field: 'currentMessageId',
     note: 'A Message id (agent output text), unrelated domain from Question.',
