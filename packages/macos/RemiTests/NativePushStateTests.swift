@@ -242,7 +242,7 @@ final class NativePushStateTests: XCTestCase {
     // These are public metadata fixtures at the durable-state boundary. The
     // original-byte signature/sealed decoder receives separate conformance pins.
     private func content(_ trust: NativePushState.MachineTrust, nonce: UInt8 = 1, revision: Int64 = 1,
-                         collapse: String = "opaque-card", kind: Int = 1, issued: Int64 = 1000,
+                         collapse: String = "AQEBAQEBAQEBAQEBAQEBAQ", kind: Int = 1, issued: Int64 = 1000,
                          expiry: Int64 = 1100) -> NativePushState.ContentRecord {
         let bytes = Data(repeating: nonce, count: 32)
         let digest = Data(SHA256.hash(data: bytes + Data("\(revision)|\(kind)|\(collapse)|\(issued)|\(expiry)".utf8)))
@@ -310,7 +310,7 @@ final class NativePushStateTests: XCTestCase {
         guard outcome != nil else { return }
         let update = content(trust, nonce: 2, revision: 2, expiry: 2000)
         XCTAssertEqual(try state.recordVerifiedContent(update, trust: trust, now: 1000), .publish)
-        let second = content(trust, nonce: 3, collapse: "second-card", expiry: 2000)
+        let second = content(trust, nonce: 3, collapse: "AgICAgICAgICAgICAgICAg", expiry: 2000)
         XCTAssertThrowsError(try state.recordVerifiedContent(second, trust: trust, now: 1000),
                              "2048 policy is TOTAL nonce plus collapse rows, never a per-table allowance")
         XCTAssertNoThrow(try state.reverifyLatestContent(update, trust: trust, now: 1000), "Capacity refusal cannot evict existing live state")
