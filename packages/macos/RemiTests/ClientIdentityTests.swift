@@ -784,6 +784,32 @@ final class ClientIdentityTests: XCTestCase {
     }
 
     @MainActor
+    func testActualWebProviderKeepsTwoOutstandingMachineAttempts() async throws {
+        _ = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service: service, account: account)
+        let machineA = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let machineB = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
+        let (web, root) = try await providerWebView()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let completed = try await web.callAsyncJavaScript("""
+            const api = window.nativeProviderTest;
+            const state = await api.inspectNativeIdentity();
+            const first = await api.beginNativePairingTrust(state.identity);
+            const second = await api.beginNativePairingTrust(state.identity);
+            const results = [];
+            for (const [attempt, machinePublicKey] of [[first,machineA],[second,machineB]]) {
+              try {
+                await api.commitNativePairingTrust(attempt, {machinePublicKey,relayUrl:'wss://relay.example.invalid/prefix'});
+                results.push(true);
+              } catch { results.push(false); }
+            }
+            return results;
+            """, arguments: ["machineA": machineA.base64EncodedString().replacingOccurrences(of:"+",with:"-").replacingOccurrences(of:"/",with:"_").replacingOccurrences(of:"=",with:""),
+                              "machineB": machineB.base64EncodedString().replacingOccurrences(of:"+",with:"-").replacingOccurrences(of:"/",with:"_").replacingOccurrences(of:"=",with:"")], in: nil, contentWorld: .page)
+        XCTAssertEqual(completed as? [Bool], [true,true], "Starting another native machine reconnect must not replace an outstanding verified READY attempt")
+        XCTAssertEqual(try authority.completedMachineTrusts().count, 2, "Both independently verified completed routes must persist")
+    }
+
+    @MainActor
     func testActualWebProviderConflictChoiceKeepsNativeAndClearsOnlyVerifiedLegacy() async throws {
         let native = try ClientIdentityStore.loadOrCreate(authority: authority, accessGroup: nil, service:service,account:account)
         let (web,root) = try await providerWebView()
