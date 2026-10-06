@@ -266,4 +266,64 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(result.title, ""); XCTAssertEqual(result.body, ""); XCTAssertEqual(result.categoryIdentifier, "")
         XCTAssertNil(probe.installedCategory())
     }
+    // MARK: Legacy plaintext pushes (no remiPush carrier), #1200 D1
+    private func legacyInfo(dynamic: Bool = true) -> [AnyHashable: Any] {
+        var info: [AnyHashable: Any] = ["sessionId": "s-1", "questionId": "q-123", "claudeSessionId": "c-1",
+                                       "opt_0": "PostgreSQL", "opt_1": "MySQL", "opt_2": "No, thanks", "kind": "question"]
+        if dynamic { info["dynCategory"] = "1" }
+        return info
+    }
+    private func beginLegacy(_ info: [AnyHashable: Any], effects: @escaping () -> Void = {}) -> (NotificationService, DeliveryProbe) {
+        let probe = DeliveryProbe(self)
+        let service = NotificationService(effectFactory: { effects(); return self.effect() }, installCategory: probe.installed)
+        let content = UNMutableNotificationContent()
+        content.title = "Claude needs your input"; content.body = "Pick a database"
+        content.categoryIdentifier = "REMI_MULTI"; content.userInfo = info
+        service.didReceive(UNNotificationRequest(identifier: "q-123", content: content, trigger: nil),
+                           withContentHandler: probe.delivered)
+        wait(for: [probe.activity], timeout: 3)
+        return (service, probe)
+    }
+    func testLegacyPushKeepsItsContentAndGetsItsDynamicCategory() throws {
+        var factoryCalls = 0
+        let (service, probe) = beginLegacy(legacyInfo(), effects: { factoryCalls += 1 })
+        defer { service.serviceExtensionTimeWillExpire() }
+        let category = try XCTUnwrap(probe.installedCategory(), "A single-question push with real labels must build its dynamic category")
+        XCTAssertEqual(category.identifier, "REMI_DYN_q-123")
+        XCTAssertEqual(category.actions.map(\.identifier), ["OPT_0", "OPT_1", "OPT_2"])
+        XCTAssertEqual(category.actions.map(\.title), ["PostgreSQL", "MySQL", "No, thanks"])
+        XCTAssertEqual(category.actions.map { $0.options.contains(.destructive) }, [false, false, true])
+        XCTAssertTrue(probe.snapshot().isEmpty, "Nothing is delivered until the registration read-back")
+        probe.release(true); wait(for: [probe.completed], timeout: 3)
+        let result = try XCTUnwrap(probe.snapshot().first)
+        XCTAssertEqual(result.title, "Claude needs your input"); XCTAssertEqual(result.body, "Pick a database")
+        XCTAssertEqual(result.categoryIdentifier, "REMI_DYN_q-123")
+        for (key, value) in legacyInfo() { XCTAssertEqual(result.userInfo[key] as? String, value as? String, "\(key) must reach RemiAnswerRelay") }
+        XCTAssertEqual(factoryCalls, 0, "A legacy push never touches the secure push state or keys")
+    }
+    func testLegacyPushKeepsTheDaemonCategoryWhenRegistrationDoesNotLand() throws {
+        let (service, probe) = beginLegacy(legacyInfo()); defer { service.serviceExtensionTimeWillExpire() }
+        XCTAssertNotNil(probe.installedCategory())
+        probe.release(false); wait(for: [probe.completed], timeout: 3)
+        let result = try XCTUnwrap(probe.snapshot().first)
+        XCTAssertEqual(result.categoryIdentifier, "REMI_MULTI", "The daemon's static category is the fallback, never an unresolved dynamic id")
+        XCTAssertEqual(result.userInfo["questionId"] as? String, "q-123"); XCTAssertEqual(result.userInfo["opt_0"] as? String, "PostgreSQL")
+    }
+    func testLegacyPushWithoutDynamicOptionsPassesThroughUnchanged() throws {
+        let (service, probe) = beginLegacy(legacyInfo(dynamic: false)); defer { service.serviceExtensionTimeWillExpire() }
+        wait(for: [probe.completed], timeout: 3)
+        let result = try XCTUnwrap(probe.snapshot().first)
+        XCTAssertNil(probe.installedCategory())
+        XCTAssertEqual(result.title, "Claude needs your input"); XCTAssertEqual(result.categoryIdentifier, "REMI_MULTI")
+        XCTAssertEqual(result.userInfo["sessionId"] as? String, "s-1"); XCTAssertEqual(result.userInfo["claudeSessionId"] as? String, "c-1")
+    }
+    func testLegacyPushExpiryDeliversTheOriginalOnceAndIgnoresALateCategory() throws {
+        let (service, probe) = beginLegacy(legacyInfo())
+        XCTAssertNotNil(probe.installedCategory())
+        service.serviceExtensionTimeWillExpire(); wait(for: [probe.completed], timeout: 3)
+        probe.release(true); service.serviceExtensionTimeWillExpire()
+        let result = try XCTUnwrap(probe.snapshot().first)
+        XCTAssertEqual(probe.snapshot().count, 1, "The content handler is invoked exactly once")
+        XCTAssertEqual(result.categoryIdentifier, "REMI_MULTI"); XCTAssertEqual(result.userInfo["questionId"] as? String, "q-123")
+    }
 }
