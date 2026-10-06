@@ -446,6 +446,11 @@ const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
 const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
+// A session daemon this process spawns copies process.env (`spawnDaemon`), never
+// the parent's argv, so a secret given as `--push-secret` must reach children
+// through the environment, which `ps` does not show to other users. Without
+// this a hub started with the flag spawned children that could not push (#1200).
+if (parsedArgs.pushSecret !== undefined) process.env['REMI_PUSH_SECRET'] = parsedArgs.pushSecret;
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
