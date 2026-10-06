@@ -219,6 +219,22 @@ final class NativePushPublicationTests: XCTestCase {
         XCTAssertEqual(result.title, ""); XCTAssertEqual(result.body, ""); XCTAssertEqual(result.categoryIdentifier, "")
         XCTAssertNil(probe.installedCategory())
     }
+    // #1200 D2: apns-collapse-id makes the delivered notification's identifier the
+    // collapse id, so whatever the extension returns REPLACES the live card.
+    func testActualNSEExactDuplicateOfTheLiveCardRendersTheSameVerifiedContent() throws {
+        let (service, probe) = try begin(); defer { service.serviceExtensionTimeWillExpire() }
+        wait(for: [probe.completed], timeout: 3)
+        let live = try XCTUnwrap(probe.snapshot().first)
+        XCTAssertNotEqual(live.title, "")
+        let (again, repeated) = try begin(); defer { again.serviceExtensionTimeWillExpire() }
+        wait(for: [repeated.completed], timeout: 3)
+        let duplicate = try XCTUnwrap(repeated.snapshot().first)
+        XCTAssertEqual(duplicate.title, live.title, "A redelivered capsule must not blank the live card")
+        XCTAssertEqual(duplicate.body, live.body)
+        XCTAssertEqual(duplicate.categoryIdentifier, "")
+        XCTAssertEqual(NSDictionary(dictionary: duplicate.userInfo), NSDictionary(dictionary: live.userInfo))
+        XCTAssertNil(repeated.installedCategory())
+    }
     // #1200 D3: no native owner answers a v2 action until R6, and iOS dismisses the
     // card after an action tap, so a Yes/No button would silently drop the choice.
     func testSecurePushOffersNoAnswerActionsAndOpensTheApp() throws {
