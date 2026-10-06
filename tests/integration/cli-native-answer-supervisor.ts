@@ -18,6 +18,10 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-r5-cli-
 fs.chmodSync(root, 0o700);
 const mode = 'root';
 const scenario = 'supervisor';
+// `flag`: the hub gets its push secret only as `--push-secret`, so a child can push only if
+// the hub hands the secret on (#1200). Default `env`: REMI_PUSH_SECRET in every environment.
+const secretVia = process.argv[2] === 'flag' ? 'flag' : 'env';
+const pushSecret = 'owned-cross-track-push-secret';
 const cliRuntime = fs.realpathSync(process.env['REVIEW_CLI_BUN'] ?? process.execPath);
 const refusalNotice = '[SecurePush] unsupported signaling URL; secure push requires a root origin';
 const repo = path.resolve(import.meta.dir, '../..');
@@ -451,7 +455,7 @@ try {
     TERM: 'xterm-256color',
     FAKE_CLAUDE_DIR: fake,
     NODE_EXTRA_CA_CERTS: path.join(own, 'tls-ca.pem'),
-    REMI_PUSH_SECRET: 'owned-cross-track-push-secret',
+    ...(secretVia === 'env' ? { REMI_PUSH_SECRET: pushSecret } : {}),
   };
   const tlsControl = Bun.spawn(
     [
@@ -484,6 +488,7 @@ try {
       '--no-telegram',
       '--port',
       String(port),
+      ...(secretVia === 'flag' ? ['--push-secret', pushSecret] : []),
     ],
     { cwd: work, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
   );
@@ -817,6 +822,7 @@ try {
         }).trim(),
         mode,
         scenario,
+        secretVia,
         fixtureRuntime: process.execPath,
         cliRuntime,
         tlsUpgrades,
@@ -844,6 +850,7 @@ try {
       own,
       mode,
       scenario,
+      secretVia,
       tlsUpgrades,
       childPid,
       completed,
