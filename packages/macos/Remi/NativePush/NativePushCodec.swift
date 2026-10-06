@@ -30,11 +30,12 @@ enum NativePushCodec {
     }
     struct Information: Equatable { let sessionId: String?; let title: String; let body: String }
     enum Payload: Equatable { case question(Question), informational(Information), dismiss }
+    /// The only cleartext APNs relays (#1200): the room and the collapse id (both are AAD and the
+    /// room selects the pinned machine), plus the sealed bytes. The event kind and the key version
+    /// are read from the signed content after decryption, never from the outer capsule.
     struct Carrier: Equatable {
-        let rid: String; let collapseId: String; let keyVersion: Int64; let kind: Kind; let sealed: String
-        var userInfo: [String: Any] {
-            ["v": 2, "rid": rid, "collapseId": collapseId, "keyVersion": keyVersion, "kind": kind.rawValue, "sealed": sealed]
-        }
+        let rid: String; let collapseId: String; let sealed: String
+        var userInfo: [String: Any] { ["v": 2, "rid": rid, "collapseId": collapseId, "sealed": sealed] }
     }
     struct VerifiedPush {
         let originalCarrier: Carrier
@@ -74,7 +75,7 @@ enum NativePushCodec {
             guard generation > 0, try state.currentAuthority() == trust.authority else { throw NativePushCodecError.changed }
         } catch let error as NativePushCodecError { throw error }
         catch { throw NativePushCodecError.unavailable }
-        guard recipient.keyVersion >= 1, Int64(recipient.keyVersion) == c.keyVersion else { throw NativePushCodecError.malformed }
+        guard recipient.keyVersion >= 1 else { throw NativePushCodecError.malformed }
         let sealed = try binary(c.sealed, count: nil)
         let aad = rid + Data(c.collapseId.utf8)
         let inner: Data
@@ -98,9 +99,11 @@ enum NativePushCodec {
               machine == trust.machinePublicKey, fields[1] == rid,
               Data(SHA256.hash(data: machine).prefix(16)) == rid,
               device == trust.authority.publicKey, publicR == recipient.publicKey,
-              try number(fields[4], minimum: 1) == c.keyVersion,
+              // Decryption already needed the recipient key; the signed tuple must name its version.
+              try number(fields[4], minimum: 1) == Int64(recipient.keyVersion),
               String(data: fields[5], encoding: .utf8) == c.collapseId,
-              try Kind.from(fields[7]) == c.kind, fields[8].count == 32 else { throw NativePushCodecError.malformed }
+              fields[8].count == 32 else { throw NativePushCodecError.malformed }
+        let kind = try Kind.from(fields[7])
         let revision = try number(fields[6], minimum: 1)
         let issued = try number(fields[9]), expiry = try number(fields[10])
         guard issued <= now + 60, expiry > now else { throw NativePushCodecError.expired }
@@ -112,11 +115,11 @@ enum NativePushCodec {
         let ttl: Int64
         switch parsed {
         case .dismiss:
-            guard c.kind == .dismiss else { throw NativePushCodecError.malformed }; ttl = 3600
+            guard kind == .dismiss else { throw NativePushCodecError.malformed }; ttl = 3600
         case .informational:
-            guard c.kind != .dismiss else { throw NativePushCodecError.malformed }; ttl = 300
+            guard kind != .dismiss else { throw NativePushCodecError.malformed }; ttl = 300
         case .question:
-            guard c.kind == .question else { throw NativePushCodecError.malformed }; ttl = 3600
+            guard kind == .question else { throw NativePushCodecError.malformed }; ttl = 3600
         }
         guard expiry > issued, expiry - issued <= ttl else { throw NativePushCodecError.malformed }
         // Crypto is synchronous, but another process can mutate either durable
@@ -131,14 +134,13 @@ enum NativePushCodec {
         } catch let error as NativePushCodecError { throw error }
         catch { throw NativePushCodecError.unavailable }
         return VerifiedPush(originalCarrier: c, originalBody: body, payloadBytes: fields[11],
-            record: .init(rid: rid, collapseId: c.collapseId, revision: revision, kind: c.kind.byte,
+            record: .init(rid: rid, collapseId: c.collapseId, revision: revision, kind: kind.byte,
                           nonce: fields[8], digest: digest, issuedAt: issued, expiresAt: expiry),
             payload: parsed, trust: trust, authorityGeneration: generation, recipientPublicKey: recipient.publicKey, keyVersion: recipient.keyVersion)
     }
     private static func carrier(_ value: Any) throws -> Carrier {
-        let o = try object(value, keys: ["v", "rid", "collapseId", "keyVersion", "kind", "sealed"])
-        guard try integer(o["v"], minimum: 2) == 2,
-              let kind = Kind(rawValue: try string(o["kind"], minimum: 1, maximum: 32)) else { throw NativePushCodecError.malformed }
+        let o = try object(value, keys: ["v", "rid", "collapseId", "sealed"])
+        guard try integer(o["v"], minimum: 2) == 2 else { throw NativePushCodecError.malformed }
         let rid = try string(o["rid"], minimum: 32, maximum: 32)
         _ = try hex(rid, count: 16)
         let collapse = try string(o["collapseId"], minimum: 22, maximum: 22)
@@ -146,7 +148,7 @@ enum NativePushCodec {
         let sealed = try string(o["sealed"], minimum: 1, maximum: 2855)
         let bytes = try binary(sealed, count: nil)
         guard (94...2141).contains(bytes.count), bytes.first == 4 else { throw NativePushCodecError.malformed }
-        return Carrier(rid: rid, collapseId: collapse, keyVersion: try integer(o["keyVersion"], minimum: 1), kind: kind, sealed: sealed)
+        return Carrier(rid: rid, collapseId: collapse, sealed: sealed)
     }
     private static func payload(_ value: Any) throws -> Payload {
         guard let o = value as? [String: Any], let type = o["type"] as? String else { throw NativePushCodecError.malformed }

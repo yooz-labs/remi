@@ -61,6 +61,11 @@ r = recipient.public_key().public_bytes(Encoding.X962, PublicFormat.Uncompressed
 kind_bytes = {'question': 1, 'turn_complete': 2, 'subagent_alert': 3,
               'harness_denied': 4, 'turn_failed': 5, 'dismiss': 6}
 env_bytes = {'production': 1, 'sandbox': 2}
+class_bytes = {'alert': 1, 'background': 2}
+# What the Worker is shown (#1200): no event kind, key version, revision or push key.
+submit_keys = {'v', 'audience', 'rid', 'machinePublicKey', 'devicePublicKey', 'token',
+               'environment', 'collapseId', 'pushClass', 'nonce', 'issuedAt', 'expiresAt',
+               'sealed', 'signature'}
 for case in fixture['cases']:
     c = case['content']
     rid = digest(mpk)[:16]
@@ -94,9 +99,13 @@ for case in fixture['cases']:
     s = case['submit']
     assert json.loads(case['submitJson'], object_pairs_hook=no_duplicates) == s
     assert raw(s['sealed']) == sealed
-    submit_body = lp('POST', '/v2/push/' + s['rid'], s['audience'], mpk, rid, dpk, r,
-                     num(s['keyVersion']), bytes.fromhex(s['token']), bytes([env_bytes[s['environment']]]),
-                     s['collapseId'], num(s['revision']), bytes([kind_bytes[s['kind']]]),
+    assert set(s) == submit_keys, 'submit exposes exactly the Worker-visible fields'
+    assert s['pushClass'] == ('background' if c['kind'] == 'dismiss' else 'alert')
+    assert s['rid'] == c['rid'] and s['collapseId'] == c['collapseId']
+    assert s['machinePublicKey'] == c['machinePublicKey'] and s['devicePublicKey'] == c['devicePublicKey']
+    submit_body = lp('POST', '/v2/push/' + s['rid'], s['audience'], mpk, rid, dpk,
+                     bytes.fromhex(s['token']), bytes([env_bytes[s['environment']]]),
+                     s['collapseId'], bytes([class_bytes[s['pushClass']]]),
                      raw(s['nonce']), num(s['issuedAt']), num(s['expiresAt']), digest(sealed))
     request_digest = digest(submit_body)
     submit_input = lp('remi-relay-v2 push submit', request_digest)

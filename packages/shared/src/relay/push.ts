@@ -42,6 +42,20 @@ export type SecurePushKind =
   | 'turn_failed'
   | 'dismiss';
 export type ApnsEnvironment = 'production' | 'sandbox';
+/**
+ * What the Worker may learn about an event (#1200): whether APNs must show an alert or wake the
+ * app quietly. It picks the push type and priority and nothing else; the event kind itself is
+ * signed and sealed inside the content.
+ */
+export type PushClass = 'alert' | 'background';
+export const PUSH_CLASS_BYTE: Readonly<Record<PushClass, number>> = Object.freeze({
+  alert: 1,
+  background: 2,
+});
+/** The class a kind is delivered with: only a dismissal is a quiet background push. */
+export function pushClassOf(kind: SecurePushKind): PushClass {
+  return kind === 'dismiss' ? 'background' : 'alert';
+}
 export const PUSH_KIND_BYTE: Readonly<Record<SecurePushKind, number>> = Object.freeze({
   question: 1,
   turn_complete: 2,
@@ -100,12 +114,15 @@ export interface SignedPushContent {
   readonly payloadBytes: Bytes;
   readonly signature: Bytes;
 }
+/**
+ * The only cleartext APNs carries beside the generic alert (#1200). The extension needs the room
+ * (authority lookup and AAD), the collapse id (AAD) and the sealed bytes before it can decrypt;
+ * the key version and the event kind are proven inside the signed content after decryption.
+ */
 export interface PushCarrier {
   readonly v: 2;
   readonly rid: string;
   readonly collapseId: string;
-  readonly keyVersion: number;
-  readonly kind: SecurePushKind;
   readonly sealed: string;
 }
 export interface PushAuthority {
@@ -114,11 +131,25 @@ export interface PushAuthority {
   readonly pushPublicKey: string;
   readonly keyVersion: number;
 }
-export interface UnsignedPushSubmit extends PushContentMetadata {
+/**
+ * What the Worker is shown and what the machine key signs for it (#1200). Public keys are
+ * needed to check the proof and the enrollment, the nonce and times to refuse replays, and the
+ * class to pick the APNs push type. The event kind, key version, revision and push key appear
+ * only inside the sealed content.
+ */
+export interface UnsignedPushSubmit {
   readonly v: 2;
   readonly audience: string;
+  readonly rid: string;
+  readonly machinePublicKey: string;
+  readonly devicePublicKey: string;
   readonly token: string;
   readonly environment: ApnsEnvironment;
+  readonly collapseId: string;
+  readonly pushClass: PushClass;
+  readonly nonce: string;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
   readonly sealed: string;
 }
 export interface PushSubmit extends UnsignedPushSubmit {
@@ -167,13 +198,10 @@ const SUBMIT_KEYS = [
   'rid',
   'machinePublicKey',
   'devicePublicKey',
-  'pushPublicKey',
-  'keyVersion',
   'token',
   'environment',
   'collapseId',
-  'revision',
-  'kind',
+  'pushClass',
   'nonce',
   'issuedAt',
   'expiresAt',
@@ -249,8 +277,8 @@ function live(issuedAt: number, expiresAt: number, now: number): void {
   integer(now);
   if (issuedAt > now + PUSH_CLOCK_SKEW_SECONDS || expiresAt <= now) throw new RelayError('EXPIRED');
 }
-function metadata(value: unknown, allowOtherKeys = false): PushContentMetadata {
-  const o = allowOtherKeys ? (value as Record<string, unknown>) : object(value, CONTENT_KEYS);
+function metadata(value: unknown): PushContentMetadata {
+  const o = object(value, CONTENT_KEYS);
   publicKey(o['machinePublicKey']);
   publicKey(o['devicePublicKey']);
   point(o['pushPublicKey']);
@@ -468,6 +496,18 @@ async function keys(c: PushContentMetadata): Promise<void> {
     malformed();
   }
 }
+/** The submit shows only the machine and device identities, not the sealed push key. */
+async function submitKeys(s: UnsignedPushSubmit): Promise<void> {
+  const machine = publicKey(s.machinePublicKey);
+  const device = publicKey(s.devicePublicKey);
+  if (!ctEqual(await ridOf(machine), unhex(s.rid, 16, 16))) malformed();
+  try {
+    await crypto.subtle.importKey('raw', own(machine), 'Ed25519', false, ['verify']);
+    await crypto.subtle.importKey('raw', own(device), 'Ed25519', false, ['verify']);
+  } catch {
+    malformed();
+  }
+}
 export async function sealPushContent(
   machine: Signer,
   c: PushContentMetadata,
@@ -493,18 +533,12 @@ export async function openPushContent(
   payload: SecurePushPayload;
   contentDigest: string;
 }> {
-  object(carrier, ['v', 'rid', 'collapseId', 'keyVersion', 'kind', 'sealed']);
+  object(carrier, ['v', 'rid', 'collapseId', 'sealed']);
   object(authority, ['machinePublicKey', 'devicePublicKey', 'pushPublicKey', 'keyVersion']);
-  if (
-    carrier.v !== 2 ||
-    carrier.keyVersion !== authority.keyVersion ||
-    !ctEqual(recipient.publicKey, point(authority.pushPublicKey))
-  )
-    malformed();
+  if (carrier.v !== 2 || !ctEqual(recipient.publicKey, point(authority.pushPublicKey))) malformed();
   const rid = unhex(carrier.rid, 16, 16);
   if (!ctEqual(await ridOf(publicKey(authority.machinePublicKey)), rid)) malformed();
   binary(carrier.collapseId, 16);
-  kind(carrier.kind);
   const inner = await openSeal(
     recipient,
     pushAad(rid, carrier.collapseId),
@@ -518,8 +552,7 @@ export async function openPushContent(
     c.devicePublicKey !== authority.devicePublicKey ||
     c.pushPublicKey !== authority.pushPublicKey ||
     c.keyVersion !== authority.keyVersion ||
-    c.collapseId !== carrier.collapseId ||
-    c.kind !== carrier.kind
+    c.collapseId !== carrier.collapseId
   )
     malformed();
   await keys(c);
@@ -542,8 +575,14 @@ export async function openPushContent(
 function submission(value: unknown, signed: boolean): PushSubmit | UnsignedPushSubmit {
   const o = object(value, signed ? SUBMIT_KEYS : SUBMIT_KEYS.filter((k) => k !== 'signature'));
   if (o['v'] !== 2) malformed();
-  const c = metadata(o, true);
-  lifetime(c.issuedAt, c.expiresAt, PUSH_SUBMIT_TTL_SECONDS);
+  publicKey(o['machinePublicKey']);
+  publicKey(o['devicePublicKey']);
+  unhex(o['rid'], 16, 16);
+  binary(o['collapseId'], 16);
+  binary(o['nonce'], 32);
+  const issuedAt = integer(o['issuedAt']);
+  const expiresAt = integer(o['expiresAt']);
+  lifetime(issuedAt, expiresAt, PUSH_SUBMIT_TTL_SECONDS);
   const audience = str(o['audience'], 1, 512);
   try {
     const url = new URL(audience);
@@ -556,6 +595,8 @@ function submission(value: unknown, signed: boolean): PushSubmit | UnsignedPushS
   }
   const environment = o['environment'];
   if (environment !== 'production' && environment !== 'sandbox') malformed();
+  const pushClass = o['pushClass'];
+  if (pushClass !== 'alert' && pushClass !== 'background') malformed();
   unhex(o['token'], 1, 256);
   if (typeof o['sealed'] !== 'string') malformed();
   const sealed = fromB64u(o['sealed']);
@@ -563,19 +604,16 @@ function submission(value: unknown, signed: boolean): PushSubmit | UnsignedPushS
   const result: UnsignedPushSubmit = {
     v: 2,
     audience,
-    rid: c.rid,
-    machinePublicKey: c.machinePublicKey,
-    devicePublicKey: c.devicePublicKey,
-    pushPublicKey: c.pushPublicKey,
-    keyVersion: c.keyVersion,
+    rid: o['rid'] as string,
+    machinePublicKey: o['machinePublicKey'] as string,
+    devicePublicKey: o['devicePublicKey'] as string,
     token: o['token'] as string,
     environment,
-    collapseId: c.collapseId,
-    revision: c.revision,
-    kind: c.kind,
-    nonce: c.nonce,
-    issuedAt: c.issuedAt,
-    expiresAt: c.expiresAt,
+    collapseId: o['collapseId'] as string,
+    pushClass,
+    nonce: o['nonce'] as string,
+    issuedAt,
+    expiresAt,
     sealed: o['sealed'],
   };
   if (!signed) return result;
@@ -591,13 +629,10 @@ async function submitBody(value: UnsignedPushSubmit): Promise<Bytes> {
     publicKey(s.machinePublicKey),
     unhex(s.rid, 16, 16),
     publicKey(s.devicePublicKey),
-    point(s.pushPublicKey),
-    be64(s.keyVersion),
     unhex(s.token, 1, 256),
     Uint8Array.of(APNS_ENVIRONMENT_BYTE[s.environment]),
     s.collapseId,
-    be64(s.revision),
-    Uint8Array.of(PUSH_KIND_BYTE[s.kind]),
+    Uint8Array.of(PUSH_CLASS_BYTE[s.pushClass]),
     binary(s.nonce, 32),
     be64(s.issuedAt),
     be64(s.expiresAt),
@@ -622,7 +657,7 @@ export async function verifyPushSubmit(
 ): Promise<{ requestDigest: string }> {
   const checked = submission(s, true) as PushSubmit;
   if (checked.rid !== expected.rid || checked.audience !== expected.audience) malformed();
-  await keys(checked);
+  await submitKeys(checked);
   live(checked.issuedAt, checked.expiresAt, now);
   const { signature, ...unsigned } = checked;
   const digest = await sha256(await submitBody(unsigned));

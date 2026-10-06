@@ -73,6 +73,7 @@ export {
 export {
   type SecurePushKind,
   type ApnsEnvironment,
+  type PushClass,
   type PushOption,
   type SecurePushPayload,
   type PushContentMetadata,
@@ -84,7 +85,9 @@ export {
   type PushRejectReason,
   type PushSubmitResult,
   PUSH_KIND_BYTE,
+  PUSH_CLASS_BYTE,
   APNS_ENVIRONMENT_BYTE,
+  pushClassOf,
   buildPushPayload,
   parsePushPayload,
   buildPushContentSigningInput,

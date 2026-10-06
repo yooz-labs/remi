@@ -243,16 +243,22 @@ export class SecurePushTransport {
       const issuedAt = nowSeconds();
       const expiresAt = Math.min(content.expiresAt, issuedAt + 60);
       if (expiresAt <= issuedAt) return refusal('EXPIRED');
+      // #1200: the Worker is shown the push class, never the event kind or key metadata; those
+      // stay in the signed and sealed content above.
       const unsigned: r.UnsignedPushSubmit = {
-        ...content,
         v: 2,
         audience: this.audience,
+        rid: content.rid,
+        machinePublicKey: content.machinePublicKey,
+        devicePublicKey: content.devicePublicKey,
         token: captured.token,
         environment: captured.environment,
-        sealed: r.b64u(sealed),
+        collapseId: content.collapseId,
+        pushClass: r.pushClassOf(content.kind),
         nonce: r.b64u(r.systemRandom(32)),
         issuedAt,
         expiresAt,
+        sealed: r.b64u(sealed),
       };
       const input = await r.buildPushSubmitSigningInput(unsigned);
       reason = this.guard(captured, isCurrent, expiresAt);
@@ -270,8 +276,6 @@ export class SecurePushTransport {
         v: 2,
         rid,
         collapseId: content.collapseId,
-        keyVersion: content.keyVersion,
-        kind: content.kind,
         sealed: unsigned.sealed,
       });
       const prepared = Object.freeze({

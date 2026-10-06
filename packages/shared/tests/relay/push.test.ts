@@ -132,8 +132,6 @@ test('actual signed push seal opens only for current pinned machine/device/push-
     v: 2,
     rid: content.rid,
     collapseId: content.collapseId,
-    keyVersion: 1,
-    kind: content.kind,
     sealed: r.b64u(sealed),
   };
   const authority = {
@@ -147,6 +145,8 @@ test('actual signed push seal opens only for current pinned machine/device/push-
     open(recipient, carrier, { ...authority, devicePublicKey: r.b64u(seed('other device')) }, 1001),
   ).rejects.toThrow();
   await expect(open(recipient, { ...carrier, kind: 'dismiss' }, authority, 1001)).rejects.toThrow();
+  // The signed content proves the key version: an authority pinned to another one refuses.
+  await expect(open(recipient, carrier, { ...authority, keyVersion: 2 }, 1001)).rejects.toThrow();
   await expect(open(recipient, carrier, authority, 1100)).rejects.toThrow();
 });
 
@@ -211,8 +211,6 @@ test('exact reordered whitespace payload is authenticated unchanged; modified ra
     v: 2 as const,
     rid: content.rid,
     collapseId: content.collapseId,
-    keyVersion: 1,
-    kind: content.kind,
     sealed: '',
   };
   const wrap = async (p: Uint8Array) => ({
@@ -284,14 +282,18 @@ async function signedSubmission() {
     payload as r.SecurePushPayload,
     r.systemRandom,
   );
-  const unsigned = {
-    ...content,
-    kind: 'question' as const,
-    v: 2 as const,
+  const unsigned: r.UnsignedPushSubmit = {
+    v: 2,
     audience: 'https://owned.example',
+    rid: content.rid,
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
     token: 'ab'.repeat(32),
-    environment: 'sandbox' as const,
+    environment: 'sandbox',
+    collapseId: content.collapseId,
+    pushClass: 'alert',
     nonce: r.b64u(seed('submit nonce')),
+    issuedAt: content.issuedAt,
     expiresAt: 1050,
     sealed: r.b64u(sealed),
   };
@@ -353,19 +355,15 @@ test('actual outer machine proof binds every submission field and distinguishes 
   const baseline = await verify(decode(encode(signed)), expected, 1001);
   expect(baseline.requestDigest).toMatch(/^[0-9a-f]{64}$/);
   const { signer: other } = await r.generateIdentity();
-  const otherEc = await r.generateEcPair();
   const changes: Record<string, unknown> = {
     audience: 'https://other.example',
     rid: 'ab'.repeat(16),
     machinePublicKey: r.b64u(other.publicKey),
     devicePublicKey: r.b64u(other.publicKey),
-    pushPublicKey: r.b64u(otherEc.publicKey),
-    keyVersion: 2,
     token: 'cd'.repeat(32),
     environment: 'production',
     collapseId: r.b64u(seed('other collapse').slice(0, 16)),
-    revision: 2,
-    kind: 'turn_complete',
+    pushClass: 'background',
     nonce: r.b64u(seed('other nonce')),
     issuedAt: 999,
     expiresAt: 1049,
@@ -403,7 +401,7 @@ test('actual outer machine proof binds every submission field and distinguishes 
   );
   expect(
     codeOfSync(() =>
-      decode(encode(signed).replace('"keyVersion":1', '"keyVersion":9007199254740992')),
+      decode(encode(signed).replace('"issuedAt":1000', '"issuedAt":9007199254740992')),
     ),
   ).toBe('MALFORMED');
   expect(codeOfSync(() => decode(' '.repeat(8193)))).toBe('OVERSIZE');
@@ -458,8 +456,6 @@ test('push content and submit TTLs and future clock skew enforce exact finite bo
       v: 2 as const,
       rid: c.rid,
       collapseId: c.collapseId,
-      keyVersion: 1,
-      kind: c.kind,
       sealed: r.b64u(sealed),
     };
     if (skew === 60)
@@ -538,8 +534,6 @@ test('whole signed inner measures multibyte UTF8 exactly at2048 and refuses2049 
           v: 2,
           rid: content.rid,
           collapseId: content.collapseId,
-          keyVersion: 1,
-          kind: content.kind,
           sealed: r.b64u(sealed),
         },
         {

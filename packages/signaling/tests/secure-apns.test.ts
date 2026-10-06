@@ -19,8 +19,8 @@ test('largest canonical carrier framing fits actual4096 APNs JSON without unsign
     r.encodePushSubmit({
       ...submit,
       sealed: r.b64u(new Uint8Array(2141)),
-      revision: Number.MAX_SAFE_INTEGER,
-      keyVersion: Number.MAX_SAFE_INTEGER,
+      issuedAt: Number.MAX_SAFE_INTEGER - 60,
+      expiresAt: Number.MAX_SAFE_INTEGER,
     }),
   );
   const built = buildSecureApnsRequest(maximum, 'owned.jwt', 'owned.topic');
@@ -39,7 +39,7 @@ test('actual builder refuses oversized final JSON for invalid typed caller input
 });
 test('actual dismiss builder remains quiet and selects only the signed APNs environment', () => {
   const built = buildSecureApnsRequest(
-    { ...submit, kind: 'dismiss', environment: 'production' },
+    { ...submit, pushClass: 'background', environment: 'production' },
     'owned.jwt',
     'owned.topic',
   );

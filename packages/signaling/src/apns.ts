@@ -285,7 +285,11 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-/** R5 only: generic fallback, no unsigned options, one explicitly signed environment. */
+/**
+ * R5 only: generic fallback, no unsigned options, one explicitly signed environment (#1200).
+ * The Worker shows APNs the room, the collapse id and the sealed bytes; the signed push class
+ * alone picks the push type and priority, so the event kind never reaches the Worker or APNs.
+ */
 export function buildSecureApnsRequest(
   s: import('@remi/shared/relay/index.ts').PushSubmit,
   jwt: string,
@@ -295,22 +299,20 @@ export function buildSecureApnsRequest(
     v: 2,
     rid: s.rid,
     collapseId: s.collapseId,
-    keyVersion: s.keyVersion,
-    kind: s.kind,
     sealed: s.sealed,
   };
-  const aps =
-    s.kind === 'dismiss'
-      ? { 'content-available': 1 }
-      : {
-          alert: {
-            title: 'Remi needs your attention',
-            body: 'Open Remi to view this notification.',
-          },
-          'mutable-content': 1,
-          'content-available': 1,
-          category: '',
-        };
+  const background = s.pushClass === 'background';
+  const aps = background
+    ? { 'content-available': 1 }
+    : {
+        alert: {
+          title: 'Remi needs your attention',
+          body: 'Open Remi to view this notification.',
+        },
+        'mutable-content': 1,
+        'content-available': 1,
+        category: '',
+      };
   const body = JSON.stringify({ aps, remiPush: carrier });
   if (new TextEncoder().encode(body).length > MAX_APNS_PAYLOAD_BYTES) throw new Error('OVERSIZE');
   return {
@@ -318,8 +320,8 @@ export function buildSecureApnsRequest(
     headers: {
       authorization: `bearer ${jwt}`,
       'apns-topic': bundleId,
-      'apns-push-type': s.kind === 'dismiss' ? 'background' : 'alert',
-      'apns-priority': s.kind === 'dismiss' ? '5' : '10',
+      'apns-push-type': background ? 'background' : 'alert',
+      'apns-priority': background ? '5' : '10',
       'apns-collapse-id': s.collapseId,
       'apns-expiration': String(s.expiresAt),
     },

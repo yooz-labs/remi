@@ -57,6 +57,7 @@ const PUBLIC_FUNCTIONS = [
   'parsePushPayload',
   'parseWorkerPath',
   'pushAad',
+  'pushClassOf',
   'ridOf',
   'seal',
   'sealPushContent',

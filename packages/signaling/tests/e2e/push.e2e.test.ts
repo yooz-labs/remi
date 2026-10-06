@@ -134,13 +134,19 @@ async function submission(
     },
     r.systemRandom,
   );
+  // The Worker's view (#1200): the class, never the sealed kind or key metadata.
   const unsigned: r.UnsignedPushSubmit = {
-    ...content,
     v: 2,
     audience: w.url,
+    rid: content.rid,
+    machinePublicKey: content.machinePublicKey,
+    devicePublicKey: content.devicePublicKey,
     token: 'ab'.repeat(32),
     environment: 'sandbox',
+    collapseId: content.collapseId,
+    pushClass: 'alert',
     nonce: r.b64u(r.systemRandom(32)),
+    issuedAt: now,
     expiresAt: now + 50,
     sealed: r.b64u(sealed),
     ...changes,
@@ -222,7 +228,7 @@ test('real durable nonce same digest returns retained outcome; different signed 
   const first = await post(w, s);
   expect(first.outcome).toBe('accepted');
   expect(await post(w, s)).toEqual(first);
-  const changed = await submission(w, m, d, p, { nonce: s.nonce, revision: 2 });
+  const changed = await submission(w, m, d, p, { nonce: s.nonce, pushClass: 'background' });
   expect(await post(w, changed)).toMatchObject({
     outcome: 'rejected',
     reason: 'NONCE_CONFLICT',
@@ -791,7 +797,7 @@ test('actual pending nonce ownership replacement during JWT completion prevents 
   expect(requests.length).toBe(0);
 }, 15000);
 
-test('actual gateway refuses all14 reviewed weak encodings in both public fields and an off-curve signed P256 recipient', async () => {
+test('actual gateway refuses all14 reviewed weak encodings in both public fields and any restated sealed-only field', async () => {
   const { worker: w, machine: m, device: d, recipient: p } = await setup();
   const s = await submission(w, m, d, p);
   // Read the single reviewed table; independent shared arithmetic tests validate its exact membership.
@@ -807,14 +813,21 @@ test('actual gateway refuses all14 reviewed weak encodings in both public fields
         await post(w, JSON.stringify({ ...s, [field]: r.b64u(Buffer.from(key, 'hex')) })),
       ).toMatchObject({ outcome: 'rejected', reason: 'MALFORMED', requestDigest: null });
     }
-  const offCurve = new Uint8Array(65);
-  offCurve[0] = 4;
-  const signed = await submission(w, m, d, p, { pushPublicKey: r.b64u(offCurve) });
-  expect(await post(w, signed)).toMatchObject({
-    outcome: 'rejected',
-    reason: 'MALFORMED',
-    requestDigest: null,
-  });
+  // #1200 A5: the push key, key version, revision and event kind are sealed-only. The Worker
+  // cannot judge a push key (an off-curve one is refused by the daemon's seal), and a producer
+  // that restates any of them in the clear is refused by the strict decoder.
+  const restated: [string, unknown][] = [
+    ['pushPublicKey', s.nonce],
+    ['keyVersion', 1],
+    ['revision', 1],
+    ['kind', 'question'],
+  ];
+  for (const [field, value] of restated)
+    expect(await post(w, JSON.stringify({ ...s, [field]: value }))).toMatchObject({
+      outcome: 'rejected',
+      reason: 'MALFORMED',
+      requestDigest: null,
+    });
   expect(requests.length).toBe(0);
   expect(
     Object.keys((await roomState(w, m.ridHex)).storage).filter((k) => k.startsWith('push-nonce:')),

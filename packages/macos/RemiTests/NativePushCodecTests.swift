@@ -64,7 +64,7 @@ final class NativePushCodecTests: XCTestCase {
     private func carrier(_ vector: [String: Any]) throws -> [String: Any] {
         let submit = try XCTUnwrap(vector["submit"] as? [String: Any])
         return ["v": 2, "rid": try XCTUnwrap(submit["rid"]), "collapseId": try XCTUnwrap(submit["collapseId"]),
-                "keyVersion": try XCTUnwrap(submit["keyVersion"]), "kind": try XCTUnwrap(submit["kind"]), "sealed": try XCTUnwrap(submit["sealed"])]
+                "sealed": try XCTUnwrap(submit["sealed"])]
     }
     private func b64url(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
@@ -231,14 +231,12 @@ final class NativePushCodecTests: XCTestCase {
         for (index, payload) in payloads.enumerated() {
             XCTAssertThrowsError(try open(reseal(vector) { $0[11] = payload }), "Actually signed invalid payload case \(index) must refuse")
         }
-        var nonQuestion = try reseal(vector) { $0[7] = Data([2]) }
-        nonQuestion["kind"] = "turn_complete"
-        XCTAssertThrowsError(try open(nonQuestion), "Matching signed informational KIND cannot carry an actionable question payload")
-        var wrongDismiss = try reseal(vector) {
+        let nonQuestion = try reseal(vector) { $0[7] = Data([2]) }
+        XCTAssertThrowsError(try open(nonQuestion), "A signed informational KIND cannot carry an actionable question payload")
+        let wrongDismiss = try reseal(vector) {
             $0[7] = Data([6]); $0[11] = Data("{\"type\":\"informational\",\"actionable\":false,\"sessionId\":null,\"title\":\"\",\"body\":\"\"}".utf8)
         }
-        wrongDismiss["kind"] = "dismiss"
-        XCTAssertThrowsError(try open(wrongDismiss), "Matching signed dismiss KIND must carry only strict dismiss payload")
+        XCTAssertThrowsError(try open(wrongDismiss), "A signed dismiss KIND must carry only the strict dismiss payload")
     }
     func testExactTimeAndWholeInnerMultibyteBoundaries() throws {
         let vector = try XCTUnwrap(cases.first)
@@ -268,8 +266,7 @@ final class NativePushCodecTests: XCTestCase {
     func testCarrierCanonicalEncodingsTypesAndUnknownFlagsCannotGrantAuthority() throws {
         let original = try carrier(XCTUnwrap(cases.first))
         XCTAssertNoThrow(try open(original))
-        let mutations: [(String, Any)] = [("v", true), ("v", 3), ("keyVersion", true), ("keyVersion", 0), ("keyVersion", 3.5),
-            ("keyVersion", 9_007_199_254_740_992 as Int64), ("keyVersion", 4), ("kind", "QUESTION"),
+        let mutations: [(String, Any)] = [("v", true), ("v", 3), ("keyVersion", 3), ("kind", "question"),
             ("rid", "94B442B3712A799934ED2BDEF943D321"), ("collapseId", "Yxc4uePYQ4cjMoWyFwSxOA=="),
             ("sealed", try XCTUnwrap(original["sealed"] as? String) + "=")]
         for (key, value) in mutations {
@@ -376,17 +373,22 @@ final class NativePushCodecTests: XCTestCase {
         XCTAssertThrowsError(try open(original), "A nullable legacy route is not completed native pairing authority")
         XCTAssertEqual(try state.machineTrust(rid: legacy.rid), legacy, "Refusal cannot repair or delete old public state")
     }
-    func testBooleanCannotAliasActualRecipientVersionOne() throws {
+    /// The key version is proven by the signed tuple (#1200), so it must equal the actual recipient's
+    /// and a carrier can neither restate it nor alias it with JSON `true`.
+    func testSignedKeyVersionMustEqualRecipientVersionAndCarrierCannotRestateIt() throws {
         let key = try XCTUnwrap(keys.load())
         struct Record: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
         let record = try JSONEncoder().encode(Record(version: 1, privateDER: key.privateKey.derRepresentation, publicKey: key.publicKey, keyVersion: 1))
         XCTAssertEqual(SecItemUpdate(query as CFDictionary, [kSecValueData as String: record] as CFDictionary), errSecSuccess)
         let vector = try XCTUnwrap(cases.first)
         var original = try reseal(vector) { $0[4] = self.be64(1) }
-        original["keyVersion"] = 1
         XCTAssertNoThrow(try open(original), "Actual version-one recipient and signed tuple must have a passing baseline")
-        original["keyVersion"] = true
-        XCTAssertThrowsError(try open(original), "JSON true cannot alias the actual numeric recipient version1")
+        XCTAssertThrowsError(try open(reseal(vector) { $0[4] = self.be64(2) }), "A signed version other than the recipient's refuses")
+        XCTAssertThrowsError(try open(reseal(vector) { $0[4] = self.be64(3) }), "The vector's version 3 no longer matches a version-one recipient")
+        for restated in [true, 1, 3] as [Any] {
+            original["keyVersion"] = restated
+            XCTAssertThrowsError(try open(original), "The carrier may not restate the key version as \(restated)")
+        }
     }
     func testTrustRemovalDuringFinalOSReadRefusesWithoutIdentityChange() throws {
         let original = try carrier(XCTUnwrap(cases.first))

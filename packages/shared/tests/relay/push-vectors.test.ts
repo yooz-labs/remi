@@ -18,8 +18,6 @@ test('all push kinds and noncanonical signed JSON open with actual pinned author
       v: 2,
       rid: c.content.rid,
       collapseId: c.content.collapseId,
-      keyVersion: c.content.keyVersion,
-      kind: c.content.kind,
       sealed: r.b64u(unhex(c.sealedHex)),
     };
     const authority = {
@@ -78,8 +76,6 @@ test('push signature is checked before interpreting altered plaintext semantics'
           v: 2,
           rid: c.content.rid,
           collapseId: c.content.collapseId,
-          keyVersion: c.content.keyVersion,
-          kind: c.content.kind,
           sealed: r.b64u(sealed),
         },
         {
