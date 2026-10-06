@@ -46,6 +46,19 @@ Keychain and SQLite remain separate systems. Final observed checks are not a
 claim of distributed atomicity or detection of every unobserved external change.
 Unsigned SDK tests and iOS source typechecking do not prove signed App Group
 sharing, locked NSE execution, physical camera/phone/Watch behavior, APNs
-provisioning, handset delivery or deployed gateway acceptance. Native quiet
-background dismissal, action ingress and secure registration still require their
+provisioning, handset delivery or deployed gateway acceptance. `NativePushNotificationConsumer` verifies a quiet dismiss and commits its
+terminal lifecycle before the OS delivered-card read. The pending map holds at
+most 32 contexts for two monotonic seconds; an expired read releases its decoded
+context, and the callback holds only an ID. A scan exceeding 128 cards refuses
+all removal. Each candidate capsule is independently verified, then matched by
+signed rid/collapse/revision. The current terminal and captured generation/P256
+are rechecked immediately before removal. An expired candidate capsule remains
+untouched, rather than accepting it with relaxed time validation.
+
+Background question wakes do not consume a notification nonce. The action
+consumer independently verifies the original option and latest lifecycle, then
+returns only a verified open-app result. It has no answer transport. Its owned
+OS callback tests cover actual second-connection authority changes, recipient
+replacement, scan bounds, absorbing dismissal and repeated late callback
+histories. The platform adapters and secure registration still require their
 own caller wiring and tests.

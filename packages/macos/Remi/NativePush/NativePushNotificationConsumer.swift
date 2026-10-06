@@ -1,7 +1,8 @@
 import Foundation
 import UserNotifications
 
-/// Constructible fail-closed scaffold for actual app action/quiet-dismiss callers.
+/// Actual app action/quiet-dismiss boundary. Original capsules and durable
+/// lifecycle state, rather than outer routing or NSE flags, grant authority.
 /// No v2 action may enter the legacy direct or wrapped-JS answer path.
 final class NativePushNotificationConsumer {
     struct DeliveredCard { let identifier: String; let userInfo: [AnyHashable: Any] }
@@ -15,11 +16,19 @@ final class NativePushNotificationConsumer {
     private let readDelivered: DeliveredReader
     private let removeDelivered: DeliveredRemover
     private let now: () -> Int64
+    private let queue = DispatchQueue(label: "remi.push.notification-consumer")
+    private struct Pending {
+        let prepared: NativePushEffect.Prepared
+        let effect: NativePushEffect
+        let deadline: UInt64
+        let completion: (DismissOutcome) -> Void
+    }
+    private var pending: [UUID: Pending] = [:]
     init(state: NativePushState, keys: NativePushKeyStore,
          now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) },
          readDelivered: @escaping DeliveredReader = { callback in
              UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
-                 callback(notifications.map { DeliveredCard(identifier: $0.request.identifier, userInfo: $0.request.content.userInfo) })
+                 callback(notifications.prefix(129).map { DeliveredCard(identifier: $0.request.identifier, userInfo: $0.request.content.userInfo) })
              }
          }, removeDelivered: @escaping DeliveredRemover = { identifiers in
              UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
@@ -31,6 +40,65 @@ final class NativePushNotificationConsumer {
     static func configured() throws -> NativePushNotificationConsumer {
         NativePushNotificationConsumer(state: try NativePushConfiguration.sharedState(), keys: try NativePushConfiguration.sharedKeyStore())
     }
-    func receiveDismiss(userInfo: [AnyHashable: Any], completion: @escaping (DismissOutcome) -> Void) { completion(.unavailable) }
-    func receiveAction(userInfo: [AnyHashable: Any], identifier: String) -> ActionOutcome { .unavailable }
+    func receiveDismiss(userInfo: [AnyHashable: Any], completion: @escaping (DismissOutcome) -> Void) {
+        queue.async { [self] in
+            guard pending.count < 32 else { completion(.unavailable); return }
+            do {
+                // Refuse non-dismiss before preparation: a background wake for a
+                // question must not consume its nonce and suppress its later NSE.
+                let opened = try NativePushCodec.open(userInfo: userInfo, state: state, keys: keys, now: now())
+                guard case .dismiss = opened.payload else { completion(.ignored); return }
+                let effect = try effectFactory()
+                let prepared = try effect.prepare(userInfo: userInfo)
+                let id = UUID()
+                pending[id] = Pending(prepared: prepared, effect: effect,
+                    deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000, completion: completion)
+                queue.asyncAfter(deadline: .now() + 2) { [self] in finish(id, outcome: .unavailable) }
+                // The OS continuation holds only an ID. A timeout releases the
+                // decoded payload/context even if the OS never calls back.
+                readDelivered { [weak self] cards in
+                    guard let self else { return }
+                    guard cards.count <= 128 else {
+                        self.queue.async { [weak self] in self?.finish(id, outcome: .unavailable) }; return
+                    }
+                    self.queue.async { [weak self] in self?.removeVerifiedCards(cards, id: id) }
+                }
+            } catch { completion(.unavailable) }
+        }
+    }
+    private func finish(_ id: UUID, outcome: DismissOutcome) {
+        guard let current = pending.removeValue(forKey: id) else { return }
+        current.completion(outcome)
+    }
+    private func removeVerifiedCards(_ cards: [DeliveredCard], id: UUID) {
+        guard let current = pending[id] else { return }
+        guard DispatchTime.now().uptimeNanoseconds < current.deadline else { finish(id, outcome: .unavailable); return }
+        do {
+            try current.effect.recheck(current.prepared)
+            var identifiers: [String] = []
+            for card in cards {
+                guard !card.identifier.isEmpty, card.identifier.utf8.count <= 256,
+                      let candidate = try? NativePushCodec.open(userInfo: card.userInfo, state: state, keys: keys, now: now()),
+                      candidate.record.rid == current.prepared.push.record.rid,
+                      candidate.record.collapseId == current.prepared.push.record.collapseId,
+                      candidate.record.kind != 6,
+                      candidate.record.revision <= current.prepared.push.record.revision else { continue }
+                if !identifiers.contains(card.identifier) { identifiers.append(card.identifier) }
+            }
+            guard DispatchTime.now().uptimeNanoseconds < current.deadline else { finish(id, outcome: .unavailable); return }
+            // Existing P256 read, captured generation and latest TERMINAL digest
+            // are rechecked again immediately before the actual OS removal.
+            try current.effect.recheck(current.prepared)
+            if !identifiers.isEmpty { removeDelivered(identifiers) }
+            finish(id, outcome: .removed(identifiers.count))
+        } catch { finish(id, outcome: .unavailable) }
+    }
+    func receiveAction(userInfo: [AnyHashable: Any], identifier: String) -> ActionOutcome {
+        do {
+            _ = try effectFactory().action(userInfo: userInfo, identifier: identifier)
+            // R5 consumes the v2 action here. R6 will add the sole native owner;
+            // neither legacy direct POST nor wrapped JavaScript submits it now.
+            return .verifiedOpenApp
+        } catch { return .unavailable }
+    }
 }
