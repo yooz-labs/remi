@@ -29,6 +29,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import { formatQuestionBanner, runAttachClient } from '../../src/cli/attach-client.ts';
+import { HEARTBEAT_MS } from '../../src/cli/status-bar.ts';
 
 const TEST_PORT = 9873;
 
@@ -696,7 +697,27 @@ describe('runAttachClient', () => {
     setupOutput();
     const targetSessionId = generateId();
     const questionId = generateId() as UUID;
-
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    let spinner: ReturnType<typeof setInterval> | undefined;
+    let questionLive = false;
+    let sendThinking: (() => void) | undefined;
+    let resolveQuestion: (() => void) | undefined;
+    let closePeer: (() => void) | undefined;
+    const later = (callback: () => void, ms: number) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        callback();
+      }, ms);
+      timers.add(timer);
+    };
+    const barsIn = (output: string) =>
+      [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    const currentBars = () => barsIn(fs.readFileSync(outputPath, 'utf-8'));
+    const observe = async (predicate: () => boolean, boundMs: number) => {
+      const deadline = performance.now() + boundMs;
+      while (!predicate() && performance.now() < deadline) await Bun.sleep(20);
+      return predicate();
+    };
     server = Bun.serve({
       port: TEST_PORT + 13,
       fetch(req, srv) {
@@ -708,14 +729,13 @@ describe('runAttachClient', () => {
         message(ws, data) {
           const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
           const msg = deserialize(text);
-          if (!msg) return;
-
-          if (msg.type === 'hello') {
+          if (msg?.type !== 'hello') return;
+          closePeer = () => ws.close();
+          // A real delayed response makes a pre-connect fixed peek invalid: the
+          // heartbeat belongs to the actual first paint, not the test's start.
+          later(() => {
             ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
-            // remi_status arrives first, but (#932) startStatusBar() defers
-            // its first paint until a question_snapshot has been observed --
-            // status A ("idle") is only stored, not yet painted.
-            setTimeout(() => {
+            later(() => {
               ws.send(
                 serialize(
                   createRemiStatus(
@@ -725,24 +745,13 @@ describe('runAttachClient', () => {
                 ),
               );
             }, 50);
-            // question_snapshot arrives with the question already live: this
-            // unblocks the deferred start AND is simultaneously the
-            // transition into "live", so the bar's first-ever paint IS the
-            // onset paint (reflecting status A, stored above).
-            setTimeout(() => {
+            later(() => {
+              questionLive = true;
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
             }, 150);
-            // #1038: keep the PTY BUSY for the whole question, the way a
-            // held permission's TUI spinner does (#1026). Without this the
-            // gate's `lastObservedAtMs` stays null, `isQuiescent()` is
-            // trivially true, and this test cannot tell a working bar from
-            // one that only paints when Claude falls silent -- which is
-            // exactly how #1038's own broken first attempt passed its suite.
-            // 150ms is well inside QUIESCENCE_MS (500), so quiescence is
-            // NEVER reached while the question is open. That makes the
-            // heartbeat the only thing that can carry a status change to the
-            // row, which is precisely the bound being asserted below.
-            const spinnerTimer = setInterval(() => {
+            // Keep the actual PTY forwarder busy while the question is live;
+            // quiescence must not be needed for its status heartbeat (#1038).
+            spinner = setInterval(() => {
               ws.send(
                 serialize(
                   createRawPtyOutput(
@@ -752,11 +761,7 @@ describe('runAttachClient', () => {
                 ),
               );
             }, 150);
-            setTimeout(() => clearInterval(spinnerTimer), 3400);
-            // Status changes to B ("thinking") WHILE the question is still
-            // live -- #1038: this must reach the row before the question
-            // resolves, not because of it.
-            setTimeout(() => {
+            sendThinking = () =>
               ws.send(
                 serialize(
                   createRemiStatus(
@@ -765,31 +770,16 @@ describe('runAttachClient', () => {
                   ),
                 ),
               );
-            }, 600);
-            // Question resolves only AFTER the peek below, so anything the
-            // row shows at that point was painted with the prompt still open.
-            setTimeout(() => {
+            resolveQuestion = () => {
+              questionLive = false;
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
-            }, 3000);
-            setTimeout(() => ws.close(), 3400);
-          }
+            };
+          }, 600);
         },
         close() {},
       },
     });
-
-    // Peek at t=2600: after status B (t=600) and after the first heartbeat
-    // past the bar's first paint (~t=150 + HEARTBEAT_MS = ~2150), but well
-    // before the question resolves (t=3000). Reading MID-question is the
-    // whole point -- a final-count assertion alone cannot tell "tracked it
-    // while the prompt was open" (the fix) from "caught up once the prompt
-    // closed" (the bug).
-    let midQuestionOutput = '';
-    setTimeout(() => {
-      midQuestionOutput = fs.readFileSync(outputPath, 'utf-8');
-    }, 2600);
-
-    await runAttachClient({
+    const attaching = runAttachClient({
       host: 'localhost',
       port: TEST_PORT + 13,
       sessionId: targetSessionId,
@@ -797,26 +787,39 @@ describe('runAttachClient', () => {
       outputFd,
       statusBarEligible: true,
     });
-
-    const midBars = [...midQuestionOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    // The bar's first-ever paint is deferred until question_snapshot arrives
-    // and so doubles as the onset paint (status A, stored earlier). With the
-    // PTY never quiescent, the status-B change reaches the row on the
-    // HEARTBEAT (~2s), not the 250ms tick -- staleness while Claude streams
-    // is bounded by HEARTBEAT_MS, which is the honest guarantee. Before
-    // #1038 this row read "idle" here and stayed that way for as long as the
-    // prompt did.
+    let onsetObserved = false;
+    let thinkingWhileLive = false;
+    let midQuestionOutput = '';
+    try {
+      onsetObserved = await observe(() => currentBars()[0]?.includes('idle') === true, 2000);
+      if (onsetObserved) {
+        sendThinking?.();
+        // Heartbeat plus two 250ms render ticks is a bounded scheduling margin,
+        // measured from observed onset. Resolution cannot make this pass.
+        thinkingWhileLive = await observe(
+          () => questionLive && currentBars().at(-1)?.includes('thinking') === true,
+          HEARTBEAT_MS + 500,
+        );
+      }
+      midQuestionOutput = fs.readFileSync(outputPath, 'utf-8');
+      resolveQuestion?.();
+      // Independently retain the resumed paint boundary before closing.
+      await observe(() => currentBars().at(-1)?.includes('thinking') === true, 500);
+    } finally {
+      for (const timer of timers) clearTimeout(timer);
+      clearInterval(spinner);
+      closePeer?.();
+      await attaching;
+    }
+    const midBars = barsIn(midQuestionOutput);
+    expect(onsetObserved).toBe(true);
+    expect(thinkingWhileLive).toBe(true);
     expect(midBars[0]).toContain('idle');
     expect(midBars.at(-1)).toContain('thinking');
-
-    const output = readOutput();
-    const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    const bars = barsIn(readOutput());
     expect(bars.at(-1)).toContain('thinking');
-    // The dedup still holds. ~3.25s of bar life at a 250ms cadence is ~13
-    // ticks; expected paints are the onset, one or two heartbeats and the
-    // resumed paint, so a bound of 5 proves ticks were deduped rather than
-    // painted. A bound loose enough to cover every tick could not fail if
-    // the dedup were deleted outright, which is the regression it guards.
+    // The busy-PTY gate also suppresses routine ticks; keep the finite paint
+    // count without claiming this alone isolates byte-identical deduplication.
     expect(bars.length).toBeLessThanOrEqual(5);
   });
 
