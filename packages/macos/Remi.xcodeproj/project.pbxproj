@@ -22,6 +22,7 @@
         120000060000000000000003 /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000001; };
         120000020000000000000005 /* NativePushKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000020000000000000004; };
         120000040000000000000005 /* NativePushCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000040000000000000004; };
+        120000060000000000000005 /* NativePushEffectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000004; };
         120000010000000000000002 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000001; };
         120000010000000000000003 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000001; };
         120000010000000000000005 /* NativePushStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000004; };
@@ -85,6 +86,7 @@
         120000060000000000000001 /* NativePushEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushEffect.swift; sourceTree = SOURCE_ROOT; };
         120000020000000000000004 /* NativePushKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushKeyStoreTests.swift; sourceTree = SOURCE_ROOT; };
         120000040000000000000004 /* NativePushCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushCodecTests.swift; sourceTree = SOURCE_ROOT; };
+        120000060000000000000004 /* NativePushEffectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushEffectTests.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000001 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Remi/NativePush/NativePushState.swift; sourceTree = SOURCE_ROOT; };
         120000010000000000000004 /* NativePushStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiTests/NativePushStateTests.swift; sourceTree = SOURCE_ROOT; };
 		120000030000000000000006 /* NativeAPNsEnvironmentQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Remi/NativePush/NativeAPNsEnvironmentQuery.m; sourceTree = SOURCE_ROOT; };
@@ -181,6 +183,7 @@
                 120000010000000000000014 /* NativeIdentityAuthorityTests.swift */,
                 120000020000000000000004 /* NativePushKeyStoreTests.swift */,
                 120000040000000000000004 /* NativePushCodecTests.swift */,
+                120000060000000000000004 /* NativePushEffectTests.swift */,
 				120000050000000000000003 /* NotificationService.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
@@ -380,6 +383,7 @@
                 120000060000000000000003 /* NativePushEffect.swift in Sources */,
                 120000020000000000000005 /* NativePushKeyStoreTests.swift in Sources */,
                 120000040000000000000005 /* NativePushCodecTests.swift in Sources */,
+                120000060000000000000005 /* NativePushEffectTests.swift in Sources */,
                 120000010000000000000005 /* NativePushStateTests.swift in Sources */,
                 120000010000000000000015 /* NativeIdentityAuthorityTests.swift in Sources */,
 				120000030000000000000008 /* NativeAPNsEnvironmentQuery.m in Sources */,
