@@ -99,3 +99,20 @@ export {
   encodePushSubmitResult,
   decodePushSubmitResult,
 } from './push.ts';
+
+export {
+  type UnsignedNativeAnswer,
+  type NativeAnswer,
+  type NativeAnswerAuthority,
+  type VerifiedNativeAnswer,
+  MAX_NATIVE_ANSWER_BODY,
+  MAX_NATIVE_ANSWER_JSON,
+  NATIVE_ANSWER_TTL_SECONDS,
+  NATIVE_ANSWER_FUTURE_SECONDS,
+  buildNativeAnswerBody,
+  buildNativeAnswerSigningInput,
+  nativeAnswerDigest,
+  encodeNativeAnswer,
+  decodeNativeAnswer,
+  verifyNativeAnswer,
+} from './native-answer.ts';

@@ -71,4 +71,5 @@ export const LABEL = {
   seal: 'remi-relay-v2 seal',
   pushContent: 'remi-relay-v2 push content',
   pushSubmit: 'remi-relay-v2 push submit',
+  nativeAnswer: 'remi-relay-v2 native answer',
 } as const;
