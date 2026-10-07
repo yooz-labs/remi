@@ -4,6 +4,12 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A closed session's cards leave the lock screen (#1223)
+
+#### Fixed
+
+- When a session really closed (Claude exited, or the session was stopped) while a prompt was held, its pushed card stayed on the lock screen until the hold deadline, up to 59 minutes for a daemon or hub session. The registry forgot the session before the permission relay dismissed its cards, so the relay found nothing to dismiss. It now dismisses every open card of a closed session, in the app and on the lock screen.
+
 ### Relay: off by default, and closed without authentication (#1193)
 
 `network.relay` now defaults to `false`.

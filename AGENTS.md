@@ -374,8 +374,11 @@ no Telegram buttons, no lock-screen category, and every phone answer is
 refused with the terminal wording, never typed. A structured `selections`
 answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
-(that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
-dismissal is broadcast only for a card that was actually pushed. `remi
+(that agent), `SessionEnd`, a transcript rotation, a real session close, or
+`remi unstick`; a dismissal is broadcast only for a card that was actually
+pushed, except at a real close, where the session's cards can no longer be
+looked up and every open escalation is dismissed (#1223; a no-op for a card
+no client holds). `remi
 unstick` does not close a LIVE hold: its dialog is on screen, so it is
 released to the terminal with a "handed back" notice (suppression kept),
 and a second unstick clears it.
