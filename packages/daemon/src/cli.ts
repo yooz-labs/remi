@@ -163,6 +163,7 @@ import {
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
+import { buildSessionList } from './cli/handlers/session-list-entries.ts';
 import {
   type TranscriptHandlers,
   createTranscriptHandlers,
@@ -1512,8 +1513,8 @@ function startBinaryUpdateWatcher(): void {
   });
 }
 
-// Watcher for live-sessions directory (pushes session list updates when a
-// sibling daemon registers). Closer assigned once started (wrapper mode, and
+// Watcher for live-sessions directory (pushes session list updates when the
+// set of sessions on the machine changes while another daemon runs). Closer assigned once started (wrapper mode, and
 // daemon mode since #542); cleanup() calls it unconditionally (no-op if null).
 let liveSessionsWatcherCloser: (() => void) | null = null;
 
@@ -1522,23 +1523,20 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
  * daemon's currently known sessions plus any newly-seen sibling ports. Shared
  * by both daemon and wrapper mode so a new sibling starting up is broadcast
  * to connected clients either way -- daemon mode never did this before #542.
- * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`, and
- * `liveSessionsRegistry` at CALL time (not closure-capture time), so it always
- * reflects the finalized port and current session state.
+ * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`,
+ * `harness` and `liveSessionsRegistry` at CALL time (not closure-capture time),
+ * so it always reflects the finalized port and current session state. The
+ * entries come from `buildSessionList`, the request path's builder (#1274).
  */
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
   const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
-  const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-  for (const remiId of [...managedIds]) {
-    const binding = bindingStore.get(remiId as UUID);
-    if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
-  }
-  const sessions = [
-    ...sessionRegistry.listSessions(),
-    ...transcriptDiscovery.discoverSessions(managedIds),
-  ];
-  return { sessions, newPorts };
+  // The same entries a session_list_request gets, harness identity included (#1274).
+  const { own, external } = buildSessionList(
+    { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+    true,
+  );
+  return { sessions: [...own, ...external], newPorts };
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
