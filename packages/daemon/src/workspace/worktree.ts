@@ -69,8 +69,6 @@ const TEXT = {
 
 /** The longest branch or base accepted, in UTF-16 units. */
 const MAX_REF_TEXT = 200;
-/** The longest directory name most file systems take, in bytes. */
-const MAX_NAME_BYTES = 255;
 /** How long the whole preparation may take. A checkout of a large repository takes a while. */
 const DEFAULT_DEADLINE_MS = 60_000;
 /** How long the checks after a failed `git worktree add` may take, on their own deadline. */
@@ -372,14 +370,8 @@ export async function prepareWorkspace(
 
   const target = worktreePath(main, branch);
   const shownTarget = escapeUnsafeText(target);
-  if (Buffer.byteLength(path.basename(target), 'utf8') > MAX_NAME_BYTES) {
-    return {
-      ok: false,
-      error: TEXT.nameTooLong,
-      detail: `${shownTarget}: the name is over ${MAX_NAME_BYTES} bytes`,
-    };
-  }
-  // Claim the directory before git runs: an exclusive mkdir lets one request through.
+  // Claim the directory before git runs: an exclusive mkdir lets one request through, and a name
+  // the file system cannot hold (over 255 bytes) is refused here, before git makes the branch.
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.mkdirSync(target);
