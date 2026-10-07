@@ -16,7 +16,8 @@
  *   preference). Any unknown signal fails toward silence (#914).
  * - `turnFailed`: pushes the session's `turn_failed` notice (#1153). No config
  *   gate: `on_turn_complete = false` does NOT silence a failure; only the
- *   per-device `turnFailed` preference does, inside the dispatcher.
+ *   per-device `turnFailed` preference does, inside the dispatcher, which
+ *   also alerts once per failure reason until `turnSucceeded` (#1226).
  * - `turnSucceeded`: clears a failure notice that is still outstanding, once a
  *   later turn proves it stale. Sends nothing when none is outstanding.
  *

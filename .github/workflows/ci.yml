@@ -67,6 +67,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # A normal run takes about 4 minutes. A hung `bun test` spins until the job limit (#1206), so
+    # cap it well above a slow run instead of the 360-minute default.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2

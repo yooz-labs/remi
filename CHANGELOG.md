@@ -148,19 +148,23 @@ on a usage limit, one per prompt, stacking in the app and on the lock screen.
 
 #### Added
 
-- **`turn_failed` push**: one informational notification per failed turn, titled
-  "<session>: Claude stopped", with a readable reason from the `error` code
-  (for example "Rate or usage limit reached", "Authentication failed"; an
+- **`turn_failed` push**: an informational notification when a turn fails,
+  titled "<session>: Claude stopped", with a readable reason from the `error`
+  code (for example "Rate or usage limit reached", "Authentication failed"; an
   unknown code is shown as is) and a short excerpt of Claude's last message.
-  One collapse key per session, so a repeat replaces the previous notification.
+  It alerts once per failure until Claude is working again (#1226): at a usage
+  limit every turn fails, each agent's too, and the phone used to alert on
+  every one. A different reason, or the main session after an agent, alerts
+  again and replaces the notice (one collapse key per session).
 - **"Failed turns" setting** in the app (`pushPrefs.turnFailed`), on by
   default. It is separate from "Turn complete", and
   `notifications.on_turn_complete = false` does not silence it: a failed turn is
   the one turn end you must not miss by default.
-- A failure notice clears itself: the next successful turn (or your next
-  prompt) dismisses it, so a stale "Claude stopped" does not stay on the lock
-  screen. An agent (subagent) failure is pushed too but does not change the
-  main session's status.
+- A failure notice clears itself once Claude is working again (its next tool
+  call, or a turn that finishes), so a stale "Claude stopped" does not stay on
+  the lock screen. Your next prompt alone does not clear it: at a usage limit
+  that prompt fails too. An agent (subagent) failure is pushed too but does not
+  change the main session's status.
 
 #### Changed
 

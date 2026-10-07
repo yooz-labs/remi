@@ -389,27 +389,217 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
     ]);
   });
 
-  test('the collapse key is the session-scoped key, never a card id, and is the same on a repeat', async () => {
+  test('the collapse key is the session-scoped key, never a card id, and is the same on a later failure', async () => {
     register(false);
     deviceTokens.set('a', device('a'));
     const dispatcher = make();
 
     await dispatcher.pushTurnFailed({ error: 'rate_limit' });
-    await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+    await dispatcher.pushTurnFailed({ error: 'overloaded' });
 
     expect(sent).toHaveLength(2);
     expect(sent[0]?.opts['questionId']).toBe(turnFailedCollapseId(SID));
     expect(sent[1]?.opts['questionId']).toBe(turnFailedCollapseId(SID));
   });
 
-  test('a repeat is not deduped: the second failed turn is pushed (and replaces the first via the collapse key)', async () => {
-    register(false);
-    deviceTokens.set('a', device('a'));
-    const dispatcher = make();
+  describe('one alert per failure reason until a turn succeeds (#1226)', () => {
+    test('the same failure again is not pushed while its notice stands', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
 
-    expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
-    expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
-    expect(sent).toHaveLength(2);
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+      expect(
+        await dispatcher.pushTurnFailed({
+          error: 'rate_limit',
+          last_assistant_message: 'a different excerpt',
+        }),
+      ).toBe('deduped');
+      expect(sent).toHaveLength(1);
+    });
+
+    test('a burst that arrives before the first push settles sends one alert', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () => dispatcher.pushTurnFailed({ error: 'rate_limit' })),
+      );
+
+      expect(outcomes).toEqual(['pushed', 'deduped', 'deduped', 'deduped', 'deduped']);
+      expect(sent).toHaveLength(1);
+    });
+
+    test('a different reason still alerts, and a reason seen earlier in the streak does not', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      await dispatcher.pushTurnFailed({ error: 'overloaded' });
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      await dispatcher.pushTurnFailed({ error: 'overloaded' });
+
+      expect(sent.map((p) => p.opts['body'])).toEqual([
+        'Rate or usage limit reached',
+        'API overloaded',
+      ]);
+    });
+
+    test('a missing code and the code unknown, with the same details, are one reason', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({});
+      await dispatcher.pushTurnFailed({ error: 'unknown' });
+
+      expect(sent).toHaveLength(1);
+    });
+
+    test('failures with no recognized code are told apart by their details', async () => {
+      // A Codex error whose codexErrorInfo is an object carries no string code.
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({ error_details: 'stream disconnected' });
+      await dispatcher.pushTurnFailed({ error_details: 'model not found' });
+      await dispatcher.pushTurnFailed({ error_details: 'stream disconnected' });
+
+      expect(sent).toHaveLength(2);
+    });
+
+    test("a subagent's failure does not use up the main agent's alert", async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      expect(
+        await dispatcher.pushTurnFailed({
+          error: 'overloaded',
+          agent_id: 'agent-1',
+          agent_type: 'Explore',
+        }),
+      ).toBe('pushed');
+      expect(await dispatcher.pushTurnFailed({ error: 'overloaded' })).toBe('pushed');
+      expect(
+        await dispatcher.pushTurnFailed({
+          error: 'overloaded',
+          agent_id: 'agent-2',
+          agent_type: 'Explore',
+        }),
+      ).toBe('deduped');
+      expect(await dispatcher.pushTurnFailed({ error: 'overloaded' })).toBe('deduped');
+      expect(sent).toHaveLength(2);
+    });
+
+    test('a dismiss while the first push is in flight lets the next failure alert', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      const first = dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      dispatcher.dismissTurnFailed();
+      const second = dispatcher.pushTurnFailed({ error: 'rate_limit' });
+
+      expect(await first).toBe('pushed');
+      expect(await second).toBe('pushed');
+      expect(sent.filter((p) => p.opts['kind'] === 'turn_failed')).toHaveLength(2);
+    });
+
+    test('a burst whose one push fails: the next failure after it tries again', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      failFor.add('a');
+      const dispatcher = make();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 3 }, () => dispatcher.pushTurnFailed({ error: 'rate_limit' })),
+      );
+      expect(outcomes).toEqual(['failed', 'deduped', 'deduped']);
+
+      failFor.clear();
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+    });
+
+    describe('on the secure channel (#1226 with #1200)', () => {
+      /** The secure fan-out as the dispatcher sees it: what it reports per send. Delivery itself
+       *  is covered through the real Worker in claude-session.test.ts; this pins only which
+       *  outcomes count as alerted. */
+      function secureOnly(outcomes: string[]): NotificationDispatcher {
+        const sends: string[] = [];
+        return new NotificationDispatcher(
+          {
+            sessionRegistry: registry,
+            deviceTokens,
+            pushConfig: () => ({ signalingUrl: 'ws://x', legacyEnabled: false }),
+            getPrimarySessionId: () => null,
+            pushFn,
+            securePush: {
+              hasRecipients: () => true,
+              send: (event) => {
+                sends.push(event.kind);
+                return Promise.resolve((outcomes.shift() ?? 'pushed') as never);
+              },
+            },
+          },
+          SID,
+        );
+      }
+
+      test('an uncertain secure send may have alerted, so the repeat is not sent', async () => {
+        register(false);
+        const dispatcher = secureOnly(['uncertain']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('uncertain');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
+
+      test('a failed or refused secure send does not count: the next failure tries again', async () => {
+        register(false);
+        const dispatcher = secureOnly(['failed', 'no_channel', 'pushed']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('failed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('no_channel');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
+    });
+
+    test('a successful turn ends the streak: the same failure alerts again after it', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      dispatcher.dismissTurnFailed();
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+
+      expect(sent.filter((p) => p.opts['kind'] === 'turn_failed')).toHaveLength(2);
+    });
+
+    test('a push no device accepted does not count: the next failure tries again', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      failFor.add('a');
+      const dispatcher = make();
+
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('failed');
+      failFor.clear();
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+
+      expect(sent).toHaveLength(1);
+    });
+
+    test('a failure every device muted does not count: a device that unmutes hears the next one', async () => {
+      register(false);
+      deviceTokens.set('a', device('a', false));
+      const dispatcher = make();
+
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('no_channel');
+      deviceTokens.set('a', device('a', true));
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+    });
   });
 
   test('a device that muted turnFailed gets nothing; the others still do', async () => {

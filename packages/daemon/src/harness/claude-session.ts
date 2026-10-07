@@ -401,8 +401,8 @@ export function createClaudeSession(
           sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
         onHarnessDenied,
         // #1153: a turn that ended on an API error is one `turn_failed` push
-        // per session through the session's dispatcher, never a card; a later
-        // main Stop or UserPromptSubmit clears it (`turn-failed.ts`).
+        // per session through the session's dispatcher, never a card, once per
+        // reason until a later main Stop clears it (`turn-failed.ts`, #1226).
         pushTurnFailed,
         dismissTurnFailed,
       },

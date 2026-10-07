@@ -238,8 +238,10 @@ export interface HookBridgeDeps {
   /**
    * Clear the `turn_failed` notice this session may have pushed (#1153): the
    * quiet dismissal sharing its collapse key, fired on the next main-agent
-   * `Stop` or `UserPromptSubmit`, so a stale "Claude stopped" does not sit on
-   * the lock screen after a later turn succeeded. Wired by cli.ts to the
+   * `Stop` that is not a stop-hook re-entry or the next main-agent tool call,
+   * so a stale "Claude stopped" does not sit on the lock screen once Claude is
+   * working again. Not on a new prompt (#1226): at a usage limit that prompt
+   * fails too. Wired by cli.ts to the
    * session's `NotificationDispatcher.dismissTurnFailed`, which sends nothing
    * unless a `turn_failed` push is outstanding. Absent => nothing cleared.
    * Throw-safe here.
@@ -874,6 +876,10 @@ export function setupHookBridge(
       toolInput: input.tool_input,
       toolUseId: input.tool_use_id,
     });
+    // #1226: the main agent is working again, so a "Claude stopped" notice
+    // is stale and the next failure, even for the same reason, alerts. A
+    // retry at a usage limit fails before any tool call, so it never gets here.
+    dismissTurnFailedNotice();
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -1254,8 +1260,9 @@ export function setupHookBridge(
     // answered No in the terminal after its hold was released (that fires
     // no hook at all), so its open entry cannot outlive the turn.
     autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
-    // #1153: a new prompt supersedes a "Claude stopped" notice from before it.
-    dismissTurnFailedNotice();
+    // A new prompt does NOT clear a "Claude stopped" notice (#1226): at a
+    // usage limit every prompt fails too, and clearing here re-alerted the
+    // phone on each retry. The next main-agent tool call or `Stop` clears it.
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);

@@ -691,11 +691,15 @@ describe('setupHookBridge', () => {
         expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
       });
 
-      test('a repeat failure in the same session reuses the one collapse key', async () => {
+      test('a later failure in the same session reuses the one collapse key', async () => {
         const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]));
         lock('claude-A');
         hookServer.fire('StopFailure', stopFailure());
-        hookServer.fire('StopFailure', stopFailure({ prompt_id: 'second-turn' }));
+        // Another reason: a repeat of the first is not pushed at all (#1226).
+        hookServer.fire(
+          'StopFailure',
+          stopFailure({ prompt_id: 'second-turn', error: 'overloaded' }),
+        );
         await Promise.all(outcomes);
 
         expect(sent).toHaveLength(2);
@@ -807,7 +811,7 @@ describe('setupHookBridge', () => {
           }
         });
 
-        test('the next main UserPromptSubmit clears it the same way', async () => {
+        test('a new prompt does not clear it: at a usage limit every prompt fails too (#1226)', async () => {
           const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
           lock('claude-A');
           hookServer.fire('StopFailure', stopFailure());
@@ -816,9 +820,7 @@ describe('setupHookBridge', () => {
           hookServer.fire('UserPromptSubmit', prompt());
           await flush();
 
-          expect(dismissals(sent).map((p) => p.opts['questionId'])).toEqual([
-            turnFailedCollapseId(SID),
-          ]);
+          expect(dismissals(sent)).toEqual([]);
         });
 
         test('nothing is sent when no failure is outstanding, and only once per failure', async () => {
@@ -861,15 +863,97 @@ describe('setupHookBridge', () => {
           expect(dismissals(sent)).toEqual([]);
         });
 
-        test('a failing repeat replaces the notice: dismiss, then a fresh alert under the same key', async () => {
+        test('a retry loop at a usage limit alerts once: no dismiss, no second alert (#1226)', async () => {
           const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
           lock('claude-A');
           hookServer.fire('StopFailure', stopFailure());
           await Promise.all(outcomes);
 
-          // The user retries and it fails again at once.
+          // Each retry fails again at once.
+          for (let i = 0; i < 5; i++) {
+            hookServer.fire('UserPromptSubmit', prompt());
+            hookServer.fire('StopFailure', stopFailure({ prompt_id: `retry-${i}` }));
+          }
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual(['turn_failed']);
+        });
+
+        test('subagents failing at the same limit alert once between them, and the main agent once more (#1226)', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+
+          hookServer.fire(
+            'StopFailure',
+            stopFailure({ agent_id: 'agent-1', agent_type: 'Explore' }),
+          );
+          hookServer.fire(
+            'StopFailure',
+            stopFailure({ agent_id: 'agent-2', agent_type: 'Explore' }),
+          );
+          hookServer.fire('StopFailure', stopFailure());
+          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'again' }));
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual(['turn_failed', 'turn_failed']);
+          expect(String(sent[0]?.opts['body'])).toStartWith('Explore · ');
+          expect(String(sent[1]?.opts['body'])).toStartWith('Rate or usage limit reached');
+        });
+
+        const toolCall = (over: Record<string, unknown> = {}) => ({
+          session_id: 'claude-A',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Read',
+          tool_input: { file_path: '/tmp/x' },
+          tool_use_id: 'toolu_progress',
+          ...over,
+        });
+
+        test('the main agent working again clears the notice, so the same failure later alerts (#1226)', async () => {
+          // A resumed turn that runs for hours and then hits the limit again
+          // must be heard: no Stop came in between.
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
           hookServer.fire('UserPromptSubmit', prompt());
-          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'retry' }));
+          hookServer.fire('PreToolUse', toolCall());
+          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'later' }));
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual([
+            'turn_failed',
+            'dismiss',
+            'turn_failed',
+          ]);
+        });
+
+        test("a subagent's tool call does not clear the main agent's notice (#1226)", async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('PreToolUse', toolCall({ agent_id: 'agent-1', agent_type: 'Explore' }));
+          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'again' }));
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual(['turn_failed']);
+        });
+
+        test('after a turn that finishes well, the same failure alerts again (#1226)', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('Stop', stop());
+          hookServer.fire('StopFailure', stopFailure());
           await Promise.all(outcomes);
           await flush();
 
