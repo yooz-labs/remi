@@ -943,7 +943,8 @@ export interface WorkspaceRequest {
   readonly repository: string;
   /**
    * A new worktree on the new branch `branch`, made from `base` (a branch, tag or commit; default:
-   * the main worktree's `HEAD`). Absent: the session starts in the repository's main worktree.
+   * the main worktree's `HEAD`). Absent: the session starts in the repository's main worktree; to
+   * start in an existing worktree, send its path as `directory` with no `workspace`.
    */
   readonly worktree?: { readonly branch: string; readonly base?: string | undefined } | undefined;
 }
