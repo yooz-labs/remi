@@ -44,4 +44,38 @@ struct FixtureConformanceTests {
         #expect(list.sessions.first?.sessionId == "fixture-session-id")
         #expect(list.daemonPorts == [19924, 19925])
     }
+
+    /// A session found from a Claude transcript on disk has no `name` (`name?` on the wire,
+    /// `DiscoverableSession` in packages/shared/src/types.ts), and a hub lists such sessions
+    /// whenever the request asks for external ones. The shape is what
+    /// `TranscriptDiscovery` builds (packages/daemon/src/transcript/transcript-discovery.ts);
+    /// the golden fixture has only a named session, so it cannot catch this.
+    @Test func sessionFoundFromATranscriptDecodesWithoutAName() throws {
+        let json = Data(
+            """
+            {
+              "type": "session_list_response",
+              "id": "fixture-id",
+              "timestamp": "2026-10-07T00:00:00.000Z",
+              "requestId": "fixture-request-id",
+              "sessions": [
+                {
+                  "sessionId": "11111111-1111-4111-8111-111111111111",
+                  "projectPath": "/Users/fixture/project",
+                  "status": "completed",
+                  "lastActivity": "2026-10-06T00:00:00.000Z",
+                  "messageCount": 12,
+                  "source": "transcript",
+                  "canAttach": false,
+                  "canResume": true,
+                  "claudeSessionId": "11111111-1111-4111-8111-111111111111",
+                  "transcriptPath": "/Users/fixture/.claude/projects/p/11111111-1111-4111-8111-111111111111.jsonl"
+                }
+              ]
+            }
+            """.utf8)
+        let list = try JSONDecoder().decode(SessionListResponse.self, from: json)
+        #expect(list.sessions.first?.name == nil)
+        #expect(list.sessions.first?.source == "transcript")
+    }
 }
