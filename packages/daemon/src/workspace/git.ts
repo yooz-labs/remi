@@ -162,9 +162,14 @@ export async function resolveRepository(
     deadlineAt,
   );
   if (info.code !== 0) return failedLookup(info);
-  const [bare, gitDir, commonDir] = outputLines(info.stdout);
-  if (gitDir === undefined || commonDir === undefined) return { kind: 'unknown', result: info };
-  if (bare === 'true') return { kind: 'bare', path: gitDir };
+  // One line per answer, unless a path holds a newline and shifts them. Then the paths here are
+  // not read: the NUL-separated worktree list below names the repository exactly.
+  const infoLines = outputLines(info.stdout);
+  const aligned = infoLines.length === 3;
+  const [bare, gitDir, commonDir] = infoLines;
+  if (bare === 'true') {
+    return aligned ? { kind: 'bare', path: gitDir as string } : { kind: 'unknown', result: info };
+  }
 
   const top = await runGit(git, dir, ['rev-parse', '--show-toplevel'], deadlineAt);
   if (top.code !== 0) {
@@ -172,9 +177,11 @@ export async function resolveRepository(
     if (!top.timedOut && top.stderr.includes('must be run in a work tree')) return { kind: 'none' };
     return failedLookup(top);
   }
-  const topLevel = outputLines(top.stdout)[0];
-  if (topLevel === undefined) return { kind: 'unknown', result: top };
-  if (gitDir === commonDir) {
+  // The directory's own top level has no unambiguous reading when it holds a newline.
+  const topLines = outputLines(top.stdout);
+  if (topLines.length !== 1) return { kind: 'unknown', result: top };
+  const topLevel = topLines[0] as string;
+  if (aligned && gitDir === commonDir) {
     return { kind: 'repository', top: topLevel, repository: topLevel, mainIsBare: false };
   }
 
