@@ -181,9 +181,10 @@ describe('pairing records (#1275)', () => {
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
     data.pairings[0].contested = 999;
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
-    const before = fs.readFileSync(file, 'utf-8');
+    // Every write is an atomic rename, so an untouched file keeps its inode.
+    const before = fs.statSync(file).ino;
     expect(await store.claimPairing(nonce, b.publicKey, 'y')).toBe('PAIRING_USED');
-    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(fs.statSync(file).ino).toBe(before);
     expect(await store.claimPairing(nonce, c.publicKey, 'z')).toBe('PAIRING_USED');
     expect(store.readPairing(nonce)).toMatchObject({
       contested: 999,
@@ -202,10 +203,10 @@ describe('pairing records (#1275)', () => {
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
     data.pairings[0].queueFull = 999;
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
-    const before = fs.readFileSync(file, 'utf-8');
+    const before = fs.statSync(file).ino;
     const a = await createIdentity();
     expect(await store.claimPairing(nonce, a.publicKey, 'x')).toBe('PENDING_QUEUE_FULL');
-    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(fs.statSync(file).ino).toBe(before);
   });
 
   test('at the record cap, finished records make room; only live ones count against it', async () => {
