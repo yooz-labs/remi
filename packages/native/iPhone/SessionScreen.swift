@@ -194,7 +194,7 @@ private struct ConversationButton: View {
                 Circle()
                     .fill(active ? Color.green : Color.secondary.opacity(0.5))
                     .frame(width: 7, height: 7)
-                Text(title).lineLimit(1)
+                Text(title).fixedSize(horizontal: false, vertical: true)
             }
             .font(.subheadline.weight(.semibold))
             .frame(minHeight: 44)
