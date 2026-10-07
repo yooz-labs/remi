@@ -10,6 +10,8 @@ struct MacLiveRootView: View {
     @State private var showingNewSession = false
     @State private var showingAddMachine = false
     @State private var pendingMachineRemoval: MachineState?
+    @State private var notificationRouter = MacNotificationRouter.shared
+    @State private var notificationDestination: RemiNavigationDestination?
 
     var body: some View {
         Group {
@@ -58,6 +60,7 @@ struct MacLiveRootView: View {
                             transcript: transcript(for: session.id),
                             questions: questions(for: session.id),
                             views: store.sessionViewsBySession[session.id] ?? [],
+                            initialConversationID: notificationDestination?.agentID,
                             transcriptForView: transcript,
                             onSelectView: store.loadTranscript,
                             onAnswer: { questionId, value in
@@ -104,7 +107,14 @@ struct MacLiveRootView: View {
                             },
                             onTerminate: { store.terminateSession(sessionId: session.id) }
                         )
+                        .id(notificationDestination?.agentID ?? session.id)
                         .task(id: session.id) { store.loadTranscript(sessionId: session.id) }
+                    } else if notificationDestination != nil {
+                        ContentUnavailableView(
+                            "Conversation unavailable",
+                            systemImage: "bubble.left.and.bubble.right",
+                            description: Text("The session may have ended or the machine may be offline.")
+                        )
                     } else {
                         ContentUnavailableView(
                             "Select a session",
@@ -127,6 +137,14 @@ struct MacLiveRootView: View {
         }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
             reconcileNavigation()
+        }
+        .onChange(of: notificationRouter.destination, initial: true) { _, destination in
+            guard let destination else { return }
+            notificationDestination = destination
+            selectedMachineID = destination.machineID
+            selectedSessionID = destination.sessionID
+            store.loadTranscript(sessionId: destination.agentID ?? destination.sessionID)
+            notificationRouter.destination = nil
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet { host, port in
@@ -181,6 +199,7 @@ struct MacLiveRootView: View {
                 guard next != selectedMachineID else { return }
                 selectedMachineID = next
                 selectedSessionID = ""
+                notificationDestination = nil
                 reconcileNavigation()
             }
         )
@@ -189,7 +208,10 @@ struct MacLiveRootView: View {
     private var sessionSelection: Binding<String?> {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
-            set: { selectedSessionID = $0 ?? "" }
+            set: {
+                selectedSessionID = $0 ?? ""
+                notificationDestination = nil
+            }
         )
     }
 
@@ -201,6 +223,16 @@ struct MacLiveRootView: View {
     }
 
     private func reconcileNavigation() {
+        if let destination = notificationDestination {
+            guard let machine = store.machines.first(where: { $0.id == destination.machineID }) else {
+                return
+            }
+            selectedMachineID = machine.id
+            guard machine.hasLoadedSessions else { return }
+            selectedSessionID = machine.activeSessions.contains(where: { $0.sessionId == destination.sessionID })
+                ? destination.sessionID : ""
+            return
+        }
         if !store.machines.contains(where: { $0.id == selectedMachineID }) {
             selectedMachineID = store.machines.first?.id ?? ""
         }
