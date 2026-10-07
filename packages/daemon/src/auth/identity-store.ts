@@ -438,6 +438,11 @@ export class IdentityStore {
 
   // -- Pairing records (#1275, ADR 0037) --
 
+  /** Where pairing records live, for a message that tells the person what to do with the file. */
+  get pairingsFile(): string {
+    return this.pairingsPath;
+  }
+
   private readPairingsFile(): PairingRecord[] {
     const parsed = this.readJson(this.pairingsPath);
     if (parsed === undefined) return [];

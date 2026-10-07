@@ -457,6 +457,7 @@ export function formatHelp(version: string): string {
     entry('remi keygen', 'Generate Ed25519 keypair'),
     entry('remi authorize <key>', 'Add client public key'),
     entry('remi keys', 'List authorized and pending keys'),
+    entry('remi pair', 'Pair a phone by QR, approved here (no released app scans it yet)'),
     entry('remi export-key', 'Export identity JSON'),
     entry('remi import-key [file]', 'Import identity from file or stdin'),
     '',

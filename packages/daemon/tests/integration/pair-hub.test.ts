@@ -75,6 +75,9 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
     'the hub',
   );
   expect(hub.exitCode).toBeNull();
+  // What `remi pair` reads to decide whether a phone could reach this hub.
+  const status = JSON.parse(fs.readFileSync(path.join(remiHome, 'daemon-status.json'), 'utf-8'));
+  expect(status).toMatchObject({ mode: 'hub', bind: '127.0.0.1', auth: true });
 
   // The terminal side: `remi pair` over the hub's own store.
   const store = new IdentityStore(remiHome);
