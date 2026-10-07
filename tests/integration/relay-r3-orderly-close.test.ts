@@ -4,6 +4,7 @@
  * for the far side to close it.
  */
 import { expect, test } from 'bun:test';
+import { generateId, now, relayV2, serialize } from '@remi/shared';
 import { ORDERLY_CLOSE_GRACE_MS } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { resumed } from './relay-r3-fixture.ts';
 
@@ -35,6 +36,71 @@ test('stop() waits for a pipe that is still in its orderly grace', async () => {
       () => running.logs.includes('Relay pipe closed by the hub (1000)'),
       'the hub to close the pipe itself',
     );
+  } finally {
+    await running.cleanup();
+  }
+}, 15000);
+
+test('a client that closes after the BYE exchange ends the hub wait at once', async () => {
+  const running = await resumed();
+  try {
+    await running.channel.bye();
+    await hubBye(running);
+    running.socket.close(1000);
+    await until(
+      () => running.logs.some((line) => line.startsWith('Relay pipe closed by the far side')),
+      'the far-side close to reach the hub',
+    );
+    // The close that waited for the far side settles now, not at the end of the grace: stop()
+    // awaits every close still running, so it returns at once.
+    const started = Date.now();
+    await running.relay.stop();
+    expect(Date.now() - started).toBeLessThan(ORDERLY_CLOSE_GRACE_MS / 2);
+  } finally {
+    await running.cleanup();
+  }
+}, 15000);
+
+test('a failure close reaches the client at once, with no grace', async () => {
+  const running = await resumed();
+  try {
+    const started = Date.now();
+    // Text after the channel is ready is refused with the failure close.
+    running.socket.sendText('pong');
+    const closed = await running.socket.closed;
+    expect(Date.now() - started).toBeLessThan(ORDERLY_CLOSE_GRACE_MS / 2);
+    expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
+  } finally {
+    await running.cleanup();
+  }
+}, 15000);
+
+test('after the hub ends the stream, a request from the peer is neither answered nor acted on', async () => {
+  const running = await resumed();
+  try {
+    const fingerprint = running.devices.list()[0]?.fingerprint;
+    if (!fingerprint) throw new Error('the resumed device is not enrolled');
+    // The hub ends the stream itself: its stop is an orderly close of every pipe.
+    const stopping = running.relay.stop();
+    await hubBye(running);
+    // The peer asks for something with an effect: revoking its own device.
+    const revoke = {
+      type: 'relay_device_revoke_request' as const,
+      id: generateId(),
+      timestamp: now(),
+      fingerprint,
+    };
+    await running.channel.send(new TextEncoder().encode(serialize(revoke)));
+    // A negative check, so a short settle: no answer comes back.
+    expect(await running.socket.quiet(300)).toBe(true);
+    await running.channel.bye();
+    running.socket.close(1000);
+    await stopping;
+    // And nothing was done: the device is still enrolled and authorized.
+    expect(running.devices.isEnrolled(running.device.publicKeyRaw)).toBe(true);
+    expect(
+      running.trust.loadAuthorizedKeys().keys.some((key) => key.fingerprint === fingerprint),
+    ).toBe(true);
   } finally {
     await running.cleanup();
   }
