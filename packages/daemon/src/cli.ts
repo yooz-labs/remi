@@ -157,6 +157,7 @@ import {
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
 import { promptUpDeps } from './cli/handlers/prompt-up.ts';
+import { createRecentRepositoriesHandlers } from './cli/handlers/recent-repositories-events.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
@@ -2187,7 +2188,14 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: forgetConnectionToken,
 });
 
+// The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
+const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  sessionStore,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
+  ...recentRepositoriesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   ...sessionHandlers,

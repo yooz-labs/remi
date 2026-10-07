@@ -64,15 +64,18 @@ const GOLDEN_TYPES = [
   'question_resolved',
   'remi_status',
   'question_snapshot',
+  // Added after #895, by hand, each with its issue:
+  'recent_repositories_request', // #1236 phase C
+  'recent_repositories_response', // #1236 phase C
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 45 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(45);
-    expect(new Set(GOLDEN_TYPES).size).toBe(45);
+  test('GOLDEN_TYPES has exactly 47 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(47);
+    expect(new Set(GOLDEN_TYPES).size).toBe(47);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 45 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 47 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);

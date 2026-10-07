@@ -91,6 +91,8 @@ export interface ProtocolMessageMap {
   bullet_expand_response: BulletExpandResponseMessage;
   session_list_request: SessionListRequestMessage;
   session_list_response: SessionListResponseMessage;
+  recent_repositories_request: RecentRepositoriesRequestMessage;
+  recent_repositories_response: RecentRepositoriesResponseMessage;
   transcript_content: TranscriptContentMessage;
   transcript_load_request: TranscriptLoadRequestMessage;
   transcript_load_complete: TranscriptLoadCompleteMessage;
@@ -203,6 +205,8 @@ export const MESSAGE_DIRECTION = {
   bullet_expand_response: 'd2c',
   session_list_request: 'c2d',
   session_list_response: 'd2c',
+  recent_repositories_request: 'c2d',
+  recent_repositories_response: 'd2c',
   transcript_content: 'd2c',
   transcript_load_request: 'c2d',
   transcript_load_complete: 'd2c',
@@ -792,6 +796,38 @@ export interface SessionListResponseMessage {
   readonly requestId: UUID;
   /** Other daemon ports on this machine (for auto-connect) */
   readonly daemonPorts?: readonly number[];
+}
+
+/**
+ * The repositories of the machine's recent sessions (#1236 phase C, ADR 0036), for a client to
+ * offer "new session in repository X on machine Y". Part of the `workspaces` capability: a daemon
+ * that does not list it does not answer, so a client checks `hubSupport(ack, ['workspaces'])` first.
+ */
+export interface RecentRepositoriesRequestMessage {
+  readonly type: 'recent_repositories_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** How many to return: 1 to 20; anything else means 10. */
+  readonly limit?: number | undefined;
+}
+
+/** One repository a recent session ran in (#1236 phase C). */
+export interface RecentRepository {
+  /** The repository's main worktree (a submodule or a separate-git-dir checkout is its own). */
+  readonly repository: string;
+  /** Its directory name, for display. */
+  readonly name: string;
+  /** When the most recent session in it started. */
+  readonly lastUsedAt: string;
+}
+
+/** The answer to a {@link RecentRepositoriesRequestMessage}: most recent first, each once. */
+export interface RecentRepositoriesResponseMessage {
+  readonly type: 'recent_repositories_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly requestId: UUID;
+  readonly repositories: readonly RecentRepository[];
 }
 
 /**
@@ -1937,6 +1973,30 @@ export function createSessionListRequest(includeExternal?: boolean): SessionList
     id: generateId(),
     timestamp: now(),
     ...(includeExternal !== undefined && { includeExternal }),
+  };
+}
+
+/** Create a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesRequest(limit?: number): RecentRepositoriesRequestMessage {
+  return {
+    type: 'recent_repositories_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(limit !== undefined && { limit }),
+  };
+}
+
+/** Create the answer to a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesResponse(
+  repositories: readonly RecentRepository[],
+  requestId: UUID,
+): RecentRepositoriesResponseMessage {
+  return {
+    type: 'recent_repositories_response',
+    id: generateId(),
+    timestamp: now(),
+    requestId,
+    repositories,
   };
 }
 
