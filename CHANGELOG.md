@@ -4,6 +4,12 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### The agent no longer sees remi's secrets (#1249)
+
+#### Security
+
+- Claude Code and Codex, and every command they run, inherited remi's whole environment, including `REMI_PASSPHRASE` (decrypts the daemon's identity key), `REMI_PUSH_SECRET` (the push bearer) and `TELEGRAM_BOT_TOKEN`. The agent's process now gets the environment without them (`pty/child-env.ts`). A hub's child daemons still receive what they need: they are not agents and are spawned another way.
+
 ### Relay: off by default, and closed without authentication (#1193)
 
 `network.relay` now defaults to `false`.
