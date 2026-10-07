@@ -125,13 +125,11 @@ function fakePTY(submits: string[]): PTYSession {
 }
 
 interface MessageApiCallLog {
-  resetCalls: {
-    n: number;
-    /** How each card reached the real MessageAPI: the push options the tracker or bridge gave (#1235). */
-    questionPaths?: Array<{ id: string; answerPath: string | undefined }>;
-  };
+  resetCalls: { n: number };
   statusCalls: string[];
   questionCalls: number;
+  /** How each card reached the real MessageAPI: the push options the tracker or bridge gave (#1235). */
+  questionPaths?: Array<{ id: string; answerPath: string | undefined }>;
 }
 
 function fakeMessageAPI(

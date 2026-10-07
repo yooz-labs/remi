@@ -529,16 +529,14 @@ export function setupHookBridge(
    *  `elicitation_id`. A no-op when nothing is tracked under that id (no
    *  correlation was possible, already resolved, or evicted at the cap) --
    *  mirrors `cancelExternallyResolved`'s own no-op-on-no-match safety. */
-  const resolveElicitation = (elicitationId: string, action: unknown): void => {
+  const resolveElicitation = (elicitationId: string): void => {
     const questionId = elicitationQuestions.get(elicitationId);
     if (!questionId) return;
     elicitationQuestions.delete(elicitationId);
-    // #1235: accepted or declined in Claude's MCP dialog, by a person at the terminal (a phone
-    // answer resolved the card first, and the first resolution wins). A cancel may be an Esc, a
-    // client's Esc or the server's timeout, so it names no cause.
-    const resolvedBy = action === 'accept' || action === 'decline' ? 'terminal' : undefined;
+    // #1235: no cause. A user's own hook can answer an elicitation, and a chat message typed into
+    // its free-text dialog does too, so even an accept does not show a person at the terminal.
     try {
-      deps.broadcastQuestionResolved?.(sessionId, questionId, 'cancelled', resolvedBy);
+      deps.broadcastQuestionResolved?.(sessionId, questionId, 'cancelled');
     } catch (err) {
       logError(
         `[Hooks] question_resolved broadcast (ElicitationResult) failed for ${questionId}: ${errorToString(err)}`,
@@ -1269,7 +1267,7 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     if (!input.elicitation_id) return;
-    resolveElicitation(input.elicitation_id, input.action);
+    resolveElicitation(input.elicitation_id);
   });
 
   // ---- UserPromptSubmit (#893) --------------------------------------------

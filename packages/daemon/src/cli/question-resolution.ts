@@ -1,10 +1,12 @@
 /**
  * The one way a card is resolved (#1235, ADR 0038): every path that dismisses a card on the clients
  * and the lock screen goes through {@link createQuestionResolver}. It sends `question_resolved` and
- * the quiet APNS dismissal once per card, so the first resolution wins: a later one for the same
- * card (an ElicitationResult after the phone answered it, a render that supersedes an answered card)
- * cannot contradict the `resolvedBy` the clients already have. A card that is live again (re-added
- * under the same id) can be resolved again.
+ * the quiet APNS dismissal once per card, so the first resolution that names a cause wins: a later
+ * one for the same card (an ElicitationResult after the phone answered it, a render that supersedes
+ * an answered card) cannot contradict the `resolvedBy` the clients already have. A resolution that
+ * named no cause can be followed by one that does (a render superseded the card while the phone's
+ * typed answer was being applied), so a known cause is not lost to an unknown one (#1292 review).
+ * A card that is live again (re-added under the same id) can be resolved again.
  */
 
 import { createQuestionResolved, errorToString } from '@remi/shared';
@@ -21,7 +23,10 @@ export interface QuestionResolverDeps {
 }
 
 export interface QuestionResolver {
-  /** Resolve a card on every client; false when it was already resolved (nothing is sent). */
+  /**
+   * Resolve a card on every client; false when nothing is sent: it was already resolved with a
+   * cause, or this one names none.
+   */
   resolve(
     sessionId: UUID,
     questionId: UUID,
@@ -33,13 +38,18 @@ export interface QuestionResolver {
 }
 
 export function createQuestionResolver(deps: QuestionResolverDeps): QuestionResolver {
-  const resolved = new Set<UUID>();
+  /** Each resolved card, with the cause it was resolved with (undefined: none named). */
+  const resolved = new Map<UUID, ResolvedBy | undefined>();
   return {
     resolve(sessionId, questionId, reason, resolvedBy) {
-      if (resolved.has(questionId)) return false;
-      resolved.add(questionId);
+      if (resolved.has(questionId)) {
+        // Only an unknown cause may be followed, and only by a known one.
+        if (resolved.get(questionId) !== undefined || resolvedBy === undefined) return false;
+        resolved.delete(questionId);
+      }
+      resolved.set(questionId, resolvedBy);
       if (resolved.size > REMEMBERED) {
-        const oldest = resolved.values().next().value;
+        const oldest = resolved.keys().next().value;
         if (oldest !== undefined) resolved.delete(oldest);
       }
       // Each step is guarded on its own: a failure in one never blocks the other.

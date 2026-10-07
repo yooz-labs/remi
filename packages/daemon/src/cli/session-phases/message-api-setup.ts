@@ -157,8 +157,7 @@ export function createMessageApiForSession(
       // and the terminal attach client's banner.
       // #1235: and how its answer is applied. A terminal-only card takes no phone answer whatever
       // its source said; with no path given the field stays absent (unknown), never guessed.
-      const answerPath =
-        question.terminalOnly === true ? 'none' : (opts?.answerPath ?? question.answerPath);
+      const answerPath = question.terminalOnly === true ? 'none' : opts?.answerPath;
       const stamped: Question = {
         ...question,
         ...(opts?.held === true && { held: true }),

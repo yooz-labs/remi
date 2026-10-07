@@ -1217,10 +1217,11 @@ export class AutoApproveGate {
       this.releaseWithNotice(match.qid, 'released', reason);
       return;
     }
-    // #1235: a run paired with the request by tool_use_id is the terminal's answer (a phone answer
-    // retires the card's signature first, so it cannot match); a name and input match alone may
-    // be another identical call, so it names no cause. The caller can name one (PermissionDenied).
-    const resolvedBy = opts.resolvedBy ?? (match.byId ? 'terminal' : undefined);
+    // #1235: only a match paired by tool_use_id names a cause. A run is then the terminal's answer
+    // (a phone answer retires the card's signature first, so it cannot match), unless the caller
+    // names another (PermissionDenied: the harness). A name and input match alone may be another
+    // identical call, so it names nothing, PermissionDenied included (#1292 review).
+    const resolvedBy = match.byId ? (opts.resolvedBy ?? 'terminal') : undefined;
     this.resolveSupersededQuestion(match.qid, reason, observed.toolName, resolvedBy);
   }
 
