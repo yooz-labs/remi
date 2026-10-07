@@ -4,6 +4,8 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-10-06
+
 ### Logs stay bounded on a machine that runs for weeks (#729)
 
 #### Fixed
@@ -453,7 +455,7 @@ source of several security bugs (#536, #1060, #1063).
 
 - **`packages/daemon` and `packages/shared`** (the daemon, CLI and protocol,
   and so the compiled `remi` binary and the npm packages) are licensed
-  **Apache-2.0** from the first release containing this change.
+  **Apache-2.0** from 0.7.16, the first release containing this change.
   `packages/web`, `packages/signaling` and `packages/macos` stay PolyForm
   Shield 1.0.0. `LICENSE.md` maps every directory to its license, the Homebrew
   formula declares Apache-2.0, and a contribution to an Apache-2.0 part is
@@ -472,7 +474,11 @@ source of several security bugs (#536, #1060, #1063).
   numbering. (Superseded by #1126 above: binary prompts are now held and pushed
   at once.)
 
-### Earlier changes on this line (auto-approve; all of it removed by #1125 above)
+## [0.7.8] to [0.7.15] - 2026-08-17 to 2026-09-22
+
+These eight releases shipped without sections of their own in this file. What it recorded for them is collected here: the auto-approve work, all of which 0.7.16 removed (#1125). The GitHub release notes for each version list its pull requests.
+
+### Auto-approve (all of it removed in 0.7.16 by #1125)
 
 The auto-approve **approval-rate epic** (#1057) plus follow-ups. The epic's
 diagnosis: overall approve rate 52% local / 72% on a second machine against a
