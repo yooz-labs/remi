@@ -7,7 +7,7 @@ native targets now, not planned behavior.
 |---|---|---|---|---|
 | Direct WebSocket and reconnect | Yes | Yes | Yes | Direct transport is not encrypted by Remi; keep the pairing warning. |
 | Ed25519 identity and local approval | Yes | Yes | Yes | Real-hub approval integration test passes. |
-| Multiple machines and session daemons | Yes | Yes | Yes | iPhone groups sessions by machine and persists its machine scope. Machine identity remains `host:port` until protocol #1234. |
+| Multiple machines and session daemons | Yes | Yes | Yes | Native apps persist machine/session scope. Machine identity remains `host:port` until protocol #1234. |
 | Session list and transcript history | Yes | Yes | Yes | Native renders text and tool-only transcript entries. |
 | Pending cards and cross-client dismissal | Yes | Yes | Yes | Native reconciles `question_resolved` and `question_snapshot`. |
 | Binary and standing-option answers | Yes | Yes | Yes | Answers use wire values; session grants are labeled. |

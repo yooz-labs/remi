@@ -71,6 +71,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var displayName: String
     public var status: MachineConnectionStatus
     public var sessions: [DiscoverableSession]
+    public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
     public var capabilities: [String]
     public var harnesses: [String]
@@ -80,6 +81,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
         self.displayName = displayName
         status = .disconnected
         sessions = []
+        hasLoadedSessions = false
         questions = []
         capabilities = []
         harnesses = ["claude"]
@@ -335,6 +337,9 @@ public final class MachineStore {
                 machines[index].sessions,
                 with: response.sessions
             )
+            if endpoint == parent {
+                machines[index].hasLoadedSessions = true
+            }
             for port in response.daemonPorts ?? [] where port != parent.port {
                 connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
             }
