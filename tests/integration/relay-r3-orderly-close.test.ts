@@ -4,7 +4,7 @@
  * for the far side to close it.
  */
 import { expect, test } from 'bun:test';
-import { generateId, now, relayV2, serialize } from '@remi/shared';
+import { createSessionUpdate, generateId, now, relayV2, serialize } from '@remi/shared';
 import { ORDERLY_CLOSE_GRACE_MS } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { resumed } from './relay-r3-fixture.ts';
 
@@ -125,6 +125,32 @@ test('a client that answers the hub BYE with its own leaves the hub a clean stre
     );
     // The verdict is logged only when the stream did not end cleanly; a negative check, so a
     // short settle after the close the verdict follows.
+    await Bun.sleep(200);
+    expect(running.logs.filter((line) => line.startsWith('Relay delivery uncertain'))).toEqual([]);
+  } finally {
+    await running.cleanup();
+  }
+}, 15000);
+
+test('a peer revoked outside the hub still ends clean when it answers the hub BYE', async () => {
+  const running = await resumed();
+  try {
+    const fingerprint = running.devices.list()[0]?.fingerprint;
+    if (!fingerprint) throw new Error('the resumed device is not enrolled');
+    // Revoked outside the hub (the stores edited), caught at the pipe's next send: the hub ends
+    // the stream with its BYE. The device is no longer enrolled, so its reply BYE must be read by
+    // the grace branch, before the ready stage's enrollment check would refuse it.
+    running.trust.removeAuthorizedKey(fingerprint);
+    running.devices.remove(fingerprint);
+    running.relay.broadcast(createSessionUpdate('owned-session', 'idle'));
+    await hubBye(running);
+    await running.channel.bye();
+    // The client does not close (see the clean-end test above); the hub closes after its grace.
+    await until(
+      () => running.logs.some((line) => line.startsWith('Relay pipe closed by the hub')),
+      'the hub to close the pipe after its grace',
+    );
+    // A negative check, so a short settle after the close the verdict follows.
     await Bun.sleep(200);
     expect(running.logs.filter((line) => line.startsWith('Relay delivery uncertain'))).toEqual([]);
   } finally {
