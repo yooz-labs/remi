@@ -12,6 +12,7 @@ import {
   guardLogFiles,
   planStdioLogGuard,
   rotateIfNeeded,
+  rotateLocked,
 } from '../../src/cli/log-rotation.ts';
 
 describe('rotateIfNeeded', () => {
@@ -163,6 +164,17 @@ describe('rotateIfNeeded', () => {
     expect(fs.readFileSync(`${target}.1`).length).toBe(2048);
     // The lock is released after a rotation.
     expect(fs.existsSync(`${target}.lock`)).toBe(false);
+  });
+
+  // The cheap size check runs before the lock, so by the time a process holds
+  // the lock another may already have rotated the file: the locked step decides
+  // again, or it would copy the emptied file over the good `.1` (#1262 review).
+  test('the locked step decides again: a file another process already rotated is left alone', () => {
+    fs.writeFileSync(target, 'a few bytes written since');
+    fs.writeFileSync(`${target}.1`, 'THE ROTATED DATA');
+    expect(rotateLocked(target, { maxBytes: 1024 })).toBe(false);
+    expect(fs.readFileSync(`${target}.1`, 'utf-8')).toBe('THE ROTATED DATA');
+    expect(fs.readFileSync(target, 'utf-8')).toBe('a few bytes written since');
   });
 
   test('a temp copy left by a crashed rotation is removed by the next rotation', () => {
