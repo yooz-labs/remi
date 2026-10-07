@@ -989,6 +989,10 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
         'answered',
       );
+      // The phone's answer reached Codex first (#1235).
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.resolvedBy).toBe(
+        'phone',
+      );
       expect(a.r.server.isPending(a.tuiId, requestId)).toBe(false);
       expect(stdinBytes(a.r)).toBe(0);
 
@@ -1017,6 +1021,10 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       );
       expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
         'cancelled',
+      );
+      // serverRequest/resolved does not say who answered: no cause is named (#1235).
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)).not.toHaveProperty(
+        'resolvedBy',
       );
 
       // The phone tapped a moment too late: the real handler refuses, naming the card.
@@ -1147,6 +1155,10 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       );
       expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
         'cancelled',
+      );
+      // remi let go; nothing answered the request (#1235).
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)).not.toHaveProperty(
+        'resolvedBy',
       );
       expect(a.r.output.text).toContain('Force-released 1 session(s): 1 card(s) resolved');
       // The request is still pending for the TUI; remi answered nothing and typed nothing.

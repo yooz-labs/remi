@@ -2677,6 +2677,65 @@ describe('createInputHandlers', () => {
       expect(resolved).toEqual([]);
     });
 
+    test('what resolved it: an app answer is phone, the notification endpoint lockscreen (#1235)', async () => {
+      const resolutions: unknown[] = [];
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
+      });
+      const viaApp = registerWithQuestion(QID);
+      await handlers.onAnswer(CID, viaApp, QID, 'y');
+      const Q2 = 'q2222222-2222-4222-8222-222222222222' as UUID;
+      const viaLockScreen = registerWithQuestion(Q2);
+      await handlers.relayAnswer(viaLockScreen, Q2, 'y');
+      expect(resolutions).toEqual([
+        { q: QID, reason: 'answered', resolvedBy: 'phone' },
+        { q: Q2, reason: 'answered', resolvedBy: 'lockscreen' },
+      ]);
+    });
+
+    test('an answer refused before anything is typed is cancelled, with no cause (#1235)', async () => {
+      const sessionId = registerWithQuestion(QID);
+      const resolutions: unknown[] = [];
+      const handlers = createInputHandlers({
+        // No prompt on screen: the guard refuses the typed answer.
+        isPromptObservedOnPTY: () => false,
+        observedPromptOptions: () => [],
+        sessionRegistry,
+        bindingStore,
+        send,
+        onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
+      });
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+      expect(resolutions).toEqual([{ q: QID, reason: 'cancelled' }]);
+    });
+
+    test('a held answer that reached the agent is phone; one whose hold had ended is cancelled (#1235)', async () => {
+      const resolutions: unknown[] = [];
+      let outcome: 'resolved' | 'closed' = 'resolved';
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        answerHeld: () => outcome,
+        onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
+      });
+      const first = registerWithQuestion(QID);
+      await handlers.onAnswer(CID, first, QID, 'y');
+      outcome = 'closed';
+      const Q2 = 'q2222222-2222-4222-8222-222222222222' as UUID;
+      const second = registerWithQuestion(Q2);
+      await handlers.onAnswer(CID, second, Q2, 'y');
+      expect(resolutions).toEqual([
+        { q: QID, reason: 'answered', resolvedBy: 'phone' },
+        { q: Q2, reason: 'cancelled' },
+      ]);
+    });
+
     test('a throwing onQuestionResolved never breaks answer handling', async () => {
       const sessionId = registerWithQuestion(QID);
       const handlers = createInputHandlers({

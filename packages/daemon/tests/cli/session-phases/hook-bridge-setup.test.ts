@@ -260,7 +260,7 @@ describe('setupHookBridge', () => {
       /** Capture every broadcastQuestionResolved call (#585, P7). Each entry is
        *  the (questionId, reason) the bridge forwarded. Defaults to undefined
        *  (dep not wired). */
-      broadcastResolvedLog?: Array<{ questionId: UUID; reason: string }>;
+      broadcastResolvedLog?: Array<{ questionId: UUID; reason: string; resolvedBy?: string }>;
       /** Capture every foreignSessionEscalator.handleUnadmitted call (#672).
        *  Each entry is the (input, callerSessionId) the resolver forwarded.
        *  Defaults to undefined (dep not wired). */
@@ -417,8 +417,17 @@ describe('setupHookBridge', () => {
         ...(opts.subagentAlerts ? { subagentAlerts: opts.subagentAlerts } : {}),
         ...(opts.broadcastResolvedLog
           ? {
-              broadcastQuestionResolved: (_sid: UUID, questionId: UUID, reason: 'cancelled') =>
-                opts.broadcastResolvedLog?.push({ questionId, reason }),
+              broadcastQuestionResolved: (
+                _sid: UUID,
+                questionId: UUID,
+                reason: 'cancelled',
+                resolvedBy?: string,
+              ) =>
+                opts.broadcastResolvedLog?.push({
+                  questionId,
+                  reason,
+                  ...(resolvedBy !== undefined && { resolvedBy }),
+                }),
             }
           : {}),
         ...(opts.foreignEscalationLog
@@ -1500,7 +1509,8 @@ describe('setupHookBridge', () => {
     // hide a missing rotation sweep. A stale-lock reclaim (#518) rotates
     // with nothing else firing: an event for an unknown id whose transcript
     // carries OUR port marker.
-    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+      [];
     build({ realMessageApi: true, broadcastResolvedLog });
     hookServer.fire('Notification', {
       session_id: 'claude-sweep-A',
@@ -1594,7 +1604,8 @@ describe('setupHookBridge', () => {
   });
 
   test('restart (/clear) broadcasts question_resolved for each pending question and clears them (#585 P7)', () => {
-    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+      [];
     build({ broadcastResolvedLog });
 
     // Lock onto claude-A.
@@ -1643,7 +1654,10 @@ describe('setupHookBridge', () => {
 
     // The pending card is dismissed on every client (broadcast) AND dropped from
     // the registry, so nothing lingers across the rotation.
-    expect(broadcastResolvedLog).toEqual([{ questionId: QID, reason: 'cancelled' }]);
+    // The old session ended: the harness moved on (#1235).
+    expect(broadcastResolvedLog).toEqual([
+      { questionId: QID, reason: 'cancelled', resolvedBy: 'harness' },
+    ]);
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
   });
 
@@ -2279,7 +2293,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a Yes answered in the terminal: the paired PostToolUse closes the hold empty and dismisses the card', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({
         realTracker: true,
         realMessageApi: true,
@@ -2318,7 +2333,10 @@ describe('setupHookBridge', () => {
       });
       expect(await hook).toBe('passthrough');
       expect(cards()).toHaveLength(0);
-      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // The run paired by tool_use_id: the terminal answered (#1235).
+      expect(broadcastResolvedLog).toEqual([
+        { questionId: card.id, reason: 'cancelled', resolvedBy: 'terminal' },
+      ]);
       expect(ptySubmits).toEqual([]);
     });
 
@@ -2347,7 +2365,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a No or Esc in the terminal: Claude closes the held request and the card is dismissed', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         realTracker: true,
         realMessageApi: true,
@@ -2375,7 +2394,8 @@ describe('setupHookBridge', () => {
 
     test('a main-agent StopFailure ends a live held prompt: hook released, card resolved, no later deadline notice (#1153)', async () => {
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { card, hook } = held(
         'claude-held-sf',
         {},
@@ -2508,7 +2528,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a transcript rotation releases a live hold and clears its card', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({
         realTracker: true,
         realMessageApi: true,
@@ -2534,6 +2555,9 @@ describe('setupHookBridge', () => {
       expect(await hook).toBe('passthrough');
       expect(cards()).toHaveLength(0);
       expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+      expect(broadcastResolvedLog.find((r) => r.questionId === card.id)?.resolvedBy).toBe(
+        'harness',
+      );
     });
 
     test('a released main prompt stops suppressing after the hold length: a redraw takes the guarded hook-less path', async () => {
@@ -2771,7 +2795,8 @@ describe('setupHookBridge', () => {
     });
 
     test('daemon mode: Claude closing the request with no hook (No, Esc, its own timeout) dismisses the card before the long deadline', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { handle } = build({
         realTracker: true,
@@ -2808,7 +2833,8 @@ describe('setupHookBridge', () => {
       // Measured live on Claude Code 2.1.287 (#1126): the auto-deny fires
       // PermissionDenied for the held call 120 s after the prompt, before
       // any close of the request reaches remi.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { handle } = build({
         realTracker: true,
@@ -2839,7 +2865,10 @@ describe('setupHookBridge', () => {
         reason: 'The server-side auto mode classifier judged this action dangerous',
       });
       expect(cards()).toHaveLength(0);
-      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Claude's classifier decided (#1235).
+      expect(broadcastResolvedLog).toEqual([
+        { questionId: card.id, reason: 'cancelled', resolvedBy: 'harness' },
+      ]);
       expect(noticeLog).toEqual([]);
       // The hold ends with the empty response; Claude has already decided.
       expect(await hook).toBe('passthrough');
@@ -3470,7 +3499,8 @@ describe('setupHookBridge', () => {
     }
 
     test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-pre');
 
@@ -3500,7 +3530,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching subagent PostToolUse also resolves it', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-post');
 
@@ -3530,7 +3561,8 @@ describe('setupHookBridge', () => {
     });
 
     test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-nomatch');
 
@@ -3556,7 +3588,8 @@ describe('setupHookBridge', () => {
     });
 
     test("SubagentStop resolves that agent's still-open permission (denied in the terminal, no tool call ever followed)", async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { tracker } = build({
         broadcastResolvedLog,
       });
@@ -3593,7 +3626,8 @@ describe('setupHookBridge', () => {
     });
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-ambig');
 
@@ -3628,7 +3662,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure');
 
@@ -3657,7 +3692,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure-nomatch');
 
@@ -3721,7 +3757,8 @@ describe('setupHookBridge', () => {
     }
 
     test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-main');
 
@@ -3749,7 +3786,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching SUBAGENT PermissionDenied resolves the parked escalation, scoped to that agent', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { tracker } = build({
         broadcastResolvedLog,
       });
@@ -3789,7 +3827,8 @@ describe('setupHookBridge', () => {
       // a PermissionDenied closing another agent's still-open question is the
       // swallow class #925 was. Same tool + same tool_input on purpose, so
       // agent identity is the ONLY thing that can disambiguate.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-2agents');
 
@@ -3836,7 +3875,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         broadcastResolvedLog,
         realMessageApi: true,
@@ -3864,7 +3904,8 @@ describe('setupHookBridge', () => {
     });
 
     test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         broadcastResolvedLog,
         realMessageApi: true,
@@ -3972,7 +4013,8 @@ describe('setupHookBridge', () => {
     });
 
     test('ElicitationResult resolves the exact card by elicitation_id', () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-2');
 
@@ -3996,6 +4038,31 @@ describe('setupHookBridge', () => {
       expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // Accepted at the terminal's MCP dialog (#1235).
+      expect(broadcastResolvedLog[0]?.resolvedBy).toBe('terminal');
+    });
+
+    test('an ElicitationResult cancel names no cause: an Esc, a client, or a timeout (#1235)', () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-cancel');
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-cancel',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-cancel',
+      });
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-cancel',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-cancel',
+        action: 'cancel',
+      });
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]).not.toHaveProperty('resolvedBy');
     });
 
     test('a re-fired Elicitation for the same id keeps the live card resolvable (review finding)', () => {
@@ -4005,7 +4072,8 @@ describe('setupHookBridge', () => {
       // registered. Blindly overwriting the correlation pointed
       // ElicitationResult at that phantom and orphaned card A -- the card the
       // user is actually looking at -- with no automated way to clear it.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-dup');
 
@@ -4052,7 +4120,8 @@ describe('setupHookBridge', () => {
       // fingerprint, so QuestionDedup lets it through (registers, does not
       // dedupe) -- the only way to isolate `previousIsLive` from the dedup
       // guard it sits beside.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-changed');
 
@@ -4098,7 +4167,8 @@ describe('setupHookBridge', () => {
     });
 
     test('ElicitationResult with an UNKNOWN elicitation_id is a no-op (card, if any, stays)', () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-3');
 
@@ -4156,7 +4226,8 @@ describe('setupHookBridge', () => {
       // registered (deduped against an unrelated still-live baseline) must
       // not be tracked either -- decided directly from handleElicitation's
       // returned QuestionRegistrationOutcome, not a SessionRegistry re-query.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-notreg');
 

@@ -510,6 +510,91 @@ describe('AutoApproveGate external resolution (#673)', () => {
     expect(g.hasOpenHookPrompt()).toBe(false);
     expect(g.forceRelease('remi unstick')).toEqual({ resolved: 0 });
   });
+
+  describe('what resolved a card (#1235)', () => {
+    /** Each resolution's cause, as the gate reports it. */
+    function causeGate(over: Partial<AutoApproveGateDeps> = {}) {
+      const causes: Array<{ qid: UUID; by: string | undefined }> = [];
+      const g = gate({
+        onResolved: (qid, _reason, by) => {
+          causes.push({ qid, by });
+        },
+        ...over,
+      });
+      return { g, causes };
+    }
+
+    test('a run paired by tool_use_id means the terminal answered', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ tool_use_id: 'use-a' }));
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, toolUseId: 'use-a' },
+        'PostToolUse',
+      );
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: 'terminal' }]);
+    });
+
+    test('a match by name and input alone names no cause', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      );
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: undefined }]);
+    });
+
+    test('a PermissionDenied means the harness decided', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PermissionDenied',
+        { resolvedBy: 'harness' },
+      );
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: 'harness' }]);
+    });
+
+    test("remi's own hold deadline is timeout", async () => {
+      const { g, causes } = causeGate({ holdMs: 20 });
+      void g.resolvePermission(pr());
+      await Bun.sleep(80);
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: 'timeout' }]);
+    });
+
+    test('a hold Claude closed (a terminal No, an Esc, the session) names no cause', async () => {
+      const { g, causes } = causeGate();
+      const controller = new AbortController();
+      void g.resolvePermission(pr(), controller.signal);
+      controller.abort();
+      await Bun.sleep(5);
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: undefined }]);
+    });
+
+    test('SessionEnd is the harness; a Stop names no cause', async () => {
+      const first = causeGate();
+      void first.g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      first.g.cancelStale('Stop', { mainOnly: true });
+      expect(first.causes.map((c) => c.by)).toEqual([undefined]);
+      const second = causeGate();
+      void second.g.resolvePermission(
+        pr({ permission_suggestions: ['A', 'B', 'C'], tool_input: { command: 'ls' } }),
+      );
+      second.g.cancelStale('SessionEnd', { resolvedBy: 'harness' });
+      expect(second.causes.map((c) => c.by)).toEqual(['harness']);
+    });
+
+    test('a subagent that ended with its hold open is the harness; unstick names no cause', async () => {
+      const { g, causes } = causeGate({ hasLocalTerminal: false });
+      void g.resolvePermission(pr({ agent_id: 'agent-1' }));
+      g.cancelStaleForAgent('agent-1', 'SubagentStop');
+      expect(causes.map((c) => c.by)).toEqual(['harness']);
+      const other = causeGate();
+      void other.g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      other.g.forceRelease('remi unstick');
+      expect(other.causes.map((c) => c.by)).toEqual([undefined]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
