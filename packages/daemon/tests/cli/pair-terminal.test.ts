@@ -190,7 +190,7 @@ describe('remi pair in a terminal (#1275)', () => {
     const t = runInTerminal(env);
     expect(await t.proc.exited).toBe(1);
     expect(t.screen()).toContain('pairings.json');
-    expect(t.screen()).toContain('delete it');
+    expect(t.screen()).toContain('To start over, delete');
     expect(t.screen()).not.toMatch(/\n\s+at /);
   }, 30000);
 

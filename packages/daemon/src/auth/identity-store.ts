@@ -98,6 +98,8 @@ const PAIRING_TTL_MS = 300_000;
 const MAX_OPEN_PAIRINGS = 4;
 /** Records of any state in the file. */
 const MAX_PAIRING_RECORDS = 16;
+/** Where the contest and full-queue counts stop, so a flood of attempts stops writing the file. */
+const PAIRING_COUNT_CAP = 999;
 /** Kept this long after the code expires: a claim stays approvable while its pending key lives. */
 const PAIRING_RETAIN_MS = PENDING_TTL_MS;
 const PAIRING_STATES: readonly string[] = ['open', 'claimed', 'approved', 'rejected', 'cancelled'];
@@ -110,7 +112,12 @@ function claimMatchesState(state: string, claim: unknown): boolean {
 }
 
 function isCount(value: unknown): boolean {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= PAIRING_COUNT_CAP
+  );
 }
 
 /** Decided, cancelled, or never claimed before it expired: nothing will happen to it any more. */
@@ -585,7 +592,11 @@ export class IdentityStore {
       if (record === undefined) return 'PAIRING_UNKNOWN';
       if (record.state === 'cancelled') return 'PAIRING_CANCELLED';
       if (record.claim !== null && record.claim.publicKey !== publicKey) {
-        save({ ...record, contested: record.contested + 1, lastContender: fingerprint });
+        // At the cap, only a different contender is worth a write (it is the one named).
+        if (record.contested < PAIRING_COUNT_CAP || record.lastContender !== fingerprint) {
+          const contested = Math.min(record.contested + 1, PAIRING_COUNT_CAP);
+          save({ ...record, contested, lastContender: fingerprint });
+        }
         return 'PAIRING_USED';
       }
       if (record.state === 'rejected') return 'PAIRING_REJECTED';
@@ -597,7 +608,9 @@ export class IdentityStore {
         this.registerPendingInsideTransaction(publicKey, fingerprint, true);
       } catch (err) {
         if (err instanceof PendingQueueFullError) {
-          if (record.claim === null) save({ ...record, queueFull: record.queueFull + 1 });
+          if (record.claim === null && record.queueFull < PAIRING_COUNT_CAP) {
+            save({ ...record, queueFull: record.queueFull + 1 });
+          }
           return 'PENDING_QUEUE_FULL';
         }
         if (err instanceof DuplicateKeyError) return 'PAIRING_USED';
@@ -627,6 +640,9 @@ export class IdentityStore {
     if (snapshot.claim.fingerprint !== expectedFingerprint)
       throw new Error('The pairing was claimed by a different key than the one shown');
     const grant = await this.prepareAuthorization(expectedFingerprint, snapshot.claim.label);
+    // The pending key behind that fingerprint is the claiming key, not one that merely shares it.
+    if (grant.publicKey !== snapshot.claim.publicKey)
+      throw new Error('The pending key is not the key that claimed the pairing');
     // A claim never changes once made, so only the state can have moved since the snapshot.
     return this.withPairing(nonce, (record, save) => {
       if (record?.state !== 'claimed')

@@ -203,8 +203,15 @@ async function showAndDecide(
       `Warning: ${current.contested} other device(s) also tried this code, the last ${formatFingerprint(current.lastContender)}. If the fingerprint above is not your phone's, answer no.\n`,
     );
   }
-  const answer = signal?.aborted ? null : await deps.ask('Approve this device? [y/N] ');
-  if (answer !== null && !signal?.aborted && /^(y|yes)$/i.test(answer.trim())) {
+  // Approving takes the fingerprint's first four characters, not a y: they cannot be typed before
+  // the fingerprint is known, and typing them means reading it (#1281 review).
+  const answer = signal?.aborted
+    ? null
+    : await deps.ask(
+        'Approve this device? Type the first four characters of its fingerprint to approve; Enter rejects: ',
+      );
+  const approves = answer?.trim().toLowerCase() === claim.fingerprint.slice(0, 4);
+  if (approves && !signal?.aborted) {
     try {
       await store.approvePairing(nonce, claim.fingerprint);
     } catch (err) {
@@ -225,15 +232,21 @@ async function showAndDecide(
   return signal?.aborted ? abortCode(signal) : 1;
 }
 
-/** The host as URL parsing normalizes it (lowercase, IPv6 compressed, IPv4 shorthand expanded). */
+/**
+ * The host as URL parsing normalizes it (lowercase, IPv6 compressed, IPv4 shorthand expanded), with
+ * a DNS name's trailing dot removed.
+ */
 function canonicalHost(host: string): string | null {
   try {
     const name = new URL(host.includes(':') ? `http://[${host}]/` : `http://${host}/`).hostname;
-    return name.startsWith('[') ? name.slice(1, -1) : name;
+    const bare = name.startsWith('[') ? name.slice(1, -1) : name;
+    return bare.endsWith('.') ? bare.slice(0, -1) : bare;
   } catch {
     return null;
   }
 }
+
+const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 /** Loopback in any spelling: localhost, 127.0.0.0/8, ::1, and IPv4-mapped 127.x. */
 export function isLoopbackHost(host: string): boolean {
@@ -242,10 +255,17 @@ export function isLoopbackHost(host: string): boolean {
   return (
     h === 'localhost' ||
     h.endsWith('.localhost') ||
-    h.startsWith('127.') ||
+    IPV4_LOOPBACK.test(h) ||
     h === '::1' ||
     /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(h)
   );
+}
+
+/** Link-local (169.254.0.0/16, fe80::/10): it changes with every network, so no code can name it. */
+function isLinkLocalHost(host: string): boolean {
+  const h = canonicalHost(host);
+  if (h === null) return false;
+  return /^169\.254\.\d{1,3}\.\d{1,3}$/.test(h) || /^fe[89ab][0-9a-f]:/.test(h);
 }
 
 /** The unspecified address, which a hub binds as "every interface" and no phone can dial. */
@@ -305,7 +325,7 @@ export function pairPreconditions(
     return {
       ok: false,
       message:
-        'The running hub is older than remi pair and does not say how it is bound: restart it (`remi stop`, then `remi start`) and run remi pair again.',
+        'The running hub does not say how it is bound yet. If it just started, run remi pair again in a moment; if not, it is older than remi pair: restart it (`remi stop`, then `remi start`) and run remi pair again.',
     };
   }
   if (!status.auth) {
@@ -315,7 +335,7 @@ export function pairPreconditions(
         'This hub runs with authentication off, so pairing would approve nothing. Turn it on (remove `--no-auth` or `auth.enabled = false`), restart the hub, and run remi pair again.',
     };
   }
-  if (isLoopbackHost(status.bind)) {
+  if (isLoopbackHost(status.bind) || isLinkLocalHost(status.bind)) {
     return {
       ok: false,
       message: `This hub listens on ${escapeUnsafeText(status.bind)} only, which a phone cannot reach. Set \`daemon.bind\` in ~/.remi/config.toml to "0.0.0.0" or to your LAN or VPN address, restart the hub, and run remi pair again. (An SSH tunnel needs no pairing code: use remi keys and remi authorize.)`,
@@ -329,7 +349,11 @@ export function pairPreconditions(
         message: `--host ${escapeUnsafeText(requestedHost)} is not an IP address or a host name.`,
       };
     }
-    if (isLoopbackHost(requestedHost) || isUnspecifiedHost(requestedHost)) {
+    if (
+      isLoopbackHost(requestedHost) ||
+      isUnspecifiedHost(requestedHost) ||
+      isLinkLocalHost(requestedHost)
+    ) {
       return {
         ok: false,
         message: `--host ${escapeUnsafeText(requestedHost)} is not an address a phone can reach. Use this machine's LAN or VPN address.`,
@@ -357,6 +381,22 @@ function machineName(): string {
   const short = os.hostname().split('.')[0] ?? '';
   const plain = short.replace(/[^\p{L}\p{N} ._'-]/gu, '').slice(0, 64);
   return plain.length > 0 ? plain : 'remi';
+}
+
+/**
+ * What `remi pair` says when its store fails. Only an error about the pairing records gets the way
+ * out (delete the file, which holds only pairing codes); a lock held too long or anything else is
+ * shown as it is.
+ */
+export function storeErrorMessage(err: unknown, pairingsFile: string): string {
+  const text = errorToString(err);
+  const lines = [`remi pair stopped: ${escapeUnsafeText(text)}`];
+  if (/pairings/i.test(text)) {
+    lines.push(
+      `To start over, delete ${pairingsFile} and run remi pair again; it holds only pairing codes, never keys.`,
+    );
+  }
+  return lines.join('\n');
 }
 
 /** Exit codes for the signals that stop `remi pair`: 128 plus the signal number. */
@@ -412,10 +452,13 @@ export async function runPairCommand(flags: { host?: string }): Promise<number> 
     input.setRawMode(true);
     input.on('data', drain);
     input.resume();
-    await Bun.sleep(TYPE_AHEAD_GRACE_MS);
-    input.off('data', drain);
-    input.pause();
-    input.setRawMode(false);
+    try {
+      await Bun.sleep(TYPE_AHEAD_GRACE_MS);
+    } finally {
+      input.off('data', drain);
+      input.pause();
+      input.setRawMode(false);
+    }
     if (controller.signal.aborted) return null;
     const rl = readline.createInterface({ input, output: process.stdout });
     terminal = rl;
@@ -442,9 +485,7 @@ export async function runPairCommand(flags: { host?: string }): Promise<number> 
       ...(process.stdout.rows !== undefined && { rows: process.stdout.rows }),
     });
   } catch (err) {
-    console.error(
-      `\nremi pair stopped: ${escapeUnsafeText(errorToString(err))}\nIf ${store.pairingsFile} is damaged, delete it and run remi pair again; it holds only pairing codes, never keys.`,
-    );
+    console.error(`\n${storeErrorMessage(err, store.pairingsFile)}`);
     return 1;
   } finally {
     for (const [name, handler] of handlers) process.off(name, handler);

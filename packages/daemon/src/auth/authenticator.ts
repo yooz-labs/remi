@@ -77,6 +77,10 @@ export interface AuthenticatorConfig {
 const DEFAULT_PAIRING_WAIT_MS = 20_000;
 /** How often a held claim checks for the decision. */
 const PAIRING_POLL_MS = 250;
+/** A pairing audit line repeats for the same key and outcome at most this often. */
+const PAIRING_LOG_REPEAT_MS = 60_000;
+/** How many key and outcome pairs are remembered before the memory starts over. */
+const PAIRING_LOG_KEYS = 256;
 const DEFAULT_PAIRING_LABEL = 'paired device';
 
 /**
@@ -96,6 +100,8 @@ export class Authenticator {
   /** Active challenges keyed by connection ID */
   private readonly pendingChallenges = new Map<string, string>();
   private readonly pairingWaitMs: number;
+  /** When each pairing audit line (by key and outcome) was last logged. */
+  private readonly pairingLogged = new Map<string, number>();
 
   constructor(config: AuthenticatorConfig) {
     this.identity = config.identity;
@@ -322,7 +328,10 @@ export class Authenticator {
     const nonce = response.pairingNonce;
     const label = pairingLabelOf(response.pairingLabel);
     if (!isPairingNonce(nonce) || label === null) {
-      console.log(`[Pairing] refused a malformed code or label from ${fingerprint}`);
+      this.logPairingOnce(
+        `${fingerprint} malformed`,
+        `[Pairing] refused a malformed code or label from ${fingerprint}`,
+      );
       return fail('PAIRING_MALFORMED');
     }
     let outcome: string;
@@ -332,7 +341,10 @@ export class Authenticator {
       console.error(`Auth store error during pairing claim: ${errorToString(err)}`);
       return fail('AUTH_STORE_ERROR');
     }
-    console.log(`[Pairing] ${fingerprint} presented a code: ${outcome}`);
+    this.logPairingOnce(
+      `${fingerprint} ${outcome}`,
+      `[Pairing] ${fingerprint} presented a code: ${outcome}`,
+    );
     if (outcome !== 'CLAIMED') return fail(outcome);
 
     const deadline = Date.now() + this.pairingWaitMs;
@@ -353,6 +365,19 @@ export class Authenticator {
       if (left <= 0) return fail('PAIRING_PENDING');
       await Bun.sleep(Math.min(PAIRING_POLL_MS, left));
     }
+  }
+
+  /**
+   * A pairing audit line, at most once a minute for the same key and outcome: a phone retrying after
+   * `PAIRING_PENDING`, or a flood of attempts, does not fill the log. Never the nonce.
+   */
+  private logPairingOnce(key: string, line: string): void {
+    const now = Date.now();
+    const last = this.pairingLogged.get(key);
+    if (last !== undefined && now - last < PAIRING_LOG_REPEAT_MS) return;
+    if (this.pairingLogged.size >= PAIRING_LOG_KEYS) this.pairingLogged.clear();
+    this.pairingLogged.set(key, now);
+    console.log(line);
   }
 
   /**
