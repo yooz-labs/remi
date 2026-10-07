@@ -592,6 +592,33 @@ describe('AutoApproveGate external resolution (#673)', () => {
       expect(causes.map((c) => c.by)).toEqual(['harness']);
     });
 
+    test("Claude's own hook timeout names no cause: a terminal No then looks the same", async () => {
+      // Aborted within the margin of the registered hook timeout: read as the timeout.
+      const { g, causes } = causeGate({ hookTimeoutMs: 5_030 });
+      const controller = new AbortController();
+      void g.resolvePermission(pr(), controller.signal);
+      await Bun.sleep(40);
+      controller.abort();
+      await Bun.sleep(5);
+      expect(causes.map((c) => c.by)).toEqual([undefined]);
+    });
+
+    test("a subagent's passthrough card at its SubagentStop names no cause", async () => {
+      const { g, causes } = causeGate({ hasLocalTerminal: false });
+      void g.resolvePermission(
+        pr({ agent_id: 'agent-1', permission_suggestions: ['A', 'B', 'C'] }),
+      );
+      g.cancelStaleForAgent('agent-1', 'SubagentStop');
+      expect(causes.map((c) => c.by)).toEqual([undefined]);
+    });
+
+    test('the sweep when remi closes the session names no cause', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.cancelStale('session_closed');
+      expect(causes.map((c) => c.by)).toEqual([undefined]);
+    });
+
     test('unstick names no cause', async () => {
       const { g, causes } = causeGate();
       void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
