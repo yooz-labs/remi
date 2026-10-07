@@ -108,6 +108,124 @@ describe('describeWorkspace: what git says about a session directory (#1236 phas
   });
 });
 
+describe('describeWorkspace: repository shapes and names (#1276 review)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-describe-shapes-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a branch that shares its name with a tag is named as the branch, not heads/<name>', async () => {
+    const repo = makeRepo(root);
+    git(repo, 'checkout', '-q', '-b', 'tagged');
+    git(repo, 'tag', 'tagged');
+    expect((await describeWorkspace(repo))?.branch).toBe('tagged');
+  });
+
+  test('a submodule is its own repository, not its git directory under the superproject', async () => {
+    const lib = makeRepo(root, 'lib');
+    const sup = makeRepo(root, 'super');
+    git(sup, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libsub');
+    const sub = path.join(sup, 'libsub');
+    const described = await describeWorkspace(sub);
+    expect(described?.repository).toBe(sub);
+    expect(described?.directory).toBe(sub);
+  });
+
+  test('a checkout with a separate git directory is its own repository', async () => {
+    const sep = path.join(root, 'sep');
+    const gitdir = path.join(root, 'sep.gitdir');
+    fs.mkdirSync(sep);
+    git(root, 'init', '-q', '-b', 'main', `--separate-git-dir=${gitdir}`, sep);
+    const described = await describeWorkspace(sep);
+    expect(described).toEqual({
+      repository: fs.realpathSync(sep),
+      directory: fs.realpathSync(sep),
+      branch: 'main',
+    });
+  });
+
+  test('a linked worktree of a bare repository names the bare repository', async () => {
+    const seed = makeRepo(root, 'seed');
+    const bare = path.join(root, 'bare.git');
+    git(root, 'clone', '-q', '--bare', seed, bare);
+    const linked = path.join(root, 'from-bare');
+    git(bare, 'worktree', 'add', '-q', '-b', 'work', linked);
+    expect(await describeWorkspace(linked)).toEqual({
+      repository: fs.realpathSync(bare),
+      directory: fs.realpathSync(linked),
+      branch: 'work',
+    });
+  });
+
+  test('a path that ends in a space keeps it', async () => {
+    const repo = makeRepo(root, 'trailing ');
+    expect(await describeWorkspace(repo)).toEqual({
+      repository: repo,
+      directory: repo,
+      branch: 'main',
+    });
+  });
+
+  test('a branch with a bidi or invisible character is not described: it would reach clients as text', async () => {
+    const repo = makeRepo(root);
+    git(repo, 'checkout', '-q', '-b', 'fix/a‮cod.exe');
+    expect(await describeWorkspace(repo)).toBeNull();
+  });
+
+  test('a session directory inside .git has no workspace', async () => {
+    const repo = makeRepo(root);
+    expect(await describeWorkspace(path.join(repo, '.git'))).toBeNull();
+  });
+});
+
+describe('WorkspaceCache keeps the last answer when git cannot answer (#1276 review)', () => {
+  let root: string;
+  let savedPath: string | undefined;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-wscache-hang-')));
+    savedPath = process.env['PATH'];
+  });
+
+  afterEach(() => {
+    process.env['PATH'] = savedPath ?? '';
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a read that times out keeps the previous workspace, and says why once', async () => {
+    const repo = makeRepo(root);
+    let clock = 1_000_000;
+    const logged: string[] = [];
+    const cache = new WorkspaceCache({
+      ttlMs: 10_000,
+      now: () => clock,
+      timeoutMs: 500,
+      log: (line) => logged.push(line),
+    });
+    cache.get(repo);
+    await cache.settled(repo);
+    expect(cache.get(repo)?.branch).toBe('main');
+    // A git that never answers stands first on the PATH.
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nsleep 30\n');
+    fs.chmodSync(path.join(bin, 'git'), 0o755);
+    process.env['PATH'] = `${bin}:${savedPath ?? ''}`;
+    for (let i = 0; i < 2; i++) {
+      clock += 11_000;
+      cache.get(repo);
+      await cache.settled(repo);
+      expect(cache.get(repo)).toEqual({ repository: repo, directory: repo, branch: 'main' });
+    }
+    expect(logged.filter((l) => l.includes('timed out'))).toHaveLength(1);
+  }, 20000);
+});
+
 describe('WorkspaceCache: the session list never waits on git (#1236 phase B)', () => {
   let root: string;
 
