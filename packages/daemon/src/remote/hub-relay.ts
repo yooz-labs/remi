@@ -960,32 +960,35 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     for (const offer of [...this.offers.values()])
       if (offer.reserved === peer.cid) this.discard(offer);
     peer.closing = (async () => {
-      await Promise.resolve();
-      let byeSent = false;
-      if (orderly && peer.channel) {
-        try {
-          await peer.channel.bye();
-          byeSent = true;
-        } catch {}
+      try {
+        // The first step is an await, so the `add` below always runs before the `delete`.
+        await Promise.resolve();
+        let byeSent = false;
+        if (orderly && peer.channel) {
+          try {
+            await peer.channel.bye();
+            byeSent = true;
+          } catch {}
+        }
+        peer.connection?.close('Relay closed');
+        this.peers.delete(peer.cid);
+        // After the BYE, leave the close to the far side for a while (#1225): the client closes
+        // once it has the BYE, so the pipe ends without this side resetting it.
+        if (byeSent) await waitAtMost(peer.gone, ORDERLY_CLOSE_GRACE_MS);
+        if (peer.ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
+        peer.ws.close(
+          orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
+          orderly ? '' : relayV2.FAILURE_CLOSE.reason,
+        );
+        if (peer.channel) await peer.channel.transportClosed();
+      } finally {
+        this.closingPeers.delete(peer);
       }
-      peer.connection?.close('Relay closed');
-      this.peers.delete(peer.cid);
-      // After the BYE, leave the close to the far side for a while (#1225): the client closes
-      // once it has the BYE, so the pipe ends without this side resetting it.
-      if (byeSent) await waitAtMost(peer.gone, ORDERLY_CLOSE_GRACE_MS);
-      if (peer.ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
-      peer.ws.close(
-        orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
-        orderly ? '' : relayV2.FAILURE_CLOSE.reason,
-      );
-      if (peer.channel) await peer.channel.transportClosed();
     })();
-    // The peer leaves `peers` before its grace, so `stop()` finds a closing pipe here.
+    // The peer leaves `peers` before its grace, so `stop()` finds a closing pipe here. The body
+    // removes it in a finally, so nothing else handles this promise: a rejection still reaches
+    // the process guard through the callers that `void` it.
     this.closingPeers.add(peer);
-    const settled = () => {
-      this.closingPeers.delete(peer);
-    };
-    peer.closing.then(settled, settled);
     return peer.closing;
   }
   open(id: string, send: (text: string) => void): void {
