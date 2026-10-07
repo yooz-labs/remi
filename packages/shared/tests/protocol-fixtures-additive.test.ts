@@ -162,7 +162,7 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
   test('the hello_ack fixture names the protocol version and the capabilities (#1237)', () => {
     const ack = load('hello_ack');
     expect(ack['protocolVersion']).toBe(1);
-    expect(ack['capabilities']).toEqual([]);
+    expect(ack['capabilities']).toEqual(['workspaces']);
   });
 
   test('the hello_ack_legacy golden is the ack of a daemon before #1237: the same, without version or capabilities', () => {
@@ -179,6 +179,29 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     expect(load('create_session_request_plain')).toEqual({
       type: 'create_session_request',
       directory: '/Users/fixture/project',
+    });
+  });
+
+  test('the workspace goldens: a request for a new worktree, and the response that says where (#1236)', () => {
+    expect(load('create_session_request_workspace')).toEqual({
+      type: 'create_session_request',
+      directory: '/Users/fixture/project',
+      workspace: {
+        repository: '/Users/fixture/project',
+        worktree: { branch: 'feature/fixture', base: 'main' },
+      },
+    });
+    expect(load('create_session_response_workspace')).toEqual({
+      type: 'create_session_response',
+      success: true,
+      requestId: 'fixture-request-id',
+      sessionId: 'fixture-session-id',
+      port: 19924,
+      workspace: {
+        repository: '/Users/fixture/project',
+        directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+        worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
+      },
     });
   });
 

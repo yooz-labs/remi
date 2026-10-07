@@ -23,8 +23,9 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
     ]);
   });
 
-  test('the registry starts empty: what predates #1237 is the baseline of version 1', () => {
-    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual([]);
+  test('the registry documents workspaces, the first capability (#1236): nothing older is in it', () => {
+    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual(['workspaces']);
+    expect(PROTOCOL_CAPABILITIES['workspaces']).toBe('start a session in a new git worktree');
   });
 });
 
