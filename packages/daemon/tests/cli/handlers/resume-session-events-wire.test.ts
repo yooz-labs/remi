@@ -18,8 +18,9 @@ import type {
   ResumeSessionResponseMessage,
   UUID,
 } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { PROTOCOL_VERSION, generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { DAEMON_CAPABILITIES } from '../../../src/cli/capabilities.ts';
 import {
   HUB_RESUME_UNSUPPORTED_CODE,
   createResumeSessionHandlers,
@@ -99,6 +100,9 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
     sessionRegistry.registerSession(sessionId, '/test/dir', pty(), messageApi());
     await handlers(() => ['claude', 'codex']).onResumeSessionRequest(CID, sessionId, REQ);
     expect(acks().map((a) => a.harnesses)).toEqual([['claude', 'codex']]);
+    expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
   });
 
   test('the ack for a session resumed from the store', async () => {
@@ -116,6 +120,9 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
     });
     await handlers(() => ['codex']).onResumeSessionRequest(CID, REMI_ID, REQ);
     expect(acks().map((a) => a.harnesses)).toEqual([['codex']]);
+    expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
     // Never a binding, so never an identity: the field would be a guess.
     for (const key of ['harness', 'harnessSessionId', 'claudeSessionId']) {
       expect(key in (acks()[0] as object)).toBe(false);
