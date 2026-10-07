@@ -196,7 +196,7 @@ struct MacLiveRootView: View {
     private var navigationSnapshot: [[String]] {
         store.machines.map { machine in
             [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
-                + machine.sessions.map(\.sessionId)
+                + machine.activeSessions.map(\.sessionId)
         }
     }
 
@@ -217,7 +217,7 @@ struct MacLiveRootView: View {
 
     private var visibleSessions: [RemiSessionSummary] {
         guard let machine = selectedMachine else { return [] }
-        return machine.sessions.map { session in
+        return machine.activeSessions.map { session in
             let questionCount = machine.questions.count { $0.sessionId == session.sessionId }
             return RemiSessionSummary(
                 id: session.sessionId,
