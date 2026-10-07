@@ -4,6 +4,15 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Pair a phone by scanning a QR code (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md))
+
+#### Added
+
+- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. Scan it with the Remi app, then approve the phone at the terminal after checking that both show the same fingerprint. Without a terminal, `remi keys` and `remi authorize` still work.
+- The code approves nothing on its own: the phone still proves its key, and you still say yes. A code someone else photographs gets them nothing but a request you can see and refuse. The connection is not encrypted by remi; use a trusted network, a VPN or an SSH tunnel.
+- `remi pair` needs the hub to listen on an address your phone can reach (`daemon.bind`) and authentication on, and says how to fix either. It needs the hub restarted once after upgrading, so the hub records how it is bound.
+- New dependency: `uqr` (MIT) draws the QR code; its notice ships in `THIRD_PARTY_NOTICES`.
+
 ### A session in a new worktree, made by the machine (#1236, [ADR 0036](.context/decisions/0036-workspaces.md))
 
 #### Added

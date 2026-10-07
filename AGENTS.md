@@ -235,6 +235,15 @@ mutations share an interprocess lock and atomic restricted files; approval
 persists the grant before deleting its candidate. Physical signed iPhone and
 signed sandboxed macOS acceptance remain unverified owner hardware gates.
 
+**Pairing by QR (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md)).**
+`remi pair` (`cli/cmd-pair.ts`) shows a pairing link as a QR and as text: `remi://pair#` plus the base64url of a canonical JSON object (machine name, address, the machine's full Ed25519 key, a single-use 16-byte nonce, a five-minute expiry, `PROTOCOL_VERSION`), encoded and strictly decoded by `packages/shared/src/pairing.ts` against the vectors in `packages/shared/tests/fixtures/pairing/vectors.json`.
+It needs an interactive terminal and a running hub with authentication on and a non-loopback bind, which the hub records in `daemon-status.json` (`bind`, `auth`); it offers the LAN address first, then Tailscale (`--host` chooses).
+The phone checks `auth_challenge.serverPublicKey` against the link's key before it signs, and sends `pairingNonce` and `pairingLabel` in `auth_response` (not signed: the trust step is the fingerprint comparison).
+After the signature verifies, `Authenticator.verifyPairing` claims the code through `IdentityStore.claimPairing`: the first verified key claims it and is registered as pending in the same transaction; records hold the nonce's SHA-256, at most four are open, and each is single use; an unknown, expired, used, cancelled or rejected code, or a malformed code or label, gets its own `auth_result` error and registers nothing.
+A claimed code is held up to 20 s for the decision (approval answers with the ordinary success, rejection or cancellation with its error, no decision `PAIRING_PENDING`, after which the phone retries).
+At the terminal the person sees the phone's fingerprint and name and answers; yes goes through `approvePairing`, which shares one commit with `remi authorize` (`commitAuthorizationInsideTransaction`), anything else rejects and removes the pending key; expiry or Ctrl-C cancels the code (a key that claimed it stays an ordinary pending key).
+The code authorizes nothing by itself; the direct WebSocket stays unencrypted by remi, so the nonce and label travel in clear like the rest of the session, and the single use and the fingerprint comparison are what stop a sniffed code from becoming access.
+
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended
 to carry the session; that second half was never implemented, so the relay was
