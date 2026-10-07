@@ -49,7 +49,6 @@ export type QuestionRegistrationOutcome =
   | { readonly status: 'deduped' }
   | { readonly status: 'held' };
 
-/** Events emitted by MessageAPI to adapters */
 /** How a card is pushed: held (pushed by id, load-bearing) and how its answer is applied (#1235). */
 export interface QuestionPushOptions {
   readonly held?: boolean;
@@ -57,6 +56,7 @@ export interface QuestionPushOptions {
   readonly answerPath?: AnswerPath;
 }
 
+/** Events emitted by MessageAPI to adapters */
 export interface MessageAPIEvents {
   /** New structured message created */
   onStructuredMessage: (message: StructuredMessage) => void;

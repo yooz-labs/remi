@@ -557,7 +557,11 @@ export interface QuestionResolvedMessage {
   readonly sessionId: UUID;
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
-  /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
+  /**
+   * Why it resolved, coarsely (all dismiss the card the same): `answered` is a phone answer remi
+   * applied, `cancelled` anything else (the terminal, the agent, a deadline, a refused answer). A
+   * client labels the card from `resolvedBy` when it is present, and from `reason` only otherwise.
+   */
   readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
   /**
    * What resolved it, when the daemon knows (#1235, ADR 0038): `phone` (an answer from an app
@@ -566,6 +570,10 @@ export interface QuestionResolvedMessage {
    * or moved on: an auto-deny, a session that ended, a new transcript or thread) or `timeout`
    * (remi's own hold deadline). Absent when the cause is not known, which is never guessed: a No
    * or an Esc at the terminal fires no hook, and Codex does not say who answered.
+   * `phone` and `lockscreen` mean remi delivered that answer first, not that it decided: after a
+   * terminal Yes Claude's hold stays open until the tool finishes, and Codex keeps whichever answer
+   * reached it first. `harness` names what ended the prompt, not who caused it: a person's /clear,
+   * /exit or Stop ends a session too.
    */
   readonly resolvedBy?: ResolvedBy | undefined;
 }

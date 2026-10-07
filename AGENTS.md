@@ -724,12 +724,12 @@ A "the agent needs you" moment is the `question` message's `Question` (`Decision
   The gate tells the tracker which path a pushed card takes (`onHeldEscalate(id, path)`), and one stamp in `message-api-setup.ts` writes it, forcing `none` for a terminal-only card. Absent is unknown.
 - **`question_resolved.resolvedBy`** (optional) says what resolved a card, sent only where the daemon knows:
   - `phone` or `lockscreen` (the `/answer` endpoint): a phone answer that reached the agent;
-  - `terminal`: a run paired by `tool_use_id`, or an elicitation accepted or declined;
-  - `harness`: `PermissionDenied`, `SessionEnd`, a rotation, a subagent that ended with its hold open, the agent exiting;
+  - `terminal`: a run paired by `tool_use_id`;
+  - `harness`: a paired `PermissionDenied`, `SessionEnd`, a rotation, a subagent that ended with its hold open, Claude's process exiting (what ended the prompt, not who caused it: a person's /exit ends a session too);
   - `timeout`: remi's hold deadline.
 
-  Nothing is named for a terminal No or Esc (no hook fires), Claude's hook timeout, a name-only match, a Stop or new prompt sweep, Codex's `serverRequest/resolved`, unstick, or a close remi made. A refused or late phone answer is now `cancelled`, not `answered`. `phone` means remi delivered that answer first, not that it decided (ADR 0038).
-- **The resolver.** Every dismissal goes through `createQuestionResolver` (`cli/question-resolution.ts`), which sends each card's resolution and its lock-screen dismissal once, so the first wins. It forgets a card the registry holds again.
+  Nothing is named for a terminal No or Esc (no hook fires), Claude's hook timeout, a name-only match (a `PermissionDenied` included), an elicitation's result (a user's hook or a typed chat message can answer it), a Stop or new prompt sweep, Codex's `serverRequest/resolved` or exit, unstick, or a close remi made. A refused or late phone answer is now `cancelled`, not `answered`; `reason` is coarse and a client labels from `resolvedBy` when present. `phone` means remi delivered that answer first, not that it decided (ADR 0038), and a `none` card still takes a Cancel.
+- **The resolver.** Every dismissal goes through `createQuestionResolver` (`cli/question-resolution.ts`), which sends each card's resolution and its lock-screen dismissal once, so the first that names a cause wins; one that named none can be followed by one that does, never the reverse. It forgets a card the registry holds again.
 - **`kind` is open.** A client renders an unknown kind as a generic card, never as Allow/Deny. Sandbox and trust prompts have no kind (`source: 'pty'`). `localRender` stays off the wire.
 
 ### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)

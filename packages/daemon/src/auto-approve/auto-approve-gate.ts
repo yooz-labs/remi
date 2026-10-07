@@ -321,8 +321,10 @@ export interface AutoApproveGateDeps {
    * through remi's answer path (an external-resolution signal, a Stop /
    * SubagentStop / SessionEnd sweep, `remi unstick`), so the daemon broadcasts
    * `question_resolved` + the APNS dismissal and the card clears on every
-   * remi client (Telegram does not dismiss, #1148). NOT called for a user answer: that path (input-events
-   * `handleAnswer`) broadcasts its own 'answered' resolution. Throw-safe.
+   * remi client (Telegram does not dismiss, #1148). NOT called for a phone answer:
+   * that path (input-events `handleAnswer`) reports its own resolution, `answered`
+   * when it applied and `cancelled` when it was refused. `resolvedBy` names the
+   * cause when the gate knows it (#1235, ADR 0038). Throw-safe.
    */
   onResolved?: (questionId: UUID, reason: 'cancelled', resolvedBy?: ResolvedBy) => void;
   /** Tools whose prompt is always a design question, never binary (#572):

@@ -225,7 +225,8 @@ export interface Question {
    * renders `text` + `options` as a generic card, never with a permission's
    * Allow/Deny styling, so a new kind is additive. Sandbox and trust prompts,
    * which Claude draws in the terminal, have no kind: they are `source: 'pty'`
-   * cards.
+   * cards. The union below lists the kinds this build sends; a client decoding
+   * the wire treats any other string as unknown, not as an error.
    */
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
   /**
@@ -233,7 +234,9 @@ export interface Question {
    * data, through a held hook or Codex's JSON-RPC), `keystroke` (typed into the
    * terminal behind the screen guards, so it can be refused as stale) or `none`
    * (no phone answer; every `terminalOnly` card). Absent: an older daemon, or a
-   * path this daemon did not name; read it as unknown.
+   * path this daemon did not name; read it as unknown. A `none` card still takes a
+   * Cancel: it clears the card, and on a held Claude card it denies the request, so
+   * a client keeps its Cancel (the never-stuck floor, #627).
    */
   readonly answerPath?: AnswerPath | undefined;
 

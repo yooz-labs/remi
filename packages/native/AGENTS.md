@@ -57,8 +57,8 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 - **Workspaces (#1236, ADR 0036):** a daemon's own session-list entry may carry `workspace` (repository, worktree directory, branch, null when detached); absent means unknown (not read yet, an older daemon, or not a repository), and the branch can be one list behind; `create_session_request.workspace` asks the hub to make a worktree on a new branch, and `recent_repositories_request` lists the repositories of its recent sessions (most recently used first, reaching back a week; a list cut short by the hub's deadline is not marked), once the hub lists the `workspaces` capability.
 - **The decision object (#1235, ADR 0038):** a card is the `question` message.
   - `kind` is an open set: render one you do not know as a generic card (its `text` and `options`), never as Allow/Deny.
-  - `answerPath` (`structured`, `keystroke`, `none`; absent is unknown) says how an answer applies. `keystroke` can be refused as stale; `none` is terminal only.
-  - `question_resolved.resolvedBy` (`phone`, `lockscreen`, `terminal`, `harness`, `timeout`; absent is unknown, never inferred) feeds "resolved elsewhere".
+  - `answerPath` (`structured`, `keystroke`, `none`; absent is unknown) says how an answer applies. `keystroke` can be refused as stale; `none` takes no answer, but keep its Cancel, which clears the card and denies a held Claude request.
+  - `question_resolved.resolvedBy` (`phone`, `lockscreen`, `terminal`, `harness`, `timeout`; absent is unknown, never inferred) feeds "resolved elsewhere". Label from it when present, from `reason` otherwise. `phone` means remi delivered that answer first, not that it decided; `harness` names what ended the prompt, not who caused it.
   - Decode an unknown value of either field as nil. Aligning the app is #1291.
 - **Local hub:** a machine runs a hub on `127.0.0.1:18765` (the first free port of 18765 to 18784). Its `daemonPorts` lists the session daemons, one per session, each with its own port.
 - **Auth:**

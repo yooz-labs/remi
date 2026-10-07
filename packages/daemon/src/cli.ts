@@ -1773,11 +1773,14 @@ remiAttachState = () => {
 
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
- * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
- * reason 'answered'), or (b) resolved without a user answer (an external
+ * being pending on ANY channel: (a) a phone answer remi applied (input-events
+ * `handleAnswer`, reason 'answered'), or (b) anything else: an external
  * resolution, a Stop / SubagentStop / SessionEnd sweep, a superseded render,
- * `remi unstick`; reason 'cancelled'). Since #1125 the daemon never sends the
- * protocol's 'auto_approved' / 'auto_denied' reasons. It does TWO throw-safe things:
+ * `remi unstick`, or a phone answer that was refused (reason 'cancelled'). Since
+ * #1125 the daemon never sends the protocol's 'auto_approved' / 'auto_denied'
+ * reasons. `resolvedBy` names the cause when the caller knows it (#1235, ADR 0038).
+ * `questionResolver` does the two throw-safe things, once per card (the first
+ * resolution that names a cause wins):
  *   1. Broadcast `question_resolved` to every connected client so each dismisses
  *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
  *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
@@ -1786,7 +1789,6 @@ remiAttachState = () => {
  * Each step is independently guarded so a failure in one never blocks the other,
  * and neither can propagate into the answer handler or the gate decision.
  */
-// #1235: one resolver, so the first resolution of a card wins on every client.
 const questionResolver = createQuestionResolver({
   broadcast: (message) => registry.broadcast(message),
   dismissPush: (sessionId, questionId) =>
