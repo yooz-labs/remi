@@ -19,7 +19,7 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
 
 ## Milestones
 
-**M1: design system and design pass, with preview data only.**
+**M1a: the design system, with preview data only.**
 - [ ] **Tokens** in `Theme.swift`: color (semantic, one accent for "needs you"), type, spacing, radius and motion, documented in `DESIGN.md`.
 - [ ] **The question card**, every variant:
   - binary;
@@ -33,8 +33,11 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
   Every state: pending, sending, answered, resolved elsewhere, stale.
 - [ ] **The other components:** session row, machine row (reachability, transport, waiting for approval), transcript entries, composer (with the `PROMPT_WAITING` explanation).
 - [ ] **Preview data from the golden fixtures.** Copy the fixtures you need into a RemiUI resource folder, and add a test that each copy is byte-identical to its original in `packages/shared/tests/fixtures/protocol/`, so the copies cannot drift.
-- [ ] **iPhone screens:** home (sessions by machine, cards on top), the session, pairing (the steps to run on the machine), empty and first-run states.
-- **Done when** every component and screen has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
+- **Done when** every component has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
+
+**M1b: the iPhone screens, with preview data only.**
+- [ ] **Screens:** home (sessions by machine, cards on top), the session, pairing (the steps to run on the machine), empty and first-run states, built from the M1a components.
+- **Done when** every screen has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M2: live, on RemiKit.**
 - [ ] **Use RemiKit's connection and store** as the Mac track lands them (#1241); until then, keep building against the preview data.

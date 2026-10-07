@@ -1,7 +1,7 @@
 # Design brief
 
 What the native apps should feel like, and the rules both apps share.
-Two agents design in parallel; this file is how their work stays one product.
+Whether one agent builds both apps or two build them at once, this file is how they stay one product.
 Change it in a commit of its own, and say so in the PR.
 
 ## The product in one line
@@ -32,7 +32,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 
 - **Home:** the sessions grouped by machine, with the cards that need the person on top.
 - **The session:** transcript and cards, with a composer.
-- **Lock screen:** answering from a notification follows the daemon's rules (root AGENTS.md, push categories). Only a plain Yes or No can be answered from the lock screen, and anything that grants more opens the app.
+- **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
 - **Pairing:** adding a machine shows the steps the person must do on that machine (for example `remi authorize`), not just a spinner.
 
 ## Shared components (RemiUI)

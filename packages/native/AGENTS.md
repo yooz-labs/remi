@@ -16,9 +16,10 @@ The roadmap is [`.context/plan.md`](../../.context/plan.md); the native scope is
 
 | Path | What it is | Owner |
 |---|---|---|
-| `Remi.xcodeproj` | Checked-in project. Its groups are synchronized folders: a file added under `Mac/`, `iPhone/` or the package is in the target with no project edit. | Shared; edit target settings rarely, in a commit of their own |
+| `Remi.xcodeproj` | Checked-in project. Its groups are synchronized folders: a file added under `Mac/`, `iPhone/` or the package is in the target with no project edit. Xcode may offer to update it to the recommended settings when it opens it; accept that in a commit of its own. | Shared; edit target settings rarely, in a commit of their own |
 | `RemiKit/Sources/RemiKit/` | Everything that is not a screen: protocol models, identity and auth, the connection, the multi-machine store | Mac track (#1241) |
-| `RemiKit/Sources/RemiUI/` | The design system: tokens, shared components (question card, session row, transcript entries, composer), preview data | iPhone track |
+| `RemiKit/Package.swift` | The package manifest: targets, resources, test targets | Whichever track needs a change, in a small commit of its own |
+| `RemiKit/Sources/RemiUI/` | The design system: tokens, shared components (question card, session row, machine row, transcript entries, composer), preview data | iPhone track |
 | `RemiKit/Tests/` | Swift Testing tests for the package | Whoever owns the code under test |
 | `Mac/` | The Mac app target (`RemiMac`) | Mac track (#1243) |
 | `iPhone/` | The iPhone app target (`RemiPhone`) | iPhone track (#1244) |
@@ -28,21 +29,26 @@ When two agents run the tracks at the same time, each changes only its own paths
 To change something the other track owns, open a small pull request into `develop` for just that change and name the reason; do not reformat or restructure the other track's files.
 Rebase on `develop` at least daily.
 
-## Platform and constraints (owner decisions, #1233)
+## Platform and constraints
 
-- **Minimum OS:** macOS 26 and iOS 26. Use current SwiftUI and the current design language (Liquid Glass) freely.
+The items marked #1233 are the owner's decisions; the rest were set with the scaffold (#1239).
+
+- **Minimum OS (#1233):** macOS 26 and iOS 26. Use current SwiftUI and the current design language (Liquid Glass) freely.
 - **Swift 6** with complete strict concurrency.
 - **No third-party dependencies** without the owner's approval; Apple frameworks only.
-- **The Mac app targets the App Store** if the sandbox allows it. It is sandboxed with `network.client` only (`Mac/Remi.entitlements`). It is a client of hubs, local and remote, and never spawns agents, never reads `~/.remi`, never signals a process. Anything that needs the machine (creating a worktree, starting a session) is a request to the hub.
+- **The Mac app targets the App Store (#1233)** if the sandbox allows it. It is sandboxed with `network.client` only (`Mac/Remi.entitlements`). It is a client of hubs, local and remote, and never spawns agents, never reads `~/.remi`, never signals a process. Anything that needs the machine (creating a worktree, starting a session) is a request to the hub.
 - **Bundle ids:** Debug builds are `live.yooz.remi.dev`, so they install beside the apps in use today; Release is `live.yooz.remi`. Team `9DQ459HAZB`, automatic signing.
-- **Signing, TestFlight and App Store uploads are the owner's.** No agent holds Apple credentials. TestFlight builds go up by pushing the archive directly, as in transit and whisper.
-- **The Capacitor iPhone app** (`packages/web/ios/App`) retires once the native app has the same mechanics. Read it to learn what it does; do not change it.
+- **Signing, TestFlight and App Store uploads are the owner's (#1233).** No agent holds Apple credentials. TestFlight builds go up by pushing the archive directly, as in transit and whisper.
+- **The Capacitor iPhone app** (`packages/web/ios/App`) retires (#1233) once the native app has the same mechanics. Read it to learn what it does; do not change it.
+- **Not set yet, decided when first needed:**
+  - App Transport Security for `ws://` connections. The WebView app sets `NSAllowsLocalNetworking` for `ws://127.0.0.1` (`packages/macos/Remi/Info.plist`); check what the native apps need on their first live connection (Mac M2).
+  - Export compliance (`ITSAppUsesNonExemptEncryption`): the owner's answer, at the first TestFlight upload.
 - American English, no em dashes, no emojis, in code, comments, commits and docs.
 
 ## The protocol
 
 - **Messages:** JSON over WebSocket, `ws://<host>:<port>/ws`, defined in `packages/shared/src/protocol.ts` (types in `packages/shared/src/types.ts`).
-- **The oracle:** the golden fixtures in `packages/shared/tests/fixtures/protocol/`. A Swift model is right when it decodes them. `RemiKitTests/FixtureConformanceTests.swift` shows the pattern: it reads the real files from the repository, so it cannot drift.
+- **The oracle:** the golden fixtures in `packages/shared/tests/fixtures/protocol/`. A Swift model must decode them; that is necessary, not sufficient, because a fixture holds one instance of each shape. Check a model's fields against the TypeScript type as well: a field marked `?` there is optional in Swift. `RemiKitTests/FixtureConformanceTests.swift` shows the pattern: it reads the real files from the repository, so the fixtures cannot drift.
 - **Not frozen yet.** The protocol freeze (#1234 to #1238) is in progress: a machine object, the Decision shape, workspaces and worktrees, versioning, fixtures for everything.
   - Build against today's wire.
   - When you need something the wire does not carry yet, put it behind a type in RemiKit with a comment naming the issue, and use what exists today in its place. For example, a machine is a hub's `host:port` until #1234.
@@ -74,15 +80,16 @@ Rebase on `develop` at least daily.
   - `swift test --package-path packages/native/RemiKit`
   - `xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build test`
   - `xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiPhone -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`
+- **The gates build unsigned** (`CODE_SIGNING_ALLOWED=NO`), so they do not exercise the entitlements. To run the Mac app, or check its sandbox, without the team's certificate, sign it ad hoc: add `CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=` to the `xcodebuild` command. The Mac app it builds is sandboxed with `network.client` (`codesign -d --entitlements - <app>` shows it).
 - **Previews must render.** They are the design review surface.
 - **There is no CI job for the native apps yet.** It needs a macOS 26 runner (#1240); until then the commands above are the gate, and the PR says they passed.
-- **Running a hub for development** from the repository root: `bun install`, then `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts serve`. The Mac app and the iPhone simulator reach it on `127.0.0.1`.
+- **Running a hub for development** from the repository root: `bun install`, then `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts serve`. The Mac app and the iPhone simulator reach it on `127.0.0.1`. The app's first connection waits for approval (#873): `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts keys` lists its key as pending, and `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts authorize <fingerprint> --label dev` approves it.
 
 ## Git
 
 - **Branches:** one per milestone, off `develop`, named `feature/issue-<number>-<short-name>` (for example `feature/issue-1244-remiui-tokens`). There is no epic branch.
 - **Pull requests** go into `develop`, never into `main`. Never push to `develop` or `main` directly.
-- **Worktrees are optional.** An agent that wants one creates it next to the repository, under `../remi-worktrees/` from the repository root, and removes it once its branch is merged.
+- **Worktrees are optional.** An agent that wants one creates it next to the repository, under `../remi-worktrees/agents/` from the repository root (`../remi-worktrees/` itself is where hubs will create session worktrees, #1236), and removes it once its branch is merged.
 - **Run `bun install` once in a new checkout or worktree.** The git hooks (lefthook with Biome) run from its `node_modules`; without it, a commit that stages TypeScript or JSON fails the hook.
 - **Commits:**
   - atomic: one logical change each;

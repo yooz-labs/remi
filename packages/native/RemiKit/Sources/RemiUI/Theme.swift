@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// RemiUI's design tokens. The design brief (`../../DESIGN.md`) is the source; change both together.
+/// RemiUI's design tokens. The design brief (`../../../DESIGN.md`) is the source; change both together.
 /// Placeholder values: the first design pass replaces them.
 public enum RemiTheme {
     public enum Spacing {
