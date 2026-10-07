@@ -1,4 +1,6 @@
 import SwiftUI
+import RemiKit
+import UIKit
 
 enum PhonePreferenceKey {
     static let questionNotifications = "remi.phone.question-notifications"
@@ -7,12 +9,18 @@ enum PhonePreferenceKey {
 }
 
 struct PhonePreferencesSheet: View {
+    let publicIdentity: PublicClientIdentity?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PhonePreferenceKey.questionNotifications) private var notificationsEnabled = true
     @AppStorage(PhonePreferenceKey.notificationSounds) private var soundsEnabled = true
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @State private var authorizationState = NotificationAuthorizationState.unknown
+    @State private var copiedIdentity = false
+
+    init(publicIdentity: PublicClientIdentity? = nil) {
+        self.publicIdentity = publicIdentity
+    }
 
     var body: some View {
         NavigationStack {
@@ -56,6 +64,29 @@ struct PhonePreferencesSheet: View {
                     Text("Notifications")
                 } footer: {
                     Text(notificationFooter)
+                }
+
+                if let publicIdentity {
+                    Section {
+                        LabeledContent("Fingerprint", value: publicIdentity.fingerprint)
+                            .fontDesign(.monospaced)
+                            .textSelection(.enabled)
+                        Button(copiedIdentity ? "Public identity copied" : "Copy public identity", systemImage: copiedIdentity ? "checkmark" : "doc.on.doc") {
+                            UIPasteboard.general.string = publicIdentity.exportJSON
+                            copiedIdentity = true
+                        }
+                        ShareLink(
+                            item: publicIdentity.exportJSON,
+                            subject: Text("Remi public identity"),
+                            message: Text("Authorize this device with `remi authorize <file> --label device-name`.")
+                        ) {
+                            Label("Share public identity", systemImage: "square.and.arrow.up")
+                        }
+                    } header: {
+                        Text("Device identity")
+                    } footer: {
+                        Text("This contains no private key. Installing it on a machine authorizes this device to connect there.")
+                    }
                 }
 
                 Section {

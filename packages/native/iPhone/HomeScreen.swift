@@ -1,6 +1,7 @@
 import RemiKit
 import RemiUI
 import SwiftUI
+import UIKit
 
 struct HomeScreen: View {
     @State private var showingPairing = false
@@ -11,6 +12,7 @@ struct HomeScreen: View {
     let machines: [RemiMachineSummary]
     let sessionMachines: [MachineState]
     let recentRepositories: [String: [RecentRepository]]
+    let publicIdentity: PublicClientIdentity?
     @Binding var selectedMachineID: String
     let errorMessage: String?
     let noticeMessage: String?
@@ -26,6 +28,7 @@ struct HomeScreen: View {
     let onCreateSession: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
     let onRemoveMachine: (String) -> Void
+    let onRetryApproval: (MachineEndpoint) -> Void
     let onDismissError: () -> Void
 
     init(
@@ -34,6 +37,7 @@ struct HomeScreen: View {
         machines: [RemiMachineSummary],
         sessionMachines: [MachineState] = [],
         recentRepositories: [String: [RecentRepository]] = [:],
+        publicIdentity: PublicClientIdentity? = nil,
         selectedMachineID: Binding<String> = .constant(""),
         errorMessage: String? = nil,
         noticeMessage: String? = nil,
@@ -49,6 +53,7 @@ struct HomeScreen: View {
         onCreateSession: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void = { _, _, _, _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
+        onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
         onDismissError: @escaping () -> Void = {}
     ) {
         self.questions = questions
@@ -56,6 +61,7 @@ struct HomeScreen: View {
         self.machines = machines
         self.sessionMachines = sessionMachines
         self.recentRepositories = recentRepositories
+        self.publicIdentity = publicIdentity
         _selectedMachineID = selectedMachineID
         self.errorMessage = errorMessage
         self.noticeMessage = noticeMessage
@@ -71,6 +77,7 @@ struct HomeScreen: View {
         self.onCreateSession = onCreateSession
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
+        self.onRetryApproval = onRetryApproval
         self.onDismissError = onDismissError
     }
 
@@ -119,7 +126,13 @@ struct HomeScreen: View {
                 }
 
                 if !machines.isEmpty {
-                    MachinesSection(machines: machines, onRemove: onRemoveMachine)
+                    MachinesSection(
+                        machines: machines,
+                        states: sessionMachines,
+                        publicIdentity: publicIdentity,
+                        onRemove: onRemoveMachine,
+                        onRetryApproval: onRetryApproval
+                    )
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -172,7 +185,7 @@ struct HomeScreen: View {
             }
         }
         .sheet(isPresented: $showingPreferences) {
-            PhonePreferencesSheet()
+            PhonePreferencesSheet(publicIdentity: publicIdentity)
         }
     }
 
@@ -371,7 +384,10 @@ private struct SessionsSection: View {
 
 private struct MachinesSection: View {
     let machines: [RemiMachineSummary]
+    let states: [MachineState]
+    let publicIdentity: PublicClientIdentity?
     let onRemove: (String) -> Void
+    let onRetryApproval: (MachineEndpoint) -> Void
     @State private var pendingRemoval: RemiMachineSummary?
 
     var body: some View {
@@ -395,6 +411,15 @@ private struct MachinesSection: View {
                     }
                     .accessibilityLabel("Machine actions")
                 }
+                if let state = states.first(where: { $0.id == machine.id }),
+                   case .waitingForApproval(let fingerprint) = state.status {
+                    ApprovalHelp(
+                        machineName: machine.name,
+                        fingerprint: fingerprint,
+                        command: publicIdentity?.authorizeCommand(label: UIDevice.current.name),
+                        onRetry: { onRetryApproval(state.endpoint) }
+                    )
+                }
                 if machine.id != machines.last?.id { Divider() }
             }
         }
@@ -414,5 +439,41 @@ private struct MachinesSection: View {
         } message: { machine in
             Text("Remi will forget \(machine.name) and its cached conversations on this device. Sessions on the machine keep running.")
         }
+    }
+}
+
+private struct ApprovalHelp: View {
+    let machineName: String
+    let fingerprint: String
+    let command: String?
+    let onRetry: () -> Void
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label("Approval needed", systemImage: "person.badge.key")
+                .font(.headline)
+            Text("On \(machineName), compare this fingerprint and authorize this iPhone.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text(fingerprint)
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .textSelection(.enabled)
+
+            if let command {
+                Button(copied ? "Command copied" : "Copy authorization command", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                    UIPasteboard.general.string = command
+                    copied = true
+                }
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+            }
+            Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
+                .buttonStyle(.glassProminent)
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+        }
+        .padding(RemiTheme.Spacing.m)
+        .background(.orange.opacity(0.08), in: .rect(cornerRadius: RemiTheme.Radius.control))
     }
 }
