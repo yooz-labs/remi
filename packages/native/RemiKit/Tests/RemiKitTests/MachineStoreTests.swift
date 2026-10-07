@@ -82,6 +82,7 @@ struct MachineStoreTests {
             clientId: "test-client"
         )
         #expect(store.machines.map(\.endpoint) == endpoints)
+        #expect(store.machines.allSatisfy { !$0.hasLoadedSessions })
     }
 
     @Test func machineEndpointsPersistWithoutLeakingUIState() {

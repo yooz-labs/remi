@@ -5,8 +5,8 @@ import SwiftUI
 struct MacLiveRootView: View {
     let store: MachineStore
 
-    @State private var selectedMachineID: String?
-    @State private var selectedSessionID: String?
+    @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
+    @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
     @State private var showingNewSession = false
     @State private var showingAddMachine = false
 
@@ -16,7 +16,7 @@ struct MacLiveRootView: View {
                 MacFirstRunView()
             } else {
                 NavigationSplitView {
-                    List(store.machines, selection: $selectedMachineID) { machine in
+                    List(store.machines, selection: machineSelection) { machine in
                         VStack(alignment: .leading) {
                             Text(machine.displayName).font(.headline)
                             Text(statusText(machine.status)).font(.caption).foregroundStyle(.secondary)
@@ -32,7 +32,7 @@ struct MacLiveRootView: View {
                         }
                     }
                 } content: {
-                    List(visibleSessions, selection: $selectedSessionID) { session in
+                    List(visibleSessions, selection: sessionSelection) { session in
                         RemiSessionRow(session: session)
                             .tag(session.id)
                     }
@@ -116,8 +116,11 @@ struct MacLiveRootView: View {
             }
         }
         .task {
-            selectedMachineID = selectedMachineID ?? store.machines.first?.id
+            reconcileNavigation()
             store.start()
+        }
+        .onChange(of: navigationSnapshot, initial: true) { _, _ in
+            reconcileNavigation()
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet { host, port in
@@ -143,6 +146,44 @@ struct MacLiveRootView: View {
 
     private var selectedMachine: MachineState? {
         store.machines.first { $0.id == selectedMachineID } ?? store.machines.first
+    }
+
+    private var machineSelection: Binding<String?> {
+        Binding(
+            get: { selectedMachineID.isEmpty ? nil : selectedMachineID },
+            set: { newValue in
+                let next = newValue ?? ""
+                guard next != selectedMachineID else { return }
+                selectedMachineID = next
+                selectedSessionID = ""
+                reconcileNavigation()
+            }
+        )
+    }
+
+    private var sessionSelection: Binding<String?> {
+        Binding(
+            get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
+            set: { selectedSessionID = $0 ?? "" }
+        )
+    }
+
+    private var navigationSnapshot: [[String]] {
+        store.machines.map { machine in
+            [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
+                + machine.sessions.map(\.sessionId)
+        }
+    }
+
+    private func reconcileNavigation() {
+        if !store.machines.contains(where: { $0.id == selectedMachineID }) {
+            selectedMachineID = store.machines.first?.id ?? ""
+        }
+        guard selectedMachine?.hasLoadedSessions == true else { return }
+        let sessionIDs = selectedMachine?.sessions.map(\.sessionId) ?? []
+        if !sessionIDs.contains(selectedSessionID) {
+            selectedSessionID = sessionIDs.first ?? ""
+        }
     }
 
     private var sessionCreationMachines: [MachineState] {
