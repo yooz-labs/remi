@@ -134,6 +134,7 @@ struct MacLiveRootView: View {
             let questionCount = machine.questions.count { $0.sessionId == session.sessionId }
             return RemiSessionSummary(
                 id: session.sessionId,
+                machineID: machine.id,
                 machineName: machine.displayName,
                 name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                 harness: session.harness ?? "claude",
@@ -152,9 +153,10 @@ struct MacLiveRootView: View {
             return RemiQuestionCardModel(
                 id: question.id,
                 kind: questionKind(question.kind),
-                text: question.text,
-                detail: question.detail,
-                machineName: machine.displayName,
+            text: question.text,
+            detail: question.detail,
+            machineID: machine.id,
+            machineName: machine.displayName,
                 sessionName: visibleSessions.first(where: { $0.id == sessionId })?.name ?? sessionId,
                 options: question.options.map { option in
                     RemiQuestionOption(

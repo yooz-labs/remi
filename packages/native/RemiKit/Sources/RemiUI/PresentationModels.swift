@@ -70,6 +70,7 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let kind: RemiQuestionKind
     public let text: String
     public let detail: String?
+    public let machineID: String
     public let machineName: String
     public let sessionName: String
     public let options: [RemiQuestionOption]
@@ -77,11 +78,12 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let terminalOnly: Bool
     public let state: RemiQuestionState
 
-    public init(id: String, kind: RemiQuestionKind, text: String, detail: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, state: RemiQuestionState = .pending) {
+    public init(id: String, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, state: RemiQuestionState = .pending) {
         self.id = id
         self.kind = kind
         self.text = text
         self.detail = detail
+        self.machineID = machineID ?? machineName
         self.machineName = machineName
         self.sessionName = sessionName
         self.options = options
@@ -95,6 +97,7 @@ public enum RemiSessionStatus: Sendable, Equatable { case needsYou, working, idl
 
 public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let id: String
+    public let machineID: String
     public let machineName: String
     public let name: String
     public let harness: String
@@ -103,8 +106,9 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let lastMessage: String?
     public let openQuestionCount: Int
 
-    public init(id: String, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0) {
+    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0) {
         self.id = id
+        self.machineID = machineID ?? machineName
         self.machineName = machineName
         self.name = name
         self.harness = harness

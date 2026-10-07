@@ -1,4 +1,5 @@
 import Foundation
+import RemiUI
 import Testing
 @testable import RemiKit
 
@@ -30,5 +31,20 @@ struct MachineStoreTests {
         persistence.save(endpoints)
         #expect(persistence.load() == endpoints)
         UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test func sessionPresentationKeepsStableMachineIdentity() {
+        let session = RemiSessionSummary(
+            id: "session-1",
+            machineID: "host.example:18765",
+            machineName: "Studio",
+            name: "Native app",
+            harness: "Claude",
+            project: "remi",
+            status: .working
+        )
+
+        #expect(session.machineID == "host.example:18765")
+        #expect(session.machineName == "Studio")
     }
 }

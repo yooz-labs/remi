@@ -153,6 +153,10 @@ public final class MachineStore {
         Task { await connection.retryAfterApproval() }
     }
 
+    public func clearLatestError() {
+        latestError = nil
+    }
+
     public func loadTranscript(sessionId: String) {
         guard let connection = connection(forSession: sessionId) else { return }
         let request = TranscriptLoadRequestMessage(

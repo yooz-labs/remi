@@ -27,6 +27,7 @@ public enum RemiPreviewData {
         return response.sessions.map { session in
             RemiSessionSummary(
                 id: session.sessionId,
+                machineID: "fixture-host",
                 machineName: "fixture-host",
                 name: session.name ?? session.projectPath,
                 harness: session.harness ?? "claude",
@@ -120,6 +121,7 @@ public enum RemiPreviewData {
 
     public static let primarySession = RemiSessionSummary(
         id: "1",
+        machineID: "studio",
         machineName: "Studio",
         name: "Native iOS",
         harness: "Claude",
@@ -131,7 +133,7 @@ public enum RemiPreviewData {
 
     public static let sessions = [
         primarySession,
-        RemiSessionSummary(id: "2", machineName: "Studio", name: "Protocol freeze", harness: "Codex", project: "remi", status: .working, lastMessage: "Reviewing the message registry"),
+        RemiSessionSummary(id: "2", machineID: "studio", machineName: "Studio", name: "Protocol freeze", harness: "Codex", project: "remi", status: .working, lastMessage: "Reviewing the message registry"),
     ]
 
     public static let machines = [
