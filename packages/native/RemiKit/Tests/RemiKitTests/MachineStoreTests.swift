@@ -99,6 +99,48 @@ struct MachineStoreTests {
         #expect(store.machines.isEmpty)
     }
 
+    @Test func activeSessionsMatchCapacitorDaemonSourceRule() throws {
+        var machine = MachineState(
+            endpoint: MachineEndpoint(host: "host.example", port: 18765),
+            displayName: "Host"
+        )
+        machine.sessions = [
+            try session(id: "live", source: "daemon"),
+            try session(id: "recent", source: "transcript"),
+        ]
+
+        #expect(machine.activeSessions.map(\.sessionId) == ["live"])
+    }
+
+    @Test @MainActor func resolutionAndSnapshotsPruneDuplicateMachineCollections() throws {
+        let resolved = try question(id: "question-1", sessionId: "session-1")
+        let stillLive = try question(id: "question-2", sessionId: "session-1")
+        var first = MachineState(
+            endpoint: MachineEndpoint(host: "one.example", port: 18765),
+            displayName: "One"
+        )
+        var second = MachineState(
+            endpoint: MachineEndpoint(host: "two.example", port: 18765),
+            displayName: "Two"
+        )
+        first.questions = [resolved, stillLive]
+        second.questions = [resolved]
+
+        let afterResolution = MachineStore.resolvingQuestion(
+            in: [first, second],
+            sessionId: "session-1",
+            questionId: "question-1"
+        )
+        #expect(afterResolution.flatMap(\.questions).map(\.question.id) == ["question-2"])
+
+        let afterSnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: afterResolution,
+            sessionId: "session-1",
+            liveQuestionIDs: []
+        )
+        #expect(afterSnapshot.allSatisfy { $0.questions.isEmpty })
+    }
+
     @Test func machineEndpointsPersistWithoutLeakingUIState() {
         let key = "remi.machine-store-tests.\(UUID().uuidString)"
         let persistence = MachineConfigurationStore(key: key)
@@ -151,4 +193,25 @@ struct MachineStoreTests {
             )]
         ))
     }
+}
+
+private func session(id: String, source: String) throws -> DiscoverableSession {
+    try JSONDecoder().decode(DiscoverableSession.self, from: Data(#"""
+    {
+        "sessionId":"\#(id)","name":"Session","projectPath":"/tmp/project",
+        "status":"idle","source":"\#(source)"
+    }
+    """#.utf8))
+}
+
+private func question(id: String, sessionId: String) throws -> QuestionMessage {
+    try JSONDecoder().decode(QuestionMessage.self, from: Data(#"""
+    {
+        "type":"question","id":"message-\#(id)","timestamp":"2026-10-07T12:00:00Z",
+        "sessionId":"\#(sessionId)","question":{
+            "id":"\#(id)","text":"Continue?","options":[],
+            "allowsFreeText":false,"isAnswered":false
+        }
+    }
+    """#.utf8))
 }

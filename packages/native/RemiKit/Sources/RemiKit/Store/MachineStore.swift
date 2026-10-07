@@ -75,6 +75,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var questions: [QuestionMessage]
     public var capabilities: [String]
     public var harnesses: [String]
+    public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
     public init(endpoint: MachineEndpoint, displayName: String) {
         self.endpoint = endpoint
@@ -107,6 +108,8 @@ public final class MachineStore {
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
+
+    public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
 
     public init(
         endpoints: [MachineEndpoint],
@@ -362,11 +365,17 @@ public final class MachineStore {
             machines[index].questions.removeAll { $0.question.id == message.question.id }
             machines[index].questions.append(message)
         case .questionResolved(let message):
-            machines[index].questions.removeAll { $0.question.id == message.questionId }
+            machines = Self.resolvingQuestion(
+                in: machines,
+                sessionId: message.sessionId,
+                questionId: message.questionId
+            )
         case .questionSnapshot(let snapshot):
-            machines[index].questions.removeAll {
-                $0.sessionId == snapshot.sessionId && !snapshot.questionIds.contains($0.question.id)
-            }
+            machines = Self.reconcilingQuestionSnapshot(
+                in: machines,
+                sessionId: snapshot.sessionId,
+                liveQuestionIDs: Set(snapshot.questionIds)
+            )
         case .transcript(let message):
             var transcript = transcriptsBySession[message.sessionId, default: []]
             transcript.removeAll { $0.entryUuid == message.entryUuid }
@@ -411,6 +420,34 @@ public final class MachineStore {
             latestError = error
         case .sessionUpdate, .transcriptComplete, .unsupported:
             break
+        }
+    }
+
+    static func resolvingQuestion(
+        in states: [MachineState],
+        sessionId: String,
+        questionId: String
+    ) -> [MachineState] {
+        states.map { state in
+            var state = state
+            state.questions.removeAll {
+                $0.sessionId == sessionId && $0.question.id == questionId
+            }
+            return state
+        }
+    }
+
+    static func reconcilingQuestionSnapshot(
+        in states: [MachineState],
+        sessionId: String,
+        liveQuestionIDs: Set<String>
+    ) -> [MachineState] {
+        states.map { state in
+            var state = state
+            state.questions.removeAll {
+                $0.sessionId == sessionId && !liveQuestionIDs.contains($0.question.id)
+            }
+            return state
         }
     }
 

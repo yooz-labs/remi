@@ -19,6 +19,7 @@ struct PhoneLiveRootView: View {
                 machines: machineSummaries,
                 sessionMachines: store.machines,
                 recentRepositories: store.recentRepositoriesByMachine,
+                publicIdentity: store.publicIdentity,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
                 noticeMessage: store.latestOperationNotice,
@@ -34,6 +35,7 @@ struct PhoneLiveRootView: View {
                 onCreateSession: createSession,
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
+                onRetryApproval: store.retryApproval,
                 onDismissError: store.clearLatestError
             )
         }
@@ -77,14 +79,14 @@ struct PhoneLiveRootView: View {
                 address: machine.endpoint.id,
                 reachability: reachability(machine.status),
                 transport: machine.endpoint.host == "127.0.0.1" ? .local : .direct,
-                sessionCount: machine.sessions.count
+                sessionCount: machine.activeSessions.count
             )
         }
     }
 
     private var allSessions: [RemiSessionSummary] {
         store.machines.flatMap { machine in
-            machine.sessions.map { session in
+            machine.activeSessions.map { session in
                 let count = machine.questions.count { $0.sessionId == session.sessionId }
                 return RemiSessionSummary(
                     id: session.sessionId,
