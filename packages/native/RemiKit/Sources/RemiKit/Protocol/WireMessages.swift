@@ -356,6 +356,12 @@ public struct RecentRepository: Decodable, Sendable, Equatable, Identifiable {
     public let repository: String
     public let name: String
     public let lastUsedAt: String
+
+    public init(repository: String, name: String, lastUsedAt: String) {
+        self.repository = repository
+        self.name = name
+        self.lastUsedAt = lastUsedAt
+    }
 }
 
 public struct RecentRepositoriesResponseMessage: Decodable, Sendable, Equatable {
