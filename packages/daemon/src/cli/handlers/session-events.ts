@@ -30,16 +30,16 @@ import type {
   SessionRegistry,
   SessionRegistryFile,
 } from '../../session/index.ts';
-import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import type { PromptUp } from './prompt-up.ts';
-import { buildSessionList } from './session-list-entries.ts';
+import { type SessionListDeps, buildSessionList } from './session-list-entries.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
-  transcriptDiscovery: TranscriptDiscovery;
+  /** Typed by shape (`buildSessionList`'s), so this module imports nothing from `transcript/`. */
+  transcriptDiscovery: SessionListDeps['transcriptDiscovery'];
   /**
    * What a Stop types (`gracefulExitInput`; null force-closes at once) and
    * how each listed session's transcript path is derived (`transcriptPath`).

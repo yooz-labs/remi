@@ -22,11 +22,15 @@ All notable changes to Remi are documented here.
 - `hubSupport` in `@remi/shared` tells a client whether a machine supports what it needs and, when not, which side to update. The native apps are its first users; the web client and the CLI need no capability yet.
 - An ack without the two fields comes from an older remi; a client reads it as protocol version 1 with no capabilities.
 
-## [0.7.16] - 2026-10-07
-
-### A Codex session keeps its name when another session starts (#1274)
+### A Codex session keeps its name when the machine's sessions change (#1274)
 
 #### Fixed
+
+- When the set of sessions on the machine changed (another session started, or one ended while others ran), the session list a daemon sent to connected clients left out which agent each of its sessions runs, so a Codex session read as Claude until the list was asked for again. Claude sessions also lacked their Claude id and transcript path in that list. Both lists are now built the same way.
+
+## [0.7.16] - 2026-10-07
+
+### Fixed
 
 - When another session started on the machine, the session list a daemon sent to connected clients left out which agent each of its sessions runs, so a Codex session read as Claude until the list was asked for again. Both lists are now built the same way.
 

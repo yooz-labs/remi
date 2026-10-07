@@ -3,9 +3,10 @@
  * asked, the Claude transcripts on disk that no session here manages.
  *
  * Both ways a daemon sends its list build it here: the answer to `session_list_request`
- * (`session-events.ts`) and the live-sessions broadcast sent when a sibling daemon registers
- * (`collectLiveSessionsUpdate` in `cli.ts`). Before #1274 only the first named the harness, so
- * after a broadcast a Codex session read as Claude until the next request.
+ * (`session-events.ts`) and the live-sessions broadcast sent when the set of sessions on the
+ * machine changes while another daemon runs (`collectLiveSessionsUpdate` in `cli.ts`). Before
+ * #1274 only the first named the harness, so after a broadcast a Codex session read as Claude
+ * until the next request.
  */
 
 import { errorToString } from '@remi/shared';
@@ -44,9 +45,11 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
   // transcriptPath comes from the harness, the same derivation every other
   // transcript-path site uses, so the client can show "you are talking to
   // port X / claude <short-uuid>" without round-tripping.
-  // A failed lookup on any one entry must not nuke the entire list (a request
-  // would hang waiting for a reply). Fall back to the undecorated entry on
-  // per-entry failure.
+  // A failed lookup on any one entry must not nuke the entire list: a request
+  // would hang waiting for a reply, and a broadcast would send nothing, losing
+  // the sibling ports with it. Fall back to the undecorated entry on per-entry
+  // failure; the cost on a broadcast is that a Codex entry reads as Claude
+  // until the store answers again, which the log line records.
   const own = sessionRegistry.listSessions().map((s) => {
     try {
       // Null: no record, or a harness this build does not know. Neither is guessed at.

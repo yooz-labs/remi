@@ -503,7 +503,7 @@ Item 13 lists what was asked.
 A question or a list entry has no null: with the id unknown it names the harness and no id.
 The Codex id is null on a `hello_ack` sent before `thread/started` and nothing depends on it, because answers are addressed by `questionId` and a client still echoes only `claudeSessionId` (the signaling Worker rebuilds an answer from a fixed list, so no client-to-daemon field was added; a Codex client sends none and `guardBinding` accepts that).
 `CurrentOwnedSession` gained `identity` (from `identityOfRecord`, which `SessionBindingStore.getIdentity` now also calls; a record that names a harness this build does not know, or no record, falls back to the daemon's own harness with a null id, never to a guess at Claude).
-`getIdentity` has two production callers, the session list (`session-events.ts`) and every question emission (`cli.ts`'s `getIdentity` for the message API); the issue named the first.
+`getIdentity` has two production callers, the session list (`cli/handlers/session-list-entries.ts` since #1274, for both the requested list and the live-sessions broadcast) and every question emission (`cli.ts`'s `getIdentity` for the message API); the issue named the first.
 The Claude transcripts a daemon finds on disk (`source: 'transcript'`) are not decorated: the #1162 discovery test pins that they carry no identity, and absence reads as Claude (see item 11).
 2. **`hello_ack.harnesses` on every ack, and the registry.**
 `HarnessRegistry` (`harness/registry.ts`, neutral) maps an id to `{command, validateRemoteArgs, launchRefusal?, headlessNotice?}`; `cli.ts` builds it because the validators sit behind the import boundary.
