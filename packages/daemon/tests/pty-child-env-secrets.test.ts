@@ -23,13 +23,18 @@ let session: PTYSession | null = null;
 const saved = new Map<string, string | undefined>();
 
 afterEach(async () => {
-  await session?.close(2000);
-  session = null;
-  for (const [key, value] of saved) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  try {
+    await session?.close(2000);
+  } finally {
+    // Restored even if close throws: a planted secret must not leak into
+    // later test files in the same process.
+    session = null;
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    saved.clear();
   }
-  saved.clear();
 });
 
 function plant(name: string, value: string): void {
