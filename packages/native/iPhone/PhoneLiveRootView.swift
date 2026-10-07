@@ -38,7 +38,6 @@ struct PhoneLiveRootView: View {
             )
         }
         .task { store.start() }
-        .task { await PhoneNotificationCoordinator.requestAuthorization() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
             hapticsEnabled
         }

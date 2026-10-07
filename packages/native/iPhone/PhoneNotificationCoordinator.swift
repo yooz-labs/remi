@@ -25,14 +25,27 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
 }
 
 enum PhoneNotificationCoordinator {
-    static func requestAuthorization() async {
-        guard notificationsEnabled else { return }
+    static func requestAuthorization() async -> NotificationAuthorizationState {
+        guard notificationsEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound])
+        return await authorizationState()
+    }
+
+    static func authorizationState() async -> NotificationAuthorizationState {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        return NotificationAuthorizationState(settings.authorizationStatus)
+    }
+
+    @MainActor
+    static func openSystemSettings() async {
+        guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+        await UIApplication.shared.open(url)
     }
 
     static func notify(id: String, title: String, body: String) async {
         guard notificationsEnabled else { return }
+        guard await authorizationState().isAllowed else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -55,5 +68,70 @@ enum PhoneNotificationCoordinator {
 
     private static var soundsEnabled: Bool {
         UserDefaults.standard.object(forKey: PhonePreferenceKey.notificationSounds) as? Bool ?? true
+    }
+}
+
+enum NotificationAuthorizationState: Equatable {
+    case unknown
+    case notDetermined
+    case denied
+    case authorized
+    case provisional
+    case ephemeral
+
+    init(_ status: UNAuthorizationStatus) {
+        switch status {
+        case .notDetermined: self = .notDetermined
+        case .denied: self = .denied
+        case .authorized: self = .authorized
+        case .provisional: self = .provisional
+        case .ephemeral: self = .ephemeral
+        @unknown default: self = .unknown
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .unknown: "Checking…"
+        case .notDetermined: "Not enabled"
+        case .denied: "Off in Settings"
+        case .authorized: "Allowed"
+        case .provisional: "Delivered quietly"
+        case .ephemeral: "Temporarily allowed"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .unknown: "ellipsis.circle"
+        case .notDetermined: "bell.badge"
+        case .denied: "bell.slash.fill"
+        case .authorized: "checkmark.circle.fill"
+        case .provisional, .ephemeral: "bell.badge.fill"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .unknown:
+            "Remi is checking whether iOS can show question alerts."
+        case .notDetermined:
+            "Allow Remi to alert you when a connected session needs an answer."
+        case .denied:
+            "iOS is blocking Remi alerts. You can allow them in Notification Settings."
+        case .authorized:
+            "iOS can show Remi alerts when a connected session needs an answer."
+        case .provisional:
+            "iOS delivers Remi alerts quietly without interrupting you."
+        case .ephemeral:
+            "iOS can show Remi alerts temporarily for this app session."
+        }
+    }
+
+    var isAllowed: Bool {
+        switch self {
+        case .authorized, .provisional, .ephemeral: true
+        case .unknown, .notDetermined, .denied: false
+        }
     }
 }
