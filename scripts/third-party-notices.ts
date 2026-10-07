@@ -19,13 +19,17 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const DEFAULT_ENTRY = 'packages/daemon/src/cli.ts';
-const LICENSE_FILE = /^(licen[cs]e|copying)(\.|$)/i;
+/** `LICENSE`, `LICENCE.md`, `LICENSE-MIT`, `COPYING`, ...: every one a package ships is reproduced. */
+const LICENSE_FILE = /^(licen[cs]e|copying)([.\-_]|$)/i;
+/** An Apache-2.0 package's `NOTICE` must travel with it too. */
+const NOTICE_FILE = /^notice([.\-_]|$)/i;
 
 export interface BundledPackage {
   readonly name: string;
   readonly version: string;
   /** The `license` field of its package.json, as declared. */
   readonly license: string;
+  /** Its license files and NOTICE files, each with its file name, in name order. */
   readonly licenseText: string;
 }
 
@@ -88,38 +92,45 @@ export async function bundledPackages(
     if (code !== 0) throw new Error(`bun build ${entry} failed (exit ${code}): ${stderr.trim()}`);
     const meta = JSON.parse(readFileSync(metafile, 'utf8')) as { inputs: Record<string, unknown> };
 
+    // Keyed by the package's directory, so two versions of one package (two
+    // directories) are both listed.
     const roots = new Map<string, string>();
     for (const input of Object.keys(meta.inputs)) {
       const found = packageRootOf(input);
-      if (found) roots.set(found.name, resolve(cwd, found.root));
+      if (found) roots.set(resolve(cwd, found.root), found.name);
     }
 
     const packages: BundledPackage[] = [];
     const missing: string[] = [];
-    for (const [name, root] of roots) {
+    for (const [root, name] of roots) {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as Record<
         string,
         unknown
       >;
       const version = typeof pkg['version'] === 'string' ? pkg['version'] : '0.0.0';
-      const file = readdirSync(root).find((f) => LICENSE_FILE.test(f));
-      if (file === undefined) {
+      const files = readdirSync(root).sort();
+      const licenses = files.filter((f) => LICENSE_FILE.test(f));
+      if (licenses.length === 0) {
         missing.push(`${name}@${version}`);
         continue;
       }
-      packages.push({
-        name,
-        version,
-        license: declaredLicense(pkg),
-        licenseText: readFileSync(join(root, file), 'utf8').trim(),
-      });
+      const notices = files.filter((f) => NOTICE_FILE.test(f));
+      const text = [...licenses, ...notices]
+        .map((f) => {
+          const body = readFileSync(join(root, f), 'utf8').trim();
+          return licenses.length + notices.length > 1 ? `[${f}]\n${body}` : body;
+        })
+        .join('\n\n');
+      packages.push({ name, version, license: declaredLicense(pkg), licenseText: text });
     }
     if (missing.length > 0) {
       throw new Error(
         `Bundled packages with no license file (their notice cannot be shipped): ${missing.sort().join(', ')}`,
       );
     }
-    return packages.sort((a, b) => a.name.localeCompare(b.name));
+    return packages.sort(
+      (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
+    );
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -130,8 +141,12 @@ export function renderNotices(packages: readonly BundledPackage[], version: stri
   const lines = [
     `Third-party notices for remi ${version}`,
     '',
-    'The remi binary bundles the following packages. Each is listed with the',
-    'license it declares and the full text of its license file.',
+    'The remi binary bundles the following packages from node_modules. Each is',
+    'listed with the license it declares and the full text of its license files',
+    '(and NOTICE files, where it has them).',
+    '',
+    'This list does not cover the Bun runtime that `bun build --compile` embeds in',
+    'the binary, which carries its own licenses (#1256).',
     '',
   ];
   for (const pkg of packages) {
