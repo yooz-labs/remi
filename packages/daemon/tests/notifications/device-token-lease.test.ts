@@ -178,15 +178,25 @@ describe('lease edges (#1259 review)', () => {
     expect(store.map.has('connected')).toBe(true);
   });
 
-  test('an expired token is removed from the file, and logged once', () => {
+  test('a token expired at load is removed from the file, and logged once', () => {
     seed([entry('stale', Date.now() - 30 * HOUR), entry('fresh', Date.now())]);
     const store = new DeviceTokenStore(file, { leaseMs: LEASE });
     store.load();
+
+    expect(onDisk().map((t) => t['token'])).toEqual(['fresh']);
     store.refreshFromDisk();
+    store.refreshFromDisk();
+    expect(logs.filter((l) => l.includes('Push lease expired')).length).toBe(1);
+  });
+
+  test("a token expired at a refresh (a sibling's stale copy) is removed from the file", () => {
+    const store = new DeviceTokenStore(file, { leaseMs: LEASE });
+    store.load();
+    seed([entry('stale', Date.now() - 30 * HOUR), entry('fresh', Date.now())]);
+
     store.refreshFromDisk();
 
     expect(onDisk().map((t) => t['token'])).toEqual(['fresh']);
-    expect(logs.filter((l) => l.includes('Push lease expired')).length).toBe(1);
   });
 
   test('a lastSeenAt that is not a number counts from registration', () => {
