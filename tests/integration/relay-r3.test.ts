@@ -54,9 +54,26 @@ function spawn(dir: string, args: string[]) {
   processes.push(proc);
   return proc;
 }
+/**
+ * Fail with what was awaited when a setup step does not finish in `ms` (#1225: one loaded run of
+ * 125 stalled in setup until the test's own timeout, which names nothing).
+ */
+async function bounded<T>(promise: Promise<T>, what: string, ms = 10000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function hub() {
   const dir = home();
-  const worker = await startWorker();
+  const worker = await bounded(startWorker(), 'the local Worker to start');
   workers.push(worker);
   const port = await reserveRange(1, 50, '127.0.0.1');
   const proc = spawn(dir, [
@@ -92,7 +109,10 @@ async function hub() {
   while (true) {
     if (proc.exitCode !== null) throw new Error(`hub exited: ${await stdout} ${log.tail}`);
     try {
-      if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) break;
+      const health = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (health.ok) break;
     } catch {}
     if (Date.now() > deadline) throw new Error('hub startup deadline');
     await Bun.sleep(10);
@@ -181,10 +201,13 @@ async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
   sockets.push(ws);
   const inbox = new Mailbox<Record<string, unknown>>();
   ws.onmessage = (event) => inbox.push(JSON.parse(String(event.data)));
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error('local control refused'));
-  });
+  await bounded(
+    new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error('local control refused'));
+    }),
+    'the local relay control socket to open',
+  );
   return { ws, inbox };
 }
 async function paired() {
@@ -202,7 +225,10 @@ async function paired() {
   );
   const rid = await relayV2.ridOf(token.machinePublicKey);
   const device = await newIdentity();
-  const socket = await Socket.open(clientUrl(running.worker, hex(rid)));
+  const socket = await bounded(
+    Socket.open(clientUrl(running.worker, hex(rid))),
+    'the client socket',
+  );
   sockets.push(socket.ws);
   await admit(socket, device, 'client', rid, await relayV2.admitTag(token.secret));
   expect((await socket.json())['t']).toBe('admitted');
