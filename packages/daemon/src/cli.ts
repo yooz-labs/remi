@@ -178,7 +178,13 @@ import {
   startLogFileSession,
   writeToLog,
 } from './cli/log-file.ts';
-import { guardLogFiles, logFilesBehind } from './cli/log-rotation.ts';
+import {
+  LOG_GUARD_INTERVAL_MS,
+  LOG_KEEP,
+  LOG_MAX_BYTES,
+  guardLogFiles,
+  planStdioLogGuard,
+} from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -2491,17 +2497,22 @@ if (cliDaemonMode) {
   // A daemon or hub holds its stdout and stderr for its whole life, so it keeps
   // the log files behind them bounded itself (#729): launchd's
   // remi-stdout.log / remi-stderr.log, or the daemon.log `remi start` and the
-  // hub's children write to.
-  guardLogFiles(
-    logFilesBehind(
-      [1, 2],
-      [
-        path.join(REMI_DIR, 'daemon.log'),
-        path.join(REMI_DIR, 'remi-stdout.log'),
-        path.join(REMI_DIR, 'remi-stderr.log'),
-      ],
-    ),
+  // hub's children write to. Only one it writes to in append mode (#1262).
+  const stdioLogs = planStdioLogGuard(
+    [1, 2],
+    [
+      path.join(REMI_DIR, 'daemon.log'),
+      path.join(REMI_DIR, 'remi-stdout.log'),
+      path.join(REMI_DIR, 'remi-stderr.log'),
+    ],
   );
+  guardLogFiles(stdioLogs.guarded);
+  if (stdioLogs.guarded.length > 0) {
+    log(
+      `[logs] Keeping ${stdioLogs.guarded.map((f) => path.basename(f)).join(' and ')} under ${LOG_MAX_BYTES / (1024 * 1024)} MB (checked every ${LOG_GUARD_INTERVAL_MS / 60_000} minutes, ${LOG_KEEP} backups kept)`,
+    );
+  }
+  for (const notice of stdioLogs.notices) log(`[logs] ${notice}`);
 
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {

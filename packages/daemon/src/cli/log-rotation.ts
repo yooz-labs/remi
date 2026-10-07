@@ -7,26 +7,42 @@
  * COPY, THEN TRUNCATE IN PLACE (#729). The live file keeps its inode, so every
  * process that holds it open keeps writing to the live file: the hub's own
  * stdout, launchd's descriptor for `remi-stdout.log`, and each sibling daemon
- * spawned onto `daemon.log`. That needs every writer to have opened the file
- * for append (`O_APPEND`), so the next write lands at the new end: remi opens
- * its logs with `'a'`, `appendFileSync` appends, and launchd opens
- * `StandardOutPath` and `StandardErrorPath` for append (verified with
- * `lsof +fg`: `R,W,AP`). The rename this replaced could not retarget a held
- * descriptor: a hub kept writing to `.1`, then `.2`, then an unlinked file,
- * so its log vanished two rotations in.
+ * spawned onto `daemon.log`. The rename this replaced could not retarget a
+ * held descriptor: a hub kept writing to `.1`, then `.2`, then an unlinked
+ * file, so its log vanished two rotations in.
+ *
+ * It needs every writer to have opened the file for append (`O_APPEND`), so
+ * the next write lands at the new end. A writer without it keeps its own
+ * offset, and the file fills with NUL bytes up to it. remi opens its logs with
+ * `'a'`, `appendFileSync` appends, and launchd opens `StandardOutPath` and
+ * `StandardErrorPath` for append (verified with `lsof +fg`: `R,W,AP`). What
+ * remi cannot see is someone else's descriptor: a daemon started with
+ * `> ~/.remi/daemon.log` checks its own stdout (`planStdioLogGuard`) and
+ * leaves that file alone, but another remi process rotating `daemon.log` would
+ * still pad it. Use `>>`.
+ *
+ * One rotation at a time (#1262 review): a rotation holds `<file>.lock`
+ * (created exclusively), re-checks the size under it, copies to a temp file,
+ * and only then shifts the backups, renames the copy to `.1` and truncates.
+ * Without the lock a second process copied the just-emptied file over the
+ * first one's `.1`; without the copy-first order a copy that kept failing
+ * dropped a backup on every retry. A lock older than `STALE_ROTATION_LOCK_MS`
+ * is a crashed rotation's and is cleared; so is its temp copy.
  *
  * Two ways in:
  * - `rotateIfNeeded` before an open (a wrapper's log session, a daemon spawn)
  *   and before each append to a debug sink (`appendBounded`);
  * - `guardLogFiles` for a process that never reopens: it checks the files it
- *   writes to every `LOG_GUARD_INTERVAL_MS`.
+ *   writes to every `LOG_GUARD_INTERVAL_MS`, so a file can pass the bound by
+ *   up to that much output before it is rotated.
  *
  * Lines written between the copy and the truncate are lost (a window of one
- * file copy). No cross-process locking: two processes rotating the same file
- * at once can lose a backup generation, not the live file or a crash.
+ * file copy).
  */
 
+import { FFIType, dlopen } from 'bun:ffi';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 
 /** Default rotation threshold: 10MB. */
@@ -38,6 +54,10 @@ export const LOG_KEEP = 2;
 /** How often `guardLogFiles` checks the files a long-lived process writes to. */
 export const LOG_GUARD_INTERVAL_MS = 5 * 60 * 1000;
 
+/** A rotation lock older than this was left by a crashed rotation (one takes
+ *  well under a second) and is cleared. */
+export const STALE_ROTATION_LOCK_MS = 10 * 60 * 1000;
+
 export interface RotateOptions {
   /** Rotate once the file reaches this size in bytes. Default `LOG_MAX_BYTES`. */
   readonly maxBytes?: number;
@@ -46,63 +66,124 @@ export interface RotateOptions {
 }
 
 /**
- * Rotate `filePath` if it has reached `maxBytes`, shifting existing backups
- * (`filePath.1` -> `filePath.2` -> ... -> dropped past `keep`), copying
- * `filePath` to `filePath.1`, and then truncating `filePath` in place. It is
- * truncated only when the copy succeeded, so a failed rotation loses nothing.
- * Never throws: every filesystem operation is individually try/caught, since
- * a rotation failure must never break logging for the caller.
+ * Rotate `filePath` if it has reached `maxBytes`: under its lock, copy it to a
+ * temp file, drop the oldest backup and shift the rest (`.1` -> `.2` -> ...
+ * up to `keep`), rename the copy to `.1`, and truncate `filePath` in place.
+ * Nothing is shifted or truncated unless the copy succeeded, so a failed
+ * rotation loses nothing. Never throws: a rotation failure must never break
+ * logging for the caller.
  *
- * Returns `false` if `filePath` does not exist, could not be stat'd, or is
- * under the threshold. Returns `true` whenever rotation was warranted (size
- * >= `maxBytes`), regardless of whether every individual shift/rename
- * succeeded.
+ * Returns `true` only when this call rotated the file. `false` when it is
+ * missing, not a regular file, under the bound, being rotated by another
+ * process (or was just rotated by one), or a step failed (logged).
  */
 export function rotateIfNeeded(filePath: string, opts?: RotateOptions): boolean {
   const maxBytes = opts?.maxBytes ?? LOG_MAX_BYTES;
   const keep = opts?.keep ?? LOG_KEEP;
 
-  let size: number;
+  if (!reachedBound(filePath, maxBytes)) return false;
+  const lock = `${filePath}.lock`;
+  if (!takeLock(lock)) return false;
   try {
-    size = fs.statSync(filePath).size;
+    // Another process may have rotated it between the check and the lock.
+    if (!reachedBound(filePath, maxBytes)) return false;
+    removeAbandonedCopies(filePath);
+
+    const copy = `${filePath}.rotating-${process.pid}`;
+    try {
+      fs.copyFileSync(filePath, copy);
+    } catch (err) {
+      warn(`copy ${filePath}`, err);
+      removeQuietly(copy);
+      return false;
+    }
+
+    try {
+      fs.unlinkSync(`${filePath}.${keep}`);
+    } catch (err) {
+      warnUnlessMissing(err, `drop oldest backup ${filePath}.${keep}`);
+    }
+    for (let n = keep - 1; n >= 1; n--) {
+      try {
+        fs.renameSync(`${filePath}.${n}`, `${filePath}.${n + 1}`);
+      } catch (err) {
+        warnUnlessMissing(err, `shift backup ${filePath}.${n} -> .${n + 1}`);
+      }
+    }
+    try {
+      fs.renameSync(copy, `${filePath}.1`);
+    } catch (err) {
+      warn(`rename ${copy} -> ${filePath}.1`, err);
+      removeQuietly(copy);
+      return false;
+    }
+
+    try {
+      fs.truncateSync(filePath, 0);
+    } catch (err) {
+      warn(`truncate ${filePath}`, err);
+      return false;
+    }
+    return true;
+  } finally {
+    removeQuietly(lock);
+  }
+}
+
+/** Whether `filePath` is a regular file of at least `maxBytes`. */
+function reachedBound(filePath: string, maxBytes: number): boolean {
+  try {
+    const st = fs.statSync(filePath);
+    return st.isFile() && st.size >= maxBytes;
   } catch (err) {
     warnUnlessMissing(err, `stat ${filePath}`);
     return false;
   }
+}
 
-  if (size < maxBytes) return false;
-
+/**
+ * Create `lock` exclusively. When it already exists another process is
+ * rotating, unless the lock is older than `STALE_ROTATION_LOCK_MS`: then a
+ * rotation crashed holding it, and it is cleared so the next check rotates.
+ */
+function takeLock(lock: string): boolean {
   try {
-    fs.unlinkSync(`${filePath}.${keep}`);
+    fs.closeSync(fs.openSync(lock, 'wx'));
+    return true;
   } catch (err) {
-    warnUnlessMissing(err, `drop oldest backup ${filePath}.${keep}`);
-  }
-
-  for (let n = keep - 1; n >= 1; n--) {
-    try {
-      fs.renameSync(`${filePath}.${n}`, `${filePath}.${n + 1}`);
-    } catch (err) {
-      warnUnlessMissing(err, `shift backup ${filePath}.${n} -> .${n + 1}`);
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+      warn(`lock ${lock}`, err);
+      return false;
     }
   }
-
   try {
-    fs.copyFileSync(filePath, `${filePath}.1`);
-  } catch (err) {
-    // filePath was just confirmed to exist via statSync above, so any
-    // failure here (permissions, disk full) is unexpected; surface it.
-    // filePath stays whole and the next rotateIfNeeded call will retry.
-    warn(`copy ${filePath} -> .1`, err);
-    return true;
+    if (Date.now() - fs.statSync(lock).mtimeMs > STALE_ROTATION_LOCK_MS) fs.unlinkSync(lock);
+  } catch {
+    // Released or cleared meanwhile: the next check takes it.
   }
+  return false;
+}
 
+/** Remove temp copies a crashed rotation left. Only the lock holder copies, so
+ *  any that exist while it holds the lock are abandoned. */
+function removeAbandonedCopies(filePath: string): void {
+  const prefix = `${path.basename(filePath)}.rotating-`;
+  const dir = path.dirname(filePath);
   try {
-    fs.truncateSync(filePath, 0);
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith(prefix)) removeQuietly(path.join(dir, name));
+    }
   } catch (err) {
-    warn(`truncate ${filePath}`, err);
+    warn(`list ${dir}`, err);
   }
+}
 
-  return true;
+function removeQuietly(file: string): void {
+  try {
+    fs.unlinkSync(file);
+  } catch (err) {
+    warnUnlessMissing(err, `remove ${file}`);
+  }
 }
 
 /**
@@ -125,38 +206,126 @@ export function guardLogFiles(
   return () => clearInterval(timer);
 }
 
+/** `O_APPEND` and `F_GETFL`, which differ by platform. */
+const O_APPEND_DARWIN = 0x8;
+const O_APPEND_LINUX = 0o2000;
+const F_GETFL = 3;
+
+let fcntl: ((fd: number, cmd: number) => number) | null | undefined;
+
 /**
- * The `candidates` that the descriptors `fds` write to, matched by device and
- * inode (#729). A daemon's stdout and stderr are whatever its launcher opened
- * (launchd's `remi-stdout.log`, `remi start`'s `daemon.log`, a terminal, a
- * pipe), so it guards only the files it can see it holds. A descriptor that
- * is not open, or a candidate that does not exist, is skipped.
+ * Whether descriptor `fd` was opened for append (#1262 review), so a file
+ * behind it can be truncated in place safely. Read from the kernel: on Linux
+ * from `/proc/self/fdinfo`, on macOS with `fcntl(F_GETFL)`. `null` when it
+ * cannot be read, which callers treat as "do not truncate".
  */
-export function logFilesBehind(fds: readonly number[], candidates: readonly string[]): string[] {
-  const held: fs.Stats[] = [];
+export function fdAppends(fd: number): boolean | null {
+  if (process.platform === 'linux') {
+    try {
+      const info = fs.readFileSync(`/proc/self/fdinfo/${fd}`, 'utf8');
+      const flags = /^flags:\s*([0-7]+)$/m.exec(info)?.[1];
+      return flags === undefined ? null : (Number.parseInt(flags, 8) & O_APPEND_LINUX) !== 0;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform !== 'darwin') return null;
+  if (fcntl === undefined) {
+    try {
+      // `F_GETFL` takes no third argument, so the two fixed arguments are the
+      // whole call even though `fcntl` is variadic.
+      const lib = dlopen('/usr/lib/libSystem.B.dylib', {
+        fcntl: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      });
+      fcntl = (d, cmd) => lib.symbols.fcntl(d, cmd) as number;
+    } catch {
+      fcntl = null;
+    }
+  }
+  if (fcntl === null) return null;
+  const flags = fcntl(fd, F_GETFL);
+  return flags < 0 ? null : (flags & O_APPEND_DARWIN) !== 0;
+}
+
+export interface StdioLogPlan {
+  /** The candidate files this process writes to, every descriptor on each in append mode. */
+  readonly guarded: string[];
+  /** One line per descriptor file left alone, saying why. */
+  readonly notices: string[];
+}
+
+/**
+ * Which of `candidates` this process may keep bounded (#729): the ones its
+ * descriptors `fds` (stdout and stderr) write to, matched by device and inode.
+ * A daemon's stdout and stderr are whatever its launcher opened (launchd's
+ * `remi-stdout.log`, `remi start`'s `daemon.log`, a terminal, a pipe).
+ *
+ * A file is guarded only when every one of those descriptors on it appends:
+ * truncating under a descriptor that does not (a `>` redirect) would pad the
+ * file with NUL bytes (#1262 review). A file left alone for that reason, or
+ * because it is not one of `candidates`, gets a notice; a terminal, a pipe or
+ * a descriptor that is not open is skipped quietly.
+ */
+export function planStdioLogGuard(
+  fds: readonly number[],
+  candidates: readonly string[],
+): StdioLogPlan {
+  const byFile = new Map<string, number[]>();
   for (const fd of fds) {
     try {
       const st = fs.fstatSync(fd);
-      if (st.isFile()) held.push(st);
+      if (!st.isFile()) continue;
+      const key = `${st.dev}:${st.ino}`;
+      byFile.set(key, [...(byFile.get(key) ?? []), fd]);
     } catch {
-      // Not open, or not ours to stat: nothing to guard.
+      // Not open: nothing to guard.
     }
   }
-  return candidates.filter((candidate) => {
+  const known = new Map<string, string>();
+  for (const candidate of candidates) {
     try {
       const st = fs.statSync(candidate);
-      return held.some((h) => h.dev === st.dev && h.ino === st.ino);
+      known.set(`${st.dev}:${st.ino}`, candidate);
     } catch {
-      return false;
+      // Not there: nothing writes to it.
     }
-  });
+  }
+
+  const guarded: string[] = [];
+  const notices: string[] = [];
+  for (const [key, held] of byFile) {
+    const names = held.map(descriptorName).join(' and ');
+    const file = known.get(key);
+    if (file === undefined) {
+      notices.push(`Not rotating ${names}: a file remi does not manage.`);
+      continue;
+    }
+    const modes = held.map(fdAppends);
+    if (modes.every((m) => m === true)) {
+      guarded.push(file);
+      continue;
+    }
+    const why = modes.includes(false)
+      ? 'was opened without append (a > redirect?)'
+      : 'could not be checked for append mode';
+    notices.push(
+      `Not rotating ${path.basename(file)}: ${names} ${why}, and truncating it would pad it with NUL bytes. Open it with >> to have it rotated.`,
+    );
+  }
+  return { guarded, notices };
+}
+
+function descriptorName(fd: number): string {
+  if (fd === 1) return 'stdout';
+  if (fd === 2) return 'stderr';
+  return `descriptor ${fd}`;
 }
 
 /**
  * Append `text` to `filePath`, rotating it first once it reached the bound
- * (#729): for the opt-in debug sinks (`hook-diag.jsonl`, the PTY capture),
- * which a long debug session would otherwise grow forever. A failed append
- * throws, as `appendFileSync` does, so the caller can report it.
+ * (#729): for the opt-in debug sinks (`hook-diag.jsonl`, `question-trace.jsonl`,
+ * the PTY capture), which a long debug session would otherwise grow forever.
+ * A failed append throws, as `appendFileSync` does, so the caller can report it.
  */
 export function appendBounded(filePath: string, text: string, opts?: RotateOptions): void {
   rotateIfNeeded(filePath, opts);
@@ -169,7 +338,7 @@ function warnUnlessMissing(err: unknown, op: string): void {
   warn(op, err);
 }
 
-/** Best-effort stderr notice. Never throws — a rotation failure must never break logging. */
+/** Best-effort stderr notice. Never throws: a rotation failure must never break logging. */
 function warn(op: string, err: unknown): void {
   try {
     console.error(`[remi] log rotation failed (${op}): ${errorToString(err)}`);

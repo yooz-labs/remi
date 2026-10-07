@@ -17,7 +17,10 @@
  *
  * Capture is best-effort: a write error disables it and logs ONCE, so a full disk
  * or a bad path can never disturb the live PTY. The file is bounded (#729):
- * rotated at 10MB, with two backups kept.
+ * at 10MB it is copied to `<path>.1` (the previous `.1` becomes `<path>.2`,
+ * and an older `.2` is deleted) and emptied, using `<path>.lock` while it
+ * rotates. So point the variable at a file of its own: files with those
+ * names next to it are replaced.
  *
  * TEST CONTAMINATION (#934): unlike `REMI_HOOK_DEBUG`/`REMI_QUESTION_TRACE`,
  * this sink's destination is the env var's OWN value, not a fixed `~/.remi/*`
