@@ -1,6 +1,6 @@
 # ADR 0036: Workspaces, a session in a new worktree the hub creates
 
-**Status:** accepted for phases A and B (#1236, milestone "Protocol freeze"); phase C is planned below
+**Status:** accepted for phases A, B and C (#1236, milestone "Protocol freeze")
 **Date:** 2026-10-07
 **Owner:** Yahya
 
@@ -52,9 +52,12 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
    A read git cannot answer (missing, a timeout, git older than 2.36, a repository it does not trust) keeps the previous answer and is logged once per reason, so the field does not disappear while git is slow.
    The registry builds the entry for both the requested list and the live-sessions broadcast, so both carry it (the broadcast still lacks the harness identity: #1274).
 
-## Phase C (planned)
+## Decision (phase C): recent repositories
 
-- **Recent repositories:** a request for the repositories of the hub's recent sessions, main worktrees only, most recent first, so the app can offer "new session in repository X on machine Y".
+9. **`recent_repositories_request {limit?}` is answered with `recent_repositories_response {repositories}`**, each `{ repository, name, lastUsedAt }`: the repositories the machine's recent sessions ran in, main worktrees only, most recent first, each once, with the start of the most recent session in it (`recentRepositories`, `workspace/recent.ts`; `cli/handlers/recent-repositories-events.ts`).
+   The source is the session store (`sessions.json`, at most 100 records, most recent first). Each session's directory goes through the resolver of item 2, so a subdirectory or a linked worktree names its repository and a submodule names itself; a directory that is gone, outside any repository, in a bare repository or in a linked worktree of one, or whose path `escapeUnsafeText` would change, is left out.
+   The limit is 1 to 20 (anything else means 10). One 5-second deadline covers the walk: past it, git calls return at once and the walk ends with what it found. A store that cannot be read is an empty list, never silence, since the client waits for the answer.
+   It is part of the `workspaces` capability, which no release has shipped yet without it: a daemon that does not list `workspaces` does not answer, and a client checks first.
 
 ## Consequences
 

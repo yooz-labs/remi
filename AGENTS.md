@@ -715,7 +715,7 @@ A failed `git worktree add` that left a complete worktree on the branch (a hook 
 A refusal tells the client nothing it did not send; the log has git's reason, escaped.
 Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
 Phase B: a daemon's own session-list entry carries `workspace: {repository, directory, branch}` (branch null when HEAD is detached), read from git for the session's directory (`describeWorkspace`, `workspace/describe.ts`) so a worktree a person made and a branch checked out later both show. `WorkspaceCache` answers the list from its last read and refreshes an entry older than 10 seconds in the background (that first list still shows the previous read), keeps the last answer when git cannot answer (logged once per reason), and the registry primes it when the session registers; until the first read finishes the entry has no `workspace`. Both phases resolve the repository with `resolveRepository` (`workspace/git.ts`): a submodule or a separate-git-dir checkout is its own repository; only a linked worktree reads the worktree list.
-Not yet: a recent-repositories request (phase C).
+Phase C: `recent_repositories_request {limit?}` is answered with the main worktrees of the session store's recent sessions (`recentRepositories`, `workspace/recent.ts`), most recent first, each once, with `lastUsedAt`; gone, plain, bare and unsafe paths are left out, the limit is 1 to 20 (default 10), one 5-second deadline covers the walk, and a store that cannot be read answers an empty list. It is part of the `workspaces` capability.
 
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 
