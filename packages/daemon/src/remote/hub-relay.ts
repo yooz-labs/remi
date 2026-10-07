@@ -138,6 +138,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private machine: relayV2.Signer | undefined;
   private rid: Uint8Array = new Uint8Array();
   private readonly peers = new Map<string, Peer>();
+  /** Peers whose close is still running (a pipe in its orderly grace, #1225), for `stop()`. */
+  private readonly closingPeers = new Set<Peer>();
   private readonly offers = new Map<string, Offer>();
   private readonly locals = new Map<string, (text: string) => void>();
   private readonly devices: RelayDeviceStore;
@@ -971,6 +973,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       );
       if (peer.channel) await peer.channel.transportClosed();
     })();
+    // The peer leaves `peers` before its grace, so `stop()` finds a closing pipe here.
+    this.closingPeers.add(peer);
+    const settled = () => {
+      this.closingPeers.delete(peer);
+    };
+    peer.closing.then(settled, settled);
     return peer.closing;
   }
   open(id: string, send: (text: string) => void): void {
@@ -1202,7 +1210,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     if (this.stable) clearTimeout(this.stable);
     this.control?.stop();
     this.control = undefined;
-    await Promise.all([...this.peers.values()].map((peer) => this.closePeer(peer, true)));
+    for (const peer of [...this.peers.values()]) void this.closePeer(peer, true);
+    // Every close still running, including a pipe that was already in its grace (#1225).
+    await Promise.all([...this.closingPeers].map((peer) => peer.closing));
     for (const offer of [...this.offers.values()]) this.discard(offer);
     this.locals.clear();
     await this.stateTail;
