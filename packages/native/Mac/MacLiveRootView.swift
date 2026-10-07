@@ -141,7 +141,8 @@ struct MacLiveRootView: View {
                 project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
                 status: questionCount > 0 ? .needsYou : status(for: session.status),
                 lastMessage: session.lastMessage,
-                openQuestionCount: questionCount
+                openQuestionCount: questionCount,
+                canTerminate: session.source == "daemon"
             )
         }
     }

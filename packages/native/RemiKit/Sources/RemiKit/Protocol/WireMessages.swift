@@ -328,6 +328,28 @@ public struct CreateSessionResponseMessage: Decodable, Sendable, Equatable {
     public let notice: String?
 }
 
+public struct KillSessionRequestMessage: Codable, Sendable, Equatable {
+    public let type = "kill_session_request"
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+
+    public init(id: String, timestamp: String, sessionId: String) {
+        self.id = id
+        self.timestamp = timestamp
+        self.sessionId = sessionId
+    }
+}
+
+public struct KillSessionResponseMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let success: Bool
+    public let error: String?
+    public let requestId: String
+}
+
 public struct UserInputMessage: Codable, Sendable, Equatable {
     public let type = "user_input"
     public let id: String

@@ -48,7 +48,8 @@ struct FixtureConformanceTests {
     @Test(arguments: [
         "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result",
         "question_resolved", "question_snapshot", "transcript_content",
-        "transcript_load_complete", "session_views", "create_session_response", "error", "session_update"
+        "transcript_load_complete", "session_views", "create_session_response",
+        "kill_session_response", "error", "session_update"
     ])
     func inboundLiveMessageDecodes(_ name: String) throws {
         let data = try Self.fixture(name)
@@ -75,6 +76,8 @@ struct FixtureConformanceTests {
             #expect(message.subagents.first?.agentId == "fixture-agent-id")
         case "create_session_response":
             _ = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: data)
+        case "kill_session_response":
+            _ = try JSONDecoder().decode(KillSessionResponseMessage.self, from: data)
         case "error":
             _ = try JSONDecoder().decode(ErrorMessage.self, from: data)
         case "session_update":
@@ -86,7 +89,7 @@ struct FixtureConformanceTests {
 
     @Test(arguments: [
         "hello", "auth_response", "answer", "transcript_load_request", "session_list_request",
-        "create_session_request", "create_session_request_plain", "user_input"
+        "create_session_request", "create_session_request_plain", "kill_session_request", "user_input"
     ])
     func outboundLiveMessageRoundTrips(_ name: String) throws {
         let data = try Self.fixture(name)
@@ -112,6 +115,9 @@ struct FixtureConformanceTests {
         case "create_session_request", "create_session_request_plain":
             let decoded = try decoder.decode(CreateSessionRequestMessage.self, from: data)
             _ = try decoder.decode(CreateSessionRequestMessage.self, from: encoder.encode(decoded))
+        case "kill_session_request":
+            let decoded = try decoder.decode(KillSessionRequestMessage.self, from: data)
+            _ = try decoder.decode(KillSessionRequestMessage.self, from: encoder.encode(decoded))
         case "user_input":
             let decoded = try decoder.decode(UserInputMessage.self, from: data)
             _ = try decoder.decode(UserInputMessage.self, from: encoder.encode(decoded))

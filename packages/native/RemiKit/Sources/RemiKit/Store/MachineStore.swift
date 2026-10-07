@@ -90,6 +90,7 @@ public final class MachineStore {
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
     public private(set) var latestError: ErrorMessage?
+    public private(set) var latestOperationError: String?
 
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
@@ -97,6 +98,7 @@ public final class MachineStore {
     @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
+    @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
 
     public init(
         endpoints: [MachineEndpoint],
@@ -156,6 +158,7 @@ public final class MachineStore {
 
     public func clearLatestError() {
         latestError = nil
+        latestOperationError = nil
     }
 
     public func loadTranscript(sessionId: String) {
@@ -202,6 +205,29 @@ public final class MachineStore {
             claudeSessionId: claudeSessionId
         )
         Task { try? await connection.send(message) }
+    }
+
+    public func terminateSession(sessionId: String) {
+        guard let connection = connection(forSession: sessionId) else {
+            latestOperationError = "Cannot exit session: its daemon is unavailable."
+            return
+        }
+        let request = KillSessionRequestMessage(
+            id: UUID().uuidString.lowercased(),
+            timestamp: Date().ISO8601Format(),
+            sessionId: sessionId
+        )
+        sessionByKillRequest[request.id] = sessionId
+        Task {
+            do {
+                try await connection.send(request)
+            } catch {
+                await MainActor.run {
+                    self.sessionByKillRequest[request.id] = nil
+                    self.latestOperationError = "Cannot exit session: its daemon is unavailable."
+                }
+            }
+        }
     }
 
     public func createSession(
@@ -313,6 +339,20 @@ public final class MachineStore {
             if response.success, let port = response.port {
                 connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
                 requestSessions(from: parent)
+            }
+        case .killSessionResponse(let response):
+            guard let sessionId = sessionByKillRequest.removeValue(forKey: response.requestId) else {
+                return
+            }
+            if response.success {
+                machines[index].sessions.removeAll { $0.sessionId == sessionId }
+                machines[index].questions.removeAll { $0.sessionId == sessionId }
+                transcriptsBySession[sessionId] = nil
+                sessionViewsBySession[sessionId] = nil
+                routeBySession[sessionId] = nil
+                requestSessions(from: parent)
+            } else {
+                latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"
             }
         case .error(let error):
             latestError = error
