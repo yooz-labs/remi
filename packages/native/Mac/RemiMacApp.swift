@@ -4,6 +4,7 @@ import SwiftUI
 
 @main
 struct RemiMacApp: App {
+    @NSApplicationDelegateAdaptor(MacNotificationDelegate.self) private var notificationDelegate
     @State private var store: MachineStore?
     private let startupError: String?
 
@@ -42,12 +43,14 @@ struct RemiMacApp: App {
             .frame(minWidth: 980, minHeight: 640)
         }
 
-        MenuBarExtra("Remi", systemImage: "questionmark.bubble") {
+        MenuBarExtra {
             if let store {
                 MacLiveNeedsYouMenu(store: store)
             } else {
                 Text("Device identity unavailable")
             }
+        } label: {
+            MacMenuBarLabel(store: store)
         }
     }
 
