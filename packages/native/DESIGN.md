@@ -16,6 +16,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 3. **Honest.** Never show a control that cannot work: a `terminalOnly` card has no buttons. Never show a state the app does not know: no "connected" without a live socket. Never round a security state up: an unapproved device says it is waiting for approval and how to approve it.
 4. **Native first.** Platform navigation, materials (Liquid Glass), SF Symbols, Dynamic Type, keyboard shortcuts on the Mac, haptics on the phone. No web-style custom chrome.
 5. **Many machines, one place.** Machines are first-class: every session, card and notification names its machine, and the person can tell at once which machine is unreachable.
+6. **Spacious, minimal, deliberate.** Give content enough breathing room to establish hierarchy, but make every region earn its space. Prefer one clear primary action, short supporting copy, aligned full-width controls, and a restrained material surface over dense forms, decorative chrome, or large areas that feel accidentally empty.
 
 ## The Mac app (Conductor-like)
 
@@ -33,7 +34,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 - **Home:** the sessions grouped by machine, with the cards that need the person on top.
 - **The session:** transcript and cards, with a composer.
 - **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
-- **Pairing:** adding a machine shows the steps the person must do on that machine (for example `remi authorize`), not just a spinner.
+- **Pairing:** lead with scanning the short-lived code from `remi pair`, then show the endpoint, pinned daemon fingerprint, expiry and explicit terminal-approval requirement before connecting. Manual host/port and `remi authorize` remain the fallback. The scanner, confirmation and fallback states use one focused card with generous spacing and one primary action, not a dense setup form.
 
 ## Shared components (RemiUI)
 
@@ -61,9 +62,11 @@ These are built once and used by both apps:
 
 ## Tokens
 
-- `RemiUI/Theme.swift` holds spacing and radius tokens. The first design pass replaces its placeholder values and adds color, type and motion tokens.
-- Colors come from semantic system colors where possible.
-- One accent marks "needs you"; every other status uses neutral tones.
+- `RemiUI/Theme.swift` holds color, typography, spacing, radius, size and motion tokens.
+- Spacing follows a compact 2, 4, 8, 12, 16, 24, 32, 48 point scale. Controls have a 44 point minimum tap target.
+- Colors come from semantic system colors where possible. The existing lime is retained only as the attention accent and uses a dark ink color for readable text.
+- One accent marks "needs you" and pending approval; every other status uses neutral tones.
+- Liquid Glass is concentrated on interactive cards and controls. Repeated list rows use lightweight semantic surfaces to keep scrolling efficient.
 
 ## Accessibility
 
