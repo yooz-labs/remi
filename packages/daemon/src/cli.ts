@@ -1263,10 +1263,11 @@ const sessionRegistry = new SessionRegistry(
         }
       } finally {
         closingResolved = null;
+        // The disposal and the loop above cancelled the session's held prompts and dismissed
+        // their cards through the runtime retired above; finish it once those dismissals are out
+        // (#1200, B3). In the finally, so a disposal that throws still dismisses what it pushed.
+        void closeSecurePushRuntime(sessionId);
       }
-      // The disposal and the loop above cancelled the session's held prompts and dismissed their
-      // cards through the runtime retired above; finish it once those dismissals are out (#1200, B3).
-      void closeSecurePushRuntime(sessionId);
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
       // QuestionPresenceTracker (#920): a stale entry would make
