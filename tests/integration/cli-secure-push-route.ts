@@ -4,12 +4,15 @@ import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createNetServer } from 'node:net';
 /**
- * Actual source-CLI route acceptance (#1200). Run with Bun and root|prefix|query|fragment.
+ * Actual source-CLI route acceptance (#1200). Run with Bun and
+ * root|prefix|query|fragment|nosecret|close.
  * Own temporary HOME/state, generated identities/CA, real HTTPS ingress, real SQLite
  * Worker and an owned APNs HTTP receiver. No user keys, Apple endpoint or deployment.
  * Root delivers a decryptable question; unsupported route forms and a missing
  * push secret (nosecret) visibly refuse and produce zero push POSTs through hook dispatch,
  * empty unstick and natural exit.
+ * Close (#1223 on the secure path, #1268 review): the session really closes (the agent exits)
+ * while its pushed card is still held, and exactly one sealed dismissal of that card follows.
  * Neither setup failures nor timeouts count as the route regression's causal red.
  */
 import * as os from 'node:os';
@@ -18,7 +21,7 @@ import * as path from 'node:path';
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-r5-cli-route-')));
 fs.chmodSync(root, 0o700);
 const mode = process.argv[2] ?? 'root';
-if (!['root', 'prefix', 'query', 'fragment', 'nosecret'].includes(mode))
+if (!['root', 'prefix', 'query', 'fragment', 'nosecret', 'close'].includes(mode))
   throw new Error('invalid-mode');
 const refusalNotice = '[SecurePush] unsupported signaling URL; secure push requires a root origin';
 // #1200: the Worker refuses a /v2/push submit without its per-deployment secret. The `nosecret`
@@ -385,19 +388,48 @@ try {
     );
   }
   requireOwnedCli();
-  process.kill(cli.pid, 'SIGUSR2');
-  assert(
-    JSON.stringify(JSON.parse(await bounded(hook, 'held-release'))) === '{}',
-    'unstick-empty-no-approval',
-  );
-  fs.writeFileSync(path.join(fake, 'release'), '');
-  assert((await bounded(cli.exited, 'actual-cli-exit', 12000)) === 0, 'source-cli-natural-exit');
+  if (mode === 'close') {
+    // The card is still held: the agent exits, so the session really closes with it pending.
+    const firstBody = apnsBodies[0];
+    assert(firstBody, 'close-mode-pushed-a-card-first');
+    const question = JSON.parse(firstBody).remiPush;
+    fs.writeFileSync(path.join(fake, 'release'), '');
+    assert((await bounded(cli.exited, 'actual-cli-exit', 12000)) === 0, 'source-cli-natural-exit');
+    await until(() => apnsBodies.length >= 2, 'the-dismissal-at-close', 5000);
+    // Negative check after the positive one: nothing else reaches APNs for this card.
+    await Bun.sleep(500);
+    assert(apnsBodies.length === 2, 'exactly-one-secure-dismissal-at-close');
+    const secondBody = apnsBodies[1];
+    assert(secondBody, 'the-dismissal-body');
+    const carrier = JSON.parse(secondBody).remiPush;
+    const dismissal = await relayV2.openPushContent(
+      pair,
+      carrier,
+      {
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+        pushPublicKey: snapshot.pushPublicKey,
+        keyVersion: snapshot.keyVersion,
+      },
+      Math.floor(Date.now() / 1000),
+    );
+    assert(dismissal.payload.type === 'dismiss', 'the-second-push-is-a-dismissal');
+    assert(carrier.collapseId === question.collapseId, 'the-dismissal-replaces-the-held-card');
+  } else {
+    process.kill(cli.pid, 'SIGUSR2');
+    assert(
+      JSON.stringify(JSON.parse(await bounded(hook, 'held-release'))) === '{}',
+      'unstick-empty-no-approval',
+    );
+    fs.writeFileSync(path.join(fake, 'release'), '');
+    assert((await bounded(cli.exited, 'actual-cli-exit', 12000)) === 0, 'source-cli-natural-exit');
+  }
   await Promise.all([stdout, stderr]);
   assert(
     !out.includes('OWNED_CLI_COMMAND_SENTINEL') && !cliErr.includes('OWNED_CLI_COMMAND_SENTINEL'),
     'diagnostics-no-submitted-command',
   );
-  if (mode === 'root') {
+  if (mode === 'root' || mode === 'close') {
     assert(
       apnsBodies.length >= 1 &&
         gatewayPostPaths.length >= 1 &&

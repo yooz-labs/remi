@@ -45,6 +45,7 @@ import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
+import { DAEMON_CAPABILITIES } from '../capabilities.ts';
 import { log, logError } from '../logger.ts';
 import { resolveDirectory } from '../path-resolver.ts';
 import { resendPendingQuestions } from './pending-question-resend.ts';
@@ -114,6 +115,11 @@ export interface ResumeSessionHandlerDeps {
    * that every hello_ack carries them (#1179).
    */
   harnesses: () => readonly HarnessId[];
+  /**
+   * The capabilities named on every ack (#1237, ADR 0035): {@link DAEMON_CAPABILITIES} unless a
+   * test gives another list to see it reach each ack.
+   */
+  capabilities?: readonly string[];
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -134,6 +140,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
     hubMode,
     harnessId,
     harnesses,
+    capabilities = DAEMON_CAPABILITIES,
     sessionRegistry,
     sessionStore,
     bindingStore,
@@ -201,6 +208,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
                 nextBulletId: result.nextBulletId,
               },
               harnesses: harnesses(),
+              capabilities,
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -351,6 +359,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
             createHelloAck('1.0.0', newSessionId, {
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
               harnesses: harnesses(),
+              capabilities,
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

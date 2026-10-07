@@ -84,7 +84,7 @@ proof, and those operations continue to the model/human path.
 
 ## Receipts
 
-- `.context/plan-semantic-intent-approval.md` — Phase 2 corpus, hypotheses, and
+- `.context/archive/2026-h2/plan-semantic-intent-approval.md` — Phase 2 corpus, hypotheses, and
   verification categories.
 - `packages/daemon/src/auto-approve/read-only-proof.ts` — finite command
   grammar and bounded interpreter/remote adapters.

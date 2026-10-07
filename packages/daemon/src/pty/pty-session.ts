@@ -7,6 +7,7 @@
 
 import { generateId, now } from '@remi/shared';
 import type { AgentStatus, Timestamp, UUID } from '@remi/shared';
+import { withoutRemiSecrets } from './child-env.ts';
 import { ptyCapture } from './pty-capture.ts';
 
 /** Terminal dimensions */
@@ -138,14 +139,15 @@ export class PTYSession {
 
       this.process = Bun.spawn(cmd, {
         cwd: this.config.cwd,
-        env: {
+        // The agent never sees remi's own secrets (#1249, `child-env.ts`).
+        env: withoutRemiSecrets({
           ...process.env,
           ...this.config.env,
           // Force color output
           FORCE_COLOR: '1',
           // Set TERM for proper terminal behavior
           TERM: process.env['TERM'] ?? 'xterm-256color',
-        },
+        }),
         terminal: {
           cols: this.config.size.cols,
           rows: this.config.size.rows,

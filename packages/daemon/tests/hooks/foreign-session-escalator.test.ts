@@ -295,6 +295,25 @@ describe('ForeignSessionEscalator (#672)', () => {
   // -------------------------------------------------------------------------
 
   describe('unclaimed -> rate-limited informational push', () => {
+    test('refreshes the device tokens before deciding who to push (#1259 review)', async () => {
+      registerToken();
+      let refreshes = 0;
+      const escalator = new ForeignSessionEscalator(
+        deps({
+          refreshDeviceTokens: () => {
+            refreshes += 1;
+          },
+        }),
+      );
+      escalator.handleUnadmitted(
+        permissionInput({ session_id: 'foreign-claude-id', tool_name: 'Bash', cwd: '/w' }),
+        OUR_SESSION_ID,
+      );
+      await flush();
+
+      expect(refreshes).toBe(1);
+    });
+
     test('pushes a title/body with tool name + short session hash + cwd hint, no category/options/questionId', async () => {
       registerToken();
       const escalator = new ForeignSessionEscalator(deps());

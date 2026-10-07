@@ -535,7 +535,7 @@ describe('SessionRegistry', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout', []);
       expect(pty.close).toHaveBeenCalled();
     });
   });
@@ -682,7 +682,7 @@ describe('SessionRegistry', () => {
       registry.closeSession(sessionId, 'forced');
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'forced');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'forced', []);
       expect(pty.close).toHaveBeenCalled();
     });
 
@@ -693,7 +693,27 @@ describe('SessionRegistry', () => {
 
       registry.handlePTYExit(sessionId);
 
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', []);
+    });
+
+    test('hands the ids of the cards it still held to onSessionClosed (#1223)', () => {
+      // The registry clears the session before it announces the close, so the
+      // close handler can only dismiss those cards from this list.
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const held = generateId();
+      registry.addQuestion(sessionId, {
+        id: held,
+        text: 'Allow Bash?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      } as never);
+
+      registry.handlePTYExit(sessionId);
+
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', [held]);
+      expect(registry.getQuestion(sessionId, held)).toBeNull();
     });
   });
 
@@ -1031,7 +1051,7 @@ describe('SessionRegistry', () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(pty.close).toHaveBeenCalled();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout', []);
     });
 
     test('persistent session is closed when the Claude process exits (pty_exit)', () => {
@@ -1050,7 +1070,7 @@ describe('SessionRegistry', () => {
       registry.handlePTYExit(sessionId);
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', []);
     });
 
     test('persistent + explicit detach stays detached with no timeout', async () => {

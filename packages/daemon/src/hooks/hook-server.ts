@@ -27,6 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { appendBounded } from '../cli/log-rotation.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 import type {
@@ -297,7 +298,8 @@ export class HookServer {
         const remiDir = remiHome();
         const logPath = path.join(remiDir, 'hook-diag.jsonl');
         fs.mkdirSync(remiDir, { recursive: true });
-        fs.appendFileSync(logPath, `${logLine}\n`);
+        // Bounded like the other logs (#729): a long debug session would grow it forever.
+        appendBounded(logPath, `${logLine}\n`);
       } catch (err) {
         // Diagnostic logging must never break the hook path.
         // But warn ONCE so an enabled flag producing no output is visible.

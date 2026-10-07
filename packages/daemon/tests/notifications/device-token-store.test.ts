@@ -5,6 +5,9 @@ import * as path from 'node:path';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { DeviceTokenStore } from '../../src/notifications/device-token-store.ts';
 
+/** A registration a minute old: well inside the push lease (#1254), so these
+ *  tests exercise merging and tombstones, not expiry. */
+const RECENT = Date.now() - 60_000;
 const CID = 'conn0000-0000-0000-0000-000000000000';
 
 interface OnDisk {
@@ -129,7 +132,7 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        tokens: [{ token: 'legacy-tok', platform: 'ios', registeredAt: 1, connectionId: CID }],
+        tokens: [{ token: 'legacy-tok', platform: 'ios', registeredAt: RECENT, connectionId: CID }],
       }),
     );
     const s = new DeviceTokenStore(file);
@@ -145,8 +148,8 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
       file,
       JSON.stringify({
         tokens: [
-          { token: 'tok-a', platform: 'ios', registeredAt: 1, connectionId: CID },
-          { token: 'tok-b', platform: 'ios', registeredAt: 1, connectionId: 'conn2' },
+          { token: 'tok-a', platform: 'ios', registeredAt: RECENT, connectionId: CID },
+          { token: 'tok-b', platform: 'ios', registeredAt: RECENT, connectionId: 'conn2' },
         ],
       }),
     );
@@ -333,7 +336,7 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        tokens: [{ token: 'dead', platform: 'ios', registeredAt: 1, connectionId: 'conn2' }],
+        tokens: [{ token: 'dead', platform: 'ios', registeredAt: RECENT, connectionId: 'conn2' }],
       }),
     );
     // a's next persist read-merge must NOT re-adopt the token it just pruned.
@@ -460,7 +463,7 @@ describe('DeviceTokenStore push preferences (#968)', () => {
     fs.writeFileSync(
       file,
       JSON.stringify({
-        tokens: [{ token: 'legacy', platform: 'ios', registeredAt: 1, connectionId: CID }],
+        tokens: [{ token: 'legacy', platform: 'ios', registeredAt: RECENT, connectionId: CID }],
       }),
     );
     const s = new DeviceTokenStore(file);
@@ -476,7 +479,7 @@ describe('DeviceTokenStore push preferences (#968)', () => {
           {
             token: 'pre-1153',
             platform: 'ios',
-            registeredAt: 1,
+            registeredAt: RECENT,
             connectionId: CID,
             pushPrefs: { questions: true, turnComplete: false, harnessDenied: false },
           },
@@ -516,7 +519,7 @@ describe('DeviceTokenStore push preferences (#968)', () => {
           {
             token: 'edited',
             platform: 'ios',
-            registeredAt: 1,
+            registeredAt: RECENT,
             connectionId: CID,
             pushPrefs: { questions: 'no', turnComplete: false },
           },

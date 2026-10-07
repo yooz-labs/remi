@@ -102,6 +102,39 @@ drains the wrapper receive queue before the channel verdict while suppressing
 post-close application effects. The Worker's control `gone` notice is emitted
 only for pending peers; ready disconnect closes the pipe, which owns its drain.
 
+On Bun 1.3.11, the CI and release pin, the hub's WebSocket client close usually
+resets the connection instead of waiting for the Worker's Close reply (#1225). A
+Worker that gets to the socket late, as on a loaded machine, then records the close
+as abnormal (1006) and can lose what it had not read yet: the Close frame, and the
+hub's BYE when the close came right after it (7 of 102 loaded runs before the change
+below, where the client then read `unclean`). So an orderly close does not close at
+once: after its BYE the hub waits, at most 2 s (`ORDERLY_CLOSE_GRACE_MS`), for the far
+side to close the pipe. The web client closes as soon as it has the hub's BYE, so the
+Worker ends the pipe and nothing is reset. A peer that does not close within 2 s gets
+the hub's own close, which on 1.3.11 can still be reset: that client then gets the
+Worker's failure close (4400, `closed`) instead of 1000, though the BYE, read long
+before, still arrives (195 loaded runs on 1.3.11 on 2026-10-07, 51 of them with that
+reset). The full 2 s is spent only when the far side does not close: on `stop()` (it
+awaits every pipe still in its grace), on a revocation made outside the hub (the
+authorized keys edited, caught at the pipe's next send) and with a client that ignores
+the BYE. A revoke through the hub also tells the Worker, which drops the client's
+socket at the edge and the pipe with it, so that wait ends early. While the hub waits,
+it opens each binary frame the peer sends: the reply BYE ends the stream clean, a data
+frame is dropped, and nothing is acted on; a frame that fails to open fails the
+channel, which ends the wait with the failure close (4400).
+`stop()` forgets the Worker control before closing it, since on 1.3.11 the control's
+close handler runs inside the close and would otherwise fail every pipe first. The
+hub's shutdown runs its push drain (2 s at most, #1223) beside the relay's stop, so
+the two together stay well inside the 5 s after which `remi stop` kills the hub. A
+failure close stays immediate and carries no BYE; on 1.3.11 the client may
+get the Worker's `closed` reason instead of the hub's empty one, the same failure close
+either way. The client's verdict comes from the authenticated BYE, not from the close
+code; the web client reports that verdict and does not read the code. Each pipe close
+is logged in a fixed form with no connection id (`Relay pipe closed by the hub (1000)`,
+or `by the far side`). Measured on macOS against the local workerd, where
+`relay-r3-transport-close.test.ts` pins the runtime's behavior (Bun 1.4.2 closes
+gracefully); not measured on Linux or against the deployed Worker.
+
 ## Retirement and verification
 
 V1 `RelayAdapter`, signaling client, code store and `remi code` implementation are

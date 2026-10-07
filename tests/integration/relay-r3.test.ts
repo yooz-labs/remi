@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { CAPABILITY_HEADER } from '../../packages/daemon/src/auth/capability-token.ts';
+import { ORDERLY_CLOSE_GRACE_MS } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { reserveRange } from '../../packages/daemon/tests/session/port-test-helpers.ts';
 import { type TestWorker, startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 
@@ -54,9 +55,26 @@ function spawn(dir: string, args: string[]) {
   processes.push(proc);
   return proc;
 }
+/**
+ * Fail with what was awaited when a setup step does not finish in `ms` (#1225: one loaded run of
+ * 125 stalled in setup until the test's own timeout, which names nothing).
+ */
+async function bounded<T>(promise: Promise<T>, what: string, ms = 10000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function hub() {
   const dir = home();
-  const worker = await startWorker();
+  const worker = await bounded(startWorker(), 'the local Worker to start');
   workers.push(worker);
   const port = await reserveRange(1, 50, '127.0.0.1');
   const proc = spawn(dir, [
@@ -70,12 +88,32 @@ async function hub() {
     '--no-telegram',
   ]);
   const stdout = new Response(proc.stdout).text();
-  const stderr = new Response(proc.stderr).text();
+  // Read stderr as it arrives: the hub logs its Worker control admission there, and one fixed-form
+  // line per pipe close (`Relay pipe closed by the hub (1000)`), its own record of the close.
+  const log = { tail: '', admitted: false, pipeCloses: [] as string[] };
+  void (async () => {
+    const decoder = new TextDecoder();
+    let partial = '';
+    for await (const chunk of proc.stderr) {
+      const text = decoder.decode(chunk, { stream: true });
+      log.tail = (log.tail + text).slice(-8192);
+      const lines = (partial + text).split('\n');
+      partial = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.includes('Relay control admitted')) log.admitted = true;
+        const close = /Relay pipe closed by (the hub|the far side) \(\d+(, unclean)?\)/.exec(line);
+        if (close) log.pipeCloses.push(close[0]);
+      }
+    }
+  })();
   const deadline = Date.now() + 10000;
   while (true) {
-    if (proc.exitCode !== null) throw new Error(`hub exited: ${await stdout} ${await stderr}`);
+    if (proc.exitCode !== null) throw new Error(`hub exited: ${await stdout} ${log.tail}`);
     try {
-      if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) break;
+      const health = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (health.ok) break;
     } catch {}
     if (Date.now() > deadline) throw new Error('hub startup deadline');
     await Bun.sleep(10);
@@ -86,7 +124,17 @@ async function hub() {
     worker,
     proc,
     capability: readFileSync(join(dir, 'state/capability.key'), 'utf8').trim(),
+    controlAdmitted: () => log.admitted,
+    pipeCloses: () => log.pipeCloses,
   };
+}
+/** Wait for a condition, failing with what was awaited when the deadline passes. */
+async function until(done: () => boolean, what: string, timeoutMs = 10000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(10);
+  }
 }
 async function control(port: number, capability?: string) {
   const ws = new WebSocket(
@@ -145,6 +193,7 @@ import {
   clientUrl,
   hex,
   newIdentity,
+  roomCloses,
 } from '../../packages/signaling/tests/e2e/endpoints.ts';
 async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
   const ws = new WebSocket(`ws://127.0.0.1:${running.port}/relay-control`, {
@@ -153,17 +202,21 @@ async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
   sockets.push(ws);
   const inbox = new Mailbox<Record<string, unknown>>();
   ws.onmessage = (event) => inbox.push(JSON.parse(String(event.data)));
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error('local control refused'));
-  });
+  await bounded(
+    new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error('local control refused'));
+    }),
+    'the local relay control socket to open',
+  );
   return { ws, inbox };
 }
 async function paired() {
   const running = await hub();
+  // Health precedes the hub's asynchronous control admission at the Worker, and a pairing offer
+  // needs that control (#1225: a fixed 150 ms wait stood here).
+  await until(running.controlAdmitted, 'the hub relay control admission');
   const local = await localSocket(running);
-  // Health precedes asynchronous control admission; ask only once it has had time to admit.
-  await Bun.sleep(150);
   local.ws.send(JSON.stringify({ t: 'pair', id: 'pair-one' }));
   const offer = await local.inbox.next();
   expect(offer['t']).toBe('offer');
@@ -173,7 +226,10 @@ async function paired() {
   );
   const rid = await relayV2.ridOf(token.machinePublicKey);
   const device = await newIdentity();
-  const socket = await Socket.open(clientUrl(running.worker, hex(rid)));
+  const socket = await bounded(
+    Socket.open(clientUrl(running.worker, hex(rid))),
+    'the client socket',
+  );
   sockets.push(socket.ws);
   await admit(socket, device, 'client', rid, await relayV2.admitTag(token.secret));
   expect((await socket.json())['t']).toBe('admitted');
@@ -245,34 +301,112 @@ async function paired() {
     throw new Error('expected correlated devices response');
   expect(response.requestId).toBe(id);
   expect(response.devices).toHaveLength(1);
-  return { running, local, device, socket, channel, inbox, drain: () => incoming };
+  return { running, local, device, socket, channel, inbox, drain: () => incoming, rid };
+}
+/** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
+const RESETTING_RUNTIME = '1.3.11';
+/**
+ * How the Worker saw the hub's pipe close: the first close the room recorded, as
+ * `close <code> "<reason>"` (the hub's pipe closes before the client, whose close it causes).
+ */
+async function pipeClose(running: Awaited<ReturnType<typeof hub>>, rid: Uint8Array) {
+  const deadline = Date.now() + 5000;
+  while (true) {
+    const first = (await roomCloses(running.worker, hex(rid)))[0];
+    if (first) return first;
+    if (Date.now() > deadline) throw new Error('timed out waiting for the room to record a close');
+    await Bun.sleep(10);
+  }
+}
+/** The hub's own record of its one pipe's close (`Relay pipe closed by ...`), once logged. */
+async function hubPipeClose(running: Awaited<ReturnType<typeof hub>>) {
+  await until(() => running.pipeCloses().length > 0, "the hub's pipe close log", 5000);
+  expect(running.pipeCloses()).toHaveLength(1);
+  return running.pipeCloses()[0];
+}
+/**
+ * A pipe the hub closed itself with `code` and `reason`: the hub's log says so, the Worker records
+ * that close, and the client gets it. One exception (#1225): on Bun 1.3.11 the hub's close can
+ * reset the connection, so the Worker records 1006 and closes the client with its own failure
+ * close. That is accepted only with the hub's record that it sent `code` and saw a clean close, so
+ * a hub that resets the pipe itself or sends another code fails here on every runtime.
+ */
+async function expectHubClose(
+  running: Awaited<ReturnType<typeof hub>>,
+  rid: Uint8Array,
+  closed: { code: number; reason: string },
+  code: number,
+  reason: string,
+) {
+  expect(await hubPipeClose(running)).toBe(`Relay pipe closed by the hub (${code})`);
+  const pipe = await pipeClose(running, rid);
+  if (!pipe.startsWith('close 1006 ')) {
+    expect(pipe).toBe(`close ${code} ${JSON.stringify(reason)}`);
+    expect(closed).toEqual({ code, reason });
+    return;
+  }
+  if (Bun.version !== RESETTING_RUNTIME)
+    throw new Error(
+      `the Worker recorded the hub's close as ${pipe}; only Bun ${RESETTING_RUNTIME} resets it, this is Bun ${Bun.version}`,
+    );
+  expect(closed).toEqual({
+    code: relayV2.FAILURE_CLOSE.code,
+    reason: relayV2.FAILURE_CLOSE.reason,
+  });
 }
 test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
-  const { socket, channel, drain } = await paired();
+  const { socket, channel, drain, running, rid } = await paired();
   socket.sendText('pong');
   let timer: ReturnType<typeof setTimeout> | undefined;
   const closed = await Promise.race([
     socket.closed,
     new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), 1000);
+      timer = setTimeout(() => resolve(null), 10000);
     }),
   ]);
   if (timer) clearTimeout(timer);
   expect(closed).not.toBeNull();
   if (!closed) throw new Error('MISSING_READY_TEXT_REFUSAL');
-  expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
-  // Bun 1.3.11 drops longer outbound close reasons (existing Worker E2E probe).
-  expect(closed.reason).toBe(Bun.version === '1.3.11' ? '' : relayV2.FAILURE_CLOSE.reason);
+  // A failure close is immediate (there is no BYE to protect). Bun 1.3.11 drops longer outbound
+  // close reasons (existing Worker E2E probe), so from that hub it arrives without one.
+  const reason = Bun.version === RESETTING_RUNTIME ? '' : relayV2.FAILURE_CLOSE.reason;
+  await expectHubClose(running, rid, closed, relayV2.FAILURE_CLOSE.code, reason);
   await drain();
   expect(await channel.transportClosed()).toBe('unclean');
 }, 20000);
 
-test('authenticated peer BYE receives authenticated host BYE and orderly close', async () => {
-  const { channel, socket, drain } = await paired();
+test('authenticated peer BYE receives authenticated host BYE, and the hub leaves the close to the peer', async () => {
+  const { channel, socket, drain, running } = await paired();
   await channel.bye();
-  expect((await socket.closed).code).toBe(1000);
+  await until(() => channel.peerEnded, "the hub's authenticated BYE");
+  // The hub does not close the pipe at once (#1225): on Bun 1.3.11 a close right after the BYE
+  // could reset the connection and lose the BYE with it. A negative check, so a short settle.
+  await Bun.sleep(300);
+  expect(socket.isClosed).toBe(false);
+  // The client closes once it has the peer's BYE, as the web client does.
+  socket.close(1000);
+  await socket.closed;
   await drain();
   expect(await channel.transportClosed()).toBe('clean');
+  // The hub saw its pipe closed from the far side, never closed it itself.
+  expect(await hubPipeClose(running)).toMatch(
+    /^Relay pipe closed by the far side \(\d+(, unclean)?\)$/,
+  );
+}, 20000);
+
+test('after the BYE exchange the hub closes the pipe itself, orderly, when the peer does not', async () => {
+  const { channel, socket, drain, running, rid } = await paired();
+  await channel.bye();
+  await until(() => channel.peerEnded, "the hub's authenticated BYE");
+  const sawBye = Date.now();
+  const closed = await socket.closed;
+  // The grace counts from the hub's BYE, a little before the client saw it.
+  const waited = Date.now() - sawBye;
+  expect(waited).toBeGreaterThan(ORDERLY_CLOSE_GRACE_MS / 2);
+  expect(waited).toBeLessThan(ORDERLY_CLOSE_GRACE_MS + 5000);
+  await drain();
+  expect(await channel.transportClosed()).toBe('clean');
+  await expectHubClose(running, rid, closed, 1000, '');
 }, 20000);
 async function nextType(
   inbox: Mailbox<ReturnType<typeof deserialize>>,

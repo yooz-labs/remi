@@ -5,7 +5,9 @@
 > What changed: `network.relay` now defaults to `false`; the relay is off unless `network.relay = true` or `--permanent-code`; with it requested and no `--auth --permanent-code` the daemon prints a notice and creates no adapter; the adapter refuses every peer and drops every inbound frame without an authenticator, and acts only on the Worker role `client`.
 > So finding 2 (on by default and exposed) and the default-mode parts of findings 4 and 5 describe a state that no longer exists; the rest of the audit holds.
 
-Status: APPROVED DIRECTION, owner decisions recorded 2026-10-04 (section 8); nothing here is built yet except the R0 hotfix in flight (#1193).
+Status: APPROVED DIRECTION, owner decisions recorded 2026-10-04 (section 8).
+Built as of 2026-10-06, on the epic branch `feature/issue-1195-epic-relay` (not yet in develop): R0 (#1203, also in develop), R1 (#1205), R2 (#1214), R3 (#1219), R4 (#1220), R5 and the daemon side of R6 (#1222).
+Still open: native R6 (Swift answer signing and the background channel, #1201), the owner's signed-device and deployed-Worker gates, and R7 (#1202). Order and gates: `.context/plan.md`.
 Scope: strategy section 9 (`.context/strategy-2026-10.md`), rewritten against a verified audit of what the code does today.
 Evidence: two read-only research passes on 2026-10-04: an audit of remi's own relay (every claim traced to a caller; items marked [EXEC] were reproduced against the real class with a scratch test) and a study of Paseo's relay (Apache-2.0).
 Rule for implementers (ADR 0011): every sentence you write about what the relay does must be true of the code you ship, and anything not verified live is labeled unverified.

@@ -7,8 +7,9 @@
  *                  more exclusive write lock or FIFO queue to land in.
  *   onDisconnect - detaches from the session registry, untracks on the
  *                  AdapterRegistry, and decrements the StatusWriter
- *                  connection count. Device tokens deliberately persist:
- *                  see the inline note for the APNS rationale.
+ *                  connection count. Device tokens deliberately persist
+ *                  (until the push lease runs out, #1254): see the inline
+ *                  note for the APNS rationale.
  *
  * The two handlers share the same "who owns a connection" machinery so they
  * live in one module, with a single dep bundle, to keep the wiring in cli.ts
@@ -20,6 +21,7 @@ import type { CreateHelloAckOptions, HarnessId, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
+import { DAEMON_CAPABILITIES } from '../capabilities.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
@@ -46,6 +48,11 @@ export interface ConnectionHandlerDeps {
    * each ack so a command installed later is offered without a restart (#1179).
    */
   harnesses: () => readonly HarnessId[];
+  /**
+   * The capabilities named on every ack (#1237, ADR 0035): {@link DAEMON_CAPABILITIES} unless a
+   * test gives another list to see it reach each ack.
+   */
+  capabilities?: readonly string[];
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -68,6 +75,9 @@ export interface ConnectionHandlerDeps {
    */
   onPeerConnect?: ((connectionId: UUID, metadata: AdapterMetadata) => void) | undefined;
   onPeerDisconnect?: ((connectionId: UUID) => void) | undefined;
+  /** Any connection closed (#1254): the daemon marks the device behind it as
+   *  seen now, so its push lease counts from the moment it left. */
+  onConnectionClosed?: ((connectionId: UUID) => void) | undefined;
 }
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
@@ -79,6 +89,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     harnessId,
     hubMode,
     harnesses,
+    capabilities = DAEMON_CAPABILITIES,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -88,14 +99,19 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     remiVersion,
     onPeerConnect,
     onPeerDisconnect,
+    onConnectionClosed,
   } = deps;
 
-  /** Every hello_ack names the daemon's version and the harnesses it can start (#539, #1179). */
+  /**
+   * Every hello_ack names the daemon's version, the harnesses it can start and its capabilities
+   * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
+   */
   const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) =>
     createHelloAck('1.0.0', sessionId, {
       ...options,
       daemonVersion: remiVersion,
       harnesses: harnesses(),
+      capabilities,
     });
 
   /** The current binding for hello_ack: who the session is, and the transcript it writes. */
@@ -210,14 +226,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // Device tokens persist across disconnect on purpose: APNS push exists
       // precisely to deliver a notification while the iOS app is suspended
       // (i.e. disconnected). Removing the token on every drop made push a
-      // no-op for the suspended-app case (issue #286). Tokens stay until
-      // an explicit unregister_device_token message arrives or APNS reports
-      // the token as bad. See #308 for the explicit-disconnect follow-up.
+      // no-op for the suspended-app case (issue #286). Tokens stay until an
+      // explicit unregister_device_token message arrives, APNS reports the
+      // token as bad, or the push lease runs out (#1254). `onConnectionClosed`
+      // below marks the device seen now, so the lease counts from this close.
 
       sessionRegistry.detachConnection(connectionId);
       untrackConnection(connectionId);
       onConnectionRemoved();
       onPeerDisconnect?.(connectionId);
+      onConnectionClosed?.(connectionId);
     },
   };
 }

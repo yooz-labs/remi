@@ -28,6 +28,14 @@ export interface DeviceTokenEntry {
    * every local daemon, exactly like the token itself.
    */
   pushPrefs?: ResolvedPushPreferences;
+  /**
+   * When this device was last seen (#1254): set by every registration (the app
+   * re-registers on each connection), when its connection closes, and while it
+   * stays connected. Past the push lease without a sighting, the device gets no
+   * push. Absent on entries written before #1254, which count from
+   * `registeredAt`.
+   */
+  lastSeenAt?: number;
 }
 
 export type SendToConnection = (connectionId: UUID, message: ProtocolMessage) => boolean;

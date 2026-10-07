@@ -14,6 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { LOG_MAX_BYTES } from '../../src/cli/log-rotation.ts';
 
 const WORKER = path.join(import.meta.dir, 'question-trace-worker.ts');
 
@@ -104,6 +105,20 @@ describe('traceQuestionEvent (#808)', () => {
       fs.writeFileSync(path.join(tmpHome, '.remi'), 'not a directory');
       const code = await runWorker(tmpHome, true);
       expect(code).toBe(0);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  test('the file is bounded: at 10 MB it is rotated before the next line (#729)', async () => {
+    const tmpHome = makeTmpHome();
+    try {
+      const file = path.join(tmpHome, '.remi', 'question-trace.jsonl');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, Buffer.alloc(LOG_MAX_BYTES, 'x'));
+      await runWorker(tmpHome, true);
+      expect(fs.statSync(`${file}.1`).size).toBe(LOG_MAX_BYTES);
+      expect(fs.readFileSync(file, 'utf-8').trim().split('\n').length).toBe(2);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

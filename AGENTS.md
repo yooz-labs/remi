@@ -45,6 +45,11 @@ Rules, all cheap:
 
 Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
 
+## Roadmap
+
+What comes next, in order, and how each step is tested: [`.context/plan.md`](.context/plan.md).
+The work is tracked as GitHub milestones (0.7.16 release, Relay R7, Protocol freeze, then the native apps) and area labels; decisions the roadmap waits on are collected in #1233.
+
 ## Architecture decisions
 
 Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
@@ -99,7 +104,7 @@ A second rule lets only `cli.ts` and `harness/` import `harness/index`, `harness
 A third is an allowlist for `harness/codex/` (`CODEX_MAY_IMPORT` in the test): its own files, `node:*`, `@remi/shared`, `harness/types`, `harness/decision`, `cli/session-phases/pty-session-setup.ts` (and no other session phase) and, under `session/`, the session store, binding store, registry, live-sessions registry file, `legacy-writers` and `shell-quote`, plus `api/message-api` (the chat history's bullet structuring) and `notifications/turn-events` (as a type only, which a test pins); and only `cli.ts` may import `harness/codex/`, which is why `harness/index.ts` does not re-export it.
 `remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status, shows the thread's command approvals as phone cards (see "Codex approvals" below), pushes how each turn ended and serves the thread's chat (see "Codex turn events and chat" below), and typed chat from a client is refused (`PROMPT_WAITING`) (`.context/codex-epic-plan-2026-10.md`).
 The wire names the harness (`harness`, `harnessSessionId`, `hello_ack.harnesses`; see "Harness identity and `create_session_request`" below).
-`Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
+`Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; whatever the launch, the agent's process does not inherit remi's own secrets (`REMI_PASSPHRASE`, `REMI_PUSH_SECRET`, `TELEGRAM_BOT_TOKEN`; `pty/child-env.ts`, #1249), and a test fails if a secret-named string literal under `packages/daemon/src` is not on that list (except a short, named list of literals that are not environment variables, such as the push paths' error codes, which a second test keeps out of every environment read). That stops inheritance only: a same-user process can still read the daemon's environment and arguments (`ps eww`, `/proc/<pid>/environ`; #1252), and commands Codex runs execute in its shared app-server, which keeps its own environment; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
 `Harness.transcriptPath` may return `null` (no transcript file), which every reader treats as "no file".
 The store reads are harness-aware (#1176): `getMostRecent('claude')` and `resolveStoredSession(..., {harness: 'claude'})` (Claude-only since #1179: nothing resolved a Codex record by remi id or prefix, so that branch is gone) skip or refuse a record of another harness, `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only, and `--sessions` labels a record `claude:<first 8 of its id>` or, for another harness, `<harness>:<last 8 of its id>` (a Codex thread id is a UUIDv7, whose first eight characters are a timestamp).
 `session/legacy-writers.ts` (the older-daemon gate, read before any Codex record is written) and `harness/codex/codex-args.ts` (argument validation) are called by the Codex launch; the gate narrows the older-daemon hazard and does not close it (see its header).
@@ -112,7 +117,8 @@ remi/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
 │   ├── signaling/       # Cloudflare relay Worker (machine rooms, admission, global limiter, legacy /push)
-│   ├── macos/           # Native Mac app (Swift)
+│   ├── macos/           # WebView Mac app (a Swift shell around the web client)
+│   ├── native/          # Native SwiftUI Mac and iPhone apps (Xcode; see packages/native/AGENTS.md)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
 │   ├── e2e/             # Playwright end-to-end tests
@@ -122,7 +128,7 @@ remi/
 └── .rules/              # Repo-specific standards
 ```
 
-`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`).
+`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`).
 `packages/daemon/tests/license-boundary.test.ts` enforces it.
 
 Key directories to know:
@@ -210,6 +216,14 @@ can also list/revoke, but cannot approve anyone or learn the local capability.
 Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
 answers return correlated actual child outcomes, and child discovery is aggregated
 by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
+An orderly close leaves the pipe open after the hub's BYE, at most 2 s, for the client to close it
+(#1225): on the Bun 1.3.11 pin the hub's own close can reset the connection, and a reset right after
+the BYE could lose it. A client that does not close in time gets the hub's close, which on 1.3.11
+can still arrive as the Worker's failure close (4400) after an intact BYE; the stream verdict, from
+the authenticated BYE, is what counts (measured on macOS only, `docs/relay-daemon-v2.md`). During
+the wait the hub opens each binary frame the peer sends: the reply BYE ends the stream clean, a data
+frame is dropped and nothing is acted on, and a frame that fails to open ends the wait with the
+failure close (4400).
 The old `RelayAdapter`, signaling code client and permanent code store are removed;
 `remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
 its legacy Authenticator methods have no current production callers. Direct
@@ -255,7 +269,7 @@ describe this source.
 
 ## Question Detection and Notifications
 
-See `.context/notification-and-session-flow.md` for the full flow diagram.
+The old flow diagram (from before the held-hook relay, #1125/#1126) is archived at `.context/archive/2026-h2/notification-and-session-flow.md`; this section is the current description, and #1145 tracks a new diagram.
 
 **Question sources** (daemon side):
 
@@ -384,8 +398,13 @@ no Telegram buttons, no lock-screen category, and every phone answer is
 refused with the terminal wording, never typed. A structured `selections`
 answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
-(that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
-dismissal is broadcast only for a card that was actually pushed. `remi
+(that agent), `SessionEnd`, a transcript rotation, a real session close, or
+`remi unstick`; a dismissal is broadcast only for a card that was actually
+pushed. At a real close the registry hands the ids of the cards it still held
+to the close handler (`closeSession` clears the session first, so nothing else
+can look them up), which dismisses each one not already dismissed by the
+harness's own teardown, and the daemon waits up to 2 s for its pushes in
+flight before it exits (`drainPushDeliveries`, #1223). `remi
 unstick` does not close a LIVE hold: its dialog is on screen, so it is
 released to the terminal with a "handed back" notice (suppression kept),
 and a second unstick clears it.
@@ -654,10 +673,43 @@ those two are both exactly `{token, title, body}`.
   literally was: `settings.notifications` was written by the settings panel and
   read by nothing. Preferences ride up on `register_device_token` (idempotent
   and keyed by token, so a toggle change is just a re-register) and the daemon
-  filters its per-token fan-out in `notifications/push-preferences.ts`.
+  filters its per-token fan-out in `notifications/push-preferences.ts`. Until
+  #1258 the `cli.ts` wiring dropped them, so every device was stored with the
+  defaults and muting did nothing; sibling daemons now also adopt the newest
+  registration (its preferences included) from the shared store.
+- **On the legacy path, a phone is pushed only while its lease holds** (#1254,
+  owner decision; the secure path has no lease yet, see the end of this item).
+  The registration lives while the phone keeps connecting: the app
+  re-registers on every connection, and the daemon renews the lease while the
+  connection stays open and stamps it when the connection closes; a phone
+  connected to a daemon never expires there (`isLive`). Disconnecting the
+  machine in the app (`unregister_device_token`, #690, sent only while the
+  machine is reachable) ends it at once; otherwise a phone not seen for
+  `[notifications] push_lease_hours` (default 24; 0 never expires) is dropped
+  from memory and from `device-tokens.json` the next time any daemon sharing
+  the file reads it. Every push path re-reads the file first
+  (`refreshFromDisk`, #1259 review), so an expiry, a removal or a mute
+  recorded by a sibling daemon applies to the next push. It covers a phone
+  that removed the machine while the daemon was unreachable, which the
+  unregister cannot reach. The Worker-side revocation (a phone telling the
+  Worker directly) is R7 work. The store file is written owner-only (0600).
+  Only the legacy path has the lease today. A secure subscription has none
+  yet; the owner's lease decision covers it too, and that change is planned
+  for R7 (#1272). Until then it is read from disk under the interprocess lock
+  at every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister
+  or a revoke recorded by another process applies to the next push, and it
+  ends only on the app's `secure_push_unregister_request` over the relay, on
+  `remi devices revoke`, or on `remi authorize --remove` (a subscription is
+  current only while its authorized key and its enrollment are). A phone that
+  dropped the machine while the hub was unreachable keeps being sent sealed
+  pushes until one of those.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise. The next main-agent tool call or
+  of the device that asked for less noise. The one exception is a device that
+  is gone: unregistered, or (on the legacy path) rejected by APNS or past its
+  lease, gets nothing, dismissals included, so a card it still holds stays
+  until the app opens.
+  The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
   `turn_failed` push is outstanding), so a stale "Claude stopped" does not
   outlive the agent working again. A new prompt does not (#1226): at a usage
@@ -669,7 +721,9 @@ those two are both exactly `{token, title, body}`.
   dismissed nothing before), wait up to 3 s for the dismissals (`SecurePushService.drain`) and
   only then finish the runtime (`retireSecurePushRuntime` / `closeSecurePushRuntime` in
   `cli.ts`); a dismissal that went out uncertain or failed is sent again with a fresh nonce by
-  the next dismissal. The legacy path has the same gap at a real close and is not changed here (#1223).
+  the next dismissal. At a real close the registry's pending ids are dismissed first, through
+  the session's dispatcher on both paths (#1223, above), so `dismissUndismissedQuestions` sends
+  only what that missed; the legacy sends are drained by `drainPushDeliveries` at cleanup.
 - **Legacy push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
   in its body, the same posture as `turn_complete` (the first 200 characters
@@ -717,6 +771,28 @@ those two are both exactly `{token, title, body}`.
 - `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
 - A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
+
+### Protocol version and capabilities (#1237, ADR 0035)
+
+Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks (`hello-ack-sources.test.ts` fails a new ack path that omits them; the bare `Connection`'s ack, which production never sends, lists none).
+The version changes only on a breaking change; an additive change never changes it. `protocol-fixtures-additive.test.ts` holds five messages to that; for the rest it is a review rule, and a breaking change raises `PROTOCOL_VERSION` by hand.
+A capability names an additive feature a client cannot see in the messages themselves (a request field an older daemon would ignore); it is added by the change that ships the feature, documented in `PROTOCOL_CAPABILITIES`, and a test refuses an undocumented one.
+It lists `workspaces` (#1236), the first; everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
+Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
+`serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
+
+### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
+
+`create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.
+`parseWorkspaceRequest` (`workspace/worktree.ts`) checks the values as text before a port is probed (no control character, no leading hyphen, at most 200 characters, no `@{` in a branch); a `directory` that is set and resolves elsewhere is refused.
+Once a port is held, `prepareWorkspace` finds the main worktree (`git worktree list --porcelain -z`, first entry, git 2.36 or later; bare refused), checks the branch (`check-ref-format --branch`, then one `for-each-ref`: it must not exist or be a folder of an existing branch, or the reverse; new branches only), resolves the base to a commit (default `HEAD`), claims `<parent>/remi-worktrees/<name>-<branch>` (every `/` a `-`) with an exclusive `mkdir` so two requests that map to one directory cannot both reach git, and runs `git worktree add -b <branch> <path> <commit>` in it.
+Git runs with no shell, no standard input, no prompt, `core.fsmonitor` off, no inherited `GIT_*` or remi secret, in its own process group; one 60-second deadline covers the preparation, and at it the group (hooks included) is ended.
+The repository's own hooks and filters run, as for the person at the machine.
+The child starts in the worktree, and `create_session_response.workspace` says `{repository, directory, worktree?: {branch, base}}` (the base as the commit); a resume with a new worktree is refused.
+A failed `git worktree add` that left a complete worktree on the branch (a hook failed) is used, with `notice` saying so; any other failure is refused, saying whether the branch stays, and the log lists what is left. The hub removes only its own empty claim.
+A refusal tells the client nothing it did not send; the log has git's reason, escaped.
+Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
+Not yet: the workspace on the session list (phase B) and a recent-repositories request (phase C).
 
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 

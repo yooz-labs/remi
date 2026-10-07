@@ -11,8 +11,9 @@
  * `~/.remi/question-trace.jsonl`.
  *
  * Mirrors the existing `REMI_HOOK_DEBUG` diagnostic dump (see
- * `hooks/hook-server.ts`): synchronous `fs.appendFileSync`, wrapped so a
- * write failure can never escape into the caller, warn-once (not every call)
+ * `hooks/hook-server.ts`): a synchronous append, bounded at 10MB like the
+ * other logs (`appendBounded`, #729), wrapped so a write failure can never
+ * escape into the caller, warn-once (not every call)
  * so a broken sink is still visible without spamming the log. Disabled (the
  * default) short-circuits before touching the filesystem at all, so this can
  * never affect the decision path it observes.
@@ -29,6 +30,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { QuestionSource } from '@remi/shared';
+import { appendBounded } from '../cli/log-rotation.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
@@ -184,7 +186,8 @@ export function traceQuestionEvent(record: QuestionTraceRecord): void {
     });
     const remiDir = remiHome();
     fs.mkdirSync(remiDir, { recursive: true });
-    fs.appendFileSync(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
+    // Bounded like the other logs (#729): rotated at 10MB, two backups kept.
+    appendBounded(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
   } catch (err) {
     if (!warned) {
       warned = true;

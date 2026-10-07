@@ -17,7 +17,7 @@ The measured return on that layer is low and its cost is high:
 
 | Evidence | Source |
 |---|---|
-| On one machine's banded LLM-only decision lines, the LLM approves 87 of 275 operations it evaluates (31.6%); the overall approve rates, deterministic layers included, were 53.4% there and 72.2% on the second machine | `.context/approval-rate-baseline-2026-08.md` |
+| On one machine's banded LLM-only decision lines, the LLM approves 87 of 275 operations it evaluates (31.6%); the overall approve rates, deterministic layers included, were 53.4% there and 72.2% on the second machine | `.context/archive/2026-h2/approval-rate-baseline-2026-08.md` |
 | Escalation latency p50 5.3 s, p95 25 s; MacBook Air approve p50 9.4 s and 498 engine-timeout errors | same |
 | Deterministic coverage of real main-agent commands: 12.9% | #996 |
 | `auto-approve/` is 22,920 of 65,007 daemon source lines; its tests 34,766 of 91,924 | `wc -l` at `3a5e8b27` |
@@ -78,4 +78,4 @@ The superseded ADRs keep their bodies as history.
 
 - Owner decision D1, `.context/strategy-2026-10.md` (2026-10-01), sections 2 to 4.
 - Epic #1123; phase issue #1125; push on render #1121 (PR #1122), the path every binary main-agent escalation now takes (AskUserQuestion and ExitPlanMode push at once instead).
-- `.context/approval-rate-baseline-2026-08.md` (approval rate and latency), #996 (deterministic coverage).
+- `.context/archive/2026-h2/approval-rate-baseline-2026-08.md` (approval rate and latency), #996 (deterministic coverage).

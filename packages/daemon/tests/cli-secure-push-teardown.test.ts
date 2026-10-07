@@ -24,7 +24,10 @@ function between(start: string, end: string, after = ''): string {
   return source.slice(from, to);
 }
 const sites = {
-  'a session closing': between('onSessionClosed: (sessionId, reason) => {', 'onSessionOrphaned:'),
+  'a session closing': between(
+    'onSessionClosed: (sessionId, reason, pendingQuestionIds) => {',
+    'onSessionOrphaned:',
+  ),
   'the daemon cleaning up': between(
     'async function cleanup(): Promise<void> {',
     'installProcessGuards(',
@@ -61,4 +64,24 @@ test('the closing step dismisses the cards the disposal did not, before it waits
   expect(dismiss, 'it dismisses the undismissed cards').toBeGreaterThan(-1);
   expect(drain, 'it waits for them').toBeGreaterThan(dismiss);
   expect(body.indexOf('finishSecurePushRuntime(')).toBeGreaterThan(drain);
+});
+
+test('a closing session dismisses the cards it held before its secure runtime closes (#1223)', () => {
+  const text = sites['a session closing'];
+  // The registry's pending ids are dismissed through the session's dispatcher, which sends the
+  // secure dismissal too; the runtime must still be open for it, so the close comes after.
+  const pending = text.indexOf('onQuestionResolved(sessionId, questionId,');
+  const close = text.search(/\bcloseSecurePushRuntime\(/);
+  expect(pending, 'the pending cards are dismissed').toBeGreaterThan(-1);
+  expect(close).toBeGreaterThan(pending);
+});
+
+test('a closing session closes its secure runtime even when the disposal throws (#1268 review)', () => {
+  const text = sites['a session closing'];
+  // The disposal runs in a try; the runtime's close belongs in its finally, or a throwing
+  // dispose leaves the runtime open (and its pushed cards undismissed) until process cleanup.
+  const start = text.indexOf('} finally {');
+  expect(start, 'the teardown has a finally').toBeGreaterThan(-1);
+  const block = text.slice(start, text.indexOf('\n      }', start));
+  expect(block).toMatch(/\bcloseSecurePushRuntime\(/);
 });

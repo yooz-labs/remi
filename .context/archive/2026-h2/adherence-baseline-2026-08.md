@@ -1,6 +1,6 @@
 # Auto-approve model-adherence baseline (#972, phase 7 of epic #1057)
 
-> **Historical (2026-10-01).** The evaluator, rule layer and report scripts this document measures were removed in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)); the commands below no longer run on this tree.
+> **Historical (2026-10-01).** The evaluator, rule layer and report scripts this document measures were removed in #1125 ([ADR 0030](../../decisions/0030-defer-permission-judgment-to-the-harness.md)); the commands below no longer run on this tree.
 > The numbers stay as a record.
 
 Measured 2026-08-16 on this Mac (Apple Silicon), engine **0.7.8** on

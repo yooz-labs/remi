@@ -4,6 +4,23 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A session in a new worktree, made by the machine (#1236, [ADR 0036](.context/decisions/0036-workspaces.md))
+
+#### Added
+
+- `create_session_request` can name a workspace: a repository on the machine and, optionally, a new branch (and the branch, tag or commit to start it from). The machine creates a git worktree for it at `remi-worktrees/<repository>-<branch>`, next to the repository, and starts the session there. The response says where the session runs and which commit the worktree started from. This is what lets the sandboxed native apps start a session on a new branch without running git themselves.
+- Only new branches, and nothing deletes a worktree: closing a session leaves its worktree in place.
+- The machine checks every value before git runs and runs git without a shell, with one 60-second limit that also ends the repository's hooks. A refusal says what was wrong (an invalid branch name, a branch that exists or conflicts with one, a base it cannot find) without naming anything on the machine; the remi log has git's reason. Two requests whose branches would share a directory cannot both go ahead. When a hook in the repository fails after the worktree is made, the session starts and the response says so. It needs git 2.36 or later on the machine.
+- A daemon that supports this lists the `workspaces` capability on `hello_ack`.
+
+### The protocol has a version, and a daemon says what it supports (#1237, [ADR 0035](.context/decisions/0035-protocol-version-and-capabilities.md))
+
+#### Added
+
+- Every `hello_ack` names the protocol version (`protocolVersion`, now 1) and the daemon's capabilities (`capabilities`; the first is `workspaces`, below). The version changes only on a breaking change; a capability names a feature added later that a client could not otherwise detect, such as a request field an older daemon would ignore.
+- `hubSupport` in `@remi/shared` tells a client whether a machine supports what it needs and, when not, which side to update. The native apps are its first users; the web client and the CLI need no capability yet.
+- An ack without the two fields comes from an older remi; a client reads it as protocol version 1 with no capabilities.
+
 ### Relay Worker v2: one room per machine, admitted by signature (#1197, [ADR 0034](.context/decisions/0034-relay-v2-protocol.md))
 
 The Worker in `packages/signaling` is rebuilt for relay protocol v2.
@@ -26,6 +43,74 @@ It is not deployed by this change (the owner deploys, from `docs/relay-worker-de
 
 The legacy `POST /push` is unchanged until push privacy ships.
 
+## [0.7.16] - 2026-10-07
+
+### Logs stay bounded on a machine that runs for weeks (#729)
+
+#### Fixed
+
+- A hub, a session daemon or a wrapper that ran for a long time grew its log without limit: logs were rotated only when a process opened them, and a long-lived process never reopens. Each one now checks the files it writes to every five minutes. A file that has passed 10 MB is rotated, and two backups are kept. That covers `daemon.log`, `remi.log` and the LaunchAgent's `remi-stdout.log` and `remi-stderr.log`, which nothing rotated before. A daemon says at startup which files it keeps bounded.
+- A hub started with `remi start` lost its log. Once `daemon.log` reached 10 MB, starting a session renamed it away from under the hub, and two rotations later the hub's file was deleted while the hub still wrote to it. Rotation now copies the log and empties it in place, so every process writing to it keeps writing to the live file. A few lines written during the copy can be lost. One process rotates a file at a time, and a rotation that fails keeps the log and its backups.
+- Emptying a file in place needs every writer to append to it, as remi's own processes and launchd do. A daemon whose stdout or stderr was opened without append (started with `> ~/.remi/daemon.log` rather than `>>`) leaves that file alone and says so at startup. Another remi process rotating the same file would still corrupt it, so use `>>`.
+- The opt-in debug files are bounded the same way: `REMI_HOOK_DEBUG`'s `hook-diag.jsonl`, `REMI_QUESTION_TRACE`'s `question-trace.jsonl`, and the `REMI_PTY_CAPTURE` file. The capture file's rotation writes `<file>.1`, `<file>.2` and `<file>.lock` next to it, replacing files with those names.
+
+### A phone that stops connecting stops getting pushes; muting works (#1254, #1258)
+
+#### Fixed
+
+- A machine the phone had disconnected from kept pushing to it when the disconnect could not reach the machine (its daemon was down or unreachable at that moment), and kept doing so when the daemon came back. A phone's push registration now lasts while the phone stays connected or keeps reconnecting, and ends at once when you disconnect the machine in the app while it is reachable. Otherwise it expires `push_lease_hours` after the phone was last connected: a new `[notifications]` setting, default 24 hours, where 0 means it never expires. An expired phone gets nothing more from that machine, dismissals included, until it connects again. `device-tokens.json` is now readable by you only.
+- The per-device push switches in the app (#968) had no effect: the daemon dropped the phone's preferences before storing them, so every phone got every kind of push. They are now stored and honored, across all of a machine's daemons: every push re-reads the shared device list first, so a change made through one daemon applies to the next push from any of them.
+
+### Third-party notices ship with remi (#1131)
+
+#### Fixed
+
+- The `remi` binary bundles MIT and BSD-3-Clause packages from `node_modules` (grammy, bonjour-service, smol-toml and their dependencies; 13 today) whose licenses require their notice to travel with copies, and none was shipped. Every npm package, the GitHub release and the Homebrew formula now carry `THIRD_PARTY_NOTICES`, generated at release time from the bundle's real inputs (`scripts/third-party-notices.ts`). It includes every license and NOTICE file a package ships. CI fails a pull request that bundles a package with no license file.
+- Not covered yet: the Bun runtime that `bun build --compile` embeds in the binary, which carries its own licenses (#1256).
+
+### The agent's process no longer inherits remi's secrets (#1249)
+
+#### Security
+
+- The agent's process inherited remi's whole environment, including `REMI_PASSPHRASE` (decrypts the daemon's identity key), `REMI_PUSH_SECRET` (the push bearer) and `TELEGRAM_BOT_TOKEN`. That covered Claude Code and every command it runs, and the Codex TUI. Now it gets the environment without them (`pty/child-env.ts`). A hub's child daemons still receive what they need: they are not agents and are spawned another way.
+- What this does not do: a process running as the same user can still read the daemon's own environment and arguments (`ps eww` on macOS, `/proc/<pid>/environ` on Linux), so an agent that looks for them can still find them there. Put the Telegram token in `config.toml` (`[telegram] bot_token`, readable only by you) rather than the environment. Reading the push secret and the passphrase from a file is #1252. Commands Codex runs execute in its shared app-server, which keeps the environment it was started with.
+- A `remi` command the agent runs no longer sees these variables: one that needs an encrypted identity asks for `REMI_PASSPHRASE` and fails, and a `remi serve` it starts has no Telegram token or push secret from the environment.
+
+### A closed session's cards leave the lock screen (#1223)
+
+#### Fixed
+
+- When a session really closed (Claude exited, or the session was stopped), the cards it had pushed stayed on the lock screen. The registry forgot the session before anything could dismiss its cards, and a daemon whose agent exited quit within milliseconds, before a push in flight left. A closed session's cards are now dismissed in the app and on the lock screen. That covers a held prompt and also a card the permission relay does not track, such as an MCP question or a trust dialog. The daemon also waits up to 2 seconds for its pushes to leave before it exits.
+
+### Unknown clients wait for your approval on the machine (#873)
+
+#### Security
+
+- Authentication is now on for every bind address: `auth.enabled = "auto"`, the default, means on. Before, it meant off, and turning it on with `--auth` trusted any new client key on its first connection.
+- A client whose key the machine does not know is refused and held as pending for ten minutes (at most 32 at once). On that machine, `remi keys` lists pending and authorized keys. Compare the fingerprint with the one the app shows, approve it with `remi authorize <fingerprint> --label phone`, and connect again.
+- Nothing is trusted on first use any more. `--no-tofu` and `daemon.require_local_auth` are retired: they are ignored, with a notice at startup. A client on the same machine is challenged too, unless it presents the daemon's local capability token.
+- `--no-auth` or `auth.enabled = false` still turns authentication off, with a warning.
+
+#### Upgrading
+
+- Each phone or browser must be approved once with `remi authorize`, unless its key is already authorized. With the old default (authentication off), that is every client.
+
+### Codex as a second harness: `remi codex` (#1175, [ADR 0033](.context/decisions/0033-codex-adapter-app-server.md))
+
+#### Added
+
+- `remi codex` starts Codex (`codex --no-alt-screen`) in a session the phone can see, with its status (working, waiting, idle).
+- A command Codex asks to run becomes a card, answered from the phone or in the terminal; the first answer wins. A phone No cancels the command and ends the turn, as the terminal's No does. Other requests (file changes, extra permissions, questions) show as a notice to answer in the terminal. With Codex's "Approve for me", Codex approves commands itself and remi sees no request.
+- A finished turn is pushed like Claude's (`turn_complete`, with the same `turn_complete_min_seconds` gate). A failed turn is pushed as "Codex stopped" (`turn_failed`).
+- The app shows the thread's chat: its history, a catch-up when remi attaches, and each item live. Typing chat into a Codex session is refused (`PROMPT_WAITING`).
+- `remi codex --host <ip>` and `remi new --host <ip> --harness codex` start a Codex session through a hub that lists `codex` in its `hello_ack.harnesses`. A hub lists it when `codex` is on its PATH. Codex arguments go after `--`, and a remote request may only narrow the host's settings (`-m`, `-s read-only`, `resume <uuid>`).
+- The protocol names the harness: `harness` and `harnessSessionId` on `hello_ack`, `question` and session-list entries. `sessions.json` records both for a Codex session.
+
+#### Known limits
+
+- Checked against Codex 0.160.0 on 2026-10-04 and 2026-10-05. Not verified: subagent requests, what Codex does with "Yes, and don't ask again for this command this session" (it has never offered it), and the Update or Trust prompt a hub-started Codex session may stop at with no terminal.
+- A Codex session cannot be resumed through the app (`resume_session_request` is refused); `remi codex resume <thread id>` works from a terminal.
+
 ### Relay: off by default, and closed without authentication (#1193)
 
 `network.relay` now defaults to `false`.
@@ -42,7 +127,7 @@ Nobody could use the relay, so nobody loses anything; one inbound door is shut.
   It acts on peer events only for the Worker role `client`, so a socket that never joined can no longer drop the connected peer by connecting and closing.
 - The signaling client logs each unknown frame type once (at most 16 types) instead of one line per frame.
 - The room code is no longer printed to the log when no authenticator is configured, since nobody can use it.
-- With `--auth --permanent-code` the key exchange is unchanged, and the daemon now prints a warning at boot: unless `--no-tofu` is set, any client that knows the room code is added to the authorized keys on its first connection.
+- With `--auth --permanent-code` the key exchange is unchanged. A client that knows the room code is no longer trusted on its first connection: it waits for your approval like any other (see the #873 entry above).
 - `remi --help`, `remi code`, `remi config`, the README and AGENTS.md no longer describe the relay as a way to connect from anywhere.
   Nothing remote ships through it today; a rebuild is planned.
 
@@ -57,12 +142,11 @@ Nothing a client or a Claude session can see changes, apart from the two items u
   The statements and their order are unchanged, and a new test runs the real daemon against a fake `claude` to pin the launch.
 - `remi unstick` logs `Force-released N session(s)` with N counting every session, including one whose hook server failed to start (0 cards resolved there; it was not counted before).
 - `sessions.json` now carries optional `harness` and `harnessSessionId` fields through a rewrite instead of dropping them, and ignores one of the wrong type.
-  Nothing writes either field yet, a Claude record keeps its eight keys, and the file stays `version` 1, so a daemon from before this change reads it as before.
+  A Claude record keeps its eight keys and the file stays `version` 1, so a daemon from before this change reads it as before; a Codex session writes both fields (see the Codex entry above).
 
 #### Known limits
 
-- `harness` and `harnessSessionId` are declared on the session list, `hello_ack` and question messages but sent by nothing.
-  A non-Claude record is not protected from a daemon older than this change (it drops `harness` on its next rewrite); the Codex epic (#1165) closes both.
+- A Codex record is not protected from a daemon older than this change: it drops `harness` on its next rewrite. `remi codex` refuses to start while an older remi is running, which narrows this but does not close it.
 
 ### Contributions: PolyForm Shield packages closed to outside changes (#1132)
 
@@ -438,7 +522,7 @@ source of several security bugs (#536, #1060, #1063).
 
 - **`packages/daemon` and `packages/shared`** (the daemon, CLI and protocol,
   and so the compiled `remi` binary and the npm packages) are licensed
-  **Apache-2.0** from the first release containing this change.
+  **Apache-2.0** from 0.7.16, the first release containing this change.
   `packages/web`, `packages/signaling` and `packages/macos` stay PolyForm
   Shield 1.0.0. `LICENSE.md` maps every directory to its license, the Homebrew
   formula declares Apache-2.0, and a contribution to an Apache-2.0 part is
@@ -457,16 +541,20 @@ source of several security bugs (#536, #1060, #1063).
   numbering. (Superseded by #1126 above: binary prompts are now held and pushed
   at once.)
 
-### Earlier changes on this line (auto-approve; all of it removed by #1125 above)
+## [0.7.8] to [0.7.15] - 2026-08-17 to 2026-09-22
+
+These eight releases shipped without sections of their own in this file, and it recorded only part of what they changed: mostly the 0.7.8 auto-approve epic and later auto-approve work, all of which 0.7.16 removed (#1125). 0.7.10 to 0.7.12 have no entries here. The GitHub release notes for each version list every pull request.
+
+### Auto-approve (all of it removed in 0.7.16 by #1125)
 
 The auto-approve **approval-rate epic** (#1057) plus follow-ups. The epic's
 diagnosis: overall approve rate 52% local / 72% on a second machine against a
 90–95% target, with band=high 0/85 approvable — routine agent work was being
-escalated to the phone in volume. This release made in-context authorization
+escalated to the phone in volume. 0.7.8 made in-context authorization
 actually approve that work while keeping every security veto fail-closed. Every
 phase was independently reviewed (adversarial + mutation on the
-security-sensitive ones), and the composed-gate review before this release
-caught a pre-existing ceiling bypass (#1076), fixed here. Every entry below
+security-sensitive ones), and the composed-gate review before 0.7.8
+caught a pre-existing ceiling bypass (#1076), fixed in 0.7.8. Every entry below
 describes the auto-approve evaluator or its rule layer, which #1125 removed
 (ADR 0030); each is marked so, and they stay as a record of what shipped.
 
