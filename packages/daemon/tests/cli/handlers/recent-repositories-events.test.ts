@@ -88,6 +88,46 @@ describe('recent_repositories_request (#1236 phase C)', () => {
     expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toEqual([]);
   });
 
+  test('a limit that is not a number is the default, ten', async () => {
+    for (let i = 0; i < 12; i++) {
+      record(
+        repo(`n${String(i).padStart(2, '0')}`),
+        new Date(Date.UTC(2026, 9, 7, 10, i)).toISOString(),
+        `${String(i).padStart(2, '0')}111111-1111-4111-8111-111111111111`,
+      );
+    }
+    await handlers().onRecentRepositoriesRequest(CID, REQ, '5' as unknown as number);
+    expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toHaveLength(10);
+  }, 30000);
+
+  test('requests that arrive together share one walk, and each gets its own answer', async () => {
+    record(repo('a'), '2026-10-07T10:00:00.000Z', '11111111-1111-4111-8111-111111111111');
+    let reads = 0;
+    const counted = createRecentRepositoriesHandlers({
+      sessionStore: {
+        list: () => {
+          reads += 1;
+          return store.list();
+        },
+      },
+      send: (connectionId, message) => {
+        sent.push({ connectionId, message });
+        return true;
+      },
+    });
+    const other = 'req11111-0000-0000-0000-000000000000' as UUID;
+    await Promise.all([
+      counted.onRecentRepositoriesRequest(CID, REQ, 1),
+      counted.onRecentRepositoriesRequest(CID, other, 5),
+    ]);
+    expect(reads).toBe(1);
+    expect(
+      sent.map((s) => (s.message as RecentRepositoriesResponseMessage).requestId).sort(),
+    ).toEqual([REQ, other].sort());
+    await counted.onRecentRepositoriesRequest(CID, REQ, 1);
+    expect(reads).toBe(2);
+  });
+
   test('the limit the client asked for is applied', async () => {
     for (let i = 0; i < 4; i++) {
       record(

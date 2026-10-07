@@ -354,14 +354,16 @@ describe('a hub creating a session for a harness (#1179)', () => {
     ]) {
       spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: repo });
     }
+    // Relative to now: the store drops a session seven days after it exited.
+    const exitedAt = new Date(Date.now() - 60_000).toISOString();
     new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
       remiSessionId: '33333333-3333-4333-8333-333333333333',
       claudeSessionId: null,
       projectPath: repo,
       port: 0,
       pid: null,
-      startedAt: '2026-10-07T10:00:00.000Z',
-      exitedAt: '2026-10-07T11:00:00.000Z',
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      exitedAt,
       exitCode: 0,
     });
     const { ws, received } = await connectAndHello(r.hub.port);
@@ -372,7 +374,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
         m.type === 'recent_repositories_response' && m.requestId === request.id;
       await pollUntil(() => received.some(isResponse), 15000, 'the recent repositories');
       expect(received.find(isResponse)?.repositories).toEqual([
-        { repository: repo, name: 'recent-project', lastUsedAt: '2026-10-07T10:00:00.000Z' },
+        { repository: repo, name: 'recent-project', lastUsedAt: exitedAt },
       ]);
     } finally {
       ws.close();
