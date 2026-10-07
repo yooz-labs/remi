@@ -50,15 +50,20 @@ struct MacRootView: View {
 }
 
 struct MacFirstRunView: View {
+    let onAddMachine: () -> Void
+
+    init(onAddMachine: @escaping () -> Void = {}) {
+        self.onAddMachine = onAddMachine
+    }
+
     var body: some View {
         ContentUnavailableView {
             Label("Add your first machine", systemImage: "desktopcomputer.and.macbook")
         } description: {
             Text("Connect Remi to a hub to see its repositories, sessions, and questions in one window.")
         } actions: {
-            Text("Machine connection arrives with RemiKit core in M2.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Button("Add machine", systemImage: "plus", action: onAddMachine)
+                .buttonStyle(.glassProminent)
         }
         .frame(minWidth: 700, minHeight: 500)
     }

@@ -85,6 +85,20 @@ struct MachineStoreTests {
         #expect(store.machines.allSatisfy { !$0.hasLoadedSessions })
     }
 
+    @Test @MainActor func removingMachineRemovesItsConfiguration() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client"
+        )
+
+        store.removeMachine(endpoint)
+
+        #expect(store.machines.isEmpty)
+    }
+
     @Test func machineEndpointsPersistWithoutLeakingUIState() {
         let key = "remi.machine-store-tests.\(UUID().uuidString)"
         let persistence = MachineConfigurationStore(key: key)
