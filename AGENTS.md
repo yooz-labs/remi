@@ -694,6 +694,15 @@ those two are both exactly `{token, title, body}`.
 - A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
+### Protocol version and capabilities (#1237, ADR 0035)
+
+Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks (`hello-ack-sources.test.ts` fails a new ack path that omits them; the bare `Connection`'s ack, which production never sends, lists none).
+The version changes only on a breaking change; an additive change never changes it. `protocol-fixtures-additive.test.ts` holds five messages to that; for the rest it is a review rule, and a breaking change raises `PROTOCOL_VERSION` by hand.
+A capability names an additive feature a client cannot see in the messages themselves (a request field an older daemon would ignore); it is added by the change that ships the feature, documented in `PROTOCOL_CAPABILITIES`, and a test refuses an undocumented one.
+The list is empty: everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
+Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
+`serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
+
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 
 What ships, read against `packages/shared/src/protocol.ts` and `packages/daemon/src`. The black-box tests here use a fake `claude` and `codex` and the stand-in app-server. LV-4 ran live on 2026-10-04 (Codex 0.160.0, Claude Code 2.1.289, a hub from source with an isolated home); ADR 0033's "LV-4 results" section records what it showed, item by item, and what it did not run.

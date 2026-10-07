@@ -21,6 +21,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { WebSocketAdapter } from '../src/adapters/websocket-adapter.ts';
 import { RelayAdapter } from '../src/remote/relay-adapter.ts';
+import { callArguments } from './helpers/call-arguments.ts';
 import { stripComments } from './helpers/strip-comments.ts';
 
 const SRC = resolve(import.meta.dir, '..', 'src');
@@ -34,49 +35,6 @@ function sourceFiles(dir: string): string[] {
     if (statSync(path).isDirectory()) return sourceFiles(path);
     return path.endsWith('.ts') ? [path] : [];
   });
-}
-
-/** The text between the parentheses that open at `open`, and the top-level arguments in it. */
-function callArguments(source: string, open: number): { args: string[]; spread: boolean } {
-  const args: string[] = [];
-  let depth = 0;
-  let current = '';
-  let quote: string | null = null;
-  for (let i = open; i < source.length; i++) {
-    const c = source[i] as string;
-    if (quote !== null) {
-      current += c;
-      if (c === '\\') {
-        current += source[++i] ?? '';
-      } else if (c === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      quote = c;
-      current += c;
-      continue;
-    }
-    if (c === '(' || c === '[' || c === '{') {
-      depth++;
-      if (depth === 1) continue;
-    }
-    if (c === ')' || c === ']' || c === '}') {
-      depth--;
-      if (depth === 0) {
-        if (current.trim() !== '') args.push(current.trim());
-        break;
-      }
-    }
-    if (c === ',' && depth === 1) {
-      if (current.trim() !== '') args.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += c;
-  }
-  return { args, spread: args.some((a) => a.startsWith('...')) };
 }
 
 /**

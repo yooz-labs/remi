@@ -266,6 +266,16 @@ describe('a hub creating a session for a harness (#1179)', () => {
     ).toEqual(['claude']);
   }, 60000);
 
+  test("the hub's session-less ack names the protocol version and the capabilities, none yet (#1237)", async () => {
+    const r = await startHub({ claude: true });
+    const { ws, received } = await connectAndHello(r.hub.port);
+    ws.close();
+    const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
+    expect(ack?.sessionId).toBeNull();
+    expect(ack?.protocolVersion).toBe(1);
+    expect(ack?.capabilities).toEqual([]);
+  }, 60000);
+
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {
     const r = await startHub({ codex: true });
     const { response } = await ask(r, { harness: 'codex', args: ['-m', 'fixture-model'] });

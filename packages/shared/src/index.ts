@@ -254,6 +254,9 @@ export { sleep } from './async-utils.ts';
 
 // Text a peer controls, made safe to show (#1178)
 export { escapeUnsafeText } from './display-text.ts';
+// The protocol version and capabilities on hello_ack (#1237, ADR 0035)
+export type { HubSupport, HubSupportAck } from './protocol-version.ts';
+export { hubSupport, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from './protocol-version.ts';
 
 // Ed25519 admission defense shared by direct auth and relay (#873).
 export { isSmallOrderPublicKey } from './ed25519-public-key.ts';

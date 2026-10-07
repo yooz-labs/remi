@@ -63,6 +63,8 @@ import {
   createTranscriptLoadRequest,
   createUnregisterDeviceToken,
   createUserInput,
+  generateId,
+  now,
 } from '../../../src/protocol.ts';
 import type {
   HubPendingQuestion,
@@ -348,6 +350,29 @@ export const FIXTURE_VARIANTS: Record<
   create_session_request_plain: {
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
+  },
+  // The ack of a daemon before #1237 (ADR 0035), written out field by field rather than derived
+  // from the registry golden: a field added to `hello_ack` later must not appear in the ack of a
+  // daemon that predates it. A client must accept it.
+  hello_ack_legacy: {
+    type: 'hello_ack',
+    build: () => ({
+      type: 'hello_ack',
+      id: generateId(),
+      timestamp: now(),
+      serverVersion: '1.0.0',
+      sessionId: SESSION_ID,
+      isResume: false,
+      replayCount: 0,
+      nextBulletId: 1,
+      claudeSessionId: CLAUDE_SESSION_ID,
+      harness: 'claude',
+      harnessSessionId: CLAUDE_SESSION_ID,
+      transcriptPath: '/Users/fixture/transcript.jsonl',
+      attachState: 'attached',
+      daemonVersion: '0.7.4-dev.1',
+      harnesses: ['claude', 'codex'],
+    }),
   },
 };
 

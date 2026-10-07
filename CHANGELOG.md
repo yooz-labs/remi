@@ -4,6 +4,14 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### The protocol has a version, and a daemon says what it supports (#1237, [ADR 0035](.context/decisions/0035-protocol-version-and-capabilities.md))
+
+#### Added
+
+- Every `hello_ack` names the protocol version (`protocolVersion`, now 1) and the daemon's capabilities (`capabilities`, empty for now). The version changes only on a breaking change; a capability names a feature added later that a client could not otherwise detect, such as a request field an older daemon would ignore.
+- `hubSupport` in `@remi/shared` tells a client whether a machine supports what it needs and, when not, which side to update. The native apps are its first users; the web client and the CLI need no capability yet.
+- An ack without the two fields comes from an older remi; a client reads it as protocol version 1 with no capabilities.
+
 ## [0.7.16] - 2026-10-07
 
 ### Logs stay bounded on a machine that runs for weeks (#729)
