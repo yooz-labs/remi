@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### The agent's process no longer inherits remi's secrets (#1249)
+
+#### Security
+
+- The agent's process inherited remi's whole environment, including `REMI_PASSPHRASE` (decrypts the daemon's identity key), `REMI_PUSH_SECRET` (the push bearer) and `TELEGRAM_BOT_TOKEN`. That covered Claude Code and every command it runs, and the Codex TUI. Now it gets the environment without them (`pty/child-env.ts`). A hub's child daemons still receive what they need: they are not agents and are spawned another way.
+- What this does not do: a process running as the same user can still read the daemon's own environment and arguments (`ps eww` on macOS, `/proc/<pid>/environ` on Linux), so an agent that looks for them can still find them there. Put the Telegram token in `config.toml` (`[telegram] bot_token`, readable only by you) rather than the environment. Reading the push secret and the passphrase from a file is #1252. Commands Codex runs execute in its shared app-server, which keeps the environment it was started with.
+- A `remi` command the agent runs no longer sees these variables: one that needs an encrypted identity asks for `REMI_PASSPHRASE` and fails, and a `remi serve` it starts has no Telegram token or push secret from the environment.
 ### A closed session's cards leave the lock screen (#1223)
 
 #### Fixed

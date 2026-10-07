@@ -184,11 +184,14 @@ function makeFakes(
 }
 
 /** `cli.ts --daemon --harness codex`, with the fake `codex` and a fake app-server; `extraArgs` follow `--harness codex`. */
-async function startDaemon(extraArgs: readonly string[] = []): Promise<Running> {
+async function startDaemon(
+  extraArgs: readonly string[] = [],
+  extraEnv: Readonly<Record<string, string>> = {},
+): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
   const { fakeDir, env } = makeFakes(home);
   const server = FakeAppServer.start();
-  const overrides = { ...env, CODEX_HOME: server.codexHome };
+  const overrides = { ...env, CODEX_HOME: server.codexHome, ...extraEnv };
   const spawned = await spawnDaemon(home, work, overrides, ['--harness', 'codex', ...extraArgs]);
   const output = { text: '' };
   collect(spawned.proc.stdout, output);
@@ -311,6 +314,23 @@ function resumeFrames(r: Running, client: number): Json[] {
 }
 
 describe('remi codex launch (daemon, black-box characterization, #1177)', () => {
+  test("the codex child does not inherit remi's secrets (#1249)", async () => {
+    // The daemon is started with them in its environment (`--no-telegram` keeps the token from
+    // reaching Telegram); the fake codex prints its whole environment.
+    const secrets = {
+      REMI_PASSPHRASE: 'passphrase-sentinel-1249',
+      REMI_PUSH_SECRET: 'push-secret-sentinel-1249',
+      TELEGRAM_BOT_TOKEN: 'bot-token-sentinel-1249',
+    };
+    const r = await startDaemon([], secrets);
+    await waitForFakeCodex(r);
+
+    const childEnv = read(path.join(r.fakeDir, 'env'));
+    // The control: the rest of the daemon's environment arrives.
+    expect(childEnv).toContain(`CODEX_HOME=${r.server.codexHome}`);
+    for (const value of Object.values(secrets)) expect(childEnv).not.toContain(value);
+  });
+
   test('spawns codex --no-alt-screen, records an identity-less codex record, and writes nothing for Claude', async () => {
     const r = await startDaemon();
     await waitForFakeCodex(r);
