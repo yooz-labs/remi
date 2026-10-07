@@ -141,7 +141,11 @@ describe('sibling daemons share the newest registration and the latest sighting 
     store.refreshFromDisk();
 
     expect(store.map.get('t1')?.pushPrefs?.turnComplete).toBe(false);
-    expect(store.map.get('t1')?.connectionId).toBe('c2');
+    // This daemon keeps its own connection id, so its rotation prune (#585)
+    // still finds the token (#1259 review).
+    expect(store.map.get('t1')?.connectionId).toBe('c1');
+    store.register('t2', 'ios', 'c1');
+    expect(store.map.has('t1')).toBe(false);
   });
 
   test("a sibling's later sighting of the same registration is kept, not overwritten", () => {
@@ -157,5 +161,46 @@ describe('sibling daemons share the newest registration and the latest sighting 
 
     expect(store.map.get('t1')?.lastSeenAt).toBe(seenLater);
     expect(onDisk().find((t) => t['token'] === 't1')?.['lastSeenAt']).toBe(seenLater);
+  });
+});
+
+describe('lease edges (#1259 review)', () => {
+  test('a token with a live connection on this daemon never expires, whatever the clock says', () => {
+    seed([entry('connected', Date.now() - 48 * HOUR)]);
+    const store = new DeviceTokenStore(file, {
+      leaseMs: LEASE,
+      isLive: (token) => token === 'connected',
+    });
+    store.load();
+    store.refreshFromDisk();
+
+    expect(store.map.has('connected')).toBe(true);
+  });
+
+  test('an expired token is removed from the file, and logged once', () => {
+    seed([entry('stale', Date.now() - 30 * HOUR), entry('fresh', Date.now())]);
+    const store = new DeviceTokenStore(file, { leaseMs: LEASE });
+    store.load();
+    store.refreshFromDisk();
+    store.refreshFromDisk();
+
+    expect(onDisk().map((t) => t['token'])).toEqual(['fresh']);
+    expect(logs.filter((l) => l.includes('Push lease expired')).length).toBe(1);
+  });
+
+  test('a lastSeenAt that is not a number counts from registration', () => {
+    seed([entry('bogus', Date.now() - 30 * HOUR, { lastSeenAt: 'yesterday' })]);
+    const store = new DeviceTokenStore(file, { leaseMs: LEASE });
+    store.load();
+
+    expect(store.map.has('bogus')).toBe(false);
+  });
+
+  test('a lastSeenAt in the future is not trusted to keep a token alive forever', () => {
+    seed([entry('future', Date.now() - 30 * HOUR, { lastSeenAt: Date.now() + 365 * 24 * HOUR })]);
+    const store = new DeviceTokenStore(file, { leaseMs: LEASE });
+    store.load();
+
+    expect(store.map.get('future')?.lastSeenAt ?? 0).toBeLessThanOrEqual(Date.now());
   });
 });

@@ -105,3 +105,36 @@ describe('the lease is renewed while the phone stays connected (#1254)', () => {
     void response;
   }, 60000);
 });
+
+describe('the lease counts from when the phone left (#1254, #1259 review)', () => {
+  test('closing the connection stamps the device as seen at that moment', async () => {
+    // A one-hour lease: no periodic renewal runs during the test, so only the
+    // close can move the sighting past the registration.
+    const r = await startWithPhone({
+      seed: (remiDir) =>
+        fs.writeFileSync(
+          path.join(remiDir, 'config.toml'),
+          '[notifications]\npush_lease_hours = 1\n',
+        ),
+      register: [{ token: WANTS }],
+    });
+    await Bun.sleep(1500);
+    const closedAt = Date.now();
+    r.ws.close();
+
+    const store = path.join(r.home, '.remi', 'device-tokens.json');
+    const lastSeen = (): number => {
+      const tokens = (
+        JSON.parse(fs.readFileSync(store, 'utf8')) as {
+          tokens: Array<{ token: string; lastSeenAt?: number }>;
+        }
+      ).tokens;
+      return tokens.find((t) => t.token === WANTS)?.lastSeenAt ?? 0;
+    };
+    await pollUntil(
+      () => lastSeen() >= closedAt - 100,
+      8000,
+      'the close to stamp the device as seen',
+    );
+  }, 60000);
+});
