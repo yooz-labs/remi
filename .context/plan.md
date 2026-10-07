@@ -28,14 +28,16 @@ Each milestone is a GitHub milestone of the same name. Issues outside a mileston
 
 | # | Milestone | What it delivers | Done when |
 |---|---|---|---|
-| 1 | **0.7.16 release** | Develop shipped to users, with its release blockers fixed: #1223 (legacy cards not dismissed on a real close), #729 (the always-on hub's logs never rotate), #1131 (third-party notices in the packages), #1249 (the agent's process inherits remi's secrets) | The owner approves the release (#1233); `develop` to `main` is merged; the upgrade notes cover the one-time `remi authorize` and stopping the old engine by hand |
+| 1 | **0.7.16 release** | Develop shipped to users, with its release blockers fixed: #1223 (legacy cards not dismissed on a real close), #729 (the always-on hub's logs never rotate), #1131 (third-party notices in the packages), #1249 (the agent's process inherits remi's secrets), #1254 (a machine the phone disconnected from keeps pushing to it) | The owner approves the release (#1233); `develop` to `main` is merged; the upgrade notes cover the one-time `remi authorize` and stopping the old engine by hand |
 | 2 | **Relay R7** | Relay v2 finished and merged into develop, still off by default: #1224, #1225, R7 (#1202); then close #1195, #1199, #1200, #544, #373 | The R7 suite passes against a real Durable Object (session over an hour; replay, displacement, stranger and revoke refused; ciphertext only); the owner's signed-device and deployed-Worker gates pass |
 | 3 | **Protocol freeze** | The wire a native client builds on: machine object (#1234), Decision (#1235), workspaces and worktrees (#1236), version and capabilities (#1237), fixture coverage (#1238), multiple profiles per session (#1157), the file tunnel's frames (#1170), plus #1129, #534, #695, #791 | Every message a native client uses has a golden fixture and an ADR records each new shape |
 | 4 | **Native foundations (X0-X2)** | Repo prep for Xcode's agents (#1240), the `RemiKit` core (#1241), relay v2 in Swift and native answers (#1242, #1201) | Every fixture round-trips in Swift; all relay v2 vectors pass in Swift; a TypeScript hub accepts a Swift-signed answer |
 | 5 | **Native apps (X3-X4)** | The Conductor-like Mac app (#1243) and the iPhone app (#1244) | The Mac app replaces the WebView window for daily use on two machines; the iPhone app reaches parity with the Capacitor app |
 | 6 | **Native depth (X5-X6)** | Diffs, files and a terminal view (#1245); Live Activities, Watch and widgets (#1246) | Per phase issue |
 
-Milestones 2 and 3 can run in parallel; milestone 4 starts when 3 is done, since the Swift models are written against the frozen fixtures.
+Milestones 2 and 3 run in parallel.
+On 2026-10-06 the owner started the native apps (milestones 4 and 5) in parallel too: two Codex agents in Xcode, one for the Mac app and one for the iPhone app, on the epic branch `feature/issue-1239-epic-native` (`packages/native/AGENTS.md` and `packages/native/handoff/`).
+They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 
 ## Tracks (work outside the milestones)
@@ -67,8 +69,11 @@ Collected in #1233. Decided on 2026-10-06:
 - **Remote and hub posture:** the host passes its default (#1208, #1192).
 - **Old epics:** #548 and #885 are closed, their leftovers tracked on their own.
 
+- **Project structure:** the native apps use a checked-in Xcode project with synchronized folders (`packages/native/Remi.xcodeproj`); `packages/macos` keeps xcodegen until it retires.
+- **Native apps start now,** in parallel with the protocol freeze.
+
 Still open:
-- the project structure (whether xcodegen goes; #1240, milestone 4);
+- the push lease: how many days a phone can go without reconnecting before a machine stops pushing to it (#1254; proposed 30);
 - whether closing a session deletes its worktree (until decided, it does not);
 - Codex typed chat (#1207).
 
