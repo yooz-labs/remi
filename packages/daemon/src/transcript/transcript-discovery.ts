@@ -130,10 +130,9 @@ export class TranscriptDiscovery {
       fd = fs.openSync(filePath, 'r');
       const buffer = Buffer.alloc(HEAD_BYTES);
       const read = fs.readSync(fd, buffer, 0, HEAD_BYTES, 0);
-      const lines = buffer.toString('utf-8', 0, read).split('\n');
-      // A file longer than the part read ends mid-line: that last piece is not a whole entry.
-      const whole = read === HEAD_BYTES ? lines.slice(0, -1) : lines;
-      for (const line of whole) {
+      // A file longer than the part read ends mid-line; that last piece is not JSON and is skipped
+      // like any other line that is not.
+      for (const line of buffer.toString('utf-8', 0, read).split('\n')) {
         if (!line.trim()) continue;
         try {
           const entry = JSON.parse(line) as { cwd?: unknown };
