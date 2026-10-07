@@ -54,6 +54,26 @@ type Offer = {
   timer: ReturnType<typeof setTimeout>;
 };
 const keyBase64 = (key: Uint8Array) => Buffer.from(key).toString('base64');
+/**
+ * How long an orderly close waits, after the hub's BYE, for the far side to close the pipe
+ * (#1225). Closing right after the BYE can reset the connection (Bun 1.3.11's client close), and
+ * a reset can make the Worker lose what it had not read yet, the BYE included. A conforming client
+ * closes as soon as it has the hub's BYE (the web client: `relay-machine-channel.ts`), which takes
+ * one Worker round trip; 2 s leaves room for a slow link and a loaded machine, and bounds what a
+ * peer that never closes costs: a revoke, a shutdown or a refused frame waits this long at most.
+ */
+const ORDERLY_CLOSE_GRACE_MS = 2000;
+/** Resolve when `promise` does or after `ms`, whichever is first. Never rejects. */
+async function waitAtMost(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    promise.catch(() => {}),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]);
+  clearTimeout(timer);
+}
 type Peer = {
   answers: AnswerResults;
   answerIds: MessageIdTracker;
@@ -62,6 +82,9 @@ type Peer = {
   transportClosing: boolean;
   /** The hub asked to close this pipe (its own close or a channel failure), for the close log. */
   hubClosed: boolean;
+  /** Resolves once the pipe has closed or failed, whichever side ended it. */
+  gone: Promise<void>;
+  markGone: () => void;
   ending?: Promise<void>;
   closing?: Promise<void>;
   pendingFrames: number;
@@ -293,6 +316,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       this.log('Relay handshake capacity refused');
       return;
     }
+    let markGone: () => void = () => {};
+    const gone = new Promise<void>((resolve) => {
+      markGone = resolve;
+    });
     const ws = new WebSocket(this.url('pipe', cid));
     ws.binaryType = 'arraybuffer';
     const peer: Peer = {
@@ -304,6 +331,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       orderlyClosing: false,
       transportClosing: false,
       hubClosed: false,
+      gone,
+      markGone,
       revisions: new Map(this.revisions),
       pendingFrames: 0,
       pendingApplications: 0,
@@ -550,9 +579,11 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         });
     };
     ws.onerror = () => {
+      peer.markGone();
       void this.closePeer(peer);
     };
     ws.onclose = (event) => {
+      peer.markGone();
       // Who ended the pipe and how this side saw the close (#1225), in a fixed form with no
       // connection id (#1200).
       this.log(
@@ -921,13 +952,18 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       if (offer.reserved === peer.cid) this.discard(offer);
     peer.closing = (async () => {
       await Promise.resolve();
+      let byeSent = false;
       if (orderly && peer.channel) {
         try {
           await peer.channel.bye();
+          byeSent = true;
         } catch {}
       }
       peer.connection?.close('Relay closed');
       this.peers.delete(peer.cid);
+      // After the BYE, leave the close to the far side for a while (#1225): the client closes
+      // once it has the BYE, so the pipe ends without this side resetting it.
+      if (byeSent) await waitAtMost(peer.gone, ORDERLY_CLOSE_GRACE_MS);
       if (peer.ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
       peer.ws.close(
         orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
