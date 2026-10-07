@@ -67,12 +67,35 @@ class RecordingTransport implements RelayTransport {
     if (last === undefined) throw new Error('nothing was sent');
     return JSON.parse(last) as T;
   }
+
+  /** The type of the most recent payload when it is a plaintext handshake message. */
+  lastType(): string | undefined {
+    try {
+      return this.lastAsJson<{ type?: string }>().type;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
-/** Wait for the adapter's async handshake continuations to settle. */
+/**
+ * Wait until `done()` holds (#1260). The handshake signs, verifies and derives
+ * keys with real Ed25519 and P-256 keys, which under load takes longer than
+ * any fixed tick, so each step waits for the message it produces.
+ */
+async function until(done: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** Give the adapter a moment, before asserting that it sent NOTHING. A
+ *  positive step waits with `until` instead. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 12; i++) await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 50));
 }
 
 describe('relay adapter encrypts what the Worker carries', () => {
@@ -121,7 +144,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
   }> {
     const offerKex = options.offerKex !== false;
     transport.emit('peer-connected', 'client');
-    await settle();
+    await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
     const challenge = transport.lastAsJson<AuthChallengeMessage>();
     expect(challenge.type).toBe('auth_challenge');
@@ -167,14 +190,14 @@ describe('relay adapter encrypts what the Worker carries', () => {
         ),
       ),
     );
-    await settle();
+    await until(() => transport.lastType() === 'auth_result', 'the auth result');
     return { keys, challenge };
   }
 
   test('the challenge carries a signed ephemeral key', async () => {
     await startAdapter();
     transport.emit('peer-connected', 'client');
-    await settle();
+    await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
     const challenge = transport.lastAsJson<AuthChallengeMessage>();
     expect(challenge.relayEphemeralKey).toBeTruthy();
@@ -198,7 +221,8 @@ describe('relay adapter encrypts what the Worker carries', () => {
       content: secret,
       // biome-ignore lint/suspicious/noExplicitAny: minimal literal for the test
     } as any);
-    await settle();
+    await until(() => transport.sent.length > before, 'the relayed message');
+    await settle(); // and nothing after it
 
     const onTheWire = transport.sent.slice(before);
     expect(onTheWire.length).toBe(1);
@@ -253,7 +277,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
   test('nothing is relayed before the key exchange completes', async () => {
     await startAdapter();
     transport.emit('peer-connected', 'client');
-    await settle();
+    await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
     const before = transport.sent.length;
     const sent = adapter?.broadcast({
