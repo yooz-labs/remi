@@ -69,6 +69,7 @@ private struct QuestionCardHeader: View {
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RemiTheme.Color.attention.opacity(0.1))
     }
 
