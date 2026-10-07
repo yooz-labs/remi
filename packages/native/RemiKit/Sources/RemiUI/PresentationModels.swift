@@ -105,8 +105,9 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let status: RemiSessionStatus
     public let lastMessage: String?
     public let openQuestionCount: Int
+    public let canTerminate: Bool
 
-    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0) {
+    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, canTerminate: Bool = false) {
         self.id = id
         self.machineID = machineID ?? machineName
         self.machineName = machineName
@@ -116,6 +117,7 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
         self.status = status
         self.lastMessage = lastMessage
         self.openQuestionCount = openQuestionCount
+        self.canTerminate = canTerminate
     }
 }
 

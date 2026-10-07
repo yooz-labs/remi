@@ -3,6 +3,7 @@ import RemiUI
 import SwiftUI
 
 struct SessionScreen: View {
+    @Environment(\.dismiss) private var dismiss
     let session: RemiSessionSummary
     let transcript: [RemiTranscriptEntry]
     let questions: [RemiQuestionCardModel]
@@ -13,9 +14,11 @@ struct SessionScreen: View {
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
     let onSend: (String) -> Void
+    let onTerminate: () -> Void
 
     @State private var draft = ""
     @State private var selectedViewID = ""
+    @State private var confirmingTermination = false
 
     init(
         session: RemiSessionSummary,
@@ -27,7 +30,8 @@ struct SessionScreen: View {
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
-        onSend: @escaping (String) -> Void = { _ in }
+        onSend: @escaping (String) -> Void = { _ in },
+        onTerminate: @escaping () -> Void = {}
     ) {
         self.session = session
         self.transcript = transcript
@@ -39,6 +43,7 @@ struct SessionScreen: View {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onSend = onSend
+        self.onTerminate = onTerminate
     }
 
     var body: some View {
@@ -109,6 +114,30 @@ struct SessionScreen: View {
         }
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if session.canTerminate {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu("Session actions", systemImage: "ellipsis.circle") {
+                        Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                            confirmingTermination = true
+                        }
+                    }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Exit \(session.name)?",
+            isPresented: $confirmingTermination,
+            titleVisibility: .visible
+        ) {
+            Button("Exit session", role: .destructive) {
+                onTerminate()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
+        }
         .onChange(of: selectedViewID) { _, newValue in
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
