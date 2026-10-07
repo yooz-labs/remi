@@ -16,6 +16,15 @@ import { escapeUnsafeText } from './display-text.ts';
 export const PROTOCOL_VERSION = 1;
 
 /**
+ * The version of an ack that names none: a daemon older than #1237, whose wire is
+ * the baseline of version 1. A client compares it like any other version.
+ */
+const VERSIONLESS_ACK_VERSION = 1;
+
+/** Said of a machine whose remi must change: a daemon keeps its binary until it restarts (#539). */
+const UPDATE_MACHINE = 'Update remi on that machine and restart it.';
+
+/**
  * Every capability a daemon may list in `hello_ack.capabilities`, with what a
  * daemon that lists it does, phrased to follow "cannot" in a message to the
  * person. A capability names an additive feature a client cannot see in the
@@ -53,10 +62,12 @@ export interface HubSupportAck {
  * {@link PROTOCOL_CAPABILITIES}) for a client that speaks `clientVersion`.
  *
  * - No `protocolVersion`: a daemon older than #1237, whose wire is the baseline
- *   of version 1. Supported unless the client needs a capability, which such a
- *   daemon cannot have.
- * - A protocol version other than the client's, or one that is not a positive
- *   integer: not supported, and the message says which side to update.
+ *   of version 1, so it is compared as version 1. It lists no capabilities, so a
+ *   client that needs one is told to update it.
+ * - A protocol version other than the client's, in either direction, or one that
+ *   is not a positive integer: not supported, and the message says which side to
+ *   update. There is no range: a client and a daemon must speak the same version
+ *   (ADR 0035).
  * - A needed capability the machine does not list: not supported, named with
  *   what it does.
  *
@@ -70,26 +81,25 @@ export function hubSupport(
   clientVersion: number = PROTOCOL_VERSION,
 ): HubSupport {
   const remi = quotedRemi(ack.daemonVersion);
-  const version = ack.protocolVersion;
+  // `=== undefined`, not `??`: a null version is unreadable, not absent.
+  const version = ack.protocolVersion === undefined ? VERSIONLESS_ACK_VERSION : ack.protocolVersion;
 
-  if (version !== undefined) {
-    if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
-      return {
-        supported: false,
-        reason: 'protocol-version',
-        missing: [],
-        message: `${remi} sent a protocol version this app cannot read. Update remi on that machine and this app.`,
-      };
-    }
-    if (version !== clientVersion) {
-      const update = version > clientVersion ? 'this app' : 'remi on that machine';
-      return {
-        supported: false,
-        reason: 'protocol-version',
-        missing: [],
-        message: `${remi} speaks protocol version ${version}, and this app speaks version ${clientVersion}. Update ${update}.`,
-      };
-    }
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
+    return {
+      supported: false,
+      reason: 'protocol-version',
+      missing: [],
+      message: `${remi} sent a protocol version this app cannot read. ${UPDATE_MACHINE} Update this app too.`,
+    };
+  }
+  if (version !== clientVersion) {
+    const update = version > clientVersion ? 'Update this app.' : UPDATE_MACHINE;
+    return {
+      supported: false,
+      reason: 'protocol-version',
+      missing: [],
+      message: `${remi} speaks protocol version ${version}, and this app speaks version ${clientVersion}. ${update}`,
+    };
   }
 
   const listed = new Set(
@@ -102,14 +112,17 @@ export function hubSupport(
 
   const cannot = missing
     .map((name) =>
-      Object.hasOwn(PROTOCOL_CAPABILITIES, name) ? PROTOCOL_CAPABILITIES[name] : name,
+      // Not Object.hasOwn: the Capacitor app runs on iOS 15.0, and hasOwn needs Safari 15.4.
+      Object.prototype.hasOwnProperty.call(PROTOCOL_CAPABILITIES, name)
+        ? PROTOCOL_CAPABILITIES[name]
+        : name,
     )
     .join('; ');
   return {
     supported: false,
     reason: 'capabilities',
     missing,
-    message: `${remi} cannot ${cannot}. Update remi on that machine.`,
+    message: `${remi} cannot ${cannot}. ${UPDATE_MACHINE}`,
   };
 }
 
