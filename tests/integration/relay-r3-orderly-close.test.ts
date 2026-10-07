@@ -93,8 +93,10 @@ test('after the hub ends the stream, a request from the peer is neither answered
     await running.channel.send(new TextEncoder().encode(serialize(revoke)));
     // A negative check, so a short settle: no answer comes back.
     expect(await running.socket.quiet(300)).toBe(true);
+    // The client does not close: on Bun 1.3.11 its own close can reset the connection and lose
+    // what it sent (#1225), which would let this pass for the wrong reason. The hub closes the
+    // pipe after its grace instead.
     await running.channel.bye();
-    running.socket.close(1000);
     await stopping;
     // And nothing was done: the device is still enrolled and authorized.
     expect(running.devices.isEnrolled(running.device.publicKeyRaw)).toBe(true);
@@ -111,13 +113,15 @@ test('a client that answers the hub BYE with its own leaves the hub a clean stre
   try {
     const stopping = running.relay.stop();
     await hubBye(running);
-    // What the web client does on the hub's BYE: its own BYE, then the close.
+    // The web client answers the hub's BYE with its own and then closes. This client does not
+    // close: on Bun 1.3.11 its own close can reset the connection and lose the BYE it just sent
+    // (#1225), which is the test client's runtime, not the hub's behavior. The hub closes the
+    // pipe after its grace instead, having read the reply.
     await running.channel.bye();
-    running.socket.close(1000);
     await stopping;
     await until(
-      () => running.logs.some((line) => line.startsWith('Relay pipe closed by the far side')),
-      'the far-side close to reach the hub',
+      () => running.logs.some((line) => line.startsWith('Relay pipe closed by the hub (1000)')),
+      'the hub to close the pipe after its grace',
     );
     // The verdict is logged only when the stream did not end cleanly; a negative check, so a
     // short settle after the close the verdict follows.
