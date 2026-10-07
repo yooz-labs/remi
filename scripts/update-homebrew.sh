@@ -52,6 +52,9 @@ FORMULA="class Remi < Formula
 
   def install
     bin.install \"bin/remi\"
+    # License, notice and the bundled packages' notices (#1131); a tarball from
+    # before #1131 has no THIRD_PARTY_NOTICES, so only what exists is installed.
+    doc.install Dir[\"LICENSE\", \"NOTICE\", \"THIRD_PARTY_NOTICES\"]
   end
 
   test do

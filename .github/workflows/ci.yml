@@ -61,6 +61,9 @@ jobs:
       # entirely. Given #543/#881's history here, an undetected type error
       # in this package is the more serious half of #946's gap.
       - run: bun run typecheck:signaling
+      # Every package the binary bundles must have a license file, or its notice
+      # cannot ship (#1131); fails here on the PR that adds such a dependency.
+      - run: bun scripts/third-party-notices.ts --check
 
   test:
     name: Test

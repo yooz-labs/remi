@@ -28,9 +28,9 @@ The `@yooz-labs/remi` npm package (`npm/remi`) is a small Node launcher.
 It selects one of four platform packages (`@yooz-labs/remi-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`), and those hold the compiled `remi` binary.
 The binary is built from `packages/daemon` and `packages/shared` only, plus third-party dependencies that keep their own licenses.
 Nothing from `packages/web`, `packages/signaling` or `packages/macos` is compiled into it; `packages/daemon/tests/license-boundary.test.ts` fails if daemon or shared code imports them.
-The npm packages are therefore licensed Apache-2.0 and carry the Apache `LICENSE` and `NOTICE` files.
+The npm packages are therefore licensed Apache-2.0 and carry the Apache `LICENSE` and `NOTICE` files, plus `THIRD_PARTY_NOTICES`: the license of every package the binary bundles from `node_modules`, generated at release time from the bundle's real inputs (`scripts/third-party-notices.ts`, #1131). The same file is attached to each GitHub release, and the Homebrew formula installs it with the binary.
 
-The notices of the bundled third-party dependencies are not yet shipped with the binary; that is tracked in [#1131](https://github.com/yooz-labs/remi/issues/1131).
+`bun build --compile` also embeds the Bun runtime in the binary, which carries its own licenses; their notices are not shipped yet ([#1256](https://github.com/yooz-labs/remi/issues/1256)).
 
 ## Which versions this covers
 
