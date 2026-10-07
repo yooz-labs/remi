@@ -692,17 +692,19 @@ those two are both exactly `{token, title, body}`.
   Worker directly) is R7 work. The store file is written owner-only (0600).
   Only the legacy path has the lease today. A secure subscription has none
   yet; the owner's lease decision covers it too, and that change is planned
-  for R7. Until then it is read from disk under the interprocess lock at
-  every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister or a
-  revoke recorded by another process applies to the next push, and it ends
-  only on the app's `secure_push_unregister_request` over the relay or on
-  `remi devices revoke`. A phone that dropped the machine while the hub was
-  unreachable keeps being sent sealed pushes until one of those.
+  for R7 (#1272). Until then it is read from disk under the interprocess lock
+  at every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister
+  or a revoke recorded by another process applies to the next push, and it
+  ends only on the app's `secure_push_unregister_request` over the relay, on
+  `remi devices revoke`, or on `remi authorize --remove` (a subscription is
+  current only while its authorized key and its enrollment are). A phone that
+  dropped the machine while the hub was unreachable keeps being sent sealed
+  pushes until one of those.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise. The one exception is a device that
-  is gone: unregistered, rejected by APNS, or (on the legacy path) past its
-  lease gets nothing, dismissals included, so a card it still holds stays
+  is gone: unregistered, or (on the legacy path) rejected by APNS or past its
+  lease, gets nothing, dismissals included, so a card it still holds stays
   until the app opens.
   The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
