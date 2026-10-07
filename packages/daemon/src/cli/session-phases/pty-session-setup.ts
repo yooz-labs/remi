@@ -126,7 +126,8 @@ export interface PtySessionSetupArgs {
 export interface PtyLaunch {
   readonly command: string;
   /**
-   * Environment overrides added on top of `process.env` for the child.
+   * Environment overrides added on top of `process.env` for the child (minus
+   * remi's own secrets, which the PTY layer removes from the result, #1249).
    * `{}` adds nothing of this launch's own: no `REMI_PORT` and none of Claude's
    * variables. The PTY layer still sets `FORCE_COLOR=1` and `TERM` (the
    * daemon's own, or `xterm-256color`) for every launch, Claude's included
@@ -176,7 +177,8 @@ export const CLAUDE_INLINE_RENDERER_ENV = 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'
 /**
  * Environment overrides remi adds on top of the incoming environment for the
  * Claude child. `PTYSession.start()` spreads `process.env` first and these
- * after, so anything returned here wins over the user's environment; that is
+ * after, then removes remi's own secrets (#1249), so anything returned here
+ * wins over the user's environment; that is
  * why the inline-renderer variable is only emitted when the user has not set
  * it to something non-empty.
  *
