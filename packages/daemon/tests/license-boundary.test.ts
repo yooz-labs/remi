@@ -2,8 +2,8 @@
  * License boundary guard (#1128, epic #1123, owner decision D8).
  *
  * `packages/daemon` and `packages/shared` are Apache-2.0 and ship in the
- * published `remi` binary. `packages/web`, `packages/signaling` and
- * `packages/macos` are PolyForm Shield 1.0.0. Code from the PolyForm packages
+ * published `remi` binary. `packages/web`, `packages/signaling`,
+ * `packages/macos` and `packages/native` are PolyForm Shield 1.0.0. Code from the PolyForm packages
  * must therefore never be pulled into the Apache packages, or the compiled
  * binary would carry PolyForm code under an Apache-2.0 label.
  *
@@ -38,7 +38,7 @@ const SCANNED_DIRS = [
 ] as const;
 
 /** PolyForm Shield packages that the scanned sources must not reach. */
-const PROTECTED_NAMES = ['web', 'signaling', 'macos'] as const;
+const PROTECTED_NAMES = ['web', 'signaling', 'macos', 'native'] as const;
 const PROTECTED_DIRS = PROTECTED_NAMES.map((name) => join(PACKAGES_DIR, name));
 
 const PROTECTED_ALT = PROTECTED_NAMES.join('|');
