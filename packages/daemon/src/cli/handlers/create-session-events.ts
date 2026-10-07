@@ -42,6 +42,22 @@ export interface SpawnResult {
 const START_FAILED_TEXT =
   "The session could not be started on the host; the host's remi log has the reason.";
 const INVALID_DIRECTORY_TEXT = 'Invalid directory; the request was not started.';
+const RESUME_INTO_WORKTREE_TEXT =
+  'A resumed session cannot start in a new worktree; the request was not started.';
+
+/**
+ * Whether the validated arguments resume a session (Claude's `--resume`/`-r`, Codex's `resume`).
+ * A resume belongs to the directory it ran in; sending it into a new worktree would start it
+ * somewhere it never was (#1270 review), so such a request is refused.
+ */
+function resumes(spawnArgs: readonly string[]): boolean {
+  const at = spawnArgs.indexOf('--');
+  if (at < 0) return false;
+  return spawnArgs
+    .slice(at + 1)
+    .some((a) => a === '--resume' || a === '-r' || a === 'resume' || a.startsWith('--resume='));
+}
+
 const DIRECTORY_MISMATCH_TEXT =
   'The directory and the workspace repository differ; the request was not started.';
 
@@ -146,6 +162,12 @@ export function checkHarnessRequest(
   };
 }
 
+/** The harness's notice and the workspace's, one per line; none when neither has one. */
+function joinNotices(...notices: readonly (string | undefined)[]): string | undefined {
+  const present = notices.filter((n): n is string => n !== undefined);
+  return present.length > 0 ? present.join('\n') : undefined;
+}
+
 export interface CreateSessionHandlerDeps {
   /** The harnesses a request may name, and what each allows (`cli.ts` builds it). */
   harnesses: HarnessRegistry;
@@ -238,6 +260,14 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           );
           return;
         }
+        if (workspaceRequest.workspace?.worktree !== undefined && resumes(request.spawnArgs)) {
+          log('Create session request refused: a resume into a new worktree; nothing spawned');
+          send(
+            connectionId,
+            createCreateSessionResponse(false, requestId, undefined, RESUME_INTO_WORKTREE_TEXT),
+          );
+          return;
+        }
 
         // Include in-flight spawn ports to prevent a TOCTOU race on
         // concurrent create requests.
@@ -265,6 +295,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           // The worktree is made only once a port is held, so a request that cannot start makes
           // none (#1236). The port stays reserved while git runs.
           let workspace: SessionWorkspace | undefined;
+          let workspaceNotice: string | undefined;
           if (workspaceRequest.workspace !== undefined) {
             const prepared = await prepareWorkspace(workspaceRequest.workspace);
             if (!prepared.ok) {
@@ -277,9 +308,13 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
             }
             workspace = prepared.workspace;
             if (workspace.worktree !== undefined) made = workspace;
+            if (prepared.notice !== undefined) {
+              workspaceNotice = prepared.notice;
+              log(`Workspace made with a warning: ${prepared.detail ?? ''}`);
+            }
           }
           // #1025: no/empty/whitespace directory means "home", never the
-          // hub's own cwd (an accident of where `remi serve` was started) —
+          // hub's own cwd (an accident of where `remi serve` was started);
           // see resolveRequestedSessionDirectory for the full rationale.
           const resolvedDirectory =
             workspace?.directory ?? resolveRequestedSessionDirectory(directory);
@@ -298,7 +333,10 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
               result.sessionId as UUID,
               undefined,
               result.port,
-              request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
+              joinNotices(
+                request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
+                workspaceNotice,
+              ),
               workspace,
             ),
           );

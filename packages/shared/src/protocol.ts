@@ -1003,10 +1003,12 @@ export interface CreateSessionResponseMessage {
   /** Port of the new daemon (when session was spawned on a new daemon) */
   readonly port?: number;
   /**
-   * What a success does not say (#1179): for a harness started without a terminal that may stop at a
-   * prompt only a terminal can answer (Codex's Update and Trust prompts), the daemon cannot know the
-   * session reached its prompt, so it says so and what to do. `success` means the session daemon was
-   * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
+   * What a success does not say, one line each: for a harness started without a terminal that may
+   * stop at a prompt only a terminal can answer (Codex's Update and Trust prompts, #1179), the
+   * daemon cannot know the session reached its prompt, so it says so and what to do; for a workspace
+   * (#1236), a worktree git made but then reported an error for (a hook or filter in the repository).
+   * `success` means the session daemon was spawned and registered, never that the harness is ready.
+   * Absent when there is nothing to add, and for a refusal.
    */
   readonly notice?: string | undefined;
   /** The workspace the session was started in, when the request named one (#1236). */
