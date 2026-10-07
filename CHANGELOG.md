@@ -16,7 +16,7 @@ All notable changes to Remi are documented here.
 
 #### Fixed
 
-- When a session really closed (Claude exited, or the session was stopped) while a prompt was held, its pushed card stayed on the lock screen until the hold deadline, up to 59 minutes for a daemon or hub session. The registry forgot the session before the permission relay dismissed its cards, so the relay found nothing to dismiss. It now dismisses every open card of a closed session, in the app and on the lock screen.
+- When a session really closed (Claude exited, or the session was stopped), the cards it had pushed stayed on the lock screen. The registry forgot the session before anything could dismiss its cards, and a daemon whose agent exited quit within milliseconds, before a push in flight left. A closed session's cards are now dismissed in the app and on the lock screen. That covers a held prompt and also a card the permission relay does not track, such as an MCP question or a trust dialog. The daemon also waits up to 2 seconds for its pushes to leave before it exits.
 
 ### Relay: off by default, and closed without authentication (#1193)
 

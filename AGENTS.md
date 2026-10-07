@@ -376,9 +376,11 @@ answer for a card no hold stands behind is refused, never typed. An open card is
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
 (that agent), `SessionEnd`, a transcript rotation, a real session close, or
 `remi unstick`; a dismissal is broadcast only for a card that was actually
-pushed, except at a real close, where the session's cards can no longer be
-looked up and every open escalation is dismissed (#1223; a no-op for a card
-no client holds). `remi
+pushed. At a real close the registry hands the ids of the cards it still held
+to the close handler (`closeSession` clears the session first, so nothing else
+can look them up), which dismisses each one not already dismissed by the
+harness's own teardown, and the daemon waits up to 2 s for its pushes in
+flight before it exits (`drainPushDeliveries`, #1223). `remi
 unstick` does not close a LIVE hold: its dialog is on screen, so it is
 released to the terminal with a "handed back" notice (suppression kept),
 and a second unstick clears it.
