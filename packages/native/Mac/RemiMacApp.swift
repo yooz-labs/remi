@@ -52,6 +52,19 @@ struct RemiMacApp: App {
         } label: {
             MacMenuBarLabel(store: store)
         }
+
+        Settings {
+            if let store {
+                MacPreferencesView(publicIdentity: store.publicIdentity)
+            } else {
+                ContentUnavailableView(
+                    "Device identity unavailable",
+                    systemImage: "key.slash",
+                    description: Text(startupError ?? "The Keychain is unavailable.")
+                )
+                .frame(width: 520, height: 360)
+            }
+        }
     }
 
     private static func clientId() -> String {
