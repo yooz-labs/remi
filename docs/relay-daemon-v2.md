@@ -104,14 +104,25 @@ only for pending peers; ready disconnect closes the pipe, which owns its drain.
 
 On Bun 1.3.11, the CI and release pin, the hub's WebSocket client close usually
 resets the connection instead of waiting for the Worker's Close reply (#1225). A
-Worker that gets to the socket late, as on a loaded machine, then records the pipe
-close as abnormal (1006) and closes the client with its failure close (4400,
-`closed`), even after an orderly BYE. The client's verdict comes from the
-authenticated BYE, not from the close code, so a BYE that arrived still reads
-`clean`; the web client reports that verdict and does not read the code. Measured
-on macOS against the local workerd, where `relay-r3-transport-close.test.ts` pins
-the runtime's behavior (Bun 1.4.2 closes gracefully); not measured on Linux or
-against the deployed Worker.
+Worker that gets to the socket late, as on a loaded machine, then records the close
+as abnormal (1006) and can lose what it had not read yet: the Close frame, and the
+hub's BYE when the close came right after it (7 of 102 loaded runs before the change
+below, where the client then read `unclean`). So an orderly close does not close at
+once: after its BYE the hub waits, at most 2 s (`ORDERLY_CLOSE_GRACE_MS`), for the far
+side to close the pipe. The web client closes as soon as it has the hub's BYE, so the
+Worker ends the pipe and nothing is reset. A peer that does not close within 2 s gets
+the hub's own close, which on 1.3.11 can still be reset: that client then gets the
+Worker's failure close (4400, `closed`) instead of 1000, though the BYE, read long
+before, still arrives (195 loaded runs on 1.3.11 on 2026-10-07, 51 of them with that reset). A
+revoke, a shutdown or another orderly close therefore takes up to 2 s per pipe, in
+parallel. A failure close stays immediate and carries no BYE; on 1.3.11 the client may
+get the Worker's `closed` reason instead of the hub's empty one, the same failure close
+either way. The client's verdict comes from the authenticated BYE, not from the close
+code; the web client reports that verdict and does not read the code. Each pipe close
+is logged in a fixed form with no connection id (`Relay pipe closed by the hub (1000)`,
+or `by the far side`). Measured on macOS against the local workerd, where
+`relay-r3-transport-close.test.ts` pins the runtime's behavior (Bun 1.4.2 closes
+gracefully); not measured on Linux or against the deployed Worker.
 
 ## Retirement and verification
 
