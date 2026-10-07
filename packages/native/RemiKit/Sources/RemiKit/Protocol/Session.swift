@@ -14,12 +14,18 @@ public struct DiscoverableSession: Codable, Sendable, Equatable, Identifiable {
     public let harness: String?
     public let canAttach: Bool?
     public let wsPort: Int?
+    public let claudeSessionId: String?
+    public let transcriptPath: String?
+    public let canResume: Bool?
 }
 
 /// `{ "type": "session_list_response", ... }`: the sessions a machine has.
 public struct SessionListResponse: Decodable, Sendable, Equatable {
     public let type: String
+    public let id: String
+    public let timestamp: String
     public let sessions: [DiscoverableSession]
+    public let requestId: String
     /// The ports of the machine's session daemons (#542); a machine object replaces this (#1234).
     public let daemonPorts: [Int]?
 }

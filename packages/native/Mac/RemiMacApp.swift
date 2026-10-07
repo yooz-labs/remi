@@ -2,33 +2,60 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
-/// The Mac app: a Conductor-like window over every machine's sessions (handoff/mac.md).
 @main
 struct RemiMacApp: App {
+    @State private var store: MachineStore?
+    private let startupError: String?
+
+    init() {
+        do {
+            let identity = try ClientIdentityStore.shared.loadOrCreate()
+            let clientId = Self.clientId()
+            let saved = MachineConfigurationStore.shared.load()
+            _store = State(initialValue: MachineStore(
+                endpoints: saved.isEmpty
+                    ? [MachineEndpoint(host: "127.0.0.1", port: 18765)] : saved,
+                identity: identity,
+                clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
+                clientId: clientId
+            ))
+            startupError = nil
+        } catch {
+            _store = State(initialValue: nil)
+            startupError = error.localizedDescription
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
-            MacRootView()
-        }
-    }
-}
-
-/// Placeholder shell: machines and repositories, their sessions, the session.
-struct MacRootView: View {
-    var body: some View {
-        NavigationSplitView {
-            List {
-                Section("Machines") { Text("No machines yet") }
+            Group {
+                if let store {
+                    MacLiveRootView(store: store)
+                } else {
+                    ContentUnavailableView(
+                        "Couldn’t load device identity",
+                        systemImage: "key.slash",
+                        description: Text(startupError ?? "The Keychain is unavailable.")
+                    )
+                }
             }
-            .navigationTitle("Remi")
-        } content: {
-            Text("Sessions")
-        } detail: {
-            Text("Select a session")
-                .padding(RemiTheme.Spacing.xl)
+            .frame(minWidth: 980, minHeight: 640)
+        }
+
+        MenuBarExtra("Remi", systemImage: "questionmark.bubble") {
+            if let store {
+                MacLiveNeedsYouMenu(store: store)
+            } else {
+                Text("Device identity unavailable")
+            }
         }
     }
-}
 
-#Preview {
-    MacRootView()
+    private static func clientId() -> String {
+        let key = "remi.native.client-id"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let value = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(value, forKey: key)
+        return value
+    }
 }
