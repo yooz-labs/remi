@@ -186,6 +186,7 @@ import {
 } from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
+import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -1247,20 +1248,19 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       // The session's dispose() also drops its #914 admits filter, so a closed
       // session's binder can never keep admitting turns on its behalf.
-      closingResolved = new Set<UUID>();
+      const resolvedAtClose = new Set<UUID>();
+      closingResolved = resolvedAtClose;
       try {
-        harnessSessions.get(sessionId)?.dispose();
         // #1223: the cards the session still held are dismissed on every
-        // client and lock screen. `closeSession` cleared the registry before
-        // this ran, so the harness's own teardown could not look them up; a
-        // card that teardown already dismissed (Codex's) is not sent twice.
-        // Before `sessionNotifiers.delete` below: the dismissal needs the
-        // session's dispatcher.
-        for (const questionId of pendingQuestionIds) {
-          if (!closingResolved.has(questionId)) {
-            onQuestionResolved(sessionId, questionId, 'cancelled');
-          }
-        }
+        // client and lock screen, after the harness's own teardown (see
+        // `cli/session-close.ts`). Before `sessionNotifiers.delete` below:
+        // the dismissal needs the session's dispatcher.
+        disposeAndDismiss({
+          dispose: () => harnessSessions.get(sessionId)?.dispose(),
+          pendingQuestionIds,
+          alreadyResolved: resolvedAtClose,
+          dismiss: (questionId) => onQuestionResolved(sessionId, questionId, 'cancelled'),
+        });
       } finally {
         closingResolved = null;
         // The disposal and the loop above cancelled the session's held prompts and dismissed
