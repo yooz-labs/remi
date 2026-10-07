@@ -116,16 +116,18 @@ describe('App.tsx follows a resumed child session (#1129)', () => {
     const next = SOURCE.indexOf('\n      case ', start + 1);
     return SOURCE.slice(start, next === -1 ? undefined : next);
   };
-  /** Formatting-proof: calls may be split over lines. */
-  const flat = (text: string): string => text.replace(/\s+/g, ' ');
+  /** Formatting-proof: all white space is dropped, so a call may be split over lines. */
+  const flat = (text: string): string => text.replace(/\s+/g, '');
 
   test('the session the person is on is captured when they ask, not when the answer arrives (#688)', () => {
     const start = SOURCE.indexOf('const handleResumeSession = useCallback(');
     expect(start).toBeGreaterThan(-1);
-    const handler = flat(SOURCE.slice(start, SOURCE.indexOf('[sessions, requestResumeSession', start)));
-    expect(handler).toContain('resumeAskedFromRef.current = activeSessionIdRef.current');
+    const handler = flat(
+      SOURCE.slice(start, SOURCE.indexOf('[sessions, requestResumeSession', start)),
+    );
+    expect(handler).toContain('resumeAskedFromRef.current=activeSessionIdRef.current');
     // Before the request goes out, so nothing the person does afterwards is mistaken for "where they were".
-    expect(handler.indexOf('resumeAskedFromRef.current =')).toBeLessThan(
+    expect(handler.indexOf('resumeAskedFromRef.current=')).toBeLessThan(
       handler.indexOf('requestResumeSession('),
     );
   });
@@ -133,39 +135,39 @@ describe('App.tsx follows a resumed child session (#1129)', () => {
   test('a response with a port is decided by resumeOutcome, anchored at the ask, and refreshes the list', () => {
     const block = flat(caseBlock('resume_session_response'));
     expect(block).toContain('resumeOutcome(message)');
-    expect(block).toContain("outcome.kind === 'follow'");
-    expect(block).toContain('startFollow( outcome.sessionId, resumeAskedFromRef.current,');
-    expect(block).toContain('pendingFollowRef.current = pending');
+    expect(block).toContain("outcome.kind==='follow'");
+    expect(block).toContain('startFollow(outcome.sessionId,resumeAskedFromRef.current,');
+    expect(block).toContain('pendingFollowRef.current=pending');
     expect(block).toContain('reqList(conn.connectionId');
-    expect(block).toContain("outcome.kind === 'open'");
+    expect(block).toContain("outcome.kind==='open'");
   });
 
-  test("a session that is already here is opened through the same rule, never by a bare select", () => {
+  test('a session that is already here is opened through the same rule, never by a bare select', () => {
     const block = flat(caseBlock('resume_session_response'));
-    expect(block).toContain("sessionsRef.current.some( (s) => s.id === outcome.sessionId && s.connectionStatus === 'connected',");
     expect(block).toContain(
-      'followLanding( pending, outcome.sessionId, activeSessionIdRef.current,',
+      "sessionsRef.current.some((s)=>s.id===outcome.sessionId&&s.connectionStatus==='connected',",
     );
+    expect(block).toContain('followLanding(pending,outcome.sessionId,activeSessionIdRef.current,');
     // Opening is a decision of the outcome or of followLanding, nowhere else.
     expect(block.match(/setActiveSessionId\(/g)).toHaveLength(2);
-    expect(block).toContain('setActiveSessionId(landing as UUID)');
-    expect(block).toContain('setActiveSessionId(outcome.sessionId as UUID)');
+    expect(block).toContain('setActiveSessionId(landing');
+    expect(block).toContain('setActiveSessionId(outcome.sessionId');
   });
 
   test('a follow that never lands says so when its window ends, and only if it is still the pending one', () => {
     const block = flat(caseBlock('resume_session_response'));
     expect(block).toContain('FOLLOW_WINDOW_MS');
-    expect(block).toContain('if (pendingFollowRef.current === pending)');
-    expect(block).toContain('pendingFollowRef.current = null');
-    expect(block).toContain('did not appear');
+    expect(block).toContain('if(pendingFollowRef.current!==pending)return;');
+    expect(block).toContain('pendingFollowRef.current=null');
+    expect(block).toContain('didnotappear');
   });
 
   test("the child's hello_ack opens the session through followLanding, against where the person is now", () => {
     const block = flat(caseBlock('hello_ack'));
     expect(block).toContain(
-      'followLanding( pendingFollowRef.current, sessionId, activeSessionIdRef.current, Date.now(),',
+      'followLanding(pendingFollowRef.current,sessionId,activeSessionIdRef.current,Date.now(),',
     );
-    expect(block).toContain('pendingFollowRef.current = null');
-    expect(block).toContain('setActiveSessionId(landing as UUID)');
+    expect(block).toContain('pendingFollowRef.current=null');
+    expect(block).toContain('setActiveSessionId(landing');
   });
 });

@@ -255,23 +255,23 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       // it came off the wire).
       const badDirectory = directoryRefusal(directory);
       if (badDirectory !== null) {
-        log('Create session request refused: the directory is not acceptable; nothing spawned');
+        log('Session start refused: the directory is not acceptable; nothing spawned');
         return { ok: false, error: badDirectory };
       }
       const workspaceRequest = checkWorkspaceRequest(directory, extra);
       if (!workspaceRequest.ok) {
-        log('Create session request refused: the workspace is not acceptable; nothing spawned');
+        log('Session start refused: the workspace is not acceptable; nothing spawned');
         return { ok: false, error: workspaceRequest.error };
       }
       const request = checkHarnessRequest(harnesses, extra);
       if (!request.ok) {
         log(
-          `Create session request refused: ${escapeUnsafeText(request.detail ?? request.error)}; nothing spawned`,
+          `Session start refused: ${escapeUnsafeText(request.detail ?? request.error)}; nothing spawned`,
         );
         return { ok: false, error: request.error };
       }
       if (workspaceRequest.workspace?.worktree !== undefined && resumes(request.spawnArgs)) {
-        log('Create session request refused: a resume into a new worktree; nothing spawned');
+        log('Session start refused: a resume into a new worktree; nothing spawned');
         return { ok: false, error: RESUME_INTO_WORKTREE_TEXT };
       }
 
@@ -299,7 +299,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         if (workspaceRequest.workspace !== undefined) {
           const prepared = await prepareWorkspace(workspaceRequest.workspace);
           if (!prepared.ok) {
-            log(`Create session request refused: ${prepared.detail}; nothing spawned`);
+            log(`Session start refused: ${prepared.detail}; nothing spawned`);
             return { ok: false, error: prepared.error };
           }
           workspace = prepared.workspace;

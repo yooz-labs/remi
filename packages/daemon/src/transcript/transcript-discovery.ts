@@ -117,6 +117,46 @@ export class TranscriptDiscovery {
   }
 
   /**
+   * The directory a transcript was recorded in: the `cwd` of the first entry that names one, read
+   * from the first 64 KiB of the file (#1129). A project directory's name is a lossy encoding of
+   * the path (every `/` became `-`), so a project with a dash in its name cannot be decoded from
+   * it; the transcript's own `cwd` is the truth. Null when the file is gone, unreadable, or no
+   * entry in the part read names one. READ-ONLY.
+   */
+  readTranscriptCwd(filePath: string): string | null {
+    const HEAD_BYTES = 64 * 1024;
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(filePath, 'r');
+      const buffer = Buffer.alloc(HEAD_BYTES);
+      const read = fs.readSync(fd, buffer, 0, HEAD_BYTES, 0);
+      const lines = buffer.toString('utf-8', 0, read).split('\n');
+      // A file longer than the part read ends mid-line: that last piece is not a whole entry.
+      const whole = read === HEAD_BYTES ? lines.slice(0, -1) : lines;
+      for (const line of whole) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line) as { cwd?: unknown };
+          if (typeof entry.cwd === 'string' && entry.cwd !== '') return entry.cwd;
+        } catch {
+          // Not JSON: skipped, like the tail reader skips a partial line.
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Nothing to do about a failed close of a read-only descriptor.
+        }
+      }
+    }
+  }
+
+  /**
    * Find all .jsonl transcript files across all projects.
    * Sorted by last modification time (most recent first).
    */

@@ -45,6 +45,7 @@ import {
 import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
+import { AmbiguousSessionIdentityError, isClaudeRecord } from '../../session/index.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { DAEMON_CAPABILITIES } from '../capabilities.ts';
@@ -85,6 +86,29 @@ type ResumeTarget =
   | { ok: true; claudeSessionId: string; workingDirectory: string }
   | { ok: false; error: string };
 
+/** Canonical 8-4-4-4-12 hex UUID shape: the only Claude session id `--resume` takes. */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The longest part of a requested id that is read back to the requester. */
+const SHOWN_ID_MAX = 80;
+
+/**
+ * How long a session stays "just resumed" after a hub started its child (#1129 review, M2). The
+ * store learns the new row's Claude id only once Claude binds, a few seconds after the spawn, and a
+ * second request in that window (a double tap, two phones) passes the held check and starts a
+ * second child that loses the race.
+ */
+const RESUME_HOLD_MS = 15_000;
+
+const JUST_RESUMED_TEXT =
+  'That session was just resumed on the host; open it from the session list.';
+const NO_SESSION_NAMED_TEXT = 'The request does not name a session to resume.';
+
+/** A requested id as it is read back or logged: written out, and cut when it is long. */
+function shownId(id: string): string {
+  return escapeUnsafeText(id.length > SHOWN_ID_MAX ? `${id.slice(0, SHOWN_ID_MAX)}...` : id);
+}
+
 /** What a requester reads when the child could not be started: the host's log has the cause. */
 const CHILD_START_FAILED_TEXT =
   "The session could not be started on the host; the host's remi log has the reason.";
@@ -121,6 +145,8 @@ export interface ResumeSessionHandlerDeps {
    *  the accessor so it cannot diverge from the other resume resolver. */
   bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
+  /** The clock for the "just resumed" window; a test gives its own. */
+  now?: () => number;
   /** Builds the launch arguments that resume a stored session (`resumeArgs`). */
   harness: Pick<Harness, 'resumeArgs'>;
   createNewSession: CreateNewSessionFn;
@@ -132,6 +158,7 @@ export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandler
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   const {
     childSessions,
+    now = Date.now,
     harnessId,
     harnesses,
     capabilities = DAEMON_CAPABILITIES,
@@ -153,16 +180,25 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   function resolveResumeTarget(targetSessionId: string): ResumeTarget {
     let claudeSessionId: string | null = null;
     let projectPath: string | null = null;
+    const shown = shownId(targetSessionId);
 
     try {
       const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
       if (storedByRemi) {
+        // A record of another harness answers to its remi id too, whatever its Claude column holds.
+        if (!isClaudeRecord(storedByRemi)) {
+          return {
+            ok: false,
+            error: 'That session ran under another harness and cannot be resumed from here.',
+          };
+        }
         claudeSessionId = storedByRemi.claudeSessionId;
         projectPath = storedByRemi.projectPath;
       }
 
       if (!claudeSessionId) {
-        const storedByClaude = bindingStore.getByClaudeSessionId(targetSessionId);
+        // Several exited rows of one Claude session resolve to the newest: every resume adds one.
+        const storedByClaude = bindingStore.getResumableByClaudeSessionId(targetSessionId);
         if (storedByClaude) {
           claudeSessionId = storedByClaude.claudeSessionId;
           projectPath = storedByClaude.projectPath;
@@ -173,20 +209,30 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
         if (transcriptPath) {
           claudeSessionId = targetSessionId;
-          const dirName = path.basename(path.dirname(transcriptPath));
-          projectPath = dirName.replace(/-/g, '/');
+          // The transcript names the directory it was recorded in; the project folder's name is a
+          // lossy encoding of it (every `/` became `-`), the fallback for an old transcript.
+          projectPath =
+            transcriptDiscovery.readTranscriptCwd(transcriptPath) ??
+            path.basename(path.dirname(transcriptPath)).replace(/-/g, '/');
         }
       }
     } catch (error) {
-      const msg = `Cannot resolve session ${targetSessionId}: ${errorToString(error)}`;
-      logError(`[Resume] ${escapeUnsafeText(msg)}`);
-      return { ok: false, error: msg };
+      // An ambiguity message is written to be printed (a short id, a count). Any other failure can
+      // hold a path or a lock holder, which is the host's business: the log has it.
+      logError(`[Resume] Cannot resolve ${shown}: ${escapeUnsafeText(errorToString(error))}`);
+      return {
+        ok: false,
+        error:
+          error instanceof AmbiguousSessionIdentityError
+            ? `Cannot resolve session ${shown}: ${error.message}`
+            : `Cannot resolve session ${shown}: the host's session records could not be read.`,
+      };
     }
 
     if (!claudeSessionId) {
       return {
         ok: false,
-        error: `Session ${targetSessionId} not found. No Claude session ID available for resume.`,
+        error: `Session ${shown} not found. No Claude session ID available for resume.`,
       };
     }
 
@@ -203,6 +249,9 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
     }
     return { ok: true, claudeSessionId, workingDirectory: dirResult.resolved };
   }
+
+  /** Session ids resumed through this hub lately: Claude id -> when the hold ends (ms). */
+  const resuming = new Map<string, number>();
 
   /**
    * A resume through the hub (#1129): start a child session daemon with `--resume` in the stored
@@ -222,10 +271,43 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       send(connectionId, createResumeSessionResponse(false, requestId, undefined, target.error));
       return;
     }
+    if (!UUID_SHAPE.test(target.claudeSessionId)) {
+      // The stored id is not one `--resume` takes; the child start would refuse it with words about
+      // arguments, which mean nothing to the person.
+      logError(
+        `[Resume] The stored Claude session id is not a UUID: ${escapeUnsafeText(target.claudeSessionId)}`,
+      );
+      send(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          "That session's Claude id is not a valid session id, so it cannot be resumed.",
+        ),
+      );
+      return;
+    }
+    const key = target.claudeSessionId.toLowerCase();
+    for (const [id, until] of resuming) if (until <= now()) resuming.delete(id);
+    if (resuming.has(key)) {
+      log(`Refusing a second resume of ${key}: one is in flight or just finished`);
+      send(
+        connectionId,
+        createResumeSessionResponse(false, requestId, undefined, JUST_RESUMED_TEXT),
+      );
+      return;
+    }
+    // Held for the whole start, so a request that arrives while it runs is refused, and then for a
+    // short while after a success. A failed start frees the session at once.
+    resuming.set(key, Number.POSITIVE_INFINITY);
     log(
       `Resuming Claude session ${target.claudeSessionId} through a child daemon in ${escapeUnsafeText(target.workingDirectory)}`,
     );
-    let outcome: Awaited<ReturnType<StartChildSession>>;
+    let outcome: Awaited<ReturnType<StartChildSession>> = {
+      ok: false,
+      error: CHILD_START_FAILED_TEXT,
+    };
     try {
       outcome = await startChild(target.workingDirectory, {
         args: harness.resumeArgs(target.claudeSessionId),
@@ -235,7 +317,9 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       logError(
         `[Resume] Failed to start a child daemon: ${escapeUnsafeText(errorToString(error))}`,
       );
-      outcome = { ok: false, error: CHILD_START_FAILED_TEXT };
+    } finally {
+      if (outcome.ok) resuming.set(key, now() + RESUME_HOLD_MS);
+      else resuming.delete(key);
     }
     if (!outcome.ok) {
       send(connectionId, createResumeSessionResponse(false, requestId, undefined, outcome.error));
@@ -263,11 +347,18 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       targetSessionId: string,
       requestId: UUID,
     ): Promise<void> => {
+      // The envelope is validated, the payload is not: the id can be missing, null or an array.
+      if (typeof (targetSessionId as unknown) !== 'string') {
+        log(`Resume session request from ${connectionId} names no session; refused`);
+        send(
+          connectionId,
+          createResumeSessionResponse(false, requestId, undefined, NO_SESSION_NAMED_TEXT),
+        );
+        return;
+      }
       // The id came off the wire: written out, so a control character in it cannot act on a
       // terminal that reads the log.
-      log(
-        `Resume session request from ${connectionId} for session ${escapeUnsafeText(targetSessionId)}`,
-      );
+      log(`Resume session request from ${connectionId} for session ${shownId(targetSessionId)}`);
 
       // A daemon that hosts another harness has no Claude session to resume or attach a Claude
       // resume to (#1179): refused with the hub's code, before any path below runs.

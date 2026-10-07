@@ -635,7 +635,7 @@ Status per item of item 13 (the letters are that list's):
   Refused as designed: `--permission-mode`, `--continue`, and `--resume` of an id a live session holds.
   A session started directly with `--permission-mode acceptEdits` and then resumed through the hub with `--resume` came back in `accept edits` mode, although the hub child's arguments named no mode and the account default differs: Claude restores the session's earlier mode on resume.
   That was seen with `acceptEdits` only; `bypassPermissions` was not tried.
-  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129).
+  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129; until #1129, which made the hub start a child daemon for it).
 - **(h) The headless Update and Trust prompts, and `remi attach` as the way out: NOT RUN.**
   No modal appeared, so `create_session_response.notice`'s sentence that `remi attach` lets the user answer an Update or Trust prompt is still UNVERIFIED and keeps its hedge.
 
