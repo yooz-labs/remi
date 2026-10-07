@@ -1734,6 +1734,10 @@ describe('what cli.ts hands the harness (#1164)', () => {
     // The cards the session held are dismissed after the harness's teardown (the order inside
     // `disposeAndDismiss` is its own test's) and while the dispatcher is still registered (#1223).
     expect(closed).toContain('disposeAndDismiss({');
+    // One Set: `onQuestionResolved` fills `closingResolved` while the disposal runs, and the
+    // helper reads the same Set, so a card the teardown dismissed (Codex's) is not sent twice.
+    expect(closed).toContain('closingResolved = resolvedAtClose;');
+    expect(closed).toContain('alreadyResolved: resolvedAtClose,');
     expect(dismissed).toBeGreaterThan(disposed);
     expect(dropped).toBeGreaterThan(dismissed);
   });
