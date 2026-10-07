@@ -4,6 +4,7 @@ import SwiftUI
 
 struct PhoneLiveRootView: View {
     let store: MachineStore
+    @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
 
@@ -13,6 +14,8 @@ struct PhoneLiveRootView: View {
                 questions: allQuestions,
                 sessions: allSessions,
                 machines: machineSummaries,
+                selectedMachineID: $selectedMachineID,
+                errorMessage: store.latestError?.message,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
                 onAnswer: answer,
@@ -20,7 +23,8 @@ struct PhoneLiveRootView: View {
                 onCancel: cancel,
                 onOpenSession: store.loadTranscript,
                 onSend: sendChat,
-                onAddMachine: addMachine
+                onAddMachine: addMachine,
+                onDismissError: store.clearLatestError
             )
         }
         .task { store.start() }
@@ -66,6 +70,7 @@ struct PhoneLiveRootView: View {
                 let count = machine.questions.count { $0.sessionId == session.sessionId }
                 return RemiSessionSummary(
                     id: session.sessionId,
+                    machineID: machine.id,
                     machineName: machine.displayName,
                     name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                     harness: session.harness ?? "claude",
@@ -103,6 +108,7 @@ struct PhoneLiveRootView: View {
                 : question.kind == "plan_approval" ? .planApproval : .permission,
             text: question.text,
             detail: question.detail,
+            machineID: machine.id,
             machineName: machine.displayName,
             sessionName: machine.sessions.first(where: { $0.sessionId == message.sessionId })?.name
                 ?? message.sessionId,

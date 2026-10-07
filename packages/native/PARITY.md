@@ -7,13 +7,13 @@ native targets now, not planned behavior.
 |---|---|---|---|---|
 | Direct WebSocket and reconnect | Yes | Yes | Yes | Direct transport is not encrypted by Remi; keep the pairing warning. |
 | Ed25519 identity and local approval | Yes | Yes | Yes | Real-hub approval integration test passes. |
-| Multiple machines and session daemons | Yes | Yes | Yes | Machine identity remains `host:port` until protocol #1234. |
+| Multiple machines and session daemons | Yes | Yes | Yes | iPhone groups sessions by machine and persists its machine scope. Machine identity remains `host:port` until protocol #1234. |
 | Session list and transcript history | Yes | Yes | Yes | Native renders text and tool-only transcript entries. |
 | Pending cards and cross-client dismissal | Yes | Yes | Yes | Native reconciles `question_resolved` and `question_snapshot`. |
 | Binary and standing-option answers | Yes | Yes | Yes | Answers use wire values; session grants are labeled. |
 | AskUserQuestion structured selections | Yes | Yes | Yes | Free-text sub-question answers still need a native control. |
 | Plan approval and terminal-only cards | Yes | Yes | Yes | Terminal-only cards never offer answer controls. |
-| Typed chat with prompt guard | Yes | Yes | Yes | Daemon errors are retained by the store; user-facing error presentation remains. |
+| Typed chat with prompt guard | Yes | Yes | Yes | iPhone presents daemon errors in a dismissible banner; Mac error presentation remains. |
 | Create session | Yes | No | Yes | iPhone creation UI remains to be designed. |
 | Add/persist direct machines | Yes | Yes | Yes | Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Menu bar | iPhone foreground banner and dismissal are implemented. |

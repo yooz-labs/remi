@@ -114,7 +114,12 @@ private struct QuestionOptions: View {
     var body: some View {
         VStack(spacing: RemiTheme.Spacing.xs) {
             ForEach(options) { option in QuestionOptionButton(option: option) { onAnswer(option.id) } }
-            Button("Cancel", role: .cancel, action: onCancel).buttonStyle(.glass).frame(maxWidth: .infinity).frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel")
+                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.glass)
         }
     }
 }
@@ -198,7 +203,12 @@ private struct QuestionSteps: View {
             }
             .buttonStyle(.glassProminent)
             .disabled(steps.contains { selections[$0.id, default: []].isEmpty })
-            Button("Cancel", role: .cancel, action: onCancel).buttonStyle(.glass)
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel")
+                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.glass)
         }
     }
 
