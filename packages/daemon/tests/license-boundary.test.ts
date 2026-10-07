@@ -3,9 +3,10 @@
  *
  * `packages/daemon` and `packages/shared` are Apache-2.0 and ship in the
  * published `remi` binary. `packages/web`, `packages/signaling`,
- * `packages/macos` and `packages/native` are PolyForm Shield 1.0.0. Code from the PolyForm packages
- * must therefore never be pulled into the Apache packages, or the compiled
- * binary would carry PolyForm code under an Apache-2.0 label.
+ * `packages/macos` and `packages/native` are PolyForm Shield 1.0.0. Code from
+ * the PolyForm packages must therefore never be pulled into the Apache
+ * packages, or the compiled binary would carry PolyForm code under an
+ * Apache-2.0 label.
  *
  * This test walks every TypeScript file under `packages/daemon/src` and
  * `packages/shared/src`, parses it with the TypeScript compiler (so comments
@@ -86,6 +87,9 @@ describe('license boundary detector (parses real import syntax only)', () => {
       'static import by workspace name': `import { x } from '@remi/web';`,
       'workspace subpath': `import { x } from '@remi/signaling/src/index';`,
       'macos by name': `import x from '@remi/macos';`,
+      'native by name': `import x from '@remi/native';`,
+      'relative path into native': `import z from '../../../native/src/z';`,
+      'repo-relative path into native': `import z from 'packages/native/src/z';`,
       'bare side-effect import': `import '@remi/web/src/styles';`,
       'type-only import': `import type { T } from '@remi/web';`,
       'export from': `export * from '@remi/signaling';`,
@@ -142,7 +146,7 @@ describe('Apache-2.0 packages never import PolyForm package code', () => {
     }
   });
 
-  test('no file in packages/daemon/src or packages/shared/src imports web, signaling or macos', () => {
+  test('no file in packages/daemon/src or packages/shared/src imports any PolyForm package', () => {
     const files = SCANNED_DIRS.flatMap(sourceFiles);
     // A glob that silently matched nothing would make this test vacuous.
     expect(files.length).toBeGreaterThan(150);
