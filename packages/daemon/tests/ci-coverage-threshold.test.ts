@@ -21,9 +21,10 @@ function coverageScript(): string {
     scriptLines.push(line.length > 0 ? line.slice(10) : '');
   }
 
-  const workflowCommand = 'bun test --coverage 2>&1';
-  expect(scriptLines.join('\n').split(workflowCommand)).toHaveLength(2);
-  return scriptLines.join('\n').replace(workflowCommand, 'cat "$COVERAGE_FIXTURE"');
+  // The check reads the output the test step kept (it does not run the suite a second time).
+  const workflowInput = 'test-output.txt';
+  expect(scriptLines.join('\n').split(workflowInput)).toHaveLength(2);
+  return scriptLines.join('\n').replace(workflowInput, '"$COVERAGE_FIXTURE"');
 }
 
 async function runThreshold(name: string, fixture: string | Buffer) {
@@ -56,6 +57,19 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(tempRoot, { recursive: true, force: true });
+});
+
+describe('CI test step keeps its output for the threshold check', () => {
+  test('the suite runs once: its output goes to the file the check reads, and a failure still fails the step', () => {
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const step = workflow.slice(
+      workflow.indexOf('      - name: Test with coverage\n'),
+      workflow.indexOf(stepHeader),
+    );
+    expect(step).toContain('set -o pipefail');
+    expect(step).toContain('2>&1 | tee test-output.txt');
+    expect(workflow.split('bun test --coverage')).toHaveLength(2);
+  });
 });
 
 describe('CI coverage threshold shell pipeline', () => {
