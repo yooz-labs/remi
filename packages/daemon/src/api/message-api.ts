@@ -275,7 +275,9 @@ export class MessageAPI {
       return { status: 'held' };
     }
     if (!this.questionDedup.shouldEmit(question)) return { status: 'deduped' };
-    this.events.onQuestion?.(question, opts);
+    // Options only when given (#1235: a render's answer path), so other callers see one argument.
+    if (opts === undefined) this.events.onQuestion?.(question);
+    else this.events.onQuestion?.(question, opts);
     return { status: 'registered' };
   }
 
