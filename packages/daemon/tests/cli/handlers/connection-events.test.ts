@@ -534,6 +534,29 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(false);
     });
 
+    test('reports the closed connection, so the device behind it is marked seen (#1254)', async () => {
+      const closed: string[] = [];
+      const handlers = createConnectionHandlers({
+        sessionRegistry,
+        currentOwnedSession: () => null,
+        hubMode: false,
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
+        trackConnection: () => {},
+        untrackConnection: () => {},
+        onConnectionAdded: () => {},
+        onConnectionRemoved: () => {},
+        cancelOrphanTimeout: () => {},
+        send,
+        remiVersion: '0.0.0-test',
+        onConnectionClosed: (connectionId) => closed.push(connectionId),
+      });
+
+      await handlers.onDisconnect(CID, 'client closed');
+
+      expect(closed).toEqual([CID]);
+    });
+
     test('detaching one of two attached connections leaves the other attached (#795)', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());

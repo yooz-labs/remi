@@ -81,3 +81,27 @@ describe('the push lease (#1254)', () => {
     void response;
   }, 60000);
 });
+
+describe('the lease is renewed while the phone stays connected (#1254)', () => {
+  test('a phone connected for longer than the lease is still pushed', async () => {
+    // A 7.2-second lease; the daemon renews a connected phone's lease well inside it.
+    const r = await startWithPhone({
+      seed: (remiDir) =>
+        fs.writeFileSync(
+          path.join(remiDir, 'config.toml'),
+          '[notifications]\npush_lease_hours = 0.002\n',
+        ),
+      register: [{ token: WANTS }],
+    });
+    await Bun.sleep(10_000);
+
+    const response = heldPrompt(r);
+
+    await pollUntil(
+      () => r.pushes.some((p) => p.token === WANTS && p.kind === 'question'),
+      8000,
+      'the question push to the phone that stayed connected',
+    );
+    void response;
+  }, 60000);
+});
