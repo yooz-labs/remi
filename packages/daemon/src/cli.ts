@@ -223,7 +223,10 @@ import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decisi
 import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
-import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
+import {
+  type NotificationDispatcher,
+  drainPushDeliveries,
+} from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
@@ -1121,6 +1124,9 @@ const orphanTimeoutMs =
 // registry below is constructed before `sessionHandlers` exists, so onSessionClosed
 // reaches the resolver through this holder, assigned once the handlers are wired.
 let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
+// The cards resolved while a session's close is being handled (#1223), so the
+// close's own dismissal of the cards it held skips those already dismissed.
+let closingResolved: Set<UUID> | null = null;
 // Mirrors the session's pending questions into the live-sessions registry
 // file (#786/#787), keyed by question id so `createdAt` stays stable across
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
@@ -1136,7 +1142,7 @@ const sessionRegistry = new SessionRegistry(
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
-    onSessionClosed: (sessionId, reason) => {
+    onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1146,7 +1152,23 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       // The session's dispose() also drops its #914 admits filter, so a closed
       // session's binder can never keep admitting turns on its behalf.
-      harnessSessions.get(sessionId)?.dispose();
+      closingResolved = new Set<UUID>();
+      try {
+        harnessSessions.get(sessionId)?.dispose();
+        // #1223: the cards the session still held are dismissed on every
+        // client and lock screen. `closeSession` cleared the registry before
+        // this ran, so the harness's own teardown could not look them up; a
+        // card that teardown already dismissed (Codex's) is not sent twice.
+        // Before `sessionNotifiers.delete` below: the dismissal needs the
+        // session's dispatcher.
+        for (const questionId of pendingQuestionIds) {
+          if (!closingResolved.has(questionId)) {
+            onQuestionResolved(sessionId, questionId, 'cancelled');
+          }
+        }
+      } finally {
+        closingResolved = null;
+      }
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
       // QuestionPresenceTracker (#920): a stale entry would make
@@ -1715,6 +1737,7 @@ const onQuestionResolved = (
   questionId: UUID,
   reason: 'answered' | 'cancelled',
 ): void => {
+  closingResolved?.add(questionId);
   try {
     registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
   } catch (err) {
@@ -2436,7 +2459,15 @@ async function cleanup(): Promise<void> {
       }
     }
   }
+
+  // #1223: a session's last pushes (its cards' dismissals at close, a final
+  // notice) are usually still in flight when the PTY exit lands here, and the
+  // process exits right after this returns. Wait for them, bounded.
+  await drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
 }
+
+/** How long a shutting-down daemon waits for its pushes in flight (#1223). */
+const PUSH_DRAIN_TIMEOUT_MS = 2000;
 
 // Guard against unhandled rejections / uncaught exceptions killing the whole
 // daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived

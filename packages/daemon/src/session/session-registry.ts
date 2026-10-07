@@ -73,7 +73,17 @@ export interface SessionRegistryEvents {
   /** Session was created */
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
-  onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
+  /**
+   * The session closed. `pendingQuestionIds` are the cards it still held,
+   * snapshotted before the session was cleared (#1223): by the time this fires
+   * the registry no longer has them, so whoever must dismiss them on clients
+   * and lock screens reads them from here.
+   */
+  onSessionClosed?: (
+    sessionId: UUID,
+    reason: 'timeout' | 'pty_exit' | 'forced',
+    pendingQuestionIds: readonly UUID[],
+  ) => void;
   /** The session's last attached connection detached, leaving it with none.
    *  Fires for ALL such detach reasons, not only genuine orphans: a plain
    *  non-locally-owned, non-persistent session becomes orphaned (orphan
@@ -592,10 +602,13 @@ export class SessionRegistry {
       });
     }
 
+    // The cards it still holds, before they go with it (#1223).
+    const pendingQuestionIds = [...this.session.questionStore.questions.keys()];
+
     // Clear the session
     this.session = null;
 
-    this.events.onSessionClosed?.(sessionId, reason);
+    this.events.onSessionClosed?.(sessionId, reason, pendingQuestionIds);
   }
 
   /**

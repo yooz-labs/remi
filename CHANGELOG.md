@@ -12,6 +12,12 @@ All notable changes to Remi are documented here.
 - What this does not do: a process running as the same user can still read the daemon's own environment and arguments (`ps eww` on macOS, `/proc/<pid>/environ` on Linux), so an agent that looks for them can still find them there. Put the Telegram token in `config.toml` (`[telegram] bot_token`, readable only by you) rather than the environment. Reading the push secret and the passphrase from a file is #1252. Commands Codex runs execute in its shared app-server, which keeps the environment it was started with.
 - A `remi` command the agent runs no longer sees these variables: one that needs an encrypted identity asks for `REMI_PASSPHRASE` and fails, and a `remi serve` it starts has no Telegram token or push secret from the environment.
 
+### A closed session's cards leave the lock screen (#1223)
+
+#### Fixed
+
+- When a session really closed (Claude exited, or the session was stopped), the cards it had pushed stayed on the lock screen. The registry forgot the session before anything could dismiss its cards, and a daemon whose agent exited quit within milliseconds, before a push in flight left. A closed session's cards are now dismissed in the app and on the lock screen. That covers a held prompt and also a card the permission relay does not track, such as an MCP question or a trust dialog. The daemon also waits up to 2 seconds for its pushes to leave before it exits.
+
 ### Relay: off by default, and closed without authentication (#1193)
 
 `network.relay` now defaults to `false`.
