@@ -2647,7 +2647,13 @@ async function cleanup(): Promise<void> {
   transcriptFallbackTimers.clear();
   liveSessionsWatcherCloser?.();
   liveSessionsWatcherCloser = null;
+  // `remi stop` kills a hub 5 s after SIGTERM. Stopping the adapters can take up to the relay's
+  // orderly-close grace (ORDERLY_CLOSE_GRACE_MS, #1225), so the drain of the pushes already in
+  // flight (#1223) runs beside it, not after it, and both drains share one budget.
+  const drainUntil = Date.now() + PUSH_DRAIN_TIMEOUT_MS;
+  const draining = drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
   await registry.stopAll();
+  await draining;
   await sessionRegistry.shutdown();
   cleanupStatusFile();
 
@@ -2676,8 +2682,10 @@ async function cleanup(): Promise<void> {
 
   // #1223: a session's last pushes (its cards' dismissals at close, a final
   // notice) are usually still in flight when the PTY exit lands here, and the
-  // process exits right after this returns. Wait for them, bounded.
-  await drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
+  // process exits right after this returns. The drain above waited for those;
+  // this one waits for any the session shutdown started, with what is left of
+  // the budget.
+  await drainPushDeliveries(Math.max(0, drainUntil - Date.now()));
 }
 
 /** How long a shutting-down daemon waits for its pushes in flight (#1223). */
