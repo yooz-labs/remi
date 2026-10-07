@@ -60,6 +60,8 @@ type Peer = {
   revisions: ReadonlyMap<string, number>;
   orderlyClosing: boolean;
   transportClosing: boolean;
+  /** The hub asked to close this pipe (its own close or a channel failure), for the close log. */
+  hubClosed: boolean;
   ending?: Promise<void>;
   closing?: Promise<void>;
   pendingFrames: number;
@@ -301,6 +303,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       answerIds: new MessageIdTracker(),
       orderlyClosing: false,
       transportClosing: false,
+      hubClosed: false,
       revisions: new Map(this.revisions),
       pendingFrames: 0,
       pendingApplications: 0,
@@ -481,7 +484,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                   }
                   ws.send(frame);
                 },
-                close: (code, reason) => ws.close(code, reason),
+                close: (code, reason) => {
+                  if (ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
+                  ws.close(code, reason);
+                },
               });
               if (!this.current(peer) || !this.enrolled(peer)) {
                 await ready.channel.transportClosed();
@@ -546,7 +552,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     ws.onerror = () => {
       void this.closePeer(peer);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      // Who ended the pipe and how this side saw the close (#1225), in a fixed form with no
+      // connection id (#1200).
+      this.log(
+        `Relay pipe closed by ${peer.hubClosed ? 'the hub' : 'the far side'} (${event.code}${event.wasClean ? '' : ', unclean'})`,
+      );
       void this.transportEnd(peer);
     };
   }
@@ -917,6 +928,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }
       peer.connection?.close('Relay closed');
       this.peers.delete(peer.cid);
+      if (peer.ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
       peer.ws.close(
         orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
         orderly ? '' : relayV2.FAILURE_CLOSE.reason,
