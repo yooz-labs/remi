@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { CAPABILITY_HEADER } from '../../packages/daemon/src/auth/capability-token.ts';
+import { ORDERLY_CLOSE_GRACE_MS } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { reserveRange } from '../../packages/daemon/tests/session/port-test-helpers.ts';
 import { type TestWorker, startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 
@@ -304,8 +305,6 @@ async function paired() {
 }
 /** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
 const RESETTING_RUNTIME = '1.3.11';
-/** How long the hub waits after its BYE for the far side to close the pipe (`hub-relay.ts`). */
-const ORDERLY_CLOSE_GRACE_MS = 2000;
 /**
  * How the Worker saw the hub's pipe close: the first close the room recorded, as
  * `close <code> "<reason>"` (the hub's pipe closes before the client, whose close it causes).

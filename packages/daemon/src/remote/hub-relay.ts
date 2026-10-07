@@ -62,7 +62,7 @@ const keyBase64 = (key: Uint8Array) => Buffer.from(key).toString('base64');
  * one Worker round trip; 2 s leaves room for a slow link and a loaded machine, and bounds what a
  * peer that never closes costs: a revoke, a shutdown or a refused frame waits this long at most.
  */
-const ORDERLY_CLOSE_GRACE_MS = 2000;
+export const ORDERLY_CLOSE_GRACE_MS = 2000;
 /** Resolve when `promise` does or after `ms`, whichever is first. Never rejects. */
 async function waitAtMost(promise: Promise<void>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
