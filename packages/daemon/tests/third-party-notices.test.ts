@@ -42,13 +42,14 @@ function metafilePackages(entry: string, cwd: string): Map<string, string> {
   const meta = JSON.parse(readFileSync(join(out, 'meta.json'), 'utf8')) as {
     inputs: Record<string, unknown>;
   };
+  // Keyed by directory: two versions of one package are two entries.
   const roots = new Map<string, string>();
   for (const input of Object.keys(meta.inputs)) {
     const at = input.lastIndexOf('node_modules/');
     if (at < 0) continue;
     const rest = input.slice(at + 'node_modules/'.length).split('/');
     const name = rest[0]?.startsWith('@') ? `${rest[0]}/${rest[1]}` : (rest[0] ?? '');
-    roots.set(name, join(cwd, input.slice(0, at + 'node_modules/'.length) + name));
+    roots.set(join(cwd, input.slice(0, at + 'node_modules/'.length) + name), name);
   }
   return roots;
 }
@@ -61,7 +62,7 @@ describe('third-party notices (#1131)', () => {
 
     const notices = renderNotices(await bundledPackages(entry, repoRoot), '0.0.0-test');
 
-    for (const [name, root] of expected) {
+    for (const [root, name] of expected) {
       const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
         version: string;
       };
@@ -87,6 +88,101 @@ describe('third-party notices (#1131)', () => {
       root: 'node_modules/ms',
     });
     expect(packageRootOf('packages/daemon/src/cli.ts')).toBeNull();
+  });
+
+  /** A throwaway project whose entry requires `entryRequires`. */
+  function project(
+    pkgs: ReadonlyArray<{
+      dir: string;
+      name: string;
+      version: string;
+      files: Record<string, string>;
+      requires?: string[];
+    }>,
+    entryRequires: string[],
+  ): string {
+    const root = mkdtempSync(join(tmpdir(), 'remi-notices-project-'));
+    temps.push(root);
+    for (const pkg of pkgs) {
+      const dir = join(root, pkg.dir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: pkg.name, version: pkg.version, main: 'index.js', license: 'MIT' }),
+      );
+      const body = (pkg.requires ?? []).map((r) => `require('${r}');`).join('\n');
+      writeFileSync(
+        join(dir, 'index.js'),
+        `${body}\nmodule.exports = '${pkg.name}@${pkg.version}';\n`,
+      );
+      for (const [file, text] of Object.entries(pkg.files)) writeFileSync(join(dir, file), text);
+    }
+    writeFileSync(
+      join(root, 'entry.js'),
+      `${entryRequires.map((r) => `console.log(require('${r}'));`).join('\n')}\n`,
+    );
+    return root;
+  }
+
+  test('two versions of one package are both listed (#1255 review)', async () => {
+    const root = project(
+      [
+        {
+          dir: 'node_modules/dup',
+          name: 'dup',
+          version: '1.0.0',
+          files: { LICENSE: 'dup one license' },
+        },
+        {
+          dir: 'node_modules/other',
+          name: 'other',
+          version: '1.0.0',
+          files: { LICENSE: 'other license' },
+          requires: ['dup'],
+        },
+        {
+          dir: 'node_modules/other/node_modules/dup',
+          name: 'dup',
+          version: '2.0.0',
+          files: { LICENSE: 'dup two license' },
+        },
+      ],
+      ['dup', 'other'],
+    );
+
+    const notices = renderNotices(await bundledPackages('entry.js', root), '0.0.0-test');
+
+    expect(notices).toContain('dup@1.0.0');
+    expect(notices).toContain('dup@2.0.0');
+    expect(notices).toContain('dup one license');
+    expect(notices).toContain('dup two license');
+  });
+
+  test('every license file and the NOTICE file are reproduced, in name order (#1255 review)', async () => {
+    const root = project(
+      [
+        {
+          dir: 'node_modules/dual',
+          name: 'dual',
+          version: '3.0.0',
+          files: {
+            'LICENSE-MIT': 'the mit text',
+            'LICENSE-APACHE': 'the apache text',
+            NOTICE: 'the notice text',
+          },
+        },
+      ],
+      ['dual'],
+    );
+
+    const notices = renderNotices(await bundledPackages('entry.js', root), '0.0.0-test');
+
+    const apache = notices.indexOf('the apache text');
+    const mit = notices.indexOf('the mit text');
+    const notice = notices.indexOf('the notice text');
+    expect(apache).toBeGreaterThan(0);
+    expect(mit).toBeGreaterThan(apache);
+    expect(notice).toBeGreaterThan(mit);
   });
 
   test('a bundled package with no license file fails generation and is named', async () => {
@@ -132,9 +228,11 @@ describe('the notices ship with every package and release (#1131)', () => {
   });
 
   test('CI checks every bundled package has a license file, and the formula installs the notices', () => {
-    expect(read('.github/workflows/ci.yml')).toContain(
-      'bun scripts/third-party-notices.ts --check',
+    const ci = read('.github/workflows/ci.yml');
+    const typecheckJob = ci.slice(ci.indexOf('    name: Type Check'), ci.indexOf('    name: Test'));
+    expect(typecheckJob).toContain('      - run: bun scripts/third-party-notices.ts --check');
+    expect(read('scripts/update-homebrew.sh')).toContain(
+      'doc.install Dir[\\"LICENSE\\", \\"NOTICE\\", \\"THIRD_PARTY_NOTICES\\"]',
     );
-    expect(read('scripts/update-homebrew.sh')).toContain('THIRD_PARTY_NOTICES');
   });
 });
