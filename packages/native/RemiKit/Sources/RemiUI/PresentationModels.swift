@@ -44,13 +44,15 @@ public struct RemiQuestionStep: Identifiable, Sendable, Equatable {
     public let header: String?
     public let text: String
     public let allowsMultipleSelection: Bool
+    public let allowsFreeText: Bool
     public let options: [RemiQuestionOption]
 
-    public init(id: String, header: String? = nil, text: String, allowsMultipleSelection: Bool = false, options: [RemiQuestionOption]) {
+    public init(id: String, header: String? = nil, text: String, allowsMultipleSelection: Bool = false, allowsFreeText: Bool = true, options: [RemiQuestionOption]) {
         self.id = id
         self.header = header
         self.text = text
         self.allowsMultipleSelection = allowsMultipleSelection
+        self.allowsFreeText = allowsFreeText && !allowsMultipleSelection
         self.options = options
     }
 }
@@ -58,10 +60,33 @@ public struct RemiQuestionStep: Identifiable, Sendable, Equatable {
 public struct RemiQuestionStepSelection: Sendable, Equatable {
     public let stepID: String
     public let optionIDs: [String]
+    public let text: String?
 
-    public init(stepID: String, optionIDs: [String]) {
+    public init(stepID: String, optionIDs: [String], text: String? = nil) {
         self.stepID = stepID
         self.optionIDs = optionIDs
+        self.text = text
+    }
+}
+
+public enum RemiQuestionForm {
+    public static let freeTextLimit = 2_000
+
+    public static func isComplete(
+        steps: [RemiQuestionStep],
+        selections: [RemiQuestionStepSelection]
+    ) -> Bool {
+        let selectionByStep = Dictionary(uniqueKeysWithValues: selections.map { ($0.stepID, $0) })
+        return steps.allSatisfy { step in
+            guard let selection = selectionByStep[step.id] else { return false }
+            if step.allowsMultipleSelection {
+                return !selection.optionIDs.isEmpty && selection.text == nil
+            }
+            let text = selection.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard text.count <= freeTextLimit else { return false }
+            return (selection.optionIDs.count == 1 && text.isEmpty)
+                || (selection.optionIDs.isEmpty && !text.isEmpty)
+        }
     }
 }
 
