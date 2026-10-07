@@ -47,7 +47,8 @@ describe('hubSupport (#1237)', () => {
       supported: false,
       reason: 'capabilities',
       missing: ['example.feature'],
-      message: "This machine's remi (0.7.16) cannot example.feature. Update remi on that machine.",
+      message:
+        "This machine's remi (0.7.16) cannot example.feature. Update remi on that machine and restart it.",
     });
   });
 
@@ -57,7 +58,7 @@ describe('hubSupport (#1237)', () => {
     const result = hubSupport(ack, ['a', 'b', 'b', 'd']);
     expect(result).toMatchObject({ supported: false, reason: 'capabilities', missing: ['b', 'd'] });
     expect(result.supported === false && result.message).toBe(
-      "This machine's remi (0.7.17) cannot b; d. Update remi on that machine.",
+      "This machine's remi (0.7.17) cannot b; d. Update remi on that machine and restart it.",
     );
   });
 
@@ -79,7 +80,7 @@ describe('hubSupport (#1237)', () => {
   test('a capability name is looked up as the registry own key, never an inherited one', () => {
     const result = hubSupport(current, ['constructor', 'toString']);
     expect(result.supported === false && result.message).toBe(
-      "This machine's remi (0.7.17) cannot constructor; toString. Update remi on that machine.",
+      "This machine's remi (0.7.17) cannot constructor; toString. Update remi on that machine and restart it.",
     );
   });
 
@@ -99,8 +100,19 @@ describe('hubSupport (#1237)', () => {
       reason: 'protocol-version',
       missing: [],
       message:
-        "This machine's remi (0.7.17) speaks protocol version 1, and this app speaks version 2. Update remi on that machine.",
+        "This machine's remi (0.7.17) speaks protocol version 1, and this app speaks version 2. Update remi on that machine and restart it.",
     });
+  });
+
+  test('an ack without a version is version 1: a client on another version refuses it (#1269 review)', () => {
+    expect(hubSupport(legacy, [], 2)).toEqual({
+      supported: false,
+      reason: 'protocol-version',
+      missing: [],
+      message:
+        "This machine's remi (0.7.16) speaks protocol version 1, and this app speaks version 2. Update remi on that machine and restart it.",
+    });
+    expect(hubSupport(legacy, [], 1)).toEqual({ supported: true });
   });
 
   test('a version that is not a positive integer is refused as unreadable', () => {
@@ -110,7 +122,7 @@ describe('hubSupport (#1237)', () => {
         reason: 'protocol-version',
         missing: [],
         message:
-          "This machine's remi (0.7.17) sent a protocol version this app cannot read. Update remi on that machine and this app.",
+          "This machine's remi (0.7.17) sent a protocol version this app cannot read. Update remi on that machine and restart it. Update this app too.",
       });
     }
   });
@@ -128,27 +140,27 @@ describe('hubSupport (#1237)', () => {
     test('is left out when absent, empty or not text', () => {
       for (const daemonVersion of [undefined, '', 7, null]) {
         expect(message(daemonVersion)).toBe(
-          "This machine's remi cannot a. Update remi on that machine.",
+          "This machine's remi cannot a. Update remi on that machine and restart it.",
         );
       }
     });
 
     test('is escaped, newline and tab included: the daemon chose it, and a message is one line', () => {
-      expect(message('0.7.17‮evil\n')).toBe(
-        "This machine's remi (0.7.17\\u202Eevil\\u000A) cannot a. Update remi on that machine.",
+      expect(message('0.7.17\u202Eevil\n')).toBe(
+        "This machine's remi (0.7.17\\u202Eevil\\u000A) cannot a. Update remi on that machine and restart it.",
       );
       expect(message('0.7\t17')).toBe(
-        "This machine's remi (0.7\\u000917) cannot a. Update remi on that machine.",
+        "This machine's remi (0.7\\u000917) cannot a. Update remi on that machine and restart it.",
       );
     });
 
     test('is cut at 40 code points, before escaping, never inside a surrogate pair', () => {
       const long = `${'9'.repeat(39)}\u{1F600}tail`;
       expect(message(long)).toBe(
-        `This machine's remi (${'9'.repeat(39)}\u{1F600}...) cannot a. Update remi on that machine.`,
+        `This machine's remi (${'9'.repeat(39)}\u{1F600}...) cannot a. Update remi on that machine and restart it.`,
       );
       expect(message('8'.repeat(40))).toBe(
-        `This machine's remi (${'8'.repeat(40)}) cannot a. Update remi on that machine.`,
+        `This machine's remi (${'8'.repeat(40)}) cannot a. Update remi on that machine and restart it.`,
       );
     });
   });

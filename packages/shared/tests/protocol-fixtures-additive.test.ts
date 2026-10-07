@@ -165,9 +165,15 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     expect(ack['capabilities']).toEqual(['workspaces']);
   });
 
-  test('the hello_ack_legacy golden is the ack of a daemon before #1237: the same, without version or capabilities', () => {
-    const { protocolVersion: _v, capabilities: _c, ...before } = load('hello_ack');
-    expect(load('hello_ack_legacy')).toEqual(before);
+  test('the hello_ack_legacy golden is the ack of a daemon before #1237: no version, no capabilities', () => {
+    // A literal, not the current golden minus two fields: a field added to hello_ack later must
+    // not appear in the ack of a daemon that predates it.
+    expect(load('hello_ack_legacy')).toEqual({
+      ...LEGACY['hello_ack']?.value,
+      harness: 'claude',
+      harnessSessionId: CLAUDE_ID,
+      harnesses: ['claude', 'codex'],
+    });
   });
 
   test('the hello_ack fixture advertises the harnesses a client may ask for', () => {

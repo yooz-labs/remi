@@ -117,7 +117,7 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     expect(acks().map((a) => a.harnesses)).toEqual([['claude'], ['claude', 'codex'], ['codex']]);
   });
 
-  test("every ack names the protocol version and the daemon's capabilities (#1237)", async () => {
+  test('every ack names the protocol version and DAEMON_CAPABILITIES; the next test proves each path passes the list (#1237)', async () => {
     const h = handlers({ harnessId: 'claude' });
     await connect(h); // session-less
     withPrimarySession();
