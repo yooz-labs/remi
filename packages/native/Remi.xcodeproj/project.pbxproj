@@ -353,6 +353,9 @@
 		8A88B749DCF7DFA62D63C157 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
@@ -391,6 +394,7 @@
 		B5D029BB176C21B8EDCA4198 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -411,6 +415,8 @@
 		BBC861F8071C6F832546E4DC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
