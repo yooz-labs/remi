@@ -4,7 +4,7 @@
  * hub's own identity store, and a real WebSocket client with a real Ed25519 key answering the
  * challenge. Every key is made in the test; nothing real is read.
  *
- * What these pin is the contract a native app builds against (`.context/provisioning-keys.md`):
+ * What these pin is the contract a native app builds against (`docs/PROVISIONING.md`):
  * the three ways a client key reaches a machine's authorized keys (approve a pending key, import
  * its public-only JSON before it ever connects, pair by QR) end in the same record, the label
  * names the client, a revoked or rotated key needs approval again, and the grant is the machine's
@@ -95,6 +95,12 @@ function makeHost(extraEnv: Record<string, string> = {}): Host {
   fs.mkdirSync(path.join(dir, 'bin'));
   for (const agent of ['claude', 'codex'])
     fs.writeFileSync(path.join(dir, 'bin', agent), '#!/bin/sh\nexit 88\n', { mode: 0o700 });
+  // `remi` as a script would find it on PATH: the CLI under test, run by the runtime under test.
+  fs.writeFileSync(
+    path.join(dir, 'bin', 'remi'),
+    `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`,
+    { mode: 0o700 },
+  );
   const home = path.join(dir, '.remi');
   const host: Host = {
     dir,
@@ -447,6 +453,95 @@ describe('provisioning a client key (#1303)', () => {
     );
     expect((await authenticate(portSecond, client.identity)).result.success).toBe(true);
   }, 90000);
+
+  test('the provisioning script in the docs authorizes a directory of devices, twice, and says what failed', async () => {
+    const doc = fs.readFileSync(
+      path.resolve(import.meta.dir, '../../../../docs/PROVISIONING.md'),
+      'utf-8',
+    );
+    const script = /```sh\n(#!\/bin\/sh\n# provision-devices\.sh[\s\S]*?)```/.exec(doc)?.[1];
+    if (script === undefined)
+      throw new Error('the provisioning script is not in docs/PROVISIONING.md');
+    const host = makeHost();
+    const phone = await newClient();
+    const mac = await newClient();
+    const devices = path.join(host.dir, 'devices');
+    fs.mkdirSync(devices);
+    fs.writeFileSync(path.join(devices, 'work-iphone.json'), phone.publicJson);
+    fs.writeFileSync(path.join(devices, 'work-mac.json'), mac.publicJson);
+    const scriptFile = path.join(host.dir, 'provision-devices.sh');
+    fs.writeFileSync(scriptFile, script, { mode: 0o700 });
+    const run = async () => {
+      const proc = Bun.spawn(['sh', scriptFile, devices], {
+        env: host.env,
+        cwd: host.dir,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { stdout, stderr, code };
+    };
+
+    const first = await run();
+    expect(first.code).toBe(0);
+    expect(first.stdout).toContain('authorized work-iphone');
+    expect(first.stdout).toContain('authorized work-mac');
+    // Run again by a bootstrap that restarts: nothing changes and nothing fails.
+    const second = await run();
+    expect(second.code).toBe(0);
+    expect(second.stdout).toContain('already authorized: work-iphone');
+    expect(
+      new IdentityStore(host.home)
+        .listAuthorizedKeys()
+        .map((k) => [k.label, k.fingerprint])
+        .sort(),
+    ).toEqual(
+      [
+        ['work-iphone', phone.fingerprint],
+        ['work-mac', mac.fingerprint],
+      ].sort(),
+    );
+    // A file that is not a device key is named, fails the run, and does not stop the others.
+    fs.writeFileSync(path.join(devices, 'broken.json'), 'not json');
+    const later = await newClient();
+    fs.writeFileSync(path.join(devices, 'zz-later.json'), later.publicJson);
+    const third = await run();
+    expect(third.code).toBe(1);
+    expect(third.stderr).toContain('could not authorize broken');
+    expect(third.stdout).toContain('authorized zz-later');
+
+    // The grants made before the hub existed let the devices in.
+    const port = await startHub(host);
+    expect((await authenticate(port, phone.identity)).result.success).toBe(true);
+    expect((await authenticate(port, later.identity)).result.success).toBe(true);
+  }, 90000);
+
+  test('the command an app shows, with the label single-quoted, stores the label as the person typed it', async () => {
+    const host = makeHost();
+    const client = await newClient();
+    // The rule in the docs: wrap in single quotes, and write each ' in the label as '\''.
+    const quote = (label: string) => `'${label.replaceAll("'", "'\\''")}'`;
+    const label = `Work iPhone's "second" $HOME; echo gone`;
+    // The key must be pending for the exact fingerprint to be approvable.
+    await new IdentityStore(host.home).registerPendingKey(client.publicKey);
+    const proc = Bun.spawn(
+      ['sh', '-c', `remi authorize ${client.fingerprint} --label ${quote(label)}`],
+      { env: host.env, cwd: host.dir, stdout: 'pipe', stderr: 'pipe' },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code, `${stdout}${stderr}`).toBe(0);
+    expect(new IdentityStore(host.home).listAuthorizedKeys()).toMatchObject([
+      { fingerprint: client.fingerprint, label },
+    ]);
+  });
 
   test("the session daemons a hub starts accept the machine's keys and share its approvals", async () => {
     const host = makeHost();
