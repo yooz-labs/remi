@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import {
   parseWorkspaceRequest,
   prepareWorkspace,
+  refusalForWorktreeList,
   worktreePath,
 } from '../../src/workspace/worktree.ts';
 
@@ -330,6 +331,166 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     expect(git(repo, 'branch', '--list', 'b')).toContain('b');
   });
 
+  /** A hook in `repo`, executable, whose body is `script`. */
+  function hook(repo: string, name: string, script: string): void {
+    const file = path.join(repo, '.git', 'hooks', name);
+    fs.writeFileSync(file, `#!/bin/sh\n${script}\n`);
+    fs.chmodSync(file, 0o755);
+  }
+
+  test('two requests whose branches map to one directory, at once: one intact worktree, one refusal (#1270 review)', async () => {
+    const repo = makeRepo(root);
+    for (let i = 0; i < 10; i++) {
+      const a = `c${i}/b`;
+      const b = `c${i}-b`;
+      const [first, second] = await Promise.all([
+        prepareWorkspace(parsed({ repository: repo, worktree: { branch: a } })),
+        prepareWorkspace(parsed({ repository: repo, worktree: { branch: b } })),
+      ]);
+      const won = [first, second].filter((r) => r.ok);
+      const lost = [first, second].filter((r) => !r.ok);
+      expect(won.length, `round ${i}`).toBe(1);
+      expect(lost.length, `round ${i}`).toBe(1);
+      const winner = won[0] as Extract<typeof first, { ok: true }>;
+      const loser = lost[0] as Extract<typeof first, { ok: false }>;
+      expect(loser.error, `round ${i}`).toContain('already exists on the host');
+      const branch = winner.workspace.worktree?.branch as string;
+      expect(
+        git(winner.workspace.directory, 'rev-parse', '--abbrev-ref', 'HEAD'),
+        `round ${i}`,
+      ).toBe(branch);
+      // The loser made no branch.
+      const other = branch === a ? b : a;
+      expect(git(repo, 'branch', '--list', other), `round ${i}`).toBe('');
+    }
+  }, 60000);
+
+  test('three requests for one branch, at once: exactly one wins', async () => {
+    const repo = makeRepo(root);
+    const results = await Promise.all(
+      [1, 2, 3].map(() =>
+        prepareWorkspace(parsed({ repository: repo, worktree: { branch: 'same' } })),
+      ),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const dir = path.join(root, 'remi-worktrees', 'project-same');
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('same');
+  });
+
+  test('the time limit holds even when a hook outlives git: the call returns, and says so', async () => {
+    const repo = makeRepo(root);
+    hook(repo, 'post-checkout', 'sleep 30');
+    const started = Date.now();
+    const result = await prepareWorkspace(
+      parsed({ repository: repo, worktree: { branch: 'slow' } }),
+      {
+        timeoutMs: 3000,
+      },
+    );
+    expect(Date.now() - started).toBeLessThan(10000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('took too long');
+    expect(result.detail).toContain('timed out');
+  }, 20000);
+
+  test('a hook that fails after the worktree is made: the worktree is used, with a notice', async () => {
+    const repo = makeRepo(root);
+    hook(repo, 'post-checkout', 'echo "hook says no" >&2; exit 1');
+    const result = await prepareWorkspace(
+      parsed({ repository: repo, worktree: { branch: 'hooked' } }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const dir = path.join(root, 'remi-worktrees', 'project-hooked');
+    expect(result.workspace.directory).toBe(dir);
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('hooked');
+    expect(result.notice).toContain('hook');
+    expect(result.notice).not.toContain(root);
+    expect(result.detail).toContain('hook says no');
+  });
+
+  test('a name too long for a directory is refused before git runs: no branch is made', async () => {
+    const repo = makeRepo(root, 'r'.repeat(60));
+    const branch = 'b'.repeat(200);
+    expect(await no({ repository: repo, worktree: { branch } })).toContain('too long');
+    expect(git(repo, 'branch', '--list', branch)).toBe('');
+  });
+
+  test('a branch that is a prefix of an existing one, or the other way round, is refused by name', async () => {
+    const repo = makeRepo(root);
+    git(repo, 'branch', 'feature');
+    git(repo, 'branch', 'fix/deep');
+    expect(await no({ repository: repo, worktree: { branch: 'feature/login' } })).toContain(
+      'conflicts with an existing branch',
+    );
+    expect(await no({ repository: repo, worktree: { branch: 'fix' } })).toContain(
+      'conflicts with an existing branch',
+    );
+    expect(fs.existsSync(path.join(root, 'remi-worktrees'))).toBe(false);
+  });
+
+  test('a branch or base with a bidi or invisible character is refused as text', () => {
+    for (const worktree of [{ branch: 'x‮y' }, { branch: 'a​b' }, { branch: 'b', base: 'main⁦' }]) {
+      expect(refused({ repository: '/r', worktree }), JSON.stringify(worktree)).toContain(
+        'Invalid workspace',
+      );
+    }
+  });
+
+  test('a lone surrogate passes the text check and git refuses it', async () => {
+    const repo = makeRepo(root);
+    expect(await no({ repository: repo, worktree: { branch: 'a\ud800b' } })).toContain(
+      'That branch name is not valid',
+    );
+  });
+
+  test('a main worktree whose path holds a control character is refused, even when named through a linked worktree', async () => {
+    const odd = makeRepo(root, 'new\nline');
+    const linked = path.join(root, 'linked');
+    git(odd, 'worktree', 'add', '-q', '-b', 'linked', linked);
+    expect(await no({ repository: real(linked) })).toContain('cannot be used');
+    expect(await no({ repository: real(linked), worktree: { branch: 'b' } })).toContain(
+      'cannot be used',
+    );
+  });
+
+  test('a detached HEAD is a base like any other commit', async () => {
+    const repo = makeRepo(root);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', '--detach');
+    const workspace = await ok({ repository: repo, worktree: { branch: 'from-detached' } });
+    expect(workspace.worktree).toEqual({ branch: 'from-detached', base: head });
+  });
+
+  test("remi's secrets never reach git or its hooks", async () => {
+    const repo = makeRepo(root);
+    const envFile = path.join(root, 'hook-env.txt');
+    hook(repo, 'post-checkout', `env > '${envFile}'`);
+    const saved = process.env['REMI_PASSPHRASE'];
+    process.env['REMI_PASSPHRASE'] = 'secret-test-value';
+    try {
+      await ok({ repository: repo, worktree: { branch: 'env' } });
+    } finally {
+      if (saved === undefined) Reflect.deleteProperty(process.env, 'REMI_PASSPHRASE');
+      else process.env['REMI_PASSPHRASE'] = saved;
+    }
+    const env = fs.readFileSync(envFile, 'utf-8');
+    expect(env).not.toContain('secret-test-value');
+    expect(env).toContain('GIT_TERMINAL_PROMPT=0');
+  });
+
+  test("the repository's fsmonitor command does not run", async () => {
+    const repo = makeRepo(root);
+    const marker = path.join(root, 'fsmonitor-ran');
+    const script = path.join(root, 'fsmonitor.sh');
+    fs.writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\n`);
+    fs.chmodSync(script, 0o755);
+    git(repo, 'config', 'core.fsmonitor', script);
+    await ok({ repository: repo, worktree: { branch: 'monitored' } });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   test('a refusal says nothing the client did not send; the detail is for the log', async () => {
     const repo = makeRepo(root);
     git(repo, 'branch', 'taken');
@@ -340,5 +501,36 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     if (result.ok) return;
     expect(result.error).not.toContain(root);
     expect(result.detail).toContain('taken');
+  });
+});
+
+describe('refusalForWorktreeList: what a failed worktree list means (#1270 review)', () => {
+  const result = (code: number, stderr: string, timedOut = false) => ({
+    code,
+    stdout: '',
+    stderr,
+    timedOut,
+  });
+
+  test('git older than 2.36 (no -z) is named as too old, not as "not a repository"', () => {
+    expect(refusalForWorktreeList(result(129, "error: unknown switch `z'"))).toContain('too old');
+  });
+
+  test('a repository git does not trust is named as such', () => {
+    expect(
+      refusalForWorktreeList(
+        result(128, "fatal: detected dubious ownership in repository at '/x'"),
+      ),
+    ).toContain('does not trust');
+  });
+
+  test('a timeout says the request took too long', () => {
+    expect(refusalForWorktreeList(result(-1, 'timed out', true))).toContain('took too long');
+  });
+
+  test('anything else is "not in a git repository"', () => {
+    expect(refusalForWorktreeList(result(128, 'fatal: not a git repository'))).toContain(
+      'not in a git repository',
+    );
   });
 });

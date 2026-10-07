@@ -228,6 +228,39 @@ describe('create requests with a workspace (#1236)', () => {
     ).toBe(true);
   });
 
+  test('a resume cannot start in a new worktree: refused, nothing made or spawned (#1270 review)', async () => {
+    await handlers().onCreateSessionRequest(CID, undefined, REQ, {
+      args: ['--resume', '3f9c2a1e-0000-4000-8000-000000000042'],
+      workspace: { repository: repo, worktree: { branch: 'b' } },
+    });
+    expect(response()).toMatchObject({ success: false });
+    expect(response().error).toContain('resumed session cannot start in a new worktree');
+    expect(probes).toBe(0);
+    expect(spawns).toEqual([]);
+    expect(fs.existsSync(path.join(root, 'remi-worktrees'))).toBe(false);
+  });
+
+  test('a resume in the repository itself, with no new worktree, is allowed', async () => {
+    await handlers().onCreateSessionRequest(CID, undefined, REQ, {
+      args: ['--resume', '3f9c2a1e-0000-4000-8000-000000000042'],
+      workspace: { repository: repo },
+    });
+    expect(response().success).toBe(true);
+    expect(spawns.map((s) => s.directory)).toEqual([repo]);
+  });
+
+  test('a hook that fails after the worktree is made: the session starts, and the response says so', async () => {
+    const hookFile = path.join(repo, '.git', 'hooks', 'post-checkout');
+    fs.writeFileSync(hookFile, '#!/bin/sh\nexit 1\n');
+    fs.chmodSync(hookFile, 0o755);
+    await handlers().onCreateSessionRequest(CID, undefined, REQ, {
+      workspace: { repository: repo, worktree: { branch: 'b' } },
+    });
+    expect(response().success).toBe(true);
+    expect(spawns.map((s) => s.directory)).toEqual([worktreeDir('b')]);
+    expect(response().notice).toContain('hook');
+  });
+
   test('a request with no workspace is unchanged: no workspace in the response', async () => {
     await handlers().onCreateSessionRequest(CID, repo, REQ, undefined);
     expect(spawns.map((s) => s.directory)).toEqual([repo]);
