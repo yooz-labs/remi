@@ -2,7 +2,7 @@
 
 Thanks for considering a contribution.
 Remi is the Yooz ecosystem's remote monitor for Claude Code (and other coding agent) sessions; PRs to the Apache-2.0 packages that improve correctness, latency or multi-machine discovery are welcome.
-The web client, the signaling relay and the native Mac app take outside changes only by prior written agreement; see [Outside contributions to the PolyForm Shield packages](#outside-contributions-to-the-polyform-shield-packages).
+The web client, the signaling relay, the WebView Mac app and the native Mac and iPhone apps take outside changes only by prior written agreement; see [Outside contributions to the PolyForm Shield packages](#outside-contributions-to-the-polyform-shield-packages).
 
 ## Before you start
 

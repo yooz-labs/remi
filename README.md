@@ -214,7 +214,7 @@ Remi is open core, and the license is set per directory.
 
 - **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
   Use, modify and redistribute them, commercially or not, under the terms of that license.
-- **Mobile and web client, hosted relay and native Mac app** (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
+- **Mobile and web client, hosted relay, and the Mac and iPhone apps** (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
   You can read, fork, modify and use them for any purpose **except** building a competing product, so you cannot offer a re-skinned commercial fork of the app or the relay.
   For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
 - **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.

@@ -117,7 +117,7 @@ remi/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
 │   ├── signaling/       # Cloudflare Workers signaling / relay service
-│   ├── macos/           # Native Mac app (Swift)
+│   ├── macos/           # WebView Mac app (a Swift shell around the web client)
 │   ├── native/          # Native SwiftUI Mac and iPhone apps (Xcode; see packages/native/AGENTS.md)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
