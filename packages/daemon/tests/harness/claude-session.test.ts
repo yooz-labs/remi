@@ -566,13 +566,17 @@ describe('what cli.ts hands the harness (#1164)', () => {
 
   test('session close disposes the harness session before it drops it', () => {
     const closed = slice(
-      'onSessionClosed: (sessionId, reason) => {',
+      'onSessionClosed: (sessionId, reason, pendingQuestionIds) => {',
       'sessionNotifiers.delete(sessionId);',
     );
     const disposed = closed.indexOf('harnessSessions.get(sessionId)?.dispose();');
+    const dismissed = closed.indexOf('onQuestionResolved(sessionId, questionId,');
     const dropped = closed.indexOf('harnessSessions.delete(sessionId);');
     expect(disposed).toBeGreaterThan(0);
-    expect(dropped).toBeGreaterThan(disposed);
+    // The cards the session held are dismissed after the harness's teardown
+    // and while its dispatcher is still registered (#1223).
+    expect(dismissed).toBeGreaterThan(disposed);
+    expect(dropped).toBeGreaterThan(dismissed);
   });
 
   test('cleanup stops the hook server before it disposes the sessions, and keeps them in the map', () => {
