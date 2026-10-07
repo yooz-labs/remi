@@ -90,6 +90,7 @@ private struct PairingIntroduction: View {
 
 private struct PairingStep: View {
     @State private var copied = false
+    @ScaledMetric(relativeTo: .caption) private var numberBadgeSize: CGFloat = 28
 
     let number: Int
     let title: LocalizedStringKey
@@ -107,7 +108,7 @@ private struct PairingStep: View {
         HStack(alignment: .top, spacing: 12) {
             Text(number, format: .number)
                 .font(.caption.weight(.bold))
-                .frame(width: 28, height: 28)
+                .frame(width: numberBadgeSize, height: numberBadgeSize)
                 .background(.secondary.opacity(0.14), in: Circle())
 
             VStack(alignment: .leading, spacing: 6) {

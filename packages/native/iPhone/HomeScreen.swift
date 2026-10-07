@@ -289,7 +289,7 @@ private struct ScopeButton: View {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
                 Label(title, systemImage: systemImage)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
             .frame(minWidth: 132, alignment: .leading)
