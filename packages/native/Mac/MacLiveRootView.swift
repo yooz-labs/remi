@@ -50,6 +50,9 @@ struct MacLiveRootView: View {
                             session: session,
                             transcript: transcript(for: session.id),
                             questions: questions(for: session.id),
+                            views: store.sessionViewsBySession[session.id] ?? [],
+                            transcriptForView: transcript,
+                            onSelectView: store.loadTranscript,
                             onAnswer: { questionId, value in
                                 store.answer(
                                     sessionId: session.id,
