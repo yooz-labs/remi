@@ -53,6 +53,9 @@
       "packages/daemon/scripts",
       "packages/macos/Remi/Resources/web",
       "packages/macos/DerivedData",
+      "packages/native/DerivedData",
+      "packages/native/RemiKit/.build",
+      "packages/native/RemiKit/.swiftpm",
       ".claude",
       "build"
     ]
