@@ -54,12 +54,37 @@ type Offer = {
   timer: ReturnType<typeof setTimeout>;
 };
 const keyBase64 = (key: Uint8Array) => Buffer.from(key).toString('base64');
+/**
+ * How long an orderly close waits, after the hub's BYE, for the far side to close the pipe
+ * (#1225). Closing right after the BYE can reset the connection (Bun 1.3.11's client close), and
+ * a reset can make the Worker lose what it had not read yet, the BYE included. A conforming client
+ * closes as soon as it has the hub's BYE (the web client: `relay-machine-channel.ts`), which takes
+ * one Worker round trip; 2 s leaves room for a slow link and a loaded machine, and bounds what a
+ * peer that never closes costs: a revoke, a shutdown or a refused frame waits this long at most.
+ */
+export const ORDERLY_CLOSE_GRACE_MS = 2000;
+/** Resolve when `promise` does or after `ms`, whichever is first. Never rejects. */
+async function waitAtMost(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    promise.catch(() => {}),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]);
+  clearTimeout(timer);
+}
 type Peer = {
   answers: AnswerResults;
   answerIds: MessageIdTracker;
   revisions: ReadonlyMap<string, number>;
   orderlyClosing: boolean;
   transportClosing: boolean;
+  /** The hub asked to close this pipe (its own close or a channel failure), for the close log. */
+  hubClosed: boolean;
+  /** Resolves once the pipe has closed or failed, whichever side ended it. */
+  gone: Promise<void>;
+  markGone: () => void;
   ending?: Promise<void>;
   closing?: Promise<void>;
   pendingFrames: number;
@@ -113,6 +138,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private machine: relayV2.Signer | undefined;
   private rid: Uint8Array = new Uint8Array();
   private readonly peers = new Map<string, Peer>();
+  /** Peers whose close is still running (a pipe in its orderly grace, #1225), for `stop()`. */
+  private readonly closingPeers = new Set<Peer>();
   private readonly offers = new Map<string, Offer>();
   private readonly locals = new Map<string, (text: string) => void>();
   private readonly devices: RelayDeviceStore;
@@ -291,6 +318,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       this.log('Relay handshake capacity refused');
       return;
     }
+    let markGone: () => void = () => {};
+    const gone = new Promise<void>((resolve) => {
+      markGone = resolve;
+    });
     const ws = new WebSocket(this.url('pipe', cid));
     ws.binaryType = 'arraybuffer';
     const peer: Peer = {
@@ -301,6 +332,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       answerIds: new MessageIdTracker(),
       orderlyClosing: false,
       transportClosing: false,
+      hubClosed: false,
+      gone,
+      markGone,
       revisions: new Map(this.revisions),
       pendingFrames: 0,
       pendingApplications: 0,
@@ -337,7 +371,21 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }
       peer.receiveTail = peer.receiveTail
         .then(async () => {
-          if (!this.active(peer)) return;
+          // Three checks keep a frame from acting after this peer stops being current: this
+          // `active()` guard, the `current()` check after the ready stage's receive and the one
+          // at the top of `route()`. They are redundant on purpose; at the ready stage removing
+          // this guard alone changes nothing a test can see. The branch below exists for a peer
+          // that is no longer enrolled: the ready stage's enrollment check would refuse its reply
+          // BYE before the channel could read it.
+          if (!this.active(peer)) {
+            // In an orderly close's grace (#1225) the peer's reply BYE still arrives: open it so
+            // the stream ends clean. Only the channel reads it; nothing after the hub's BYE is
+            // acted on, a data frame here is opened and dropped, and a frame that fails to open
+            // fails the channel, which closes the pipe with the failure close.
+            if (peer.orderlyClosing && peer.channel && typeof event.data !== 'string')
+              await peer.channel.receive(new Uint8Array(event.data)).catch(() => undefined);
+            return;
+          }
           if (peer.stage === 'admit') {
             const notice = relayV2.decodeNotice(event.data);
             if (pipeStage === 'nonce' && notice.t === 'nonce') {
@@ -481,7 +529,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                   }
                   ws.send(frame);
                 },
-                close: (code, reason) => ws.close(code, reason),
+                close: (code, reason) => {
+                  if (ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
+                  ws.close(code, reason);
+                },
               });
               if (!this.current(peer) || !this.enrolled(peer)) {
                 await ready.channel.transportClosed();
@@ -544,9 +595,16 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         });
     };
     ws.onerror = () => {
+      peer.markGone();
       void this.closePeer(peer);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      peer.markGone();
+      // Who ended the pipe and how this side saw the close (#1225), in a fixed form with no
+      // connection id (#1200).
+      this.log(
+        `Relay pipe closed by ${peer.hubClosed ? 'the hub' : 'the far side'} (${event.code}${event.wasClean ? '' : ', unclean'})`,
+      );
       void this.transportEnd(peer);
     };
   }
@@ -909,20 +967,35 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     for (const offer of [...this.offers.values()])
       if (offer.reserved === peer.cid) this.discard(offer);
     peer.closing = (async () => {
-      await Promise.resolve();
-      if (orderly && peer.channel) {
-        try {
-          await peer.channel.bye();
-        } catch {}
+      try {
+        // The first step is an await, so the `add` below always runs before the `delete`.
+        await Promise.resolve();
+        let byeSent = false;
+        if (orderly && peer.channel) {
+          try {
+            await peer.channel.bye();
+            byeSent = true;
+          } catch {}
+        }
+        peer.connection?.close('Relay closed');
+        this.peers.delete(peer.cid);
+        // After the BYE, leave the close to the far side for a while (#1225): the client closes
+        // once it has the BYE, so the pipe ends without this side resetting it.
+        if (byeSent) await waitAtMost(peer.gone, ORDERLY_CLOSE_GRACE_MS);
+        if (peer.ws.readyState < WebSocket.CLOSING) peer.hubClosed = true;
+        peer.ws.close(
+          orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
+          orderly ? '' : relayV2.FAILURE_CLOSE.reason,
+        );
+        if (peer.channel) await peer.channel.transportClosed();
+      } finally {
+        this.closingPeers.delete(peer);
       }
-      peer.connection?.close('Relay closed');
-      this.peers.delete(peer.cid);
-      peer.ws.close(
-        orderly ? 1000 : relayV2.FAILURE_CLOSE.code,
-        orderly ? '' : relayV2.FAILURE_CLOSE.reason,
-      );
-      if (peer.channel) await peer.channel.transportClosed();
     })();
+    // The peer leaves `peers` before its grace, so `stop()` finds a closing pipe here. The body
+    // removes it in a finally, so nothing else handles this promise: a rejection still reaches
+    // the process guard through the callers that `void` it.
+    this.closingPeers.add(peer);
     return peer.closing;
   }
   open(id: string, send: (text: string) => void): void {
@@ -1152,9 +1225,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     this.running = false;
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.stable) clearTimeout(this.stable);
-    this.control?.stop();
+    // Forget the control before closing it: on Bun 1.3.11 its close handler runs inside close(),
+    // and while it is still the current control that handler treats the close as a lost control
+    // and closes every pipe with the failure close, before the orderly close below (#1225).
+    const control = this.control;
     this.control = undefined;
-    await Promise.all([...this.peers.values()].map((peer) => this.closePeer(peer, true)));
+    control?.stop();
+    for (const peer of [...this.peers.values()]) void this.closePeer(peer, true);
+    // Every close still running, including a pipe that was already in its grace (#1225).
+    await Promise.all([...this.closingPeers].map((peer) => peer.closing));
     for (const offer of [...this.offers.values()]) this.discard(offer);
     this.locals.clear();
     await this.stateTail;

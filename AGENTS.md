@@ -216,6 +216,14 @@ can also list/revoke, but cannot approve anyone or learn the local capability.
 Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
 answers return correlated actual child outcomes, and child discovery is aggregated
 by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
+An orderly close leaves the pipe open after the hub's BYE, at most 2 s, for the client to close it
+(#1225): on the Bun 1.3.11 pin the hub's own close can reset the connection, and a reset right after
+the BYE could lose it. A client that does not close in time gets the hub's close, which on 1.3.11
+can still arrive as the Worker's failure close (4400) after an intact BYE; the stream verdict, from
+the authenticated BYE, is what counts (measured on macOS only, `docs/relay-daemon-v2.md`). During
+the wait the hub opens each binary frame the peer sends: the reply BYE ends the stream clean, a data
+frame is dropped and nothing is acted on, and a frame that fails to open ends the wait with the
+failure close (4400).
 The old `RelayAdapter`, signaling code client and permanent code store are removed;
 `remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
 its legacy Authenticator methods have no current production callers. Direct
