@@ -571,28 +571,32 @@ describe('AutoApproveGate external resolution (#673)', () => {
       expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: undefined }]);
     });
 
-    test('SessionEnd is the harness; a Stop names no cause', async () => {
-      const first = causeGate();
-      void first.g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
-      first.g.cancelStale('Stop', { mainOnly: true });
-      expect(first.causes.map((c) => c.by)).toEqual([undefined]);
-      const second = causeGate();
-      void second.g.resolvePermission(
-        pr({ permission_suggestions: ['A', 'B', 'C'], tool_input: { command: 'ls' } }),
-      );
-      second.g.cancelStale('SessionEnd', { resolvedBy: 'harness' });
-      expect(second.causes.map((c) => c.by)).toEqual(['harness']);
+    test('a Stop names no cause', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.cancelStale('Stop', { mainOnly: true });
+      expect(causes.map((c) => c.by)).toEqual([undefined]);
     });
 
-    test('a subagent that ended with its hold open is the harness; unstick names no cause', async () => {
+    test('SessionEnd is the harness', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.cancelStale('SessionEnd', { resolvedBy: 'harness' });
+      expect(causes.map((c) => c.by)).toEqual(['harness']);
+    });
+
+    test('a subagent that ended with its hold open is the harness', async () => {
       const { g, causes } = causeGate({ hasLocalTerminal: false });
       void g.resolvePermission(pr({ agent_id: 'agent-1' }));
       g.cancelStaleForAgent('agent-1', 'SubagentStop');
       expect(causes.map((c) => c.by)).toEqual(['harness']);
-      const other = causeGate();
-      void other.g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
-      other.g.forceRelease('remi unstick');
-      expect(other.causes.map((c) => c.by)).toEqual([undefined]);
+    });
+
+    test('unstick names no cause', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
+      g.forceRelease('remi unstick');
+      expect(causes.map((c) => c.by)).toEqual([undefined]);
     });
   });
 });

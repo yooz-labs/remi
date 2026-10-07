@@ -101,7 +101,7 @@
  * removes and dismisses the card itself.
  */
 
-import type { UUID } from '@remi/shared';
+import type { ResolvedBy, UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
 import type { HeldAnswer, HeldAnswerOutcome } from '../harness/decision.ts';
@@ -324,7 +324,7 @@ export interface AutoApproveGateDeps {
    * remi client (Telegram does not dismiss, #1148). NOT called for a user answer: that path (input-events
    * `handleAnswer`) broadcasts its own 'answered' resolution. Throw-safe.
    */
-  onResolved?: (questionId: UUID, reason: 'cancelled') => void;
+  onResolved?: (questionId: UUID, reason: 'cancelled', resolvedBy?: ResolvedBy) => void;
   /** Tools whose prompt is always a design question, never binary (#572):
    *  used to classify an escalation as binary (held, #1126) vs design
    *  (passthrough, pushed immediately). AskUserQuestion and ExitPlanMode are
@@ -402,11 +402,14 @@ export class AutoApproveGate {
    * native prompt), so it is resolved through the same funnel a tool-signature
    * match uses. `SessionEnd` is real teardown and resolves everything.
    */
-  cancelStale(reason: string, opts?: { mainOnly?: boolean }): void {
+  cancelStale(reason: string, opts?: { mainOnly?: boolean; resolvedBy?: ResolvedBy }): void {
+    // #1235: the caller names the cause when it knows it (SessionEnd, a rotation: the harness);
+    // a Stop or a new prompt does not (the dialog may have been closed by a No at the terminal).
+    const resolvedBy = opts?.resolvedBy;
     if (opts?.mainOnly ?? false) {
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
-        this.resolveSupersededQuestion(qid, reason, sig.toolName);
+        this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
       }
       return;
     }
@@ -414,7 +417,7 @@ export class AutoApproveGate {
     // through `resolveSupersededQuestion`, never a silent bookkeeping-only
     // delete.
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
-      this.resolveSupersededQuestion(qid, reason, sig.toolName);
+      this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
     }
   }
 
@@ -431,7 +434,10 @@ export class AutoApproveGate {
   cancelStaleForAgent(agentId: string, reason: string): void {
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
       if (sig.agentId !== agentId) continue;
-      this.resolveSupersededQuestion(qid, reason, sig.toolName);
+      // #1235: an agent that ended with its hold open moved on without an answer (the harness);
+      // a passthrough card may have been rejected at the terminal, so it names no cause.
+      const resolvedBy = this.holds.has(qid) ? 'harness' : undefined;
+      this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
     }
   }
 
@@ -727,7 +733,10 @@ export class AutoApproveGate {
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline (${reason}); released to the terminal`,
     );
-    this.releaseWithNotice(questionId, 'deadline', reason);
+    // #1235: remi's own deadline is a timeout. Claude's hook timeout, inferred from the elapsed
+    // time of an abort, names no cause: a terminal No in those last seconds looks the same.
+    const resolvedBy = reason === 'hold_deadline' ? 'timeout' : undefined;
+    this.releaseWithNotice(questionId, 'deadline', reason, resolvedBy);
   }
 
   /**
@@ -736,7 +745,12 @@ export class AutoApproveGate {
    * ask, then `releaseToTerminal`. Every release of a live hold that is not
    * an answer goes through here, so none is silent.
    */
-  private releaseWithNotice(questionId: UUID, cause: TerminalReleaseCause, reason: string): void {
+  private releaseWithNotice(
+    questionId: UUID,
+    cause: TerminalReleaseCause,
+    reason: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     const notify = this.deps.onReleasedToTerminal;
     if (notify) {
       try {
@@ -746,7 +760,7 @@ export class AutoApproveGate {
       }
       this.terminalNotices.add(questionId);
     }
-    this.releaseToTerminal(questionId, reason);
+    this.releaseToTerminal(questionId, reason, resolvedBy);
   }
 
   /**
@@ -758,10 +772,10 @@ export class AutoApproveGate {
    * costs the phone its card, never a decision, and keeping the prompt open
    * keeps its redraws from becoming a typed orphan card.
    */
-  private releaseToTerminal(questionId: UUID, reason: string): void {
+  private releaseToTerminal(questionId: UUID, reason: string, resolvedBy?: ResolvedBy): void {
     this.markTerminalPrompt(questionId);
     this.endHold(questionId, 'passthrough');
-    this.removeAndDismiss(questionId, reason);
+    this.removeAndDismiss(questionId, reason, undefined, resolvedBy);
   }
 
   /**
@@ -893,7 +907,12 @@ export class AutoApproveGate {
   /** Remove a card from the registry and broadcast its dismissal, each step
    *  guarded so one failure cannot skip the other. Broadcasts only for a card
    *  that was registered: a dismissal for a card no client holds is noise. */
-  private removeAndDismiss(questionId: UUID, reason: string, toolName?: string): void {
+  private removeAndDismiss(
+    questionId: UUID,
+    reason: string,
+    toolName?: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
     // every client, a missed one strands a card.
     let wasRegistered = true;
@@ -913,7 +932,7 @@ export class AutoApproveGate {
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] removeQuestion during card cleanup threw:`, err);
     }
-    if (wasRegistered) this.notifyResolved(questionId);
+    if (wasRegistered) this.notifyResolved(questionId, resolvedBy);
   }
 
   /**
@@ -1103,11 +1122,11 @@ export class AutoApproveGate {
    * P7), so it broadcasts `question_resolved` to every remi client and
    * dismisses the APNS card (Telegram does not dismiss, #1148). Throw-safe.
    */
-  private notifyResolved(questionId: UUID): void {
+  private notifyResolved(questionId: UUID, resolvedBy?: ResolvedBy): void {
     const fn = this.deps.onResolved;
     if (!fn) return;
     try {
-      fn(questionId, 'cancelled');
+      fn(questionId, 'cancelled', resolvedBy);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] onResolved threw (ignored):`, err);
     }
@@ -1181,7 +1200,7 @@ export class AutoApproveGate {
   cancelExternallyResolved(
     observed: ObservedToolCall,
     reason: string,
-    opts: { readonly toolFinished?: boolean } = {},
+    opts: { readonly toolFinished?: boolean; readonly resolvedBy?: ResolvedBy } = {},
   ): void {
     const match = this.findOpenQuestionMatching(observed);
     if (!match) {
@@ -1198,7 +1217,11 @@ export class AutoApproveGate {
       this.releaseWithNotice(match.qid, 'released', reason);
       return;
     }
-    this.resolveSupersededQuestion(match.qid, reason, observed.toolName);
+    // #1235: a run paired with the request by tool_use_id is the terminal's answer (a phone answer
+    // retires the card's signature first, so it cannot match); a name and input match alone may
+    // be another identical call, so it names no cause. The caller can name one (PermissionDenied).
+    const resolvedBy = opts.resolvedBy ?? (match.byId ? 'terminal' : undefined);
+    this.resolveSupersededQuestion(match.qid, reason, observed.toolName, resolvedBy);
   }
 
   /**
@@ -1286,14 +1309,19 @@ export class AutoApproveGate {
    * `toolName` (#808), when the caller knows it, is carried onto the
    * question-lifecycle trace record for this removal.
    */
-  private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
+  private resolveSupersededQuestion(
+    qid: UUID,
+    reason: string,
+    toolName?: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     log(
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     this.openQuestionSignatures.delete(qid);
     this.terminalPrompts.delete(qid);
     this.endHold(qid, 'passthrough');
-    this.removeAndDismiss(qid, reason, toolName);
+    this.removeAndDismiss(qid, reason, toolName, resolvedBy);
     if (this.terminalNotices.delete(qid)) {
       this.safeCueWithArg('onTerminalNoticeResolved', this.deps.onTerminalNoticeResolved, qid);
     }

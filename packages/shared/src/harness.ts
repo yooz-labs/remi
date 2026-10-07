@@ -77,9 +77,8 @@ export type AnswerPath = 'structured' | 'keystroke' | 'none';
 export type LocalRender = 'harness' | 'remi' | 'none';
 
 /**
- * What resolved a decision, first answer wins. Typed only: the wire's
- * `question_resolved.reason` is a different, narrower vocabulary and is not
- * changed by this type.
+ * What resolved a decision, first resolution wins (`QuestionResolvedMessage.resolvedBy`, #1235).
+ * Sent only when the daemon knows the cause; absent is unknown, never a guess.
  */
 export type ResolvedBy = 'terminal' | 'phone' | 'lockscreen' | 'harness' | 'timeout';
 

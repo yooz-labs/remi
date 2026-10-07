@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
+import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
@@ -2686,11 +2686,15 @@ describe('createInputHandlers', () => {
         send,
         onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
       });
-      const viaApp = registerWithQuestion(QID);
-      await handlers.onAnswer(CID, viaApp, QID, 'y');
+      // One session per daemon: both cards live in it.
+      const sessionId = registerWithQuestion(QID);
       const Q2 = 'q2222222-2222-4222-8222-222222222222' as UUID;
-      const viaLockScreen = registerWithQuestion(Q2);
-      await handlers.relayAnswer(viaLockScreen, Q2, 'y');
+      sessionRegistry.addQuestion(sessionId, {
+        ...(sessionRegistry.getQuestion(sessionId, QID) as Question),
+        id: Q2,
+      });
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+      await handlers.relayAnswer(sessionId, Q2, 'y');
       expect(resolutions).toEqual([
         { q: QID, reason: 'answered', resolvedBy: 'phone' },
         { q: Q2, reason: 'answered', resolvedBy: 'lockscreen' },
@@ -2724,12 +2728,15 @@ describe('createInputHandlers', () => {
         answerHeld: () => outcome,
         onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
       });
-      const first = registerWithQuestion(QID);
-      await handlers.onAnswer(CID, first, QID, 'y');
-      outcome = 'closed';
+      const sessionId = registerWithQuestion(QID);
       const Q2 = 'q2222222-2222-4222-8222-222222222222' as UUID;
-      const second = registerWithQuestion(Q2);
-      await handlers.onAnswer(CID, second, Q2, 'y');
+      sessionRegistry.addQuestion(sessionId, {
+        ...(sessionRegistry.getQuestion(sessionId, QID) as Question),
+        id: Q2,
+      });
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+      outcome = 'closed';
+      await handlers.onAnswer(CID, sessionId, Q2, 'y');
       expect(resolutions).toEqual([
         { q: QID, reason: 'answered', resolvedBy: 'phone' },
         { q: Q2, reason: 'cancelled' },

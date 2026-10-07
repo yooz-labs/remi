@@ -10,7 +10,7 @@
  * - Messages are ordered within a session
  */
 
-import type { HarnessId, SessionIdentity } from './harness.ts';
+import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   Acknowledgment,
@@ -559,6 +559,15 @@ export interface QuestionResolvedMessage {
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
   readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
+  /**
+   * What resolved it, when the daemon knows (#1235, ADR 0038): `phone` (an answer from an app
+   * over its connection, or Telegram), `lockscreen` (an answer from a notification action, through
+   * the answer endpoint), `terminal` (a person at the machine), `harness` (the agent itself decided
+   * or moved on: an auto-deny, a session that ended, a new transcript or thread) or `timeout`
+   * (remi's own hold deadline). Absent when the cause is not known, which is never guessed: a No
+   * or an Esc at the terminal fires no hook, and Codex does not say who answered.
+   */
+  readonly resolvedBy?: ResolvedBy | undefined;
 }
 
 /**
@@ -1843,6 +1852,7 @@ export function createQuestionResolved(
   sessionId: UUID,
   questionId: UUID,
   reason: QuestionResolvedMessage['reason'],
+  resolvedBy?: ResolvedBy,
 ): QuestionResolvedMessage {
   return {
     type: 'question_resolved',
@@ -1851,6 +1861,7 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+    ...(resolvedBy !== undefined && { resolvedBy }),
   };
 }
 
