@@ -1,12 +1,11 @@
-# Handoff: the Mac app (Codex, Mac agent)
+# Handoff: the Mac app (Mac track)
 
 You design and build remi's native Mac app, and you own RemiKit's core (the code both apps share that is not a screen).
-Another agent builds the iPhone app at the same time and owns RemiUI, the design system; read [../AGENTS.md](../AGENTS.md) for the rules you share, and [../DESIGN.md](../DESIGN.md) for the product.
+The iPhone track ([ios.md](ios.md)) builds the iPhone app and owns RemiUI, the design system; start from [README.md](README.md), which says how the tracks are run and in what order.
 
 - **Issues:** #1243 (the Mac app), #1241 (RemiKit core), under the epic #1239.
-- **Branch:** `feature/issue-1243-native-mac`.
-- **Worktree:** `../remi-worktrees/native-mac`. Open `packages/native/Remi.xcodeproj` there.
-- **Pull requests** go into `feature/issue-1239-epic-native`.
+- **Project:** `packages/native/Remi.xcodeproj`, scheme `RemiMac`.
+- **Branches and pull requests:** one branch per milestone off `develop`, pull requests into `develop` ([../AGENTS.md](../AGENTS.md#git)).
 
 ## What you own
 
@@ -17,7 +16,7 @@ Another agent builds the iPhone app at the same time and owns RemiUI, the design
   - the connection: WebSocket, reconnect, the `auth_challenge` exchange;
   - the store that holds many machines and their sessions at once.
 
-The iPhone agent consumes RemiKit; keep its public API small, documented and stable, and say in each PR what changed in it.
+The iPhone track consumes RemiKit; keep its public API small, documented and stable, and say in each PR what changed in it.
 
 ## Milestones
 
@@ -27,7 +26,7 @@ The iPhone agent consumes RemiKit; keep its public API small, documented and sta
   - sessions (status, harness, worktree or branch, open-card badge);
   - the session view (transcript, inline cards, composer).
 - [ ] **Screens and sheets:** the new-session sheet (machine, repository, worktree, harness, model), the menu bar extra (cards that need the person), and the empty and first-run states.
-- [ ] **RemiUI components:** use them as the iPhone agent publishes them. Where one is missing, build a Mac-only view in `Mac/` and replace it later, rather than writing into RemiUI.
+- [ ] **RemiUI components:** use them as the iPhone track publishes them. Where one is missing, build a Mac-only view in `Mac/` and replace it later, rather than writing into RemiUI.
 - [ ] **Previews:** every screen has previews in light and dark mode, at a large Dynamic Type size, and in the "machine unreachable" and "waiting for approval" states.
 - **Done when** the previews render and the owner has reviewed screenshots in the PR.
 
@@ -36,7 +35,7 @@ The iPhone agent consumes RemiKit; keep its public API small, documented and sta
 - [ ] **Identity:** an Ed25519 device key in the Keychain, and the `auth_challenge` / `auth_response` exchange, including the pending state for an unknown key (#873). The person approves the key with `remi authorize <fingerprint>` on the machine. Learn from `packages/macos/Remi/ClientIdentity.swift` and `HubClient.swift`.
 - [ ] **The connection:** WebSocket with reconnect and backoff, `hello` / `hello_ack`, the session list, joining the session daemons in `daemonPorts`, questions and answers, transcript loading.
 - [ ] **The store:** observable state for N machines at once. Identify a machine by its hub's `host:port` until the machine object lands (#1234), behind a type that can change.
-- **Done when** a test connects to a real hub started from source, gets approved, lists its sessions and answers a card. No mocks: the hub is real. The fixtures pass, and the iPhone agent can build against the API.
+- **Done when** a test connects to a real hub started from source, gets approved, lists its sessions and answers a card. No mocks: the hub is real. The fixtures pass, and the iPhone track can build against the API.
 
 **M3: the Mac app, live.**
 - [ ] **The window works on real hubs:** wire it to the store, for the local hub on `127.0.0.1` and one other machine over a direct connection.

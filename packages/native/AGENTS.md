@@ -1,7 +1,8 @@
 # Native apps: agent instructions
 
 The native SwiftUI apps for remi: a Mac app that works like Conductor (many agent sessions across machines and worktrees, one window) and an iPhone app.
-Two agents build them in parallel, one per app, in Xcode; read your own handoff next ([handoff/mac.md](handoff/mac.md) or [handoff/ios.md](handoff/ios.md)), then [DESIGN.md](DESIGN.md).
+Codex builds them in Xcode, starting from [handoff/README.md](handoff/README.md).
+The work has two tracks, the Mac app ([handoff/mac.md](handoff/mac.md)) and the iPhone app ([handoff/ios.md](handoff/ios.md)): one agent can take them in turn, or two agents can run them at the same time.
 
 Everything in the root [AGENTS.md](../../AGENTS.md) applies here too.
 The parts you need most:
@@ -16,15 +17,16 @@ The roadmap is [`.context/plan.md`](../../.context/plan.md); the native scope is
 | Path | What it is | Owner |
 |---|---|---|
 | `Remi.xcodeproj` | Checked-in project. Its groups are synchronized folders: a file added under `Mac/`, `iPhone/` or the package is in the target with no project edit. | Shared; edit target settings rarely, in a commit of their own |
-| `RemiKit/Sources/RemiKit/` | Everything that is not a screen: protocol models, identity and auth, the connection, the multi-machine store | Mac agent (#1241) |
-| `RemiKit/Sources/RemiUI/` | The design system: tokens, shared components (question card, session row, transcript entries, composer), preview data | iPhone agent |
+| `RemiKit/Sources/RemiKit/` | Everything that is not a screen: protocol models, identity and auth, the connection, the multi-machine store | Mac track (#1241) |
+| `RemiKit/Sources/RemiUI/` | The design system: tokens, shared components (question card, session row, transcript entries, composer), preview data | iPhone track |
 | `RemiKit/Tests/` | Swift Testing tests for the package | Whoever owns the code under test |
-| `Mac/` | The Mac app target (`RemiMac`) | Mac agent (#1243) |
-| `iPhone/` | The iPhone app target (`RemiPhone`) | iPhone agent (#1244) |
+| `Mac/` | The Mac app target (`RemiMac`) | Mac track (#1243) |
+| `iPhone/` | The iPhone app target (`RemiPhone`) | iPhone track (#1244) |
 | `DESIGN.md` | The design brief | Both; change it in its own commit and say so in the PR |
 
-To change something the other agent owns, open a small pull request into the epic branch for just that change and name the reason; do not reformat or restructure their files.
-Rebase on the epic branch at least daily.
+When two agents run the tracks at the same time, each changes only its own paths.
+To change something the other track owns, open a small pull request into `develop` for just that change and name the reason; do not reformat or restructure the other track's files.
+Rebase on `develop` at least daily.
 
 ## Platform and constraints (owner decisions, #1233)
 
@@ -78,9 +80,10 @@ Rebase on the epic branch at least daily.
 
 ## Git
 
-- **Branches:** the epic branch is `feature/issue-1239-epic-native`. The Mac agent works on `feature/issue-1243-native-mac` and the iPhone agent on `feature/issue-1244-native-ios`. Each has its own worktree under `../remi-worktrees/`.
-- **Pull requests** go into the epic branch, never into `develop` or `main`.
-- **Run `bun install` once in a new worktree.** The git hooks (lefthook with Biome) run from its `node_modules`; without it, a commit that stages TypeScript or JSON fails the hook.
+- **Branches:** one per milestone, off `develop`, named `feature/issue-<number>-<short-name>` (for example `feature/issue-1244-remiui-tokens`). There is no epic branch.
+- **Pull requests** go into `develop`, never into `main`. Never push to `develop` or `main` directly.
+- **Worktrees are optional.** An agent that wants one creates it next to the repository, under `../remi-worktrees/` from the repository root, and removes it once its branch is merged.
+- **Run `bun install` once in a new checkout or worktree.** The git hooks (lefthook with Biome) run from its `node_modules`; without it, a commit that stages TypeScript or JSON fails the hook.
 - **Commits:**
   - atomic: one logical change each;
   - message: subject under 50 characters, imperative, with the issue number;

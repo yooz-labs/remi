@@ -1,12 +1,11 @@
-# Handoff: the iPhone app (Codex, iPhone agent)
+# Handoff: the iPhone app (iPhone track)
 
 You design and build remi's native iPhone app, and you own RemiUI, the design system both apps use.
-Another agent builds the Mac app at the same time and owns RemiKit's core (protocol, identity, connection, store); read [../AGENTS.md](../AGENTS.md) for the rules you share, and [../DESIGN.md](../DESIGN.md) for the product.
+The Mac track ([mac.md](mac.md)) builds the Mac app and owns RemiKit's core (protocol, identity, connection, store); start from [README.md](README.md), which says how the tracks are run and in what order.
 
 - **Issue:** #1244 (the iPhone app), under the epic #1239.
-- **Branch:** `feature/issue-1244-native-ios`.
-- **Worktree:** `../remi-worktrees/native-ios`. Open `packages/native/Remi.xcodeproj` there.
-- **Pull requests** go into `feature/issue-1239-epic-native`.
+- **Project:** `packages/native/Remi.xcodeproj`, scheme `RemiPhone`.
+- **Branches and pull requests:** one branch per milestone off `develop`, pull requests into `develop` ([../AGENTS.md](../AGENTS.md#git)).
 
 ## What you own
 
@@ -16,7 +15,7 @@ Another agent builds the Mac app at the same time and owns RemiKit's core (proto
   - the shared components (question card, session row, machine row, transcript entries, composer);
   - preview data.
 
-The Mac agent uses RemiUI too. Publish components early and keep their APIs small, so both apps look like one product.
+The Mac track uses RemiUI too. Publish components early and keep their APIs small, so both apps look like one product.
 
 ## Milestones
 
@@ -38,7 +37,7 @@ The Mac agent uses RemiUI too. Publish components early and keep their APIs smal
 - **Done when** every component and screen has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M2: live, on RemiKit.**
-- [ ] **Use RemiKit's connection and store** as the Mac agent lands them (#1241); until then, keep building against the preview data.
+- [ ] **Use RemiKit's connection and store** as the Mac track lands them (#1241); until then, keep building against the preview data.
 - [ ] **Answer cards by their meaning.** The rules are in the root AGENTS.md: a held card through the hook; nothing typed for a `terminalOnly` card; a card with `detail` only in the app.
 - [ ] **Reach a machine:** the iPhone simulator reaches a hub on `127.0.0.1`. A real device needs the machine's `daemon.bind` set and its approval (#873), so show the steps.
 - **Done when** the owner answers a real card from the simulator against a hub started from source.
