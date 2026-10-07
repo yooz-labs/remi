@@ -66,7 +66,7 @@ export type AnswerPath = 'structured' | 'keystroke' | 'none';
 
 /**
  * Who draws the decision's dialog on the machine where the harness runs.
- * Typed only: not attached to any message.
+ * Typed only: not attached to any message (kept off the wire by owner decision, ADR 0038).
  *
  * - `harness`: the harness's own dialog. Claude renders its own during a
  *   MAIN-agent hold; a background subagent's dialog does not render while its
@@ -83,7 +83,7 @@ export type LocalRender = 'harness' | 'remi' | 'none';
 export type ResolvedBy = 'terminal' | 'phone' | 'lockscreen' | 'harness' | 'timeout';
 
 /**
- * One "the agent needs you" moment, for every harness. This is an alias of
+ * One "the agent needs you" moment, for every harness, frozen by ADR 0038. This is an alias of
  * {@link Question}, not a new shape: `Question` has more than 100 uses in `packages/`
  * and renaming it would buy nothing before a second harness exists. The
  * target model is `.context/strategy-2026-10.md` section 8; each of its fields
@@ -95,11 +95,11 @@ export type ResolvedBy = 'terminal' | 'phone' | 'lockscreen' | 'harness' | 'time
  * | `harness` | `QuestionMessage.harness`; absent (an older daemon) means {@link DEFAULT_HARNESS} |
  * | `harnessSessionId` | `QuestionMessage.harnessSessionId`; for Claude it equals `QuestionMessage.claudeSessionId` |
  * | `agentId` | `Question.agentId` (absent for the main agent) |
- * | `kind` | `Question.kind`: `permission`, `multi_question` (the strategy's `question`), `plan_approval` (its `plan`); the strategy's `sandbox` and `trust` have no `kind` today, they are hook-less PTY prompts (`Question.source === 'pty'`) |
+ * | `kind` | `Question.kind`: `permission`, `multi_question` (the strategy's `question`), `plan_approval` (its `plan`); an open set, so a client renders a kind it does not know as a generic card (ADR 0038). Sandbox and trust prompts have no kind: they are hook-less PTY prompts (`Question.source === 'pty'`) |
  * | `options[]` | `Question.options` |
  * | `optionsAreFallback` | `Question.optionsAreFallback` |
- * | `localRender` | no field; typed as {@link LocalRender}, not attached to the wire |
- * | `answerPath` | no field; typed as {@link AnswerPath}, not attached to the wire; `Question.held` does not stand in for it, since that flag marks every card pushed by id (binary holds, AskUserQuestion, ExitPlanMode, multi-choice permissions) |
- * | `resolvedBy` | no field; typed as {@link ResolvedBy}, not attached to the wire |
+ * | `localRender` | no field; typed as {@link LocalRender}, kept off the wire by owner decision (ADR 0038) |
+ * | `answerPath` | `Question.answerPath` (#1235); `Question.held` does not stand in for it, since that flag marks every card pushed by id (binary holds, AskUserQuestion, ExitPlanMode, multi-choice permissions) |
+ * | `resolvedBy` | `QuestionResolvedMessage.resolvedBy` (#1235), only when the daemon knows the cause |
  */
 export type Decision = Question;
