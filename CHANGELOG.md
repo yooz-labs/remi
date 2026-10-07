@@ -4,6 +4,14 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Logs stay bounded on a machine that runs for weeks (#729)
+
+#### Fixed
+
+- A hub, a session daemon or a wrapper that ran for a long time grew its log without limit: logs were rotated only when a process opened them, and a long-lived process never reopens. Each one now checks the files it writes to every five minutes and rotates them at 10 MB, keeping two backups. That covers `daemon.log`, `remi.log` and the LaunchAgent's `remi-stdout.log` and `remi-stderr.log`, which nothing rotated before.
+- A hub started with `remi start` lost its log: spawning a session renamed `daemon.log` away from under the hub, and two rotations later its file was deleted while the hub still wrote to it. Rotation now copies the log and empties it in place, so every process writing to it keeps writing to the live file. A few lines written during the copy can be lost.
+- The opt-in debug sinks (`REMI_HOOK_DEBUG`'s `hook-diag.jsonl` and `REMI_PTY_CAPTURE`) are bounded the same way.
+
 ### Third-party notices ship with remi (#1131)
 
 #### Fixed
