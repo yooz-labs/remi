@@ -299,20 +299,71 @@ public struct CreateSessionRequestMessage: Codable, Sendable, Equatable {
     public let directory: String?
     public let harness: String?
     public let args: [String]?
+    public let workspace: WorkspaceRequest?
 
     public init(
         id: String,
         timestamp: String,
         directory: String? = nil,
         harness: String? = nil,
-        args: [String]? = nil
+        args: [String]? = nil,
+        workspace: WorkspaceRequest? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
         self.directory = directory
         self.harness = harness
         self.args = args
+        self.workspace = workspace
     }
+}
+
+public struct WorkspaceRequest: Codable, Sendable, Equatable {
+    public let repository: String
+    public let worktree: WorktreeRequest?
+
+    public init(repository: String, worktree: WorktreeRequest? = nil) {
+        self.repository = repository
+        self.worktree = worktree
+    }
+}
+
+public struct WorktreeRequest: Codable, Sendable, Equatable {
+    public let branch: String
+    public let base: String?
+
+    public init(branch: String, base: String? = nil) {
+        self.branch = branch
+        self.base = base
+    }
+}
+
+public struct RecentRepositoriesRequestMessage: Codable, Sendable, Equatable {
+    public let type = "recent_repositories_request"
+    public let id: String
+    public let timestamp: String
+    public let limit: Int?
+
+    public init(id: String, timestamp: String, limit: Int? = nil) {
+        self.id = id
+        self.timestamp = timestamp
+        self.limit = limit
+    }
+}
+
+public struct RecentRepository: Decodable, Sendable, Equatable, Identifiable {
+    public var id: String { repository }
+    public let repository: String
+    public let name: String
+    public let lastUsedAt: String
+}
+
+public struct RecentRepositoriesResponseMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let requestId: String
+    public let repositories: [RecentRepository]
 }
 
 public struct CreateSessionResponseMessage: Decodable, Sendable, Equatable {

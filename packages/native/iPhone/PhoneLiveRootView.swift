@@ -14,8 +14,11 @@ struct PhoneLiveRootView: View {
                 questions: allQuestions,
                 sessions: allSessions,
                 machines: machineSummaries,
+                sessionMachines: store.machines,
+                recentRepositories: store.recentRepositoriesByMachine,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
+                noticeMessage: store.latestOperationNotice,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
                 viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
@@ -25,6 +28,7 @@ struct PhoneLiveRootView: View {
                 onOpenSession: store.loadTranscript,
                 onSend: sendChat,
                 onTerminateSession: store.terminateSession,
+                onCreateSession: createSession,
                 onAddMachine: addMachine,
                 onDismissError: store.clearLatestError
             )
@@ -215,6 +219,20 @@ struct PhoneLiveRootView: View {
     private func addMachine(_ endpoint: MachineEndpoint) {
         store.addMachine(endpoint)
         MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+    }
+
+    private func createSession(
+        endpoint: MachineEndpoint,
+        directory: String,
+        harness: String,
+        workspace: WorkspaceRequest?
+    ) {
+        store.createSession(
+            on: endpoint,
+            directory: directory,
+            harness: harness,
+            workspace: workspace
+        )
     }
 
     private func rawQuestion(_ id: String) -> QuestionMessage? {

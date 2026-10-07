@@ -4,11 +4,15 @@ import SwiftUI
 
 struct HomeScreen: View {
     @State private var showingPairing = false
+    @State private var showingNewSession = false
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    let sessionMachines: [MachineState]
+    let recentRepositories: [String: [RecentRepository]]
     @Binding var selectedMachineID: String
     let errorMessage: String?
+    let noticeMessage: String?
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
     let viewsForSession: (String) -> [SessionViewMeta]
@@ -18,6 +22,7 @@ struct HomeScreen: View {
     let onOpenSession: (String) -> Void
     let onSend: (String, String) -> Void
     let onTerminateSession: (String) -> Void
+    let onCreateSession: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
     let onDismissError: () -> Void
 
@@ -25,8 +30,11 @@ struct HomeScreen: View {
         questions: [RemiQuestionCardModel],
         sessions: [RemiSessionSummary],
         machines: [RemiMachineSummary],
+        sessionMachines: [MachineState] = [],
+        recentRepositories: [String: [RecentRepository]] = [:],
         selectedMachineID: Binding<String> = .constant(""),
         errorMessage: String? = nil,
+        noticeMessage: String? = nil,
         transcriptForSession: @escaping (String) -> [RemiTranscriptEntry] = { _ in RemiPreviewData.transcript },
         questionsForSession: @escaping (String) -> [RemiQuestionCardModel] = { _ in [] },
         viewsForSession: @escaping (String) -> [SessionViewMeta] = { _ in [] },
@@ -36,14 +44,18 @@ struct HomeScreen: View {
         onOpenSession: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String, String) -> Void = { _, _ in },
         onTerminateSession: @escaping (String) -> Void = { _ in },
+        onCreateSession: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void = { _, _, _, _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onDismissError: @escaping () -> Void = {}
     ) {
         self.questions = questions
         self.sessions = sessions
         self.machines = machines
+        self.sessionMachines = sessionMachines
+        self.recentRepositories = recentRepositories
         _selectedMachineID = selectedMachineID
         self.errorMessage = errorMessage
+        self.noticeMessage = noticeMessage
         self.transcriptForSession = transcriptForSession
         self.questionsForSession = questionsForSession
         self.viewsForSession = viewsForSession
@@ -53,6 +65,7 @@ struct HomeScreen: View {
         self.onOpenSession = onOpenSession
         self.onSend = onSend
         self.onTerminateSession = onTerminateSession
+        self.onCreateSession = onCreateSession
         self.onAddMachine = onAddMachine
         self.onDismissError = onDismissError
     }
@@ -62,6 +75,10 @@ struct HomeScreen: View {
             LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.l) {
                 if let errorMessage {
                     ErrorBanner(message: errorMessage, onDismiss: onDismissError)
+                }
+
+                if let noticeMessage {
+                    NoticeBanner(message: noticeMessage, onDismiss: onDismissError)
                 }
 
                 if machines.count > 1 {
@@ -111,14 +128,28 @@ struct HomeScreen: View {
         .navigationTitle("Remi")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingPairing = true
+                Menu {
+                    Button("New session", systemImage: "plus.rectangle.on.folder") {
+                        showingNewSession = true
+                    }
+                    .disabled(availableSessionMachines.isEmpty)
+
+                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                        showingPairing = true
+                    }
                 } label: {
-                    Label("Add machine", systemImage: "plus")
+                    Label("Add", systemImage: "plus")
                         .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
                         .contentShape(.rect)
                 }
             }
+        }
+        .sheet(isPresented: $showingNewSession) {
+            PhoneNewSessionSheet(
+                machines: availableSessionMachines,
+                recentRepositories: recentRepositories,
+                onCreate: onCreateSession
+            )
         }
         .sheet(isPresented: $showingPairing) {
             NavigationStack {
@@ -130,6 +161,10 @@ struct HomeScreen: View {
                     }
             }
         }
+    }
+
+    private var availableSessionMachines: [MachineState] {
+        sessionMachines.filter { $0.status == .connected }
     }
 
     private var visibleMachines: [RemiMachineSummary] {
@@ -171,6 +206,27 @@ private struct ErrorBanner: View {
         }
         .padding(RemiTheme.Spacing.m)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct NoticeBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.blue)
+            Text(message)
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Dismiss", systemImage: "xmark", action: onDismiss)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+        }
+        .padding(RemiTheme.Spacing.m)
+        .background(.blue.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
         .accessibilityElement(children: .combine)
     }
 }

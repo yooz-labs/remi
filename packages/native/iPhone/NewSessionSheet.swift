@@ -1,0 +1,179 @@
+import RemiKit
+import RemiUI
+import SwiftUI
+
+struct PhoneNewSessionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let machines: [MachineState]
+    let recentRepositories: [String: [RecentRepository]]
+    let onCreate: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
+
+    @State private var machineID: String
+    @State private var repository = ""
+    @State private var harness = "claude"
+    @State private var createsWorktree = false
+    @State private var branch = ""
+    @State private var base = ""
+
+    init(
+        machines: [MachineState],
+        recentRepositories: [String: [RecentRepository]],
+        onCreate: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
+    ) {
+        self.machines = machines
+        self.recentRepositories = recentRepositories
+        self.onCreate = onCreate
+        _machineID = State(initialValue: machines.first?.id ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Machine") {
+                    Picker("Machine", selection: $machineID) {
+                        ForEach(machines) { machine in
+                            Text(machine.displayName).tag(machine.id)
+                        }
+                    }
+                    .onChange(of: machineID) { _, _ in
+                        selectDefaultsForMachine()
+                    }
+                }
+
+                Section(workspaceCapable ? "Repository" : "Directory") {
+                    if !repositories.isEmpty {
+                        Picker("Recent", selection: $repository) {
+                            Text("Choose a repository").tag("")
+                            ForEach(repositories) { item in
+                                VStack(alignment: .leading) {
+                                    Text(item.name)
+                                    Text(item.repository).font(.caption).foregroundStyle(.secondary)
+                                }
+                                .tag(item.repository)
+                            }
+                        }
+                    }
+
+                    TextField(
+                        workspaceCapable ? "Repository path" : "Existing directory",
+                        text: $repository
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    Text(workspaceCapable
+                         ? "Use an absolute path or a path under ~ on this machine."
+                         : "This machine does not support workspaces yet, so Remi will start in this existing directory.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if workspaceCapable {
+                    Section("Worktree") {
+                        Toggle("Create a new branch", isOn: $createsWorktree)
+                        if createsWorktree {
+                            TextField("Branch name", text: $branch)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            TextField("Base (optional)", text: $base)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Text("The machine creates a separate worktree next to the repository. Remi does not delete it when the session ends.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Agent") {
+                    Picker("Harness", selection: $harness) {
+                        ForEach(harnesses, id: \.self) { value in
+                            Text(Self.harnessName(value)).tag(value)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("New session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { create() }
+                        .disabled(!canCreate)
+                }
+            }
+            .onAppear { selectDefaultsForMachine() }
+        }
+    }
+
+    private var selectedMachine: MachineState? {
+        machines.first { $0.id == machineID }
+    }
+
+    private var workspaceCapable: Bool {
+        selectedMachine?.capabilities.contains("workspaces") == true
+    }
+
+    private var repositories: [RecentRepository] {
+        recentRepositories[machineID] ?? []
+    }
+
+    private var harnesses: [String] {
+        let offered = selectedMachine?.harnesses ?? ["claude"]
+        return offered.isEmpty ? ["claude"] : offered
+    }
+
+    private var trimmedRepository: String {
+        repository.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canCreate: Bool {
+        guard selectedMachine != nil, !trimmedRepository.isEmpty else { return false }
+        return !createsWorktree || !branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func selectDefaultsForMachine() {
+        if !harnesses.contains(harness) {
+            harness = harnesses[0]
+        }
+        if repository.isEmpty, let recent = repositories.first {
+            repository = recent.repository
+        }
+        if !workspaceCapable {
+            createsWorktree = false
+        }
+    }
+
+    private func create() {
+        guard let selectedMachine, canCreate else { return }
+        let workspace: WorkspaceRequest?
+        if workspaceCapable {
+            let worktree = createsWorktree
+                ? WorktreeRequest(
+                    branch: branch.trimmingCharacters(in: .whitespacesAndNewlines),
+                    base: base.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                )
+                : nil
+            workspace = WorkspaceRequest(repository: trimmedRepository, worktree: worktree)
+        } else {
+            workspace = nil
+        }
+        onCreate(selectedMachine.endpoint, trimmedRepository, harness, workspace)
+        dismiss()
+    }
+
+    private static func harnessName(_ harness: String) -> String {
+        switch harness {
+        case "claude": "Claude Code"
+        case "codex": "Codex"
+        default: harness.capitalized
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}

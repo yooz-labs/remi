@@ -14,7 +14,7 @@ native targets now, not planned behavior.
 | AskUserQuestion structured selections | Yes | Yes | Yes | Native supports option and validated free-text answers for single-select subquestions. |
 | Plan approval and terminal-only cards | Yes | Yes | Yes | Terminal-only cards never offer answer controls. |
 | Typed chat with prompt guard | Yes | Yes | Yes | iPhone presents daemon errors in a dismissible banner; Mac error presentation remains. |
-| Create session | Yes | No | Yes | iPhone creation UI remains to be designed. |
+| Create session | Yes | Yes | Yes | iPhone supports recent repositories, new worktrees, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Menu bar | iPhone foreground banner and dismissal are implemented. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
