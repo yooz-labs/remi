@@ -107,3 +107,34 @@ describe('third-party notices (#1131)', () => {
     await expect(bundledPackages('entry.js', project)).rejects.toThrow('unlicensed-dep@1.2.3');
   });
 });
+
+describe('the notices ship with every package and release (#1131)', () => {
+  const read = (rel: string) => readFileSync(join(repoRoot, rel), 'utf8');
+
+  test('every npm package lists LICENSE, NOTICE and THIRD_PARTY_NOTICES in its files', () => {
+    const packages = readdirSync(join(repoRoot, 'npm'));
+    expect(packages.length).toBeGreaterThan(0);
+    for (const dir of packages) {
+      const pkg = JSON.parse(read(`npm/${dir}/package.json`)) as { files: string[] };
+      for (const file of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES']) {
+        expect(pkg.files).toContain(file);
+      }
+    }
+  });
+
+  test('the release generates them, copies them into the packages and attaches them to the release', () => {
+    const release = read('.github/workflows/release.yml');
+    // Once for the GitHub release, once for the npm packages.
+    expect(release.split('bun scripts/third-party-notices.ts --out')).toHaveLength(3);
+    expect(release).toContain('cp THIRD_PARTY_NOTICES "npm/remi-$PLAT/THIRD_PARTY_NOTICES"');
+    expect(release).toContain('cp THIRD_PARTY_NOTICES npm/remi/THIRD_PARTY_NOTICES');
+    expect(release).toMatch(/files: \|[\s\S]*\n\s+THIRD_PARTY_NOTICES\n/);
+  });
+
+  test('CI checks every bundled package has a license file, and the formula installs the notices', () => {
+    expect(read('.github/workflows/ci.yml')).toContain(
+      'bun scripts/third-party-notices.ts --check',
+    );
+    expect(read('scripts/update-homebrew.sh')).toContain('THIRD_PARTY_NOTICES');
+  });
+});
