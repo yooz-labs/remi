@@ -496,13 +496,10 @@ export type SessionSource = 'daemon' | 'transcript';
 export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'detached' | 'completed';
 
 /**
- * A session visible through the discovery mechanism.
- * Combines daemon-managed sessions and externally-discovered transcript files.
- */
-/**
  * The git workspace a session runs in (#1236 phase B, ADR 0036), as git reports it for the
- * session's directory: read, not remembered, so a branch checked out later shows (within about ten
- * seconds) and a session a person started in a worktree is described too.
+ * session's directory: read, not remembered, so a session a person started in a worktree is
+ * described too and a branch checked out later shows (a list can be one read behind). Not
+ * `SessionWorkspace` (protocol.ts), which is what a create request made and when.
  */
 export interface SessionGitWorkspace {
   /** The repository's main worktree (a bare repository's own directory). */
@@ -513,6 +510,10 @@ export interface SessionGitWorkspace {
   readonly branch: string | null;
 }
 
+/**
+ * A session visible through the discovery mechanism.
+ * Combines daemon-managed sessions and externally-discovered transcript files.
+ */
 export interface DiscoverableSession {
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;
