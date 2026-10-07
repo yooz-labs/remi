@@ -175,9 +175,19 @@ export async function startWithPhone(opts: StartOptions = {}): Promise<Running> 
   cleanup.push(async () => {
     ws.close();
   });
+  // One phone per token, each on its own connection: a second token from the
+  // same connection reads as an APNS token rotation and prunes the first (#585).
   const tokens = opts.register ?? [{ token: TOKEN }];
-  for (const { token, pushPrefs } of tokens) {
-    ws.send(serialize(createRegisterDeviceToken(token, 'ios', pushPrefs)));
+  for (const [i, { token, pushPrefs }] of tokens.entries()) {
+    let socket = ws;
+    if (i > 0) {
+      const extra = await connectAndHello(port);
+      cleanup.push(async () => {
+        extra.ws.close();
+      });
+      socket = extra.ws;
+    }
+    socket.send(serialize(createRegisterDeviceToken(token, 'ios', pushPrefs)));
   }
   await pollUntil(
     () => output.text.split('Device token registered').length - 1 >= tokens.length,
