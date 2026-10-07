@@ -367,8 +367,8 @@ export interface HelloAckMessage {
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
   /**
-   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2") — distinct from
-   * `serverVersion`, which is the protocol version. Lets clients flag a
+   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2"), distinct from
+   * `protocolVersion`, the wire's version (#1237). Lets clients flag a
    * daemon running older code than the installed binary (#539: daemons hold
    * their binary for life; upgrades only affect new daemons). Sent on
    * connection-time and promotion acks; absent on resume acks and from
