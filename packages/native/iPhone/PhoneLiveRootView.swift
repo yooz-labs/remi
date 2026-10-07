@@ -18,6 +18,7 @@ struct PhoneLiveRootView: View {
                 errorMessage: store.latestError?.message,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
+                viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
                 onAnswer: answer,
                 onSubmit: submit,
                 onCancel: cancel,

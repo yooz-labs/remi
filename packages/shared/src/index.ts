@@ -33,6 +33,7 @@ export type {
   SessionSource,
   DiscoverableSessionStatus,
   DiscoverableSession,
+  SessionGitWorkspace,
 } from './types.ts';
 
 export { ok, err, isOk, isErr, MAIN_AGENT_ID } from './types.ts';

@@ -40,6 +40,7 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case questionSnapshot(QuestionSnapshotMessage)
     case transcript(TranscriptContentMessage)
     case transcriptComplete(TranscriptLoadCompleteMessage)
+    case sessionViews(SessionViewsMessage)
     case createSessionResponse(CreateSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
     case error(ErrorMessage)
@@ -215,6 +216,8 @@ public actor RemiConnection {
             eventHandler(.transcriptComplete(
                 try decoder.decode(TranscriptLoadCompleteMessage.self, from: data)
             ))
+        case "session_views":
+            eventHandler(.sessionViews(try decoder.decode(SessionViewsMessage.self, from: data)))
         case "create_session_response":
             eventHandler(.createSessionResponse(
                 try decoder.decode(CreateSessionResponseMessage.self, from: data)

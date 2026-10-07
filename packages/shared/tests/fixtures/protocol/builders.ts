@@ -352,6 +352,25 @@ export const FIXTURE_VARIANTS: Record<
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
   },
+  // A session's list entry with its workspace (#1236 phase B): a session in a worktree the hub made.
+  session_list_response_workspace: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse(
+        [
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            projectPath: '/Users/fixture/remi-worktrees/project-feature-fixture',
+            workspace: {
+              repository: '/Users/fixture/project',
+              directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+              branch: 'feature/fixture',
+            },
+          },
+        ],
+        REQUEST_ID,
+      ),
+  },
   // A session in a new worktree (#1236, ADR 0036): the request a client sends to a hub that lists
   // the `workspaces` capability, and the response that says where the session runs.
   create_session_request_workspace: {

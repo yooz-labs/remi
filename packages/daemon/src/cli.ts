@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.6'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.8'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.6'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.8'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -260,6 +260,7 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
+import { WorkspaceCache } from './workspace/describe.ts';
 
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
@@ -1144,12 +1145,16 @@ let closingResolved: Set<UUID> | null = null;
 // file (#786/#787), keyed by question id so `createdAt` stays stable across
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
 const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
+// The workspace each listed session runs in (#1236 phase B), read from git without making the list wait.
+const workspaceCache = new WorkspaceCache({ log: (line) => log(`[Workspace] ${line}`) });
+
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
     // A Codex card's text is a command (#1178): the registry's log lines leave it out.
     redactQuestionLogs: harnessId === 'codex',
+    workspaceOf: (directory) => workspaceCache.get(directory),
   },
   {
     onSessionCreated: (sessionId) => {
