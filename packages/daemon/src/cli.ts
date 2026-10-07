@@ -619,6 +619,12 @@ if (cliInstall || cliUninstall) {
   process.exit(0);
 }
 
+// `remi pair` (#1275, ADR 0037): pair a phone by QR, approved at this terminal.
+if (cliSubcommand === 'pair') {
+  const { runPairCommand } = await import('./cli/cmd-pair.ts');
+  process.exit(await runPairCommand({ ...(cliHost !== undefined && { host: cliHost }) }));
+}
+
 // Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
 {
   const { isKeysSubcommand, runKeysCommand } = await import('./cli/cmd-keys.ts');
@@ -2719,7 +2725,15 @@ if (cliDaemonMode) {
       }
     }
 
-    updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+    updateRemiStatus({
+      wsPort: PORT,
+      sessionId: null,
+      sessionStatus: 'idle',
+      mode: 'hub',
+      // For `remi pair` (#1275): where a phone could reach this hub, and whether it authenticates.
+      bind: bindHost,
+      auth: authenticator !== undefined,
+    });
 
     console.log('');
     console.log('Remi hub ready!');
