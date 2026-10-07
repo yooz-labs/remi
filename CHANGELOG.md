@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A phone that stops connecting stops getting pushes; muting works (#1254, #1258)
+
+#### Fixed
+
+- A machine the phone had disconnected from kept pushing to it when the disconnect could not reach the machine (its daemon was down or unreachable at that moment), and kept doing so when the daemon came back. A phone's push registration now lasts while the phone stays connected or keeps reconnecting, and ends at once when you disconnect the machine in the app while it is reachable. Otherwise it expires `push_lease_hours` after the phone was last connected: a new `[notifications]` setting, default 24 hours, where 0 means it never expires. An expired phone gets nothing more from that machine, dismissals included, until it connects again. `device-tokens.json` is now readable by you only.
+- The per-device push switches in the app (#968) had no effect: the daemon dropped the phone's preferences before storing them, so every phone got every kind of push. They are now stored and honored, across all of a machine's daemons: every push re-reads the shared device list first, so a change made through one daemon applies to the next push from any of them.
+
 ### Third-party notices ship with remi (#1131)
 
 #### Fixed
