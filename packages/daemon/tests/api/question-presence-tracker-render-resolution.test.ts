@@ -270,7 +270,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
 
     const held = makeHookRecord('Allow Bash: rm -rf /tmp');
     tracker.recordPendingHook(held);
-    const pushedHeld = tracker.pushHeldHook(held.id);
+    const pushedHeld = tracker.pushHeldHook(held.id, 'structured');
 
     expect(pushedHeld).toBe(true);
     // The hook-less question is untouched by the held push -- it is a

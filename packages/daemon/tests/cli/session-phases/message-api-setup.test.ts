@@ -231,9 +231,19 @@ describe('createMessageApiForSession', () => {
       handleStatusChange: () => {},
     } as never);
     const { messageApi } = build(sessionId);
-    const structured = questionWith([yesOpt, noOpt]);
-    const terminalOnly = { ...questionWith([yesOpt, noOpt]), terminalOnly: true };
-    const unknown = questionWith([yesOpt, noOpt]);
+    const structured = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'aaaaaaaa-1111-4111-8111-111111111111' as UUID,
+    };
+    const terminalOnly = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'bbbbbbbb-1111-4111-8111-111111111111' as UUID,
+      terminalOnly: true,
+    };
+    const unknown = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'cccccccc-1111-4111-8111-111111111111' as UUID,
+    };
     messageApi.handleQuestion(structured, { held: true, answerPath: 'structured' });
     messageApi.handleQuestion(terminalOnly, { held: true, answerPath: 'structured' });
     messageApi.handleQuestion(unknown, { held: true });
@@ -246,8 +256,8 @@ describe('createMessageApiForSession', () => {
       [terminalOnly.id, 'none'],
       [unknown.id, undefined],
     ]);
-    const stored = sessionRegistry.getQuestion(sessionId, terminalOnly.id as never);
-    expect(stored?.answerPath).toBe('none');
+    const stored = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(stored.find((q) => q.id === terminalOnly.id)?.answerPath).toBe('none');
   });
 
   test('onQuestion does NOT push when a client is attached', () => {

@@ -5,7 +5,14 @@
  * Sits between the raw output parsing and the transport adapters.
  */
 
-import type { AgentStatus, Message, Question, StructuredMessage, UUID } from '@remi/shared';
+import type {
+  AgentStatus,
+  AnswerPath,
+  Message,
+  Question,
+  StructuredMessage,
+  UUID,
+} from '@remi/shared';
 import { now } from '@remi/shared';
 import { BulletEngine } from '../parser/bullet-engine.ts';
 import { BulletContentRegistry } from './bullet-content-registry.ts';
@@ -43,6 +50,13 @@ export type QuestionRegistrationOutcome =
   | { readonly status: 'held' };
 
 /** Events emitted by MessageAPI to adapters */
+/** How a card is pushed: held (pushed by id, load-bearing) and how its answer is applied (#1235). */
+export interface QuestionPushOptions {
+  readonly held?: boolean;
+  /** Stamped onto the question as `answerPath`; a `terminalOnly` card is always `none`. */
+  readonly answerPath?: AnswerPath;
+}
+
 export interface MessageAPIEvents {
   /** New structured message created */
   onStructuredMessage: (message: StructuredMessage) => void;
@@ -59,7 +73,7 @@ export interface MessageAPIEvents {
 
   /** Question detected (pass-through from OutputProcessor). `opts.held` marks a
    *  load-bearing held-hook card that bypassed dedup (#603 Phase 3). */
-  onQuestion: (question: Question, opts?: { held?: boolean }) => void;
+  onQuestion: (question: Question, opts?: QuestionPushOptions) => void;
 
   /** Status changed (pass-through from OutputProcessor) */
   onStatusChange: (status: AgentStatus, context?: string) => void;
@@ -247,7 +261,7 @@ export class MessageAPI {
    * iii) instead of silently discarding it -- see `QuestionRegistrationOutcome`
    * for why callers must not be left to guess.
    */
-  handleQuestion(question: Question, opts?: { held?: boolean }): QuestionRegistrationOutcome {
+  handleQuestion(question: Question, opts?: QuestionPushOptions): QuestionRegistrationOutcome {
     // A `held` push (`pushHeldHook`) bypasses the content-dedup: its card is
     // load-bearing, not a PTY/hook echo. Built for held hooks (Model B, #573),
     // where a deduped card left the hook with no answerable question (#603
@@ -261,7 +275,7 @@ export class MessageAPI {
       return { status: 'held' };
     }
     if (!this.questionDedup.shouldEmit(question)) return { status: 'deduped' };
-    this.events.onQuestion?.(question);
+    this.events.onQuestion?.(question, opts);
     return { status: 'registered' };
   }
 

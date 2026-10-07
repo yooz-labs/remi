@@ -3077,7 +3077,7 @@ describe('setupHookBridge', () => {
       expect(sessionRegistry.getQuestion(SID, qid)).not.toBeNull();
 
       // A repeat push for the same id is a no-op (pushedHeldIds).
-      expect(tracker.pushHeldHook(qid)).toBe(false);
+      expect(tracker.pushHeldHook(qid, 'structured')).toBe(false);
       expect(pushLog).toHaveLength(1);
       expect(
         [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])].filter(

@@ -53,14 +53,14 @@ export function identityFromClaudeId(claudeSessionId: string | null): SessionIde
 }
 
 /**
- * How a decision's answer reaches the harness. Typed only: no daemon code
- * sets or emits it in this series.
+ * How a decision's answer reaches the harness (`Question.answerPath`, #1235).
  *
- * - `structured`: through the harness's own reply channel (Claude: the held
- *   hook response).
- * - `keystroke`: typed into the PTY behind the screen guards (Claude: a
- *   hook-less prompt).
- * - `none`: no phone answer can be applied (Claude: a `terminalOnly` card).
+ * - `structured`: through the harness's own reply channel, as data (Claude: the
+ *   held hook response; Codex: the JSON-RPC response).
+ * - `keystroke`: typed into the PTY behind the screen guards, so it can be
+ *   refused when the screen changed (Claude: a hook-less prompt, a multi-choice
+ *   permission).
+ * - `none`: no phone answer can be applied (every `terminalOnly` card).
  */
 export type AnswerPath = 'structured' | 'keystroke' | 'none';
 

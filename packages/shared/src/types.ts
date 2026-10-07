@@ -8,7 +8,7 @@
  * - All timestamps are ISO 8601 strings for serialization
  */
 
-import type { HarnessId } from './harness.ts';
+import type { AnswerPath, HarnessId } from './harness.ts';
 
 /** Unique identifier for messages, sessions, etc. */
 export type UUID = string;
@@ -221,9 +221,21 @@ export interface Question {
    * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
    * (the lock-screen summary). `'plan_approval'` (#1127) is an `ExitPlanMode`
    * call: the plan is in `detail`, and `options` are the approval choices.
-   * A client that does not know a kind renders `text` + `options`.
+   * The set is open (#1235, ADR 0038): a client that does not know a kind
+   * renders `text` + `options` as a generic card, never with a permission's
+   * Allow/Deny styling, so a new kind is additive. Sandbox and trust prompts,
+   * which Claude draws in the terminal, have no kind: they are `source: 'pty'`
+   * cards.
    */
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
+  /**
+   * How a phone answer reaches the harness (#1235, ADR 0038): `structured` (as
+   * data, through a held hook or Codex's JSON-RPC), `keystroke` (typed into the
+   * terminal behind the screen guards, so it can be refused as stale) or `none`
+   * (no phone answer; every `terminalOnly` card). Absent: an older daemon, or a
+   * path this daemon did not name; read it as unknown.
+   */
+  readonly answerPath?: AnswerPath | undefined;
 
   /**
    * True when no phone answer can be applied to this card (#1127 review S7):

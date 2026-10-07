@@ -586,7 +586,8 @@ export function setupHookBridge(
         tracker.recordPendingHook(question);
         return undefined;
       }
-      return messageApi.handleQuestion(question);
+      // No hold stands behind a standalone card: a phone answer is typed, behind the guards.
+      return messageApi.handleQuestion(question, { answerPath: 'keystroke' });
     },
     // #1153: a turn that ended on an API error. Never a question; the push is
     // the whole surface. Guarded here, not in the bridge: a throw must not
@@ -651,7 +652,7 @@ export function setupHookBridge(
       // a passthrough multi-choice escalation (#625) push immediately under
       // their own id (-> addQuestion + maybePush); PTY question-emission is
       // suppressed for hooked sessions.
-      onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      onHeldEscalate: (questionId, answerPath) => tracker.pushHeldHook(questionId, answerPath),
       holdMs: deps.holdMs,
       hookTimeoutMs: deps.hookTimeoutMs,
       // #1126: a held prompt was released to the terminal without an answer

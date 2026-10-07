@@ -279,8 +279,10 @@ export interface AutoApproveGateDeps {
    *  passthrough multi-choice escalation (#625), none of which waits for a
    *  render. PTY question-emission is suppressed
    *  for hooked sessions (#625), so this is the SOLE push trigger for both.
-   *  Idempotent per id. */
-  onHeldEscalate?: (questionId: UUID) => void;
+   *  Idempotent per id. `answerPath` says how the card's answer reaches
+   *  Claude (#1235): `structured` for a held prompt (the hook response),
+   *  `keystroke` for a passthrough one (typed behind the screen guards). */
+  onHeldEscalate?: (questionId: UUID, answerPath: 'structured' | 'keystroke') => void;
   /**
    * How long a binary prompt's hook is held for a phone answer, in ms
    * (`[prompts] hold_seconds`, #1126). Required: a hold with no deadline
@@ -705,7 +707,7 @@ export class AutoApproveGate {
         startedAt: Date.now(),
       });
     });
-    this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    this.cueHeldEscalate(qid, 'structured');
     log(
       `[AutoApprove ${this.sessionTag}] Holding ${qid.slice(0, 8)} for a phone answer (${input.tool_name}, up to ${Math.round(this.deps.holdMs / 1000)}s)`,
     );
@@ -927,7 +929,7 @@ export class AutoApproveGate {
   private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
     const qid = this.escalateToUser(input);
     if (qid) {
-      this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+      this.cueHeldEscalate(qid, 'keystroke');
     } else {
       logError(
         `[AutoApprove ${this.sessionTag}] passthrough escalation produced no question id; no push sent (terminal prompt still answerable locally)`,
@@ -1076,6 +1078,17 @@ export class AutoApproveGate {
    * loop. The push IS load-bearing for reaching the phone, but Claude's
    * native prompt is still on screen and answerable locally either way.
    */
+  /** Push a card now, saying how its answer is applied (#1235). Throw-safe. */
+  private cueHeldEscalate(qid: UUID, answerPath: 'structured' | 'keystroke'): void {
+    const push = this.deps.onHeldEscalate;
+    if (!push) return;
+    try {
+      push(qid, answerPath);
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] onHeldEscalate cue threw (ignored):`, err);
+    }
+  }
+
   private safeCueWithArg<T>(label: string, fn: ((arg: T) => void) | undefined, arg: T): void {
     if (!fn) return;
     try {

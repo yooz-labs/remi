@@ -475,7 +475,8 @@ export function createCodexSession(
     client,
     sessionRegistry: deps.sessionRegistry,
     present: (question) => {
-      messageApi.handleQuestion(question, { held: true });
+      // Codex takes the answer as a JSON-RPC response; a terminal-only card is stamped none.
+      messageApi.handleQuestion(question, { held: true, answerPath: 'structured' });
     },
     onQuestionResolved: deps.onQuestionResolved,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
