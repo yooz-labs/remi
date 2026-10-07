@@ -169,6 +169,20 @@ describe('remi pair in a terminal (#1275)', () => {
     expect(store.listPendingKeys()).toHaveLength(0);
   }, 30000);
 
+  test('Ctrl-C while the terminal is drained before the question still rejects, exit 130', async () => {
+    const { env, store } = await setup();
+    const t = runInTerminal(env);
+    await waitFor(() => t.screen().includes('Waiting for the phone'), 'the code');
+    const phone = await createIdentity();
+    const nonce = t.nonce();
+    await store.claimPairing(nonce, phone.publicKey, 'x');
+    await waitFor(() => t.screen().includes('A device wants to pair'), 'the claim');
+    t.type('\x03');
+    expect(await t.proc.exited).toBe(130);
+    expect(t.screen()).not.toContain('Approve this device?');
+    expect(store.readPairing(nonce)?.state).toBe('rejected');
+  }, 30000);
+
   test('a damaged pairings file is named, with what to do, and no stack trace', async () => {
     const { env, remiHome } = await setup();
     fs.writeFileSync(path.join(remiHome, 'pairings.json'), '{"version":1,"pairings":[7]}');
