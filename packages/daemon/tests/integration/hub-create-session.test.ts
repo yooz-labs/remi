@@ -24,11 +24,13 @@ import type {
   CreateSessionResponseMessage,
   HelloAckMessage,
   ProtocolMessage,
+  RecentRepositoriesResponseMessage,
   SessionListResponseMessage,
   WorkspaceRequest,
 } from '@remi/shared/protocol.ts';
 import {
   createCreateSessionRequest,
+  createRecentRepositoriesRequest,
   createSessionListRequest,
   serialize,
 } from '@remi/shared/protocol.ts';
@@ -339,6 +341,43 @@ describe('a hub creating a session for a harness (#1179)', () => {
       expect(entry?.workspace).toEqual({ repository: repo, directory: dir, branch: 'feature/one' });
     } finally {
       child.ws.close();
+    }
+  }, 60000);
+
+  test("a recent-repositories request lists the repositories of the hub's recent sessions (#1236 phase C)", async () => {
+    const r = await startHub({ claude: true });
+    const repo = path.join(fs.realpathSync(r.hub.work), 'recent-project');
+    fs.mkdirSync(repo);
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['commit', '-q', '--allow-empty', '-m', 'first'],
+    ]) {
+      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: repo });
+    }
+    // Relative to now: the store drops a session seven days after it exited.
+    const exitedAt = new Date(Date.now() - 60_000).toISOString();
+    new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+      remiSessionId: '33333333-3333-4333-8333-333333333333',
+      claudeSessionId: null,
+      projectPath: repo,
+      port: 0,
+      pid: null,
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      exitedAt,
+      exitCode: 0,
+    });
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest(5);
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 15000, 'the recent repositories');
+      expect(received.find(isResponse)?.repositories).toEqual([
+        { repository: repo, name: 'recent-project', lastUsedAt: exitedAt },
+      ]);
+    } finally {
+      ws.close();
     }
   }, 60000);
 

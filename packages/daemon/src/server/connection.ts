@@ -38,6 +38,7 @@ import type {
   KillSessionRequestMessage,
   PingMessage,
   ProtocolMessage,
+  RecentRepositoriesRequestMessage,
   RegisterDeviceTokenMessage,
   ResumeSessionRequestMessage,
   SessionHistoryRequestMessage,
@@ -304,6 +305,7 @@ export class Connection {
         answer: (m) => this.handleAnswer(m),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
+        recent_repositories_request: (m) => this.handleRecentRepositoriesRequest(m),
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
         create_session_request: (m) => this.handleCreateSessionRequest(m),
         terminal_resize: (m) => this.handleTerminalResize(m),
@@ -545,6 +547,11 @@ export class Connection {
 
     // Notify - the CLI will handle sending the response
     this.events.onBulletExpandRequest(message.sessionId, message.bulletId, message.id);
+  }
+
+  private handleRecentRepositoriesRequest(message: RecentRepositoriesRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onRecentRepositoriesRequest?.(message.id, message.limit);
   }
 
   private handleSessionListRequest(message: SessionListRequestMessage): void {

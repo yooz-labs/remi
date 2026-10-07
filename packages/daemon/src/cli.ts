@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.8'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.10'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.8'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.10'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -157,6 +157,7 @@ import {
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
 import { promptUpDeps } from './cli/handlers/prompt-up.ts';
+import { createRecentRepositoriesHandlers } from './cli/handlers/recent-repositories-events.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
@@ -2193,7 +2194,14 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: forgetConnectionToken,
 });
 
+// The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
+const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  sessionStore,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
+  ...recentRepositoriesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   ...sessionHandlers,

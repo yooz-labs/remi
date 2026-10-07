@@ -634,6 +634,9 @@ export class RelayAdapter implements ConnectionAdapter {
       session_list_request: (m) => {
         this.events.onSessionListRequest?.(connectionId, m.id, m.includeExternal ?? false);
       },
+      recent_repositories_request: (m) => {
+        this.events.onRecentRepositoriesRequest?.(connectionId, m.id, m.limit);
+      },
       transcript_load_request: (m) => {
         this.events.onTranscriptLoadRequest?.(connectionId, m.sessionId, m.id);
       },

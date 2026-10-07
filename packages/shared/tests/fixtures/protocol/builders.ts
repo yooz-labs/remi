@@ -44,6 +44,8 @@ import {
   createQuestionResolved,
   createQuestionSnapshot,
   createRawPtyOutput,
+  createRecentRepositoriesRequest,
+  createRecentRepositoriesResponse,
   createRegisterDeviceToken,
   createRemiStatus,
   createReplayBatch,
@@ -247,6 +249,18 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   bullet_expand_response: () =>
     createBulletExpandResponse(1, 'Full bullet content here', REQUEST_ID),
   session_list_request: () => createSessionListRequest(true),
+  recent_repositories_request: () => createRecentRepositoriesRequest(10),
+  recent_repositories_response: () =>
+    createRecentRepositoriesResponse(
+      [
+        {
+          repository: '/Users/fixture/project',
+          name: 'project',
+          lastUsedAt: '2026-10-07T10:00:00.000Z',
+        },
+      ],
+      REQUEST_ID,
+    ),
   session_list_response: () =>
     createSessionListResponse([FIXED_DISCOVERABLE_SESSION], REQUEST_ID, [19924, 19925]),
   transcript_content: () =>
