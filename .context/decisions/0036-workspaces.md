@@ -54,10 +54,21 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
 
 ## Decision (phase C): recent repositories
 
-9. **`recent_repositories_request {limit?}` is answered with `recent_repositories_response {repositories}`**, each `{ repository, name, lastUsedAt }`: the repositories the machine's recent sessions ran in, main worktrees only, most recent first, each once, with the start of the most recent session in it (`recentRepositories`, `workspace/recent.ts`; `cli/handlers/recent-repositories-events.ts`).
-   The source is the session store (`sessions.json`, at most 100 records, most recent first). Each session's directory goes through the resolver of item 2, so a subdirectory or a linked worktree names its repository and a submodule names itself; a directory that is gone, outside any repository, in a bare repository or in a linked worktree of one, or whose path `escapeUnsafeText` would change, is left out.
-   The limit is 1 to 20 (anything else means 10). One 5-second deadline covers the walk: past it, git calls return at once and the walk ends with what it found. A store that cannot be read is an empty list, never silence, since the client waits for the answer.
-   It is part of the `workspaces` capability, which no release has shipped yet without it: a daemon that does not list `workspaces` does not answer, and a client checks first.
+9. **`recent_repositories_request {limit?}` is answered with `recent_repositories_response {repositories}`**, each `{ repository, name, lastUsedAt }`: the repositories the machine's recent sessions ran in, main worktrees only, most recently used first, each once (`recentRepositoriesReport`, `workspace/recent.ts`; `cli/handlers/recent-repositories-events.ts`).
+   - **Source.** The session store (`sessions.json`, at most 100 records). Reading it is the store's ordinary `list()`: it takes the store's lock, marks sessions whose process is gone as exited, and drops a session seven days after it exited.
+     So a repository leaves the list a week after its last session there ended, and at once when that session's directory is removed (a worktree the person deleted). Keeping those is #1284.
+   - **Last use.** When the session ended, or the time of the answer while it still runs. Sessions are walked in that order, and each repository carries its latest use.
+   - **What is left out.** Each session's directory goes through the resolver of item 2, so a subdirectory or a linked worktree names its repository and a submodule names itself. Left out:
+     - a directory that is gone, is a file, or is one git cannot run in;
+     - one outside any repository, in a bare repository, or in a linked worktree of one;
+     - one whose repository path `escapeUnsafeText` would change.
+     A path holding a newline is never read from `rev-parse`'s line output: the NUL-separated worktree list names the repository, and an ambiguous top level is unknown. One session that fails leaves the others listed.
+   - **Limit.** 1 to 20 as asked; above 20 is 20; absent, or anything else, is 10.
+   - **Deadline.** One 5-second deadline covers the walk, every directory check and git call; reading the store comes before it. Past the deadline, git calls return at once and the walk ends with what it found.
+     A list cut short is not marked on the wire: it is a convenience, and a client can always ask for a path instead. The hub logs it, with counts of what was left out by reason and never a path.
+   - **Errors and load.** A store that cannot be read is an empty list, never silence, since the client waits for the answer. Requests that arrive while a walk runs share it.
+   - **Capability.** It is part of the `workspaces` capability, which no release has shipped without it: a daemon that does not list `workspaces` does not answer, and a client checks first.
+   - **Disclosure.** It tells an approved device the project paths of the machine's sessions from the last week, exited ones included. That is by design: the device can already list the live sessions and start an agent in any directory.
 
 ## Consequences
 

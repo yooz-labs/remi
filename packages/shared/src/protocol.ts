@@ -807,7 +807,7 @@ export interface RecentRepositoriesRequestMessage {
   readonly type: 'recent_repositories_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
-  /** How many to return: 1 to 20; anything else means 10. */
+  /** How many to return: 1 to 20 as asked; above 20 is 20; absent or anything else is 10. */
   readonly limit?: number | undefined;
 }
 
@@ -817,11 +817,15 @@ export interface RecentRepository {
   readonly repository: string;
   /** Its directory name, for display. */
   readonly name: string;
-  /** When the most recent session in it started. */
-  readonly lastUsedAt: string;
+  /** The last time a session ran in it: when the session ended, or the time of the answer while one runs. */
+  readonly lastUsedAt: Timestamp;
 }
 
-/** The answer to a {@link RecentRepositoriesRequestMessage}: most recent first, each once. */
+/**
+ * The answer to a {@link RecentRepositoriesRequestMessage}: most recently used first, each once.
+ * A list the deadline cut short is not marked: it is a convenience, and a client can always ask
+ * for a path instead.
+ */
 export interface RecentRepositoriesResponseMessage {
   readonly type: 'recent_repositories_response';
   readonly id: UUID;

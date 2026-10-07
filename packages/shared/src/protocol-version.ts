@@ -33,7 +33,11 @@ const UPDATE_MACHINE = 'Update remi on that machine and restart it.';
  * is here: that is the baseline of version 1 (ADR 0035).
  */
 export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
-  /** `create_session_request.workspace` (#1236, ADR 0036): a session in a new worktree. */
+  /**
+   * `create_session_request.workspace` (#1236, ADR 0036): a session in a new worktree; the
+   * session list's `workspace`; and `recent_repositories_request`, the repositories to offer for
+   * one. The text names what a person would miss, in "cannot <text>".
+   */
   workspaces: 'start a session in a new git worktree',
 };
 
