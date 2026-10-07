@@ -76,16 +76,28 @@ export interface RotateOptions {
  * Returns `true` only when this call rotated the file. `false` when it is
  * missing, not a regular file, under the bound, being rotated by another
  * process (or was just rotated by one), or a step failed (logged).
+ *
+ * The size check here is the cheap one (a `stat`, run before every debug-sink
+ * append); `rotateLocked` takes the lock and decides again.
  */
 export function rotateIfNeeded(filePath: string, opts?: RotateOptions): boolean {
+  if (!reachedBound(filePath, opts?.maxBytes ?? LOG_MAX_BYTES)) return false;
+  return rotateLocked(filePath, opts);
+}
+
+/**
+ * The locked half of `rotateIfNeeded`: take `<file>.lock`, then decide again
+ * whether the file reached the bound, since another process may have rotated
+ * it after this one's check. Without that, it would copy the emptied file over
+ * the `.1` the other process just wrote. Safe to call on a file of any size.
+ */
+export function rotateLocked(filePath: string, opts?: RotateOptions): boolean {
   const maxBytes = opts?.maxBytes ?? LOG_MAX_BYTES;
   const keep = opts?.keep ?? LOG_KEEP;
 
-  if (!reachedBound(filePath, maxBytes)) return false;
   const lock = `${filePath}.lock`;
   if (!takeLock(lock)) return false;
   try {
-    // Another process may have rotated it between the check and the lock.
     if (!reachedBound(filePath, maxBytes)) return false;
     removeAbandonedCopies(filePath);
 
