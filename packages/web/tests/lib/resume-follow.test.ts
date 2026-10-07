@@ -121,7 +121,8 @@ describe('App.tsx follows a resumed child session (#1129)', () => {
     const block = caseBlock('resume_session_response');
     expect(block).toContain('resumeOutcome(message)');
     expect(block).toContain("outcome.kind === 'follow'");
-    expect(block).toContain('startFollow(');
+    // Stored, or the child's hello_ack has nothing to land on.
+    expect(block).toContain('pendingFollowRef.current = startFollow(');
     expect(block).toContain('reqList(conn.connectionId');
     // The only setActiveSessionId left opens a session the connection itself owns.
     expect(block.match(/setActiveSessionId\(/g)).toHaveLength(1);
