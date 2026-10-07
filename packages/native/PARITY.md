@@ -16,7 +16,7 @@ native targets now, not planned behavior.
 | Typed chat with prompt guard | Yes | Yes | Yes | Native apps present daemon errors in dismissible banners. |
 | Create session | Yes | Yes | Yes | Native apps support recent repositories, new worktrees, advertised harnesses, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Discovery is not inferred on loopback. |
-| Local card notifications | Yes | Yes | Menu bar | iPhone foreground banner and dismissal are implemented. |
+| Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
 | Kill/resume session | Yes | Kill only | Kill only | Native apps terminate daemon-owned sessions with confirmation. Hub resume remains unsupported (#1129), so native does not offer a misleading resume action. |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
