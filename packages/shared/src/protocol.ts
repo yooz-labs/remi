@@ -1108,6 +1108,14 @@ export interface AuthResponseMessage {
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
+  /**
+   * The `nonce` of a pairing link the phone scanned (#1275, ADR 0037). It ties this key's first
+   * connection to the `remi pair` that showed the code; it authorizes nothing. Not signed: the trust
+   * step is the person comparing fingerprints at the machine. Sent only by a key not yet authorized.
+   */
+  readonly pairingNonce?: string | undefined;
+  /** The name the person gave this device, shown at the terminal (1 to 64 characters, plain text). */
+  readonly pairingLabel?: string | undefined;
 }
 
 /** Authentication result from server to client */
@@ -1117,7 +1125,14 @@ export interface AuthResultMessage {
   readonly timestamp: Timestamp;
   /** Whether authentication succeeded */
   readonly success: boolean;
-  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, NO_PENDING_CHALLENGE, VERIFICATION_ERROR */
+  /**
+   * Error code if failed: UNKNOWN_KEY (pending local approval, #873), INVALID_SIGNATURE,
+   * FINGERPRINT_MISMATCH, NO_PENDING_CHALLENGE, VERIFICATION_ERROR, INVALID_KEY_DATA,
+   * PENDING_QUEUE_FULL, AUTH_STORE_ERROR, SERVER_SIGN_ERROR; and for a pairing code (#1275,
+   * ADR 0037): PAIRING_PENDING (claimed, the person has not decided: retry), PAIRING_REJECTED,
+   * PAIRING_CANCELLED, PAIRING_EXPIRED, PAIRING_USED (another key claimed it), PAIRING_UNKNOWN,
+   * PAIRING_MALFORMED.
+   */
   readonly error?: string;
   /** Server's signature of the challenge (for mutual authentication) */
   readonly serverSignature?: string;
@@ -2118,6 +2133,7 @@ export function createAuthResponse(
   signature: string,
   clientFingerprint: string,
   relayKex?: { readonly ephemeralKey: string; readonly signature: string },
+  pairing?: { readonly nonce: string; readonly label?: string | undefined },
 ): AuthResponseMessage {
   return {
     type: 'auth_response',
@@ -2129,6 +2145,10 @@ export function createAuthResponse(
     ...(relayKex && {
       relayEphemeralKey: relayKex.ephemeralKey,
       relayKexSignature: relayKex.signature,
+    }),
+    ...(pairing && {
+      pairingNonce: pairing.nonce,
+      ...(pairing.label !== undefined && { pairingLabel: pairing.label }),
     }),
   };
 }

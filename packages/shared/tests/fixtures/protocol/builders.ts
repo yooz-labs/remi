@@ -373,6 +373,16 @@ export const FIXTURE_VARIANTS: Record<
         worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
       }),
   },
+  // A phone's first answer after scanning a pairing link (#1275, ADR 0037): the ordinary signed
+  // answer, plus the link's nonce and the name the person gave the phone.
+  auth_response_pairing: {
+    type: 'auth_response',
+    build: () =>
+      createAuthResponse('base64-client-pubkey', 'base64-signature', 'EE:FF:00:11', undefined, {
+        nonce: 'oKGio6SlpqeoqaqrrK2urw',
+        label: 'Fixture phone',
+      }),
+  },
   // The ack of a daemon before #1237 (ADR 0035), written out field by field rather than derived
   // from the registry golden: a field added to `hello_ack` later must not appear in the ack of a
   // daemon that predates it. A client must accept it.
