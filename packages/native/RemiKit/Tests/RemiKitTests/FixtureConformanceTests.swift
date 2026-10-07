@@ -48,7 +48,7 @@ struct FixtureConformanceTests {
     @Test(arguments: [
         "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result",
         "question_resolved", "question_snapshot", "transcript_content",
-        "transcript_load_complete", "create_session_response", "error", "session_update"
+        "transcript_load_complete", "session_views", "create_session_response", "error", "session_update"
     ])
     func inboundLiveMessageDecodes(_ name: String) throws {
         let data = try Self.fixture(name)
@@ -69,6 +69,10 @@ struct FixtureConformanceTests {
             #expect(message.contentBlocks?.first?.text == "Fixture transcript text")
         case "transcript_load_complete":
             _ = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self, from: data)
+        case "session_views":
+            let message = try JSONDecoder().decode(SessionViewsMessage.self, from: data)
+            #expect(message.sessionId == "fixture-session-id")
+            #expect(message.subagents.first?.agentId == "fixture-agent-id")
         case "create_session_response":
             _ = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: data)
         case "error":

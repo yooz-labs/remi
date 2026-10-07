@@ -11,6 +11,7 @@ struct HomeScreen: View {
     let errorMessage: String?
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
+    let viewsForSession: (String) -> [SessionViewMeta]
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
@@ -27,6 +28,7 @@ struct HomeScreen: View {
         errorMessage: String? = nil,
         transcriptForSession: @escaping (String) -> [RemiTranscriptEntry] = { _ in RemiPreviewData.transcript },
         questionsForSession: @escaping (String) -> [RemiQuestionCardModel] = { _ in [] },
+        viewsForSession: @escaping (String) -> [SessionViewMeta] = { _ in [] },
         onAnswer: @escaping (String, String, String) -> Void = { _, _, _ in },
         onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
         onCancel: @escaping (String, String) -> Void = { _, _ in },
@@ -42,6 +44,7 @@ struct HomeScreen: View {
         self.errorMessage = errorMessage
         self.transcriptForSession = transcriptForSession
         self.questionsForSession = questionsForSession
+        self.viewsForSession = viewsForSession
         self.onAnswer = onAnswer
         self.onSubmit = onSubmit
         self.onCancel = onCancel
@@ -81,6 +84,7 @@ struct HomeScreen: View {
                         machines: visibleMachines,
                         transcriptForSession: transcriptForSession,
                         questionsForSession: questionsForSession,
+                        viewsForSession: viewsForSession,
                         onAnswer: onAnswer,
                         onSubmit: onSubmit,
                         onCancel: onCancel,
@@ -244,6 +248,7 @@ private struct SessionsSection: View {
     let machines: [RemiMachineSummary]
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
+    let viewsForSession: (String) -> [SessionViewMeta]
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
@@ -267,6 +272,9 @@ private struct SessionsSection: View {
                                 session: session,
                                 transcript: transcriptForSession(session.id),
                                 questions: questionsForSession(session.id),
+                                views: viewsForSession(session.id),
+                                transcriptForView: transcriptForSession,
+                                onSelectView: onOpenSession,
                                 onAnswer: { onAnswer(session.id, $0, $1) },
                                 onSubmit: { onSubmit(session.id, $0, $1) },
                                 onCancel: { onCancel(session.id, $0) },

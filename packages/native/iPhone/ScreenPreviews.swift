@@ -1,4 +1,5 @@
 #if DEBUG
+import RemiKit
 import RemiUI
 import SwiftUI
 
@@ -20,7 +21,12 @@ private struct SessionPreview: View {
             SessionScreen(
                 session: RemiPreviewData.primarySession,
                 transcript: RemiPreviewData.transcript,
-                questions: [RemiPreviewData.binaryQuestion]
+                questions: [RemiPreviewData.binaryQuestion],
+                views: [
+                    SessionViewMeta(agentId: "explore", agentType: "Explore", active: true),
+                    SessionViewMeta(agentId: "review", agentType: "code-reviewer", active: false),
+                ],
+                transcriptForView: { _ in RemiPreviewData.transcript }
             )
         }
     }
