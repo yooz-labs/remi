@@ -180,12 +180,19 @@ describe('pairing records (#1275)', () => {
   test('approval approves only the fingerprint the person was shown', async () => {
     const { store } = setup();
     const a = await createIdentity();
+    const b = await createIdentity();
+    // b is pending too (an ordinary first connection), so its fingerprint names a real candidate.
+    await store.registerPendingKey(b.publicKey);
     const { nonce } = store.createPairing();
     await store.claimPairing(nonce, a.publicKey, 'x');
     await expect(store.approvePairing(nonce, '0000000000000000')).rejects.toThrow();
+    await expect(store.approvePairing(nonce, b.fingerprint)).rejects.toThrow();
     expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(false);
+    expect(store.isAuthorized(b.publicKey, b.fingerprint)).toBe(false);
+    expect(store.readPairing(nonce)?.state).toBe('claimed');
     await store.approvePairing(nonce, a.fingerprint);
     expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(true);
+    expect(store.isAuthorized(b.publicKey, b.fingerprint)).toBe(false);
   });
 
   test('peekPairing reads without the lock: it answers while another process holds it', async () => {
@@ -210,6 +217,31 @@ describe('pairing records (#1275)', () => {
     fs.writeFileSync(path.join(dir, 'pairings.json'), '{"version":1,"pairings":[{"nonceHash":7}]}');
     await expect(store.claimPairing(nonce, a.publicKey, 'x')).rejects.toThrow();
     expect(store.listPendingKeys()).toHaveLength(0);
+  });
+
+  test('a record with a bad count or contender fails closed, for the lock-free read too', async () => {
+    const { dir, store } = setup();
+    const { nonce } = store.createPairing();
+    const file = path.join(dir, 'pairings.json');
+    const valid = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const variants: Record<string, unknown>[] = [
+      { contested: -1 },
+      { contested: 1.5 },
+      { queueFull: '1' },
+      { queueFull: null },
+      { lastContender: 'not-a-fingerprint' },
+      { lastContender: 7 },
+      { extra: true },
+    ];
+    for (const change of variants) {
+      const record = { ...valid.pairings[0], ...change };
+      fs.writeFileSync(file, JSON.stringify({ version: 1, pairings: [record] }));
+      expect(() => store.readPairing(nonce), JSON.stringify(change)).toThrow();
+      expect(() => store.peekPairing(nonce), JSON.stringify(change)).toThrow();
+    }
+    const { contested: _, ...missing } = valid.pairings[0];
+    fs.writeFileSync(file, JSON.stringify({ version: 1, pairings: [missing] }));
+    expect(() => store.peekPairing(nonce)).toThrow();
   });
 
   test('two processes claiming one code at once: exactly one wins, every round', async () => {

@@ -624,8 +624,9 @@ export class IdentityStore {
     if (snapshot.claim.fingerprint !== expectedFingerprint)
       throw new Error('The pairing was claimed by a different key than the one shown');
     const grant = await this.prepareAuthorization(expectedFingerprint, snapshot.claim.label);
+    // A claim never changes once made, so only the state can have moved since the snapshot.
     return this.withPairing(nonce, (record, save) => {
-      if (record?.state !== 'claimed' || record.claim?.fingerprint !== expectedFingerprint)
+      if (record?.state !== 'claimed')
         throw new Error('The pairing changed before it was approved');
       const committed = this.commitAuthorizationInsideTransaction(expectedFingerprint, grant);
       save({ ...record, state: 'approved' });

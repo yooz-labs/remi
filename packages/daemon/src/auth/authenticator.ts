@@ -308,7 +308,7 @@ export class Authenticator {
    * code is held for the person's decision for up to `pairingWaitMs`: an approval is answered with
    * the ordinary success, a rejection or cancellation with its error, and no decision with
    * `PAIRING_PENDING`, after which the phone retries. The wait reads without the lock, so another
-   * process holding it only delays a tick; it ends at once when the connection closes.
+   * process holding it neither stalls nor fails the wait; it ends at once when the connection closes.
    */
   private async verifyPairing(
     challenge: string,
@@ -336,7 +336,6 @@ export class Authenticator {
     if (outcome !== 'CLAIMED') return fail(outcome);
 
     const deadline = Date.now() + this.pairingWaitMs;
-    let reported = false;
     for (;;) {
       if (!isOpen()) return fail('PAIRING_PENDING');
       try {
@@ -347,10 +346,8 @@ export class Authenticator {
         if (state === 'rejected') return fail('PAIRING_REJECTED');
         if (state === 'cancelled') return fail('PAIRING_CANCELLED');
       } catch (err) {
-        // No decision this tick; the claim itself is safe in the store, and the phone retries.
-        if (!reported)
-          console.error(`Auth store error while a pairing waits: ${errorToString(err)}`);
-        reported = true;
+        console.error(`Auth store error while a pairing waits: ${errorToString(err)}`);
+        return fail('AUTH_STORE_ERROR');
       }
       const left = deadline - Date.now();
       if (left <= 0) return fail('PAIRING_PENDING');
