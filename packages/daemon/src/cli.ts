@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.11'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.14'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.11'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.14'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -617,6 +617,12 @@ if (cliInstall || cliUninstall) {
     process.exit(1);
   }
   process.exit(0);
+}
+
+// `remi pair` (#1275, ADR 0037): pair a phone by QR, approved at this terminal.
+if (cliSubcommand === 'pair') {
+  const { runPairCommand } = await import('./cli/cmd-pair.ts');
+  process.exit(await runPairCommand({ ...(cliHost !== undefined && { host: cliHost }) }));
 }
 
 // Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
@@ -2722,7 +2728,15 @@ if (cliDaemonMode) {
       }
     }
 
-    updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+    updateRemiStatus({
+      wsPort: PORT,
+      sessionId: null,
+      sessionStatus: 'idle',
+      mode: 'hub',
+      // For `remi pair` (#1275): where a phone could reach this hub, and whether it authenticates.
+      bind: bindHost,
+      auth: authenticator !== undefined,
+    });
 
     console.log('');
     console.log('Remi hub ready!');

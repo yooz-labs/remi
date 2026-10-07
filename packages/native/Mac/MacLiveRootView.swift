@@ -68,7 +68,8 @@ struct MacLiveRootView: View {
                                         guard let questionIndex = Int(selection.stepID) else { return nil }
                                         return AnswerSelection(
                                             questionIndex: questionIndex,
-                                            optionIndices: selection.optionIDs.compactMap(Int.init).sorted()
+                                            optionIndices: selection.optionIDs.compactMap(Int.init).sorted(),
+                                            text: selection.text
                                         )
                                     }
                                 )
@@ -175,6 +176,7 @@ struct MacLiveRootView: View {
                         header: step.header,
                         text: step.text,
                         allowsMultipleSelection: step.multiSelect,
+                        allowsFreeText: !step.multiSelect,
                         options: step.options.enumerated().map { optionIndex, option in
                             RemiQuestionOption(
                                 id: String(optionIndex),

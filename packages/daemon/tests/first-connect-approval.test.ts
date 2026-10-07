@@ -70,8 +70,9 @@ test('pending queue has fixed TTL, bounded capacity, restrictive modes and exact
   await store.registerPendingKey(client.publicKey);
   expect(store.listPendingKeys()[0]).toEqual(first);
   expect(Date.parse(first.expiresAt) - Date.parse(first.firstSeenAt)).toBe(600_000);
-  for (let i = 1; i < 32; i++) await store.registerPendingKey((await createIdentity()).publicKey);
-  expect(store.listPendingKeys()).toHaveLength(32);
+  // 28 of the 32 slots: four are kept for keys claiming a pairing code (#1275, #1281 review).
+  for (let i = 1; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+  expect(store.listPendingKeys()).toHaveLength(28);
   await expect(store.registerPendingKey((await createIdentity()).publicKey)).rejects.toThrow(
     'PENDING_QUEUE_FULL',
   );
@@ -139,12 +140,13 @@ test('revoked key can request approval again but no stale candidate resurrects t
 
 test('queue capacity and storage errors are explicit unsuccessful handshake refusals', async () => {
   const { dir, store, auth, response } = await setup();
-  for (let i = 0; i < 32; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+  // The 28 ordinary slots; the other four are kept for pairing claims (#1275).
+  for (let i = 0; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
   const full = await auth.verifyResponse('full', await response('full'));
   expect(full.result.success).toBe(false);
   expect(full.result.error).toBe('PENDING_QUEUE_FULL');
   expect(full.verifiedFingerprint).toBeUndefined();
-  expect(store.listPendingKeys()).toHaveLength(32);
+  expect(store.listPendingKeys()).toHaveLength(28);
   fs.writeFileSync(path.join(dir, 'pending_keys.json'), '{corrupt');
   const corrupt = await auth.verifyResponse('store', await response('store'));
   expect(corrupt.result.success).toBe(false);

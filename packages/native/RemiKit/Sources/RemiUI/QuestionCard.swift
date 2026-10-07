@@ -69,6 +69,7 @@ private struct QuestionCardHeader: View {
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RemiTheme.Color.attention.opacity(0.1))
     }
 
@@ -172,6 +173,7 @@ private struct QuestionSteps: View {
     let onSubmit: ([RemiQuestionStepSelection]) -> Void
     let onCancel: () -> Void
     @State private var selections: [String: Set<String>] = [:]
+    @State private var freeText: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
@@ -191,18 +193,31 @@ private struct QuestionSteps: View {
                         }
                         .toggleStyle(.button)
                     }
+                    if step.allowsFreeText {
+                        TextField(
+                            "Write another answer",
+                            text: textBinding(step: step),
+                            axis: .vertical
+                        )
+                        .lineLimit(2...6)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Other answer for \(step.text)")
+
+                        Text("\(trimmedText(for: step).count) / \(RemiQuestionForm.freeTextLimit)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(
+                                trimmedText(for: step).count > RemiQuestionForm.freeTextLimit
+                                    ? Color.red : Color.secondary
+                            )
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                 }
             }
             Button("Submit") {
-                onSubmit(steps.map { step in
-                    RemiQuestionStepSelection(
-                        stepID: step.id,
-                        optionIDs: Array(selections[step.id, default: []]).sorted()
-                    )
-                })
+                onSubmit(formSelections)
             }
             .buttonStyle(.glassProminent)
-            .disabled(steps.contains { selections[$0.id, default: []].isEmpty })
+            .disabled(!formIsComplete)
             Button(role: .cancel, action: onCancel) {
                 Text("Cancel")
                     .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
@@ -221,9 +236,41 @@ private struct QuestionSteps: View {
                     else { selections[step.id, default: []].remove(optionID) }
                 } else {
                     selections[step.id] = selected ? [optionID] : []
+                    if selected { freeText[step.id] = "" }
                 }
             }
         )
+    }
+
+    private func textBinding(step: RemiQuestionStep) -> Binding<String> {
+        Binding(
+            get: { freeText[step.id, default: ""] },
+            set: { value in
+                freeText[step.id] = value
+                if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    selections[step.id] = []
+                }
+            }
+        )
+    }
+
+    private func trimmedText(for step: RemiQuestionStep) -> String {
+        freeText[step.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var formIsComplete: Bool {
+        RemiQuestionForm.isComplete(steps: steps, selections: formSelections)
+    }
+
+    private var formSelections: [RemiQuestionStepSelection] {
+        steps.map { step in
+            let text = trimmedText(for: step)
+            return RemiQuestionStepSelection(
+                stepID: step.id,
+                optionIDs: Array(selections[step.id, default: []]).sorted(),
+                text: text.isEmpty ? nil : text
+            )
+        }
     }
 }
 

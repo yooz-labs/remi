@@ -11,7 +11,7 @@ native targets now, not planned behavior.
 | Session list and transcript history | Yes | Yes | Yes | Native renders text and tool-only transcript entries. |
 | Pending cards and cross-client dismissal | Yes | Yes | Yes | Native reconciles `question_resolved` and `question_snapshot`. |
 | Binary and standing-option answers | Yes | Yes | Yes | Answers use wire values; session grants are labeled. |
-| AskUserQuestion structured selections | Yes | Yes | Yes | Free-text sub-question answers still need a native control. |
+| AskUserQuestion structured selections | Yes | Yes | Yes | Native supports option and validated free-text answers for single-select subquestions. |
 | Plan approval and terminal-only cards | Yes | Yes | Yes | Terminal-only cards never offer answer controls. |
 | Typed chat with prompt guard | Yes | Yes | Yes | iPhone presents daemon errors in a dismissible banner; Mac error presentation remains. |
 | Create session | Yes | No | Yes | iPhone creation UI remains to be designed. |
