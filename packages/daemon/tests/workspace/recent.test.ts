@@ -213,14 +213,26 @@ describe('recentRepositories (#1236 phase C)', () => {
     expect(result.map((r) => r.repository)).toEqual([fine]);
   });
 
-  test('the same directory twice is listed once, at its latest use', async () => {
+  test('the same directory twice is looked up once and listed once, at its latest use', async () => {
     const fine = makeRepo(root, 'fine');
+    const other = makeRepo(root, 'other');
+    // A counting git: every call is the real one.
+    process.env['PATH'] = `${stallingGit(root, 1000)}:${savedPath ?? ''}`;
     expect(
-      await recentRepositories([
-        at(fine, '2026-10-07T11:00:00.000Z'),
-        at(fine, '2026-10-07T10:00:00.000Z'),
-      ]),
-    ).toEqual([{ repository: fine, name: 'fine', lastUsedAt: '2026-10-07T11:00:00.000Z' }]);
+      await recentRepositories(
+        [
+          at(fine, '2026-10-07T11:00:00.000Z'),
+          at(fine, '2026-10-07T10:00:00.000Z'),
+          at(other, '2026-10-07T09:00:00.000Z'),
+        ],
+        { limit: 2 },
+      ),
+    ).toEqual([
+      { repository: fine, name: 'fine', lastUsedAt: '2026-10-07T11:00:00.000Z' },
+      { repository: other, name: 'other', lastUsedAt: '2026-10-07T09:00:00.000Z' },
+    ]);
+    // Two calls for each plain repository; the repeated directory costs none.
+    expect(fs.readFileSync(path.join(root, 'git-calls'), 'utf-8').trim()).toBe('4');
   });
 
   test('a path holding a newline is left out, never cut short into another path', async () => {
