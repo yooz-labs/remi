@@ -36,7 +36,7 @@ Each milestone is a GitHub milestone of the same name. Issues outside a mileston
 | 6 | **Native depth (X5-X6)** | Diffs, files and a terminal view (#1245); Live Activities, Watch and widgets (#1246) | Per phase issue |
 
 Milestones 2 and 3 run in parallel.
-The native apps (milestones 4 and 5) run in parallel too: Codex builds them in Xcode from `packages/native/handoff/README.md`, on `develop` (the scaffold merged on 2026-10-07; there is no epic branch), as two tracks, the Mac app and the iPhone app.
+The native apps (milestones 4 and 5) run in parallel too: Codex builds them in Xcode from `packages/native/handoff/README.md`, on `develop` (the scaffold moved there on 2026-10-07 in #1267; there is no epic branch), as two tracks, the Mac app and the iPhone app.
 They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 

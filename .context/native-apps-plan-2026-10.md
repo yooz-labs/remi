@@ -72,15 +72,15 @@ Each item: protocol types in `packages/shared`, daemon support, golden fixtures,
 
 ### 0.4 Prepare the repo for Xcode's agents
 
-- [ ] **Project structure.** Create the `RemiKit` package. Replace xcodegen with a checked-in Xcode project whose groups are synchronized folders, so an agent adding a file does not have to run `scripts/generate-macos-project.sh` (owner decision 4).
+- [x] **Project structure.** Create the `RemiKit` package. Replace xcodegen with a checked-in Xcode project whose groups are synchronized folders, so an agent adding a file does not have to run `scripts/generate-macos-project.sh` (owner decision 4). Done 2026-10-07 (#1267): `packages/native/Remi.xcodeproj`, one project with both apps, and the local package `packages/native/RemiKit`; the WebView app in `packages/macos` keeps xcodegen until it retires.
 - [ ] **CI on the new toolchain.** A macOS runner with an Xcode that matches local, building both apps and running the `RemiKit` tests; decide whether the existing Xcode 15.4 job stays while the WebView app ships.
-- [ ] **Instructions for Swift agents.** A Swift section in `AGENTS.md`: bundle and group ids (`live.yooz.remi`, `group.live.yooz.remi`), the sandbox rule, the credential rule, no mocks of business logic (preview data comes from the golden fixtures), the relay test vectors as the oracle, and ADR 0011.
+- [x] **Instructions for Swift agents** (`packages/native/AGENTS.md`, 2026-10-07; the App Group id and the relay test vectors join it with X2, #1242). A Swift section in `AGENTS.md`: bundle and group ids (`live.yooz.remi`, `group.live.yooz.remi`), the sandbox rule, the credential rule, no mocks of business logic (preview data comes from the golden fixtures), the relay test vectors as the oracle, and ADR 0011.
 - [x] **Fix the docs that would mislead an agent** (ADR 0011; done 2026-10-06 with the roadmap):
   - `relay-rebuild-plan-2026-10.md:8` says nothing is built.
   - `native-ios-live-activities-guide.md` uses `com.yooz.remi` ids and calls the NSE a likely skip.
   - The competitive review's remi row describes the relay as working without end-to-end encryption by default; since #1193 it is off by default and accepts nothing without an authenticator.
   - `plan.md` and `handoff.md` date from July.
-- [ ] **Design brief.** Layout of both apps, the components (machine and session rows, the question card, transcript entries, tool chips, the composer, diff view), states (connecting, approval pending under #873, offline, relay), type, color and motion, with SwiftUI previews as the review surface.
+- [x] **Design brief** (`packages/native/DESIGN.md`, 2026-10-07; the type, color and motion tokens come with the first design pass, iPhone M1a, and the diff view with X5). Layout of both apps, the components (machine and session rows, the question card, transcript entries, tool chips, the composer, diff view), states (connecting, approval pending under #873, offline, relay), type, color and motion, with SwiftUI previews as the review surface.
 
 ## Phase X: in Xcode
 
@@ -102,7 +102,7 @@ X3 and X4 are where Xcode's previews and simulators pay off.
 
 - **Xcode's agents:** Swift, SwiftUI, previews, Swift tests, simulator runs. One issue per session, briefed from this document and the issue.
 - **Here:** the TypeScript side of every protocol change, review of every Swift PR (including a security review of the crypto port), the full gates, and releases.
-- The same branch and PR flow as today: a branch per issue off the epic or develop, pins before fixes, atomic commits.
+- The same branch and PR flow as today: a branch per milestone or issue off `develop` (there is no native epic branch), pins before fixes, atomic commits.
 
 ## Owner decisions
 
@@ -111,7 +111,7 @@ Decided on 2026-10-06 (#1233):
 1. **Release 0.7.16:** yes, after milestone "0.7.16 release" in `.context/plan.md`.
 2. **Minimum OS:** macOS 26 and iOS 26.
 3. **Mac app distribution:** the App Store if the sandbox allows it, otherwise Developer ID. The architecture above (a sandboxed hub client) is what keeps the App Store possible.
-4. **Project structure:** still open.
+4. **Project structure:** one checked-in Xcode project with both apps and a shared local Swift package, in `packages/native` on `develop` (2026-10-07).
 5. **Capacitor iOS app:** retires once the same mechanics are designed natively, at X4 parity.
 6. **Worktrees:** in `../remi-worktrees` next to the repository. Whether closing a session deletes one is still open; until decided, it does not.
 
