@@ -135,7 +135,7 @@ const IPV6 = /^[0-9A-Fa-f:]{2,39}$/;
 const DNS_LABEL = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 
 /** An address a phone can dial: IPv4, IPv6 without brackets or a zone, or a DNS name. */
-function isHost(host: string): boolean {
+export function isPairingHost(host: string): boolean {
   if (host.length === 0 || host.length > 253) return false;
   if (IPV4.test(host)) return true;
   if (host.includes(':')) return IPV6.test(host) && host.split('::').length <= 2;
@@ -162,7 +162,7 @@ function shapeError(code: Record<string, unknown>): string | null {
   ) {
     return 'name';
   }
-  if (typeof host !== 'string' || !isHost(host)) return 'host';
+  if (typeof host !== 'string' || !isPairingHost(host)) return 'host';
   if (typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
     return 'port';
   }

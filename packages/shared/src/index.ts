@@ -266,6 +266,7 @@ export {
   decodePairingLink,
   encodePairingLink,
   generatePairingNonce,
+  isPairingHost,
   isPairingNonce,
 } from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)

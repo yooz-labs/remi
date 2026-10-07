@@ -345,6 +345,17 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi authorize <key> --label "name"', 'With a label'),
     entry('remi authorize --remove <fp>', 'Remove by fingerprint'),
   ],
+  pair: [
+    'Pair a phone by QR: the phone scans, you approve it here (#1275).',
+    '',
+    bold('Usage:'),
+    entry('remi pair', 'Show a pairing QR for the running hub, then approve or reject the phone'),
+    entry('remi pair --host <address>', 'Show this address in the code (a LAN or VPN address)'),
+    '',
+    'Needs an interactive terminal, a running hub with authentication on, and daemon.bind set',
+    'to an address a phone can reach. The code works once, for five minutes, and approves',
+    'nothing by itself. Without a terminal, use remi keys and remi authorize.',
+  ],
   keys: [
     'List authorized and pending client public keys.',
     '',

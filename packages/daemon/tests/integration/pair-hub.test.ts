@@ -141,7 +141,7 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
     'the session list',
     30000,
   );
-  expect(keyMatched).toBe(true);
+  expect(keyMatched as boolean | null).toBe(true);
   expect(decided).toBe(true);
   expect(await flow).toBe(0);
   const result = messages.find((m): m is AuthResultMessage => m.type === 'auth_result');

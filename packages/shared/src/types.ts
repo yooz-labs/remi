@@ -642,4 +642,11 @@ export interface RemiStatus {
    * reasons as `mode`.
    */
   version?: string;
+  /**
+   * The address the hub listens on and whether it authenticates clients (#1275), so `remi pair`
+   * can refuse a hub no phone could reach or pair with. Written by a hub; absent from a session
+   * daemon and from a hub older than `remi pair`.
+   */
+  bind?: string;
+  auth?: boolean;
 }

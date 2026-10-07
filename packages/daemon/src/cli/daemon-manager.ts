@@ -105,6 +105,26 @@ function readStatus(): Record<string, unknown> | null {
 }
 
 /**
+ * The running hub's port, bind and whether it authenticates, for `remi pair` (#1275): null when no
+ * hub is running. `bind` and `auth` are absent from a hub older than `remi pair`.
+ */
+export function readHubStatus(): { port: number; bind?: string; auth?: boolean } | null {
+  const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
+  if (pid === null) return null;
+  const status = readStatus();
+  if (status === null || status['pid'] !== pid || status['mode'] !== 'hub') return null;
+  const port = status['wsPort'];
+  if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null;
+  const bind = status['bind'];
+  const auth = status['auth'];
+  return {
+    port,
+    ...(typeof bind === 'string' && { bind }),
+    ...(typeof auth === 'boolean' && { auth }),
+  };
+}
+
+/**
  * Resolve the command and args to invoke remi.
  * Handles both compiled binary and bun/node script execution.
  */
