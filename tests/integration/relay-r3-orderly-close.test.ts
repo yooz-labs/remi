@@ -105,3 +105,25 @@ test('after the hub ends the stream, a request from the peer is neither answered
     await running.cleanup();
   }
 }, 15000);
+
+test('a client that answers the hub BYE with its own leaves the hub a clean stream end', async () => {
+  const running = await resumed();
+  try {
+    const stopping = running.relay.stop();
+    await hubBye(running);
+    // What the web client does on the hub's BYE: its own BYE, then the close.
+    await running.channel.bye();
+    running.socket.close(1000);
+    await stopping;
+    await until(
+      () => running.logs.some((line) => line.startsWith('Relay pipe closed by the far side')),
+      'the far-side close to reach the hub',
+    );
+    // The verdict is logged only when the stream did not end cleanly; a negative check, so a
+    // short settle after the close the verdict follows.
+    await Bun.sleep(200);
+    expect(running.logs.filter((line) => line.startsWith('Relay delivery uncertain'))).toEqual([]);
+  } finally {
+    await running.cleanup();
+  }
+}, 15000);
