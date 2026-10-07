@@ -1,6 +1,6 @@
 # Native apps and the Xcode handoff: scope
 
-Written 2026-10-06. Status: proposal; the owner decisions it needs are listed last.
+Written 2026-10-06. Status: accepted 2026-10-06; the owner's decisions are recorded at the end, and the order lives in `.context/plan.md`.
 
 ## Goal
 
@@ -75,7 +75,7 @@ Each item: protocol types in `packages/shared`, daemon support, golden fixtures,
 - [ ] **Project structure.** Create the `RemiKit` package. Replace xcodegen with a checked-in Xcode project whose groups are synchronized folders, so an agent adding a file does not have to run `scripts/generate-macos-project.sh` (owner decision 4).
 - [ ] **CI on the new toolchain.** A macOS runner with an Xcode that matches local, building both apps and running the `RemiKit` tests; decide whether the existing Xcode 15.4 job stays while the WebView app ships.
 - [ ] **Instructions for Swift agents.** A Swift section in `AGENTS.md`: bundle and group ids (`live.yooz.remi`, `group.live.yooz.remi`), the sandbox rule, the credential rule, no mocks of business logic (preview data comes from the golden fixtures), the relay test vectors as the oracle, and ADR 0011.
-- [ ] **Fix the docs that would mislead an agent** (ADR 0011):
+- [x] **Fix the docs that would mislead an agent** (ADR 0011; done 2026-10-06 with the roadmap):
   - `relay-rebuild-plan-2026-10.md:8` says nothing is built.
   - `native-ios-live-activities-guide.md` uses `com.yooz.remi` ids and calls the NSE a likely skip.
   - The competitive review's remi row describes the relay as working without end-to-end encryption by default; since #1193 it is off by default and accepts nothing without an authenticator.
@@ -106,9 +106,16 @@ X3 and X4 are where Xcode's previews and simulators pay off.
 
 ## Owner decisions
 
-1. **Release 0.7.16 now?** It carries the failure-alert fixes (#1153, #1226), the removal of the local judge (#1125: remi no longer starts the local engine; the one running since October 4 has to be stopped by hand), Codex support, and #873, which no longer trusts a new client key automatically: every phone and browser must be approved once with `remi authorize` on the Mac.
-2. **Minimum OS for the native apps:** the current major versions (Liquid Glass, newest SwiftUI) or older ones for reach.
-3. **Mac app distribution:** App Store (the sandboxed hub client proposed here) or Developer ID.
-4. **Project structure:** retire xcodegen for a checked-in project with synchronized folders.
-5. **When to retire the Capacitor iOS app:** at X4 parity, or keep it as a fallback for a release.
-6. **Worktree location and cleanup** for hub-created workspaces (inside the repository, or under `~/.remi`), and whether the hub may delete a worktree when its session is closed.
+Decided on 2026-10-06 (#1233):
+
+1. **Release 0.7.16:** yes, after milestone "0.7.16 release" in `.context/plan.md`.
+2. **Minimum OS:** macOS 26 and iOS 26.
+3. **Mac app distribution:** the App Store if the sandbox allows it, otherwise Developer ID. The architecture above (a sandboxed hub client) is what keeps the App Store possible.
+4. **Project structure:** still open.
+5. **Capacitor iOS app:** retires once the same mechanics are designed natively, at X4 parity.
+6. **Worktrees:** in `../remi-worktrees` next to the repository. Whether closing a session deletes one is still open; until decided, it does not.
+
+Also decided:
+- the file tunnel (#1170) and multiple profiles per session (#1157) join the protocol freeze;
+- a remote or hub request inherits the host's default posture;
+- TestFlight builds go up by pushing the archive directly, as in transit and whisper.

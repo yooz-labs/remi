@@ -103,6 +103,21 @@ jobs:
         with:
           path: artifacts
 
+      # The release binaries are redistributed copies too, so the notices of
+      # what they bundle go up with them (#1131).
+      - uses: actions/checkout@v5
+        with:
+          path: source
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Generate third-party notices
+        run: |
+          set -euo pipefail
+          cd source
+          bun install --frozen-lockfile
+          bun scripts/third-party-notices.ts --out ../THIRD_PARTY_NOTICES --version "${GITHUB_REF_NAME#v}"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -113,6 +128,7 @@ jobs:
             artifacts/remi-darwin-x64/remi-darwin-x64
             artifacts/remi-linux-x64/remi-linux-x64
             artifacts/remi-linux-arm64/remi-linux-arm64
+            THIRD_PARTY_NOTICES
 
     outputs:
       is_dev: ${{ steps.release-type.outputs.is_dev }}
@@ -145,6 +161,19 @@ jobs:
         with:
           path: artifacts
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Generate third-party notices
+        # From the bundle's real inputs (#1131); fails if a bundled package has
+        # no license file. Shipped in every package next to LICENSE and NOTICE,
+        # so the Homebrew formula (which installs from these tarballs) has it too.
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun scripts/third-party-notices.ts --out THIRD_PARTY_NOTICES --version "${GITHUB_REF_NAME#v}"
+
       - name: Prepare npm packages
         run: |
           set -euo pipefail
@@ -158,6 +187,7 @@ jobs:
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             mkdir -p npm/remi-$PLAT/bin
             cp "artifacts/remi-$PLAT/remi-$PLAT" "npm/remi-$PLAT/bin/remi"
+            cp THIRD_PARTY_NOTICES "npm/remi-$PLAT/THIRD_PARTY_NOTICES"
             chmod +x "npm/remi-$PLAT/bin/remi"
             PLAT_PKG="$REPO_ROOT/npm/remi-$PLAT/package.json" PKG_VERSION="$VERSION" node -e "
               const fs = require('fs');
@@ -166,6 +196,7 @@ jobs:
               fs.writeFileSync(process.env.PLAT_PKG, JSON.stringify(pkg, null, 2) + '\n');
             "
           done
+          cp THIRD_PARTY_NOTICES npm/remi/THIRD_PARTY_NOTICES
           MAIN_PKG="$REPO_ROOT/npm/remi/package.json" PKG_VERSION="$VERSION" node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync(process.env.MAIN_PKG, 'utf8'));

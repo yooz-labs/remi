@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.16-dev.14'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.16-dev.14'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -177,6 +177,13 @@ import {
   startLogFileSession,
   writeToLog,
 } from './cli/log-file.ts';
+import {
+  LOG_GUARD_INTERVAL_MS,
+  LOG_KEEP,
+  LOG_MAX_BYTES,
+  guardLogFiles,
+  planStdioLogGuard,
+} from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -226,7 +233,10 @@ import {
   legacyChannelOpen,
   legacyPushFields,
 } from './notifications/legacy-push-policy.ts';
-import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
+import {
+  type NotificationDispatcher,
+  drainPushDeliveries,
+} from './notifications/notification-dispatcher.ts';
 import { isLegacyPushRetired, sendPushTrigger } from './notifications/push-client.ts';
 import {
   SecurePushContexts,
@@ -1208,6 +1218,9 @@ const orphanTimeoutMs =
 // registry below is constructed before `sessionHandlers` exists, so onSessionClosed
 // reaches the resolver through this holder, assigned once the handlers are wired.
 let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
+// The cards resolved while a session's close is being handled (#1223), so the
+// close's own dismissal of the cards it held skips those already dismissed.
+let closingResolved: Set<UUID> | null = null;
 // Mirrors the session's pending questions into the live-sessions registry
 // file (#786/#787), keyed by question id so `createdAt` stays stable across
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
@@ -1223,7 +1236,7 @@ const sessionRegistry = new SessionRegistry(
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
-    onSessionClosed: (sessionId, reason) => {
+    onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       retireSecurePushRuntime(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
@@ -1234,9 +1247,25 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       // The session's dispose() also drops its #914 admits filter, so a closed
       // session's binder can never keep admitting turns on its behalf.
-      harnessSessions.get(sessionId)?.dispose();
-      // The disposal cancelled the session's held prompts and dismissed their cards through the
-      // runtime retired above; finish it once those dismissals are out (#1200, B3).
+      closingResolved = new Set<UUID>();
+      try {
+        harnessSessions.get(sessionId)?.dispose();
+        // #1223: the cards the session still held are dismissed on every
+        // client and lock screen. `closeSession` cleared the registry before
+        // this ran, so the harness's own teardown could not look them up; a
+        // card that teardown already dismissed (Codex's) is not sent twice.
+        // Before `sessionNotifiers.delete` below: the dismissal needs the
+        // session's dispatcher.
+        for (const questionId of pendingQuestionIds) {
+          if (!closingResolved.has(questionId)) {
+            onQuestionResolved(sessionId, questionId, 'cancelled');
+          }
+        }
+      } finally {
+        closingResolved = null;
+      }
+      // The disposal and the loop above cancelled the session's held prompts and dismissed their
+      // cards through the runtime retired above; finish it once those dismissals are out (#1200, B3).
       void closeSecurePushRuntime(sessionId);
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
@@ -1332,18 +1361,46 @@ import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications. INTENTIONALLY persisted across
-// WebSocket disconnect — push notifications are the suspended-app path, so
-// dropping on disconnect breaks the only case they exist for. Cleanup happens
-// at process exit only. Issue #286.
+// Device tokens for push notifications. Kept across a WebSocket disconnect
+// (#286): push notifications are the suspended-app path, so dropping a token on
+// disconnect breaks the only case they exist for. They end on the explicit
+// removal (`unregister_device_token`), on an APNS rejection, or when the push
+// lease runs out (#1254).
 // Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
 // daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
 // can push immediately, and a dead token pruned on APNS rejection stays pruned.
 // `deviceTokens` is the store's live in-memory map (stable reference), so all the
-// existing Map consumers are unchanged.
-const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+// existing Map consumers are unchanged. Every push path re-reads the file first
+// (`refreshFromDisk`), so a sibling's removal, mute (#1258) or expiry applies.
+//
+// #1254: `connectionTokens` holds the token each live connection registered.
+// While the phone stays connected its push lease is renewed and it never
+// expires here (`isLive`), and when the connection closes the lease counts
+// from that moment. The app re-registers on every new connection.
+const connectionTokens = new Map<UUID, string>();
+const pushLeaseMs = remiConfig.notifications.push_lease_hours * 3_600_000;
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'), {
+  leaseMs: pushLeaseMs,
+  isLive: (token) => {
+    for (const held of connectionTokens.values()) if (held === token) return true;
+    return false;
+  },
+});
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
+const pushLeaseTouchTimer = setInterval(
+  () => {
+    if (connectionTokens.size > 0) deviceTokenStore.touch(connectionTokens.values());
+  },
+  pushLeaseMs > 0 ? Math.min(15 * 60_000, Math.max(1000, pushLeaseMs / 3)) : 15 * 60_000,
+);
+pushLeaseTouchTimer.unref?.();
+const forgetConnectionToken = (connectionId: UUID): void => {
+  const token = connectionTokens.get(connectionId);
+  if (token === undefined) return;
+  connectionTokens.delete(connectionId);
+  deviceTokenStore.touch([token]);
+};
 
 // Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
 // (#672): shared by every session's hook bridge so its escalation rate-limit
@@ -1353,6 +1410,7 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   liveSessionsRegistry,
   bindingStore,
   deviceTokens,
+  refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
   pushConfig: () => ({
     signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
     ...legacyPushPolicy(),
@@ -1375,11 +1433,18 @@ const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_al
 function deliverSubagentAlert(alert: SubagentAlert): void {
   const title = alertTitle(alert);
   const body = alertBody(alert);
+  // Log unconditionally: the push can fail or be throttled downstream, and the
+  // local record is what makes a silent background decision auditable. The
+  // alert's text stays out of the log (#1200: it can carry a command).
   log('[SubagentAlert] push requested');
   const sessionId = getPrimarySessionId();
   const secure = sessionId ? securePushForSession(sessionId) : undefined;
   if (secure)
     void secure.send({ kind: 'subagent_alert', logicalId: 'subagent-alert', title, body });
+
+  // A device removed or expired by a sibling daemon gets nothing (#1259 review).
+  deviceTokenStore.refreshFromDisk();
+  if (deviceTokens.size === 0) return;
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   const legacyPolicy = legacyPushPolicy();
   // A disabled or secretless legacy channel has no recipients (#1200, B6).
@@ -1453,7 +1518,11 @@ const turnEvents = createTurnEventSink({
     onTurnComplete: remiConfig.notifications.on_turn_complete,
     turnCompleteMinSeconds: remiConfig.notifications.turn_complete_min_seconds,
   }),
-  deviceTokens: () => deviceTokens.values(),
+  // Read fresh, so a sibling's mute (#1258) or an expired lease (#1254) applies.
+  deviceTokens: () => {
+    deviceTokenStore.refreshFromDisk();
+    return deviceTokens.values();
+  },
   sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,
   notifiers: sessionNotifiers,
   signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,
@@ -1832,6 +1901,7 @@ const onQuestionResolved = (
   questionId: UUID,
   reason: 'answered' | 'cancelled',
 ): void => {
+  closingResolved?.add(questionId);
   try {
     registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
   } catch (err) {
@@ -1863,11 +1933,20 @@ const ptyMessageFanout = createPtyMessageFanout({
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
-  registerDeviceToken: (token, platform, connectionId) =>
-    deviceTokenStore.register(token, platform, connectionId),
+  // The phone's preferences are stored with the token (#1258: they were dropped
+  // here, so a muted push class kept arriving).
+  registerDeviceToken: (token, platform, connectionId, pushPrefs) => {
+    deviceTokenStore.register(token, platform, connectionId, pushPrefs);
+    connectionTokens.set(connectionId, token);
+  },
   // #690: explicit user removal of this server from the phone app. Never
   // fires on a mere disconnect/app suspension — those must keep pushing.
-  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
+  unregisterDeviceToken: (token) => {
+    deviceTokenStore.unregister(token);
+    for (const [connectionId, held] of connectionTokens) {
+      if (held === token) connectionTokens.delete(connectionId);
+    }
+  },
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
@@ -2224,6 +2303,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onPeerDisconnect: hubClientTracker
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
+  onConnectionClosed: forgetConnectionToken,
 });
 
 const sharedEvents = {
@@ -2530,6 +2610,7 @@ async function cleanup(): Promise<void> {
     updateWatcher.stop();
     updateWatcher = null;
   }
+  clearInterval(pushLeaseTouchTimer);
 
   if (mdnsPublisher) {
     try {
@@ -2589,7 +2670,15 @@ async function cleanup(): Promise<void> {
       }
     }
   }
+
+  // #1223: a session's last pushes (its cards' dismissals at close, a final
+  // notice) are usually still in flight when the PTY exit lands here, and the
+  // process exits right after this returns. Wait for them, bounded.
+  await drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
 }
+
+/** How long a shutting-down daemon waits for its pushes in flight (#1223). */
+const PUSH_DRAIN_TIMEOUT_MS = 2000;
 
 // Guard against unhandled rejections / uncaught exceptions killing the whole
 // daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived
@@ -2608,6 +2697,26 @@ resolveShellPath({ log, error: logError }, harnessId === 'codex' ? 'codex' : 'cl
 
 if (cliDaemonMode) {
   console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
+
+  // A daemon or hub holds its stdout and stderr for its whole life, so it keeps
+  // the log files behind them bounded itself (#729): launchd's
+  // remi-stdout.log / remi-stderr.log, or the daemon.log `remi start` and the
+  // hub's children write to. Only one it writes to in append mode (#1262).
+  const stdioLogs = planStdioLogGuard(
+    [1, 2],
+    [
+      path.join(REMI_DIR, 'daemon.log'),
+      path.join(REMI_DIR, 'remi-stdout.log'),
+      path.join(REMI_DIR, 'remi-stderr.log'),
+    ],
+  );
+  guardLogFiles(stdioLogs.guarded);
+  if (stdioLogs.guarded.length > 0) {
+    log(
+      `[logs] Keeping ${stdioLogs.guarded.map((f) => path.basename(f)).join(' and ')} under ${LOG_MAX_BYTES / (1024 * 1024)} MB (checked every ${LOG_GUARD_INTERVAL_MS / 60_000} minutes, ${LOG_KEEP} backups kept)`,
+    );
+  }
+  for (const notice of stdioLogs.notices) log(`[logs] ${notice}`);
 
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
@@ -2933,7 +3042,9 @@ if (cliDaemonMode) {
   setPtyStdoutFd(1); // stdout file descriptor
 
   ensureRemiDir();
-  startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  const logSession = startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  // A wrapper session can run for days without reopening remi.log (#729).
+  if (logSession.path === LOG_FILE) guardLogFiles([LOG_FILE]);
 
   // Layer 1: Override console methods (catches Bun's native console path)
   const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));

@@ -35,6 +35,13 @@
  * Old-format files (no `tombstones` key) load fine (treated as no tombstones).
  * Tombstones older than 30 days are garbage-collected on every write.
  *
+ * A token also EXPIRES (#1254): a device not seen within the push lease
+ * (`[notifications] push_lease_hours`, default 24) is dropped from memory and
+ * from the file, unless it has a live connection on this daemon (`isLive`).
+ * The phone is seen when it registers, while its connection stays open, and
+ * when that connection closes; `lastSeenAt` records it, and the latest
+ * sighting wins across daemons.
+ *
  * Writes are atomic via a per-pid `.tmp` + rename (#461 pattern).
  */
 
@@ -59,6 +66,26 @@ interface StoredTombstone {
 /** Tombstones older than this are dropped on write; nothing should need one
  *  this stale (a token this old would have rotated or been re-registered). */
 const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The push lease when none is configured: 24 hours (#1254, owner decision). */
+export const DEFAULT_PUSH_LEASE_MS = 24 * 60 * 60 * 1000;
+
+export interface DeviceTokenStoreOptions {
+  /**
+   * How long after it was last seen a device still gets pushes (#1254). The
+   * phone renews it by connecting (registration), by staying connected, and
+   * when its connection closes; the explicit disconnect signal ends it at
+   * once (`unregister`). 0 means it never expires.
+   */
+  readonly leaseMs?: number;
+  /**
+   * Whether a token has a live connection on this daemon (#1259 review). Such a
+   * token never expires here, whatever its recorded sighting says: the phone is
+   * connected now, and a connection that stays open never re-registers, so an
+   * expiry would cut it off until it reconnects.
+   */
+  readonly isLive?: (token: string) => boolean;
+}
 
 /**
  * Strictly-increasing timestamp for `registeredAt` / `removedAt` (#690).
@@ -107,6 +134,23 @@ function normalizePrefs(entry: DeviceTokenEntry): DeviceTokenEntry {
   return { ...entry, pushPrefs: sanitizePushPreferences(entry.pushPrefs) };
 }
 
+/**
+ * Make a loaded `lastSeenAt` safe to count a lease from (#1259 review). One
+ * that is not a finite number is dropped, so the lease counts from the
+ * registration; one in the future (a clock set back, or a hand edit) is
+ * clamped to now, so it cannot keep a device alive past one more lease.
+ */
+function normalizeLastSeen(entry: DeviceTokenEntry): DeviceTokenEntry {
+  const seen: unknown = entry.lastSeenAt;
+  if (seen === undefined) return entry;
+  if (typeof seen !== 'number' || !Number.isFinite(seen)) {
+    const { lastSeenAt: _invalid, ...rest } = entry;
+    return rest;
+  }
+  const now = Date.now();
+  return seen > now ? { ...entry, lastSeenAt: now } : entry;
+}
+
 function isValidTombstone(t: unknown): t is StoredTombstone {
   return (
     typeof t === 'object' &&
@@ -122,7 +166,19 @@ export class DeviceTokenStore {
   /** token -> removedAt (epoch ms). See class doc for the merge/reconcile rules. */
   private readonly tombstones = new Map<string, number>();
 
-  constructor(private readonly filePath: string) {}
+  private readonly leaseMs: number;
+  private readonly isLive: (token: string) => boolean;
+  /** Tokens whose expiry was already logged, so a re-read of a sibling's
+   *  stale copy does not log it again. */
+  private readonly expiryLogged = new Set<string>();
+
+  constructor(
+    private readonly filePath: string,
+    options: DeviceTokenStoreOptions = {},
+  ) {
+    this.leaseMs = options.leaseMs ?? DEFAULT_PUSH_LEASE_MS;
+    this.isLive = options.isLive ?? (() => false);
+  }
 
   /** The live in-memory map. Stable reference — mutated in place, never replaced. */
   get map(): Map<string, DeviceTokenEntry> {
@@ -139,7 +195,7 @@ export class DeviceTokenStore {
     const { tokens, tombstones } = this.readFile();
     for (const e of tokens) this.tokens.set(e.token, e);
     for (const t of tombstones) this.tombstones.set(t.token, t.removedAt);
-    this.reconcile();
+    if (this.reconcile()) this.persist();
     if (this.tokens.size > 0) {
       log(`[DeviceTokens] Loaded ${this.tokens.size} persisted device token(s)`);
     }
@@ -147,18 +203,19 @@ export class DeviceTokenStore {
 
   /**
    * Pull in whatever another daemon on this machine has written since this
-   * store last read the file, and reconcile — WITHOUT writing back (#690).
-   * Cheap (one JSON read); meant to be called right before a push decision so
-   * a removal recorded by a sibling daemon is visible immediately, instead of
-   * waiting for this daemon's own next register/prune call to persist(). A
-   * read error is a no-op: in-memory state stays authoritative for this
-   * process either way.
+   * store last read the file, and reconcile (#690). Cheap (one JSON read);
+   * meant to be called right before a push decision so a removal, a mute or
+   * an expiry recorded by a sibling daemon is visible immediately, instead of
+   * waiting for this daemon's own next register/prune call to persist(). It
+   * writes back only when a lease expired here, so the file stops holding the
+   * device (#1259 review). A read error is a no-op: in-memory state stays
+   * authoritative for this process either way.
    */
   refreshFromDisk(): void {
     try {
       const { tokens, tombstones } = this.readFile();
       this.mergeForeign(tokens, tombstones);
-      this.reconcile();
+      if (this.reconcile()) this.persist();
     } catch {
       // Best-effort refresh; swallow and keep current in-memory state.
     }
@@ -186,16 +243,35 @@ export class DeviceTokenStore {
     // Last registration wins on `pushPrefs` (#968), including when it widens
     // what the device wants. Registration is how the app pushes a toggle
     // change, so an older stored value must never survive a newer one.
+    const registeredAt = monotonicNow();
     this.tokens.set(token, {
       token,
       platform,
-      registeredAt: monotonicNow(),
+      registeredAt,
       connectionId,
       pushPrefs,
+      lastSeenAt: registeredAt,
     });
     // A fresh registration is always newer than any prior tombstone for it.
     this.tombstones.delete(token);
+    this.expiryLogged.delete(token);
     this.persist();
+  }
+
+  /**
+   * The devices behind `tokens` were seen now (#1254): their connection is open
+   * or has just closed. Renews their push lease and persists, so a sibling
+   * daemon sees the sighting. A token this store does not hold is ignored.
+   */
+  touch(tokens: Iterable<string>): void {
+    let changed = false;
+    for (const token of tokens) {
+      const entry = this.tokens.get(token);
+      if (!entry) continue;
+      entry.lastSeenAt = monotonicNow();
+      changed = true;
+    }
+    if (changed) this.persist();
   }
 
   /**
@@ -219,8 +295,8 @@ export class DeviceTokenStore {
    * server/machine from the phone app. Same semantics as `prune` (always
    * tombstones, whether or not this instance held the token), distinct log
    * reason. Does NOT fire on mere disconnect/app suspension; push-while-
-   * suspended must keep working, so tokens persist across those. Returns true
-   * iff the token was present here.
+   * suspended must keep working, so tokens persist across those until the
+   * push lease runs out (#1254). Returns true iff the token was present here.
    */
   unregister(token: string): boolean {
     const had = this.tokens.delete(token);
@@ -256,7 +332,26 @@ export class DeviceTokenStore {
       if (t.removedAt > existing) this.tombstones.set(t.token, t.removedAt);
     }
     for (const e of foreignTokens) {
-      if (!this.tokens.has(e.token)) this.tokens.set(e.token, e);
+      const local = this.tokens.get(e.token);
+      if (!local) {
+        this.tokens.set(e.token, e);
+        continue;
+      }
+      // The newest registration wins, its preferences included (#1258): a
+      // phone that changed a toggle re-registered through a sibling daemon.
+      // The latest sighting is kept whichever side has it (#1254), so a stale
+      // copy here never writes an older one back over a sibling's renewal.
+      // This daemon keeps its own connection id: the sibling's means nothing
+      // here, and the rotation prune (#585) finds the token by this one.
+      const lastSeenAt = Math.max(
+        local.lastSeenAt ?? local.registeredAt,
+        e.lastSeenAt ?? e.registeredAt,
+      );
+      if (e.registeredAt > local.registeredAt) {
+        this.tokens.set(e.token, { ...e, lastSeenAt, connectionId: local.connectionId });
+      } else {
+        local.lastSeenAt = lastSeenAt;
+      }
     }
   }
 
@@ -270,9 +365,10 @@ export class DeviceTokenStore {
    * tombstone strictly newer than the registration drops the token entry (a
    * removal anywhere propagates here). Run after every merge (load/refresh/
    * persist) so this store's own long-held entries are re-checked against a
-   * newly-arrived sibling tombstone, not just newly-adopted ones.
+   * newly-arrived sibling tombstone, not just newly-adopted ones. Returns
+   * whether a lease expired.
    */
-  private reconcile(): void {
+  private reconcile(): boolean {
     for (const [token, removedAt] of this.tombstones) {
       const entry = this.tokens.get(token);
       if (!entry) continue;
@@ -282,6 +378,35 @@ export class DeviceTokenStore {
         this.tokens.delete(token);
       }
     }
+    return this.expireLeases();
+  }
+
+  /**
+   * Drop every device not seen within the push lease (#1254): a phone that
+   * left without the explicit disconnect (removed the machine while it was
+   * unreachable, or just stopped connecting) gets nothing after the lease. Not
+   * tombstoned: the phone's next registration brings it back. Every daemon
+   * applies the same rule on every merge, so a sibling's stale copy cannot
+   * keep it alive. A token with a live connection here is spared (`isLive`).
+   * A timestamp that is not a number counts as expired (a malformed entry
+   * stops pushes rather than keeping them). Returns whether any expired.
+   */
+  private expireLeases(): boolean {
+    if (this.leaseMs <= 0) return false;
+    const now = Date.now();
+    let expired = false;
+    for (const [token, entry] of this.tokens) {
+      const seen = entry.lastSeenAt ?? entry.registeredAt;
+      if (now - seen <= this.leaseMs || this.isLive(token)) continue;
+      this.tokens.delete(token);
+      expired = true;
+      if (this.expiryLogged.has(token)) continue;
+      this.expiryLogged.add(token);
+      const hours = Number.isFinite(seen) ? `${Math.round((now - seen) / 3_600_000)}h` : 'unknown';
+      // No part of the token is logged (#1200).
+      log(`[DeviceTokens] Push lease expired (not seen for ${hours})`);
+    }
+    return expired;
   }
 
   private gcTombstones(): void {
@@ -298,7 +423,9 @@ export class DeviceTokenStore {
       const tokenList = (parsed as { tokens?: unknown })?.tokens;
       const tombstoneList = (parsed as { tombstones?: unknown })?.tombstones;
       return {
-        tokens: Array.isArray(tokenList) ? tokenList.filter(isValidEntry).map(normalizePrefs) : [],
+        tokens: Array.isArray(tokenList)
+          ? tokenList.filter(isValidEntry).map(normalizePrefs).map(normalizeLastSeen)
+          : [],
         // Absent on an old-format file (pre-#690) -> no tombstones, loads fine.
         tombstones: Array.isArray(tombstoneList) ? tombstoneList.filter(isValidTombstone) : [],
       };
@@ -318,6 +445,7 @@ export class DeviceTokenStore {
       this.reconcile();
       this.gcTombstones();
       const tmp = `${this.filePath}.${process.pid}.tmp`;
+      // Owner-only (#1254): the tokens address the person's phones.
       fs.writeFileSync(
         tmp,
         JSON.stringify({
@@ -327,6 +455,7 @@ export class DeviceTokenStore {
             removedAt,
           })),
         }),
+        { mode: 0o600 },
       );
       fs.renameSync(tmp, this.filePath);
     } catch {

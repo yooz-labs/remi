@@ -65,7 +65,7 @@ session precedent or replaced the default group list.
 
 ## Receipts
 
-- `.context/plan-readonly-session-approval.md` — hypotheses, phased plan, and
+- `.context/archive/2026-h2/plan-readonly-session-approval.md` — hypotheses, phased plan, and
   acceptance results.
 - `packages/daemon/src/auto-approve/permission-groups.ts` — fail-closed
   `gh-read` parser and adversarial veto tests.

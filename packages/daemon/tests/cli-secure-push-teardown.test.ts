@@ -24,7 +24,10 @@ function between(start: string, end: string, after = ''): string {
   return source.slice(from, to);
 }
 const sites = {
-  'a session closing': between('onSessionClosed: (sessionId, reason) => {', 'onSessionOrphaned:'),
+  'a session closing': between(
+    'onSessionClosed: (sessionId, reason, pendingQuestionIds) => {',
+    'onSessionOrphaned:',
+  ),
   'the daemon cleaning up': between(
     'async function cleanup(): Promise<void> {',
     'installProcessGuards(',
@@ -61,4 +64,14 @@ test('the closing step dismisses the cards the disposal did not, before it waits
   expect(dismiss, 'it dismisses the undismissed cards').toBeGreaterThan(-1);
   expect(drain, 'it waits for them').toBeGreaterThan(dismiss);
   expect(body.indexOf('finishSecurePushRuntime(')).toBeGreaterThan(drain);
+});
+
+test('a closing session dismisses the cards it held before its secure runtime closes (#1223)', () => {
+  const text = sites['a session closing'];
+  // The registry's pending ids are dismissed through the session's dispatcher, which sends the
+  // secure dismissal too; the runtime must still be open for it, so the close comes after.
+  const pending = text.indexOf('onQuestionResolved(sessionId, questionId,');
+  const close = text.search(/\bcloseSecurePushRuntime\(/);
+  expect(pending, 'the pending cards are dismissed').toBeGreaterThan(-1);
+  expect(close).toBeGreaterThan(pending);
 });

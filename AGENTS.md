@@ -45,6 +45,11 @@ Rules, all cheap:
 
 Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
 
+## Roadmap
+
+What comes next, in order, and how each step is tested: [`.context/plan.md`](.context/plan.md).
+The work is tracked as GitHub milestones (0.7.16 release, Relay R7, Protocol freeze, then the native apps) and area labels; decisions the roadmap waits on are collected in #1233.
+
 ## Architecture decisions
 
 Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
@@ -99,7 +104,7 @@ A second rule lets only `cli.ts` and `harness/` import `harness/index`, `harness
 A third is an allowlist for `harness/codex/` (`CODEX_MAY_IMPORT` in the test): its own files, `node:*`, `@remi/shared`, `harness/types`, `harness/decision`, `cli/session-phases/pty-session-setup.ts` (and no other session phase) and, under `session/`, the session store, binding store, registry, live-sessions registry file, `legacy-writers` and `shell-quote`, plus `api/message-api` (the chat history's bullet structuring) and `notifications/turn-events` (as a type only, which a test pins); and only `cli.ts` may import `harness/codex/`, which is why `harness/index.ts` does not re-export it.
 `remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status, shows the thread's command approvals as phone cards (see "Codex approvals" below), pushes how each turn ended and serves the thread's chat (see "Codex turn events and chat" below), and typed chat from a client is refused (`PROMPT_WAITING`) (`.context/codex-epic-plan-2026-10.md`).
 The wire names the harness (`harness`, `harnessSessionId`, `hello_ack.harnesses`; see "Harness identity and `create_session_request`" below).
-`Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
+`Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; whatever the launch, the agent's process does not inherit remi's own secrets (`REMI_PASSPHRASE`, `REMI_PUSH_SECRET`, `TELEGRAM_BOT_TOKEN`; `pty/child-env.ts`, #1249), and a test fails if a secret-named string literal under `packages/daemon/src` is not on that list. That stops inheritance only: a same-user process can still read the daemon's environment and arguments (`ps eww`, `/proc/<pid>/environ`; #1252), and commands Codex runs execute in its shared app-server, which keeps its own environment; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
 `Harness.transcriptPath` may return `null` (no transcript file), which every reader treats as "no file".
 The store reads are harness-aware (#1176): `getMostRecent('claude')` and `resolveStoredSession(..., {harness: 'claude'})` (Claude-only since #1179: nothing resolved a Codex record by remi id or prefix, so that branch is gone) skip or refuse a record of another harness, `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only, and `--sessions` labels a record `claude:<first 8 of its id>` or, for another harness, `<harness>:<last 8 of its id>` (a Codex thread id is a UUIDv7, whose first eight characters are a timestamp).
 `session/legacy-writers.ts` (the older-daemon gate, read before any Codex record is written) and `harness/codex/codex-args.ts` (argument validation) are called by the Codex launch; the gate narrows the older-daemon hazard and does not close it (see its header).
@@ -255,7 +260,7 @@ describe this source.
 
 ## Question Detection and Notifications
 
-See `.context/notification-and-session-flow.md` for the full flow diagram.
+The old flow diagram (from before the held-hook relay, #1125/#1126) is archived at `.context/archive/2026-h2/notification-and-session-flow.md`; this section is the current description, and #1145 tracks a new diagram.
 
 **Question sources** (daemon side):
 
@@ -384,8 +389,13 @@ no Telegram buttons, no lock-screen category, and every phone answer is
 refused with the terminal wording, never typed. A structured `selections`
 answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
-(that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
-dismissal is broadcast only for a card that was actually pushed. `remi
+(that agent), `SessionEnd`, a transcript rotation, a real session close, or
+`remi unstick`; a dismissal is broadcast only for a card that was actually
+pushed. At a real close the registry hands the ids of the cards it still held
+to the close handler (`closeSession` clears the session first, so nothing else
+can look them up), which dismisses each one not already dismissed by the
+harness's own teardown, and the daemon waits up to 2 s for its pushes in
+flight before it exits (`drainPushDeliveries`, #1223). `remi
 unstick` does not close a LIVE hold: its dialog is on screen, so it is
 released to the terminal with a "handed back" notice (suppression kept),
 and a second unstick clears it.
@@ -654,10 +664,39 @@ those two are both exactly `{token, title, body}`.
   literally was: `settings.notifications` was written by the settings panel and
   read by nothing. Preferences ride up on `register_device_token` (idempotent
   and keyed by token, so a toggle change is just a re-register) and the daemon
-  filters its per-token fan-out in `notifications/push-preferences.ts`.
+  filters its per-token fan-out in `notifications/push-preferences.ts`. Until
+  #1258 the `cli.ts` wiring dropped them, so every device was stored with the
+  defaults and muting did nothing; sibling daemons now also adopt the newest
+  registration (its preferences included) from the shared store.
+- **A phone is pushed only while its lease holds** (#1254, owner decision).
+  The registration lives while the phone keeps connecting: the app
+  re-registers on every connection, and the daemon renews the lease while the
+  connection stays open and stamps it when the connection closes; a phone
+  connected to a daemon never expires there (`isLive`). Disconnecting the
+  machine in the app (`unregister_device_token`, #690, sent only while the
+  machine is reachable) ends it at once; otherwise a phone not seen for
+  `[notifications] push_lease_hours` (default 24; 0 never expires) is dropped
+  from memory and from `device-tokens.json` the next time any daemon sharing
+  the file reads it. Every push path re-reads the file first
+  (`refreshFromDisk`, #1259 review), so an expiry, a removal or a mute
+  recorded by a sibling daemon applies to the next push. It covers a phone
+  that removed the machine while the daemon was unreachable, which the
+  unregister cannot reach. The Worker-side revocation (a phone telling the
+  Worker directly) is R7 work. The store file is written owner-only (0600).
+  The lease is the legacy path's only. A secure subscription has none: it is
+  read from disk under the interprocess lock at every fan-out
+  (`SecurePushStore.listCurrent`), so a mute, an unregister or a revoke
+  recorded by another process applies to the next push, and it ends on the
+  app's `secure_push_unregister_request` over the relay or on
+  `remi devices revoke`. A phone that dropped the machine while the hub was
+  unreachable keeps being sent sealed pushes until one of those; whether
+  secure subscriptions take a lease too is open (R7).
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise. The next main-agent tool call or
+  of the device that asked for less noise. The one exception is a device that
+  is gone: unregistered, rejected by APNS, or past its lease gets nothing,
+  dismissals included, so a card it still holds stays until the app opens.
+  The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
   `turn_failed` push is outstanding), so a stale "Claude stopped" does not
   outlive the agent working again. A new prompt does not (#1226): at a usage
@@ -669,7 +708,9 @@ those two are both exactly `{token, title, body}`.
   dismissed nothing before), wait up to 3 s for the dismissals (`SecurePushService.drain`) and
   only then finish the runtime (`retireSecurePushRuntime` / `closeSecurePushRuntime` in
   `cli.ts`); a dismissal that went out uncertain or failed is sent again with a fresh nonce by
-  the next dismissal. The legacy path has the same gap at a real close and is not changed here (#1223).
+  the next dismissal. At a real close the registry's pending ids are dismissed first, through
+  the session's dispatcher on both paths (#1223, above), so `dismissUndismissedQuestions` sends
+  only what that missed; the legacy sends are drained by `drainPushDeliveries` at cleanup.
 - **Legacy push text is plaintext to the Worker and APNS.** `turn_failed` carries up
   to 140 characters of `last_assistant_message` (or a string `error_details`)
   in its body, the same posture as `turn_complete` (the first 200 characters

@@ -101,6 +101,10 @@ export interface ForeignSessionEscalatorDeps {
   liveSessionsRegistry: SessionRegistryFile;
   bindingStore: SessionBindingStore;
   deviceTokens: Map<string, DeviceTokenEntry>;
+  /** Re-read the shared device-token file before a push, so a removal, mute
+   *  or expired lease a sibling daemon recorded applies here (#1259 review).
+   *  Absent => no refresh (tests). Must be synchronous and non-throwing. */
+  refreshDeviceTokens?: () => void;
   pushConfig: () => PushConfig;
   /** The detecting session's secure fan-out; never the foreign session's answer authority. */
   securePush?: (sessionId: UUID) => SecureSessionPush | undefined;
@@ -267,6 +271,7 @@ export class ForeignSessionEscalator {
     input: PermissionRequestHookInput,
     callerSessionId: UUID,
   ): Promise<void> {
+    this.deps.refreshDeviceTokens?.();
     const { deviceTokens, pushConfig } = this.deps;
     const shortId = input.session_id.slice(0, 8);
     // A permission request in a session remi does not manage is still a

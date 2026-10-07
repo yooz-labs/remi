@@ -357,6 +357,35 @@ function fanoutOutcome(results: readonly (boolean | DeliveryOutcome)[]): Deliver
   return results.every((result) => result === 'no_channel') ? 'no_channel' : 'failed';
 }
 
+/**
+ * Every push delivery in flight, retries included, across all dispatchers in
+ * this process (#1223). A daemon whose agent exits closes its session and then
+ * exits within milliseconds; without waiting for these, the dismissals of the
+ * session's cards (and any last notice) never left before the process did.
+ */
+const inFlightDeliveries = new Set<Promise<unknown>>();
+
+/**
+ * Wait for the push deliveries in flight to finish, for at most `timeoutMs`
+ * (#1223). Deliveries started while waiting are waited for too. Never rejects;
+ * a delivery that is still going at the bound is abandoned with the process.
+ */
+export async function drainPushDeliveries(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (inFlightDeliveries.size > 0) {
+    const left = deadline - Date.now();
+    if (left <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...inFlightDeliveries]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+}
+
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
 /** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so a
@@ -410,11 +439,13 @@ export interface NotificationDispatcherDeps {
   /**
    * Pull in a removal/registration recorded by another daemon on this machine
    * since the shared store last read the file (#690). Wired to
-   * `DeviceTokenStore.refreshFromDisk` (read + reconcile, no write). Called at
-   * the top of every push decision so a server the user just removed stops
-   * getting pushed without waiting for this dispatcher's own next unrelated
-   * register/prune call. Absent => no refresh (tests / old callers); must be
-   * synchronous and non-throwing.
+   * `DeviceTokenStore.refreshFromDisk` (read + reconcile; it writes only when a
+   * push lease expired, #1254). Called at the top of every push decision,
+   * dismissals included, so a server the user just removed, a device that
+   * muted a class (#1258) or one whose lease ran out stops getting pushed
+   * without waiting for this dispatcher's own next unrelated register/prune
+   * call. Absent => no refresh (tests / old callers); must be synchronous and
+   * non-throwing.
    */
   refreshDeviceTokens?: () => void;
   /**
@@ -598,7 +629,22 @@ export class NotificationDispatcher {
    * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
    * `logCtx` carries fixed operation/result messages, never personal selectors.
    */
-  private async pushOnceWithRetry(
+  private pushOnceWithRetry(
+    signalingUrl: string,
+    token: string,
+    opts: Parameters<PushFn>[2],
+    logCtx: { sent: string; failed: string },
+  ): Promise<boolean | DeliveryOutcome> {
+    const delivery = this.deliverWithRetry(signalingUrl, token, opts, logCtx);
+    inFlightDeliveries.add(delivery);
+    const settled = (): void => {
+      inFlightDeliveries.delete(delivery);
+    };
+    delivery.then(settled, settled);
+    return delivery;
+  }
+
+  private async deliverWithRetry(
     signalingUrl: string,
     token: string,
     opts: Parameters<PushFn>[2],
@@ -864,6 +910,7 @@ export class NotificationDispatcher {
    * symmetric with `maybePush` so the dismissal carries the same routing id.
    */
   dismiss(questionSessionId: UUID, questionId: UUID, secureLogicalId: string = questionId): void {
+    this.deps.refreshDeviceTokens?.();
     const { deviceTokens, pushConfig } = this.deps;
     if (this.deps.securePush)
       void this.deps.securePush.send({ kind: 'dismiss', logicalId: secureLogicalId });

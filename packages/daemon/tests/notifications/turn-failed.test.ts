@@ -687,6 +687,15 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
     expect(refreshes).toBe(1);
   });
 
+  test('a dismissal refreshes the device tokens too, so an expired or muted device is current (#1259 review)', async () => {
+    register(false);
+    deviceTokens.set('a', device('a'));
+
+    make().dismiss(SID, 'q-1' as UUID);
+
+    expect(refreshes).toBe(1);
+  });
+
   test('reports failed when every push fails, and never rejects', async () => {
     register(false);
     deviceTokens.set('a', device('a'));
