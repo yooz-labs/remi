@@ -493,10 +493,11 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
-      // No daemonVersion here (#539) and no `harnesses` or harness identity (#1179): the
-      // production daemon always sets skipHelloAck and acks via connection-events.ts, which
-      // stamps all three, so this ack never reaches a client in production. This branch only
-      // serves library consumers of WebSocketServer.
+      // No daemonVersion here (#539), no `harnesses` or harness identity (#1179), and an empty
+      // `capabilities` (#1237; `createHelloAck` still stamps the protocol version): the production
+      // daemon always sets skipHelloAck and acks via connection-events.ts, which stamps them all,
+      // so this ack never reaches a client in production. This branch only serves library
+      // consumers of WebSocketServer, which must not rely on its capabilities for `hubSupport`.
       this.send(createHelloAck(this.config.serverVersion, this.sessionId));
     }
 

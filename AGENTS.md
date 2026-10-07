@@ -117,7 +117,8 @@ remi/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
 │   ├── signaling/       # Cloudflare relay Worker (machine rooms, admission, global limiter, legacy /push)
-│   ├── macos/           # Native Mac app (Swift)
+│   ├── macos/           # WebView Mac app (a Swift shell around the web client)
+│   ├── native/          # Native SwiftUI Mac and iPhone apps (Xcode; see packages/native/AGENTS.md)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
 │   ├── e2e/             # Playwright end-to-end tests
@@ -127,7 +128,7 @@ remi/
 └── .rules/              # Repo-specific standards
 ```
 
-`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`).
+`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`).
 `packages/daemon/tests/license-boundary.test.ts` enforces it.
 
 Key directories to know:
@@ -671,7 +672,8 @@ those two are both exactly `{token, title, body}`.
   #1258 the `cli.ts` wiring dropped them, so every device was stored with the
   defaults and muting did nothing; sibling daemons now also adopt the newest
   registration (its preferences included) from the shared store.
-- **A phone is pushed only while its lease holds** (#1254, owner decision).
+- **On the legacy path, a phone is pushed only while its lease holds** (#1254,
+  owner decision; the secure path has no lease yet, see the end of this item).
   The registration lives while the phone keeps connecting: the app
   re-registers on every connection, and the daemon renews the lease while the
   connection stays open and stamps it when the connection closes; a phone
@@ -686,19 +688,20 @@ those two are both exactly `{token, title, body}`.
   that removed the machine while the daemon was unreachable, which the
   unregister cannot reach. The Worker-side revocation (a phone telling the
   Worker directly) is R7 work. The store file is written owner-only (0600).
-  The lease is the legacy path's only. A secure subscription has none: it is
-  read from disk under the interprocess lock at every fan-out
-  (`SecurePushStore.listCurrent`), so a mute, an unregister or a revoke
-  recorded by another process applies to the next push, and it ends on the
-  app's `secure_push_unregister_request` over the relay or on
+  Only the legacy path has the lease today. A secure subscription has none
+  yet; the owner's lease decision covers it too, and that change is planned
+  for R7. Until then it is read from disk under the interprocess lock at
+  every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister or a
+  revoke recorded by another process applies to the next push, and it ends
+  only on the app's `secure_push_unregister_request` over the relay or on
   `remi devices revoke`. A phone that dropped the machine while the hub was
-  unreachable keeps being sent sealed pushes until one of those; whether
-  secure subscriptions take a lease too is open (R7).
+  unreachable keeps being sent sealed pushes until one of those.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise. The one exception is a device that
-  is gone: unregistered, rejected by APNS, or past its lease gets nothing,
-  dismissals included, so a card it still holds stays until the app opens.
+  is gone: unregistered, rejected by APNS, or (on the legacy path) past its
+  lease gets nothing, dismissals included, so a card it still holds stays
+  until the app opens.
   The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
   `turn_failed` push is outstanding), so a stale "Claude stopped" does not
@@ -761,6 +764,28 @@ those two are both exactly `{token, title, body}`.
 - `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
 - A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
+
+### Protocol version and capabilities (#1237, ADR 0035)
+
+Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks (`hello-ack-sources.test.ts` fails a new ack path that omits them; the bare `Connection`'s ack, which production never sends, lists none).
+The version changes only on a breaking change; an additive change never changes it. `protocol-fixtures-additive.test.ts` holds five messages to that; for the rest it is a review rule, and a breaking change raises `PROTOCOL_VERSION` by hand.
+A capability names an additive feature a client cannot see in the messages themselves (a request field an older daemon would ignore); it is added by the change that ships the feature, documented in `PROTOCOL_CAPABILITIES`, and a test refuses an undocumented one.
+It lists `workspaces` (#1236), the first; everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
+Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
+`serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
+
+### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
+
+`create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.
+`parseWorkspaceRequest` (`workspace/worktree.ts`) checks the values as text before a port is probed (no control character, no leading hyphen, at most 200 characters, no `@{` in a branch); a `directory` that is set and resolves elsewhere is refused.
+Once a port is held, `prepareWorkspace` finds the main worktree (`git worktree list --porcelain -z`, first entry, git 2.36 or later; bare refused), checks the branch (`check-ref-format --branch`, then one `for-each-ref`: it must not exist or be a folder of an existing branch, or the reverse; new branches only), resolves the base to a commit (default `HEAD`), claims `<parent>/remi-worktrees/<name>-<branch>` (every `/` a `-`) with an exclusive `mkdir` so two requests that map to one directory cannot both reach git, and runs `git worktree add -b <branch> <path> <commit>` in it.
+Git runs with no shell, no standard input, no prompt, `core.fsmonitor` off, no inherited `GIT_*` or remi secret, in its own process group; one 60-second deadline covers the preparation, and at it the group (hooks included) is ended.
+The repository's own hooks and filters run, as for the person at the machine.
+The child starts in the worktree, and `create_session_response.workspace` says `{repository, directory, worktree?: {branch, base}}` (the base as the commit); a resume with a new worktree is refused.
+A failed `git worktree add` that left a complete worktree on the branch (a hook failed) is used, with `notice` saying so; any other failure is refused, saying whether the branch stays, and the log lists what is left. The hub removes only its own empty claim.
+A refusal tells the client nothing it did not send; the log has git's reason, escaped.
+Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
+Not yet: the workspace on the session list (phase B) and a recent-repositories request (phase C).
 
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 

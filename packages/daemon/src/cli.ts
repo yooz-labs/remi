@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.1'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.1'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1263,10 +1263,11 @@ const sessionRegistry = new SessionRegistry(
         }
       } finally {
         closingResolved = null;
+        // The disposal and the loop above cancelled the session's held prompts and dismissed
+        // their cards through the runtime retired above; finish it once those dismissals are out
+        // (#1200, B3). In the finally, so a disposal that throws still dismisses what it pushed.
+        void closeSecurePushRuntime(sessionId);
       }
-      // The disposal and the loop above cancelled the session's held prompts and dismissed their
-      // cards through the runtime retired above; finish it once those dismissals are out (#1200, B3).
-      void closeSecurePushRuntime(sessionId);
       // Drop the session with its gate handle (#573; its open escalations were
       // already resolved by the gate's cancelStale on teardown) and its
       // QuestionPresenceTracker (#920): a stale entry would make

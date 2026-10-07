@@ -75,3 +75,13 @@ test('a closing session dismisses the cards it held before its secure runtime cl
   expect(pending, 'the pending cards are dismissed').toBeGreaterThan(-1);
   expect(close).toBeGreaterThan(pending);
 });
+
+test('a closing session closes its secure runtime even when the disposal throws (#1268 review)', () => {
+  const text = sites['a session closing'];
+  // The disposal runs in a try; the runtime's close belongs in its finally, or a throwing
+  // dispose leaves the runtime open (and its pushed cards undismissed) until process cleanup.
+  const start = text.indexOf('} finally {');
+  expect(start, 'the teardown has a finally').toBeGreaterThan(-1);
+  const block = text.slice(start, text.indexOf('\n      }', start));
+  expect(block).toMatch(/\bcloseSecurePushRuntime\(/);
+});
