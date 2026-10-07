@@ -103,23 +103,24 @@ describe('remi pair in a terminal (#1275)', () => {
     const nonce = t.nonce();
     expect(await store.claimPairing(nonce, phone.publicKey, 'Sam phone')).toBe('CLAIMED');
     await waitFor(() => t.screen().includes('Approve this device?'), 'the question');
-    t.type('y\r');
+    t.type(`${phone.fingerprint.slice(0, 4)}\r`);
     expect(await t.proc.exited).toBe(0);
     expect(store.isAuthorized(phone.publicKey, phone.fingerprint)).toBe(true);
     expect(store.listAuthorizedKeys()[0]?.label).toBe('Sam phone');
   }, 30000);
 
-  for (const [name, typed] of [
-    ['a y typed while waiting, without Enter', 'y'],
-    ['a whole y line typed while waiting', 'y\r'],
+  for (const [name, enter] of [
+    ['the approval typed while waiting, without Enter', ''],
+    ['a whole approval line typed while waiting', '\r'],
   ] as const) {
     test(`${name} does not answer the question: Enter after it rejects`, async () => {
       const { env, store } = await setup();
       const t = runInTerminal(env);
       await waitFor(() => t.screen().includes('Waiting for the phone'), 'the code');
-      t.type(typed);
-      await Bun.sleep(100);
+      // The phone shows its own fingerprint, so a person could type the approval ahead.
       const phone = await createIdentity();
+      t.type(`${phone.fingerprint.slice(0, 4)}${enter}`);
+      await Bun.sleep(100);
       const nonce = t.nonce();
       await store.claimPairing(nonce, phone.publicKey, 'x');
       await waitFor(() => t.screen().includes('Approve this device?'), 'the question');

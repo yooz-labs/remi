@@ -17,7 +17,12 @@ import {
 } from '@remi/shared';
 import { Authenticator } from '../../src/auth/authenticator.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
-import { pairFlow, pairPreconditions, pairingHosts } from '../../src/cli/cmd-pair.ts';
+import {
+  pairFlow,
+  pairPreconditions,
+  pairingHosts,
+  storeErrorMessage,
+} from '../../src/cli/cmd-pair.ts';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -90,7 +95,7 @@ describe('pairFlow (#1275)', () => {
     const flow = pairFlow(
       deps(env, async (question) => {
         asked = question;
-        return 'y';
+        return env.phone.fingerprint.slice(0, 4);
       }),
     );
     while (env.linkOf() === '') await Bun.sleep(10);
@@ -115,8 +120,19 @@ describe('pairFlow (#1275)', () => {
     expect((await env.phoneConnects(env.linkOf())).result.success).toBe(true);
   });
 
-  test('anything but yes rejects: the phone is told, and its key is not pending', async () => {
-    for (const answer of ['n', '', 'no', 'maybe', null]) {
+  test('the first four characters of the fingerprint approve, in either case and with spaces around', async () => {
+    for (const shape of [(p: string) => p.toUpperCase(), (p: string) => `  ${p} `]) {
+      const env = await setup();
+      const flow = pairFlow(deps(env, async () => shape(env.phone.fingerprint.slice(0, 4))));
+      while (env.linkOf() === '') await Bun.sleep(10);
+      void env.phoneConnects(env.linkOf());
+      expect(await flow).toBe(0);
+      expect(env.store.isAuthorized(env.phone.publicKey, env.phone.fingerprint)).toBe(true);
+    }
+  });
+
+  test("anything but the fingerprint's first four characters rejects, y and yes included", async () => {
+    for (const answer of ['y', 'yes', 'n', '', 'no', 'maybe', null, 'WRONG']) {
       const env = await setup();
       const flow = pairFlow(deps(env, async () => answer));
       while (env.linkOf() === '') await Bun.sleep(10);
@@ -262,7 +278,7 @@ describe('pairFlow (#1275)', () => {
       deps(env, async () => {
         // The person ran `remi authorize <fingerprint>` in another terminal.
         await env.store.authorizePendingKey(env.phone.fingerprint, 'Sam phone');
-        return 'y';
+        return env.phone.fingerprint.slice(0, 4);
       }),
     );
     while (env.linkOf() === '') await Bun.sleep(10);
@@ -298,7 +314,7 @@ describe('pairFlow (#1275)', () => {
         env,
         async () => {
           controller.abort(143);
-          return 'y';
+          return env.phone.fingerprint.slice(0, 4);
         },
         { signal: controller.signal },
       ),
@@ -366,7 +382,9 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
     for (const bind of [
       'LOCALHOST',
       'localhost',
+      'localhost.',
       '127.0.0.2',
+      '127.1',
       '0:0:0:0:0:0:0:1',
       '::ffff:127.0.0.1',
     ]) {
@@ -376,8 +394,46 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
     }
   });
 
-  test('--host refuses loopback and unspecified addresses, which no phone can use', () => {
-    for (const host of ['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']) {
+  test('a name that only starts with 127 is not loopback', () => {
+    expect(
+      pairPreconditions(
+        { port: 18765, bind: '0.0.0.0', auth: true },
+        '127.example.com',
+        interfaces,
+      ),
+    ).toMatchObject({ ok: true, host: '127.example.com' });
+  });
+
+  test('a link-local bind is refused like loopback: it changes with every network', () => {
+    const result = pairPreconditions(
+      { port: 18765, bind: '169.254.3.4', auth: true },
+      undefined,
+      interfaces,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('daemon.bind');
+  });
+
+  test('a hub that does not say how it is bound yet is asked about again, or restarted', () => {
+    const result = pairPreconditions({ port: 18765 }, undefined, interfaces);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain('just started');
+      expect(result.message).toContain('restart');
+    }
+  });
+
+  test('--host refuses loopback, unspecified and link-local addresses, which no phone can use', () => {
+    for (const host of [
+      '127.0.0.1',
+      'localhost',
+      'localhost.',
+      '::1',
+      '0.0.0.0',
+      '::',
+      '169.254.1.2',
+      'fe80::1',
+    ]) {
       const result = pairPreconditions(
         { port: 18765, bind: '0.0.0.0', auth: true },
         host,
@@ -426,5 +482,23 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
       port: 18765,
       others: ['192.168.1.23', '203.0.113.9', '192.168.64.1', '172.17.0.1'],
     });
+  });
+});
+
+describe('storeErrorMessage (#1275)', () => {
+  test('names the pairings file only when the error is about it', () => {
+    const file = '/home/sam/.remi/pairings.json';
+    expect(storeErrorMessage(new Error('Pairings file has invalid records'), file)).toContain(
+      `delete ${file}`,
+    );
+    expect(
+      storeErrorMessage(
+        new Error(`Auth store is corrupt or unreadable (${file}): invalid JSON`),
+        file,
+      ),
+    ).toContain(`delete ${file}`);
+    const other = storeErrorMessage(new Error('lock held by another process'), file);
+    expect(other).toContain('lock held by another process');
+    expect(other).not.toContain('delete');
   });
 });

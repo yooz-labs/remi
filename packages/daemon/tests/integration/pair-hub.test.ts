@@ -71,7 +71,17 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
   );
   procs.push(hub);
   await wait(
-    () => fs.existsSync(path.join(remiHome, 'daemon-status.json')) || hub.exitCode !== null,
+    // Ready once it says how it is bound: the status file can be written before that (#1281 review).
+    () => {
+      if (hub.exitCode !== null) return true;
+      const file = path.join(remiHome, 'daemon-status.json');
+      if (!fs.existsSync(file)) return false;
+      try {
+        return JSON.parse(fs.readFileSync(file, 'utf-8')).bind !== undefined;
+      } catch {
+        return false;
+      }
+    },
     'the hub',
   );
   expect(hub.exitCode).toBeNull();
@@ -85,6 +95,8 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
   if (!machine) throw new Error('the hub made no identity');
   const out: string[] = [];
   let decided = false;
+  // The phone, made before the code is shown; the person types its fingerprint's start to approve.
+  const phoneIdentity = await createIdentity();
   const flow = pairFlow({
     store,
     machineKey: machine.publicKey,
@@ -95,7 +107,7 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
     write: (text) => out.push(text),
     ask: async () => {
       decided = true;
-      return 'y';
+      return phoneIdentity.fingerprint.slice(0, 4);
     },
     pollMs: 50,
   });
@@ -109,7 +121,7 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
   if (!decoded.ok) throw new Error(`the link was refused: ${decoded.error}`);
 
   // The phone.
-  const phone = await unlockIdentity(await createIdentity());
+  const phone = await unlockIdentity(phoneIdentity);
   const ws = new WebSocket(`ws://${decoded.code.host}:${decoded.code.port}/ws`);
   sockets.push(ws);
   const messages: ProtocolMessage[] = [];

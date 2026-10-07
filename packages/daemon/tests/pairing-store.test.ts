@@ -171,6 +171,43 @@ describe('pairing records (#1275)', () => {
     });
   });
 
+  test('the counts stop at 999, and a repeat at the cap writes nothing', async () => {
+    const { dir, store } = setup();
+    const [a, b, c] = [await createIdentity(), await createIdentity(), await createIdentity()];
+    const { nonce } = store.createPairing();
+    await store.claimPairing(nonce, a.publicKey, 'x');
+    await store.claimPairing(nonce, b.publicKey, 'y');
+    const file = path.join(dir, 'pairings.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    data.pairings[0].contested = 999;
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    const before = fs.readFileSync(file, 'utf-8');
+    expect(await store.claimPairing(nonce, b.publicKey, 'y')).toBe('PAIRING_USED');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    expect(await store.claimPairing(nonce, c.publicKey, 'z')).toBe('PAIRING_USED');
+    expect(store.readPairing(nonce)).toMatchObject({
+      contested: 999,
+      lastContender: c.fingerprint,
+    });
+  });
+
+  test('the full-queue count stops at 999 too', async () => {
+    const { dir, store } = setup();
+    for (let i = 0; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+    for (let i = 0; i < 4; i++) {
+      await store.registerPendingKey((await createIdentity()).publicKey, { forPairing: true });
+    }
+    const { nonce } = store.createPairing();
+    const file = path.join(dir, 'pairings.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    data.pairings[0].queueFull = 999;
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    const before = fs.readFileSync(file, 'utf-8');
+    const a = await createIdentity();
+    expect(await store.claimPairing(nonce, a.publicKey, 'x')).toBe('PENDING_QUEUE_FULL');
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+  });
+
   test('at the record cap, finished records make room; only live ones count against it', async () => {
     const { store } = setup();
     for (let i = 0; i < 16; i++) store.cancelPairing(store.createPairing().nonce);

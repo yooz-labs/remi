@@ -115,6 +115,24 @@ describe('pairing on the first connection (#1275)', () => {
     expect(store.readPairing(nonce)?.state).toBe('open');
   });
 
+  test('the same key with the same outcome is logged once, not on every attempt', async () => {
+    const { respond } = await setup();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+    try {
+      for (let i = 0; i < 5; i++) await respond(`u${i}`, { nonce: 'AAAAAAAAAAAAAAAAAAAAAA' });
+      await respond('m', { nonce: 'short' });
+    } finally {
+      console.log = original;
+    }
+    const pairing = lines.filter((line) => line.startsWith('[Pairing]'));
+    expect(pairing.filter((line) => line.includes('PAIRING_UNKNOWN'))).toHaveLength(1);
+    expect(pairing.filter((line) => line.includes('malformed'))).toHaveLength(1);
+  });
+
   test('a bad signature never claims the code', async () => {
     const { store, respond } = await setup();
     const { nonce } = store.createPairing();
