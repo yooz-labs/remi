@@ -72,6 +72,8 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var status: MachineConnectionStatus
     public var sessions: [DiscoverableSession]
     public var questions: [QuestionMessage]
+    public var capabilities: [String]
+    public var harnesses: [String]
 
     public init(endpoint: MachineEndpoint, displayName: String) {
         self.endpoint = endpoint
@@ -79,6 +81,8 @@ public struct MachineState: Sendable, Equatable, Identifiable {
         status = .disconnected
         sessions = []
         questions = []
+        capabilities = []
+        harnesses = ["claude"]
     }
 }
 
@@ -89,8 +93,10 @@ public final class MachineStore {
     public private(set) var machines: [MachineState]
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
+    public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
     public private(set) var latestOperationError: String?
+    public private(set) var latestOperationNotice: String?
 
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
@@ -159,6 +165,7 @@ public final class MachineStore {
     public func clearLatestError() {
         latestError = nil
         latestOperationError = nil
+        latestOperationNotice = nil
     }
 
     public func loadTranscript(sessionId: String) {
@@ -234,17 +241,29 @@ public final class MachineStore {
         on endpoint: MachineEndpoint,
         directory: String,
         harness: String,
-        args: [String] = []
+        args: [String] = [],
+        workspace: WorkspaceRequest? = nil
     ) {
         guard let connection = connections[endpoint] else { return }
+        latestOperationError = nil
+        latestOperationNotice = nil
         let request = CreateSessionRequestMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
             directory: directory,
             harness: harness,
-            args: args.isEmpty ? nil : args
+            args: args.isEmpty ? nil : args,
+            workspace: workspace
         )
-        Task { try? await connection.send(request) }
+        Task {
+            do {
+                try await connection.send(request)
+            } catch {
+                await MainActor.run {
+                    self.latestOperationError = "Could not create session: the machine is unavailable."
+                }
+            }
+        }
     }
 
     private func connect(_ endpoint: MachineEndpoint, parent: MachineEndpoint) {
@@ -299,7 +318,14 @@ public final class MachineStore {
         else { return }
 
         switch event {
-        case .hello:
+        case .hello(let acknowledgment):
+            if endpoint == parent {
+                machines[index].capabilities = acknowledgment.capabilities ?? []
+                machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
+                if machines[index].capabilities.contains("workspaces") {
+                    requestRecentRepositories(from: endpoint)
+                }
+            }
             requestSessions(from: endpoint)
         case .sessions(let response):
             for session in response.sessions {
@@ -335,10 +361,18 @@ public final class MachineStore {
             for subagent in message.subagents {
                 routeBySession[subagent.agentId] = endpoint
             }
+        case .recentRepositories(let response):
+            guard endpoint == parent else { return }
+            recentRepositoriesByMachine[parent.id] = response.repositories
         case .createSessionResponse(let response):
-            if response.success, let port = response.port {
-                connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
-                requestSessions(from: parent)
+            if response.success {
+                latestOperationNotice = response.notice
+                if let port = response.port {
+                    connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
+                    requestSessions(from: parent)
+                }
+            } else if !response.success {
+                latestOperationError = "Could not create session: \(response.error ?? "Unknown daemon error")"
             }
         case .killSessionResponse(let response):
             guard let sessionId = sessionByKillRequest.removeValue(forKey: response.requestId) else {
@@ -367,6 +401,16 @@ public final class MachineStore {
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
             includeExternal: true
+        )
+        Task { try? await connection.send(request) }
+    }
+
+    private func requestRecentRepositories(from endpoint: MachineEndpoint) {
+        guard let connection = connections[endpoint] else { return }
+        let request = RecentRepositoriesRequestMessage(
+            id: UUID().uuidString.lowercased(),
+            timestamp: Date().ISO8601Format(),
+            limit: 10
         )
         Task { try? await connection.send(request) }
     }

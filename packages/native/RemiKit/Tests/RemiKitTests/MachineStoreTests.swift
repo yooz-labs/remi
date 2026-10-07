@@ -4,6 +4,66 @@ import Testing
 @testable import RemiKit
 
 struct MachineStoreTests {
+    @Test func workspaceSessionRequestMatchesTheWireContract() throws {
+        let request = CreateSessionRequestMessage(
+            id: "request-1",
+            timestamp: "2026-10-07T12:00:00Z",
+            directory: "~/Documents/git/remi",
+            harness: "codex",
+            workspace: WorkspaceRequest(
+                repository: "~/Documents/git/remi",
+                worktree: WorktreeRequest(branch: "feature/native", base: "develop")
+            )
+        )
+
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let workspace = try #require(object["workspace"] as? [String: Any])
+        let worktree = try #require(workspace["worktree"] as? [String: Any])
+
+        #expect(object["type"] as? String == "create_session_request")
+        #expect(object["directory"] as? String == "~/Documents/git/remi")
+        #expect(object["harness"] as? String == "codex")
+        #expect(workspace["repository"] as? String == "~/Documents/git/remi")
+        #expect(worktree["branch"] as? String == "feature/native")
+        #expect(worktree["base"] as? String == "develop")
+    }
+
+    @Test func legacySessionRequestOmitsWorkspace() throws {
+        let request = CreateSessionRequestMessage(
+            id: "request-2",
+            timestamp: "2026-10-07T12:00:00Z",
+            directory: "/tmp/project",
+            harness: "claude"
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+
+        #expect(object["workspace"] == nil)
+    }
+
+    @Test func recentRepositoriesResponseDecodes() throws {
+        let data = Data(#"""
+        {
+            "type":"recent_repositories_response",
+            "id":"response-1",
+            "timestamp":"2026-10-07T12:00:00Z",
+            "requestId":"request-1",
+            "repositories":[{
+                "repository":"/Users/me/remi",
+                "name":"remi",
+                "lastUsedAt":"2026-10-07T11:00:00Z"
+            }]
+        }
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(RecentRepositoriesResponseMessage.self, from: data)
+        #expect(response.repositories.first?.repository == "/Users/me/remi")
+        #expect(response.repositories.first?.name == "remi")
+    }
+
     @Test func endpointIdentityAndURLAreStable() throws {
         let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
         #expect(endpoint.id == "127.0.0.1:18765")
