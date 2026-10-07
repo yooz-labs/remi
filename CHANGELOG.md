@@ -4,6 +4,15 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Logs stay bounded on a machine that runs for weeks (#729)
+
+#### Fixed
+
+- A hub, a session daemon or a wrapper that ran for a long time grew its log without limit: logs were rotated only when a process opened them, and a long-lived process never reopens. Each one now checks the files it writes to every five minutes. A file that has passed 10 MB is rotated, and two backups are kept. That covers `daemon.log`, `remi.log` and the LaunchAgent's `remi-stdout.log` and `remi-stderr.log`, which nothing rotated before. A daemon says at startup which files it keeps bounded.
+- A hub started with `remi start` lost its log. Once `daemon.log` reached 10 MB, starting a session renamed it away from under the hub, and two rotations later the hub's file was deleted while the hub still wrote to it. Rotation now copies the log and empties it in place, so every process writing to it keeps writing to the live file. A few lines written during the copy can be lost. One process rotates a file at a time, and a rotation that fails keeps the log and its backups.
+- Emptying a file in place needs every writer to append to it, as remi's own processes and launchd do. A daemon whose stdout or stderr was opened without append (started with `> ~/.remi/daemon.log` rather than `>>`) leaves that file alone and says so at startup. Another remi process rotating the same file would still corrupt it, so use `>>`.
+- The opt-in debug files are bounded the same way: `REMI_HOOK_DEBUG`'s `hook-diag.jsonl`, `REMI_QUESTION_TRACE`'s `question-trace.jsonl`, and the `REMI_PTY_CAPTURE` file. The capture file's rotation writes `<file>.1`, `<file>.2` and `<file>.lock` next to it, replacing files with those names.
+
 ### A phone that stops connecting stops getting pushes; muting works (#1254, #1258)
 
 #### Fixed
