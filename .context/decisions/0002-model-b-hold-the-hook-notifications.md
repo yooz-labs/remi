@@ -53,4 +53,4 @@ Epics #571 (0.6.13), #603, #624; hook docs at code.claude.com/docs/en/hooks.
 Detail formerly in `.context/epic-notifications-rethink.md`,
 `epic-notification-robustness-refactor.md`, `phase2-hold-cancel-spec.md`,
 `native-lockscreen-answer-relay.md` (pruned 2026-07-10). Flow diagram:
-`.context/notification-and-session-flow.md` (needs a refresh to this model).
+`.context/archive/2026-h2/notification-and-session-flow.md` (needs a refresh to this model).

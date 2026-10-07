@@ -1,6 +1,6 @@
 # Implementation Plan: Semantic Intent Approval and Scoped Workflow Context
 
-> **Historical (2026-10-01).** Semantic intent approval and scoped workflow grants were removed with the rest of remi's permission judgment in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)). Nothing in this plan describes current code.
+> **Historical (2026-10-01).** Semantic intent approval and scoped workflow grants were removed with the rest of remi's permission judgment in #1125 ([ADR 0030](../../decisions/0030-defer-permission-judgment-to-the-harness.md)). Nothing in this plan describes current code.
 
 ## Context
 
