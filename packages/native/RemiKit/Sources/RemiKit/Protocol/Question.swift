@@ -37,6 +37,7 @@ public struct Question: Codable, Sendable, Equatable, Identifiable {
     public let questions: [QuestionStep]?
     public let submitLabel: String?
     public let held: Bool?
+    public let agentId: String?
 }
 
 /// `{ "type": "question", ... }`: a card for a session.

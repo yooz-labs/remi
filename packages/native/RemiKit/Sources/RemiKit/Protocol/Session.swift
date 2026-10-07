@@ -1,5 +1,19 @@
 import Foundation
 
+public struct RemiNavigationDestination: Codable, Sendable, Hashable {
+    public let machineID: String
+    public let sessionID: String
+    public let questionID: String?
+    public let agentID: String?
+
+    public init(machineID: String, sessionID: String, questionID: String? = nil, agentID: String? = nil) {
+        self.machineID = machineID
+        self.sessionID = sessionID
+        self.questionID = questionID
+        self.agentID = agentID
+    }
+}
+
 /// A session a machine can show (`DiscoverableSession` in `packages/shared/src/types.ts`).
 public struct DiscoverableSession: Codable, Sendable, Equatable, Identifiable {
     public var id: String { sessionId }

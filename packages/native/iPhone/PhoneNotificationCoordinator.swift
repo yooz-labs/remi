@@ -1,5 +1,14 @@
 import UIKit
 import UserNotifications
+import Observation
+import RemiKit
+
+@MainActor
+@Observable
+final class PhoneNotificationRouter {
+    static let shared = PhoneNotificationRouter()
+    var destination: RemiNavigationDestination?
+}
 
 final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
@@ -22,6 +31,16 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         ) as? Bool ?? true
         return soundEnabled ? [.banner, .sound] : [.banner]
     }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard let destination = PhoneNotificationCoordinator.destination(
+            from: response.notification.request.content.userInfo
+        ) else { return }
+        await MainActor.run { PhoneNotificationRouter.shared.destination = destination }
+    }
 }
 
 enum PhoneNotificationCoordinator {
@@ -43,17 +62,42 @@ enum PhoneNotificationCoordinator {
         await UIApplication.shared.open(url)
     }
 
-    static func notify(id: String, title: String, body: String) async {
+    static func notify(
+        id: String,
+        title: String,
+        body: String,
+        destination: RemiNavigationDestination
+    ) async {
         guard notificationsEnabled else { return }
         guard await authorizationState().isAllowed else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
+        content.userInfo = destinationUserInfo(destination)
         if soundsEnabled {
             content.sound = .default
         }
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    static func destinationUserInfo(_ destination: RemiNavigationDestination) -> [AnyHashable: Any] {
+        guard let data = try? JSONEncoder().encode(destination),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return object
+    }
+
+    static func destination(from userInfo: [AnyHashable: Any]) -> RemiNavigationDestination? {
+        var object: [String: Any] = [:]
+        for (key, value) in userInfo {
+            guard let key = key as? String else { continue }
+            object[key] = value
+        }
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object)
+        else { return nil }
+        return try? JSONDecoder().decode(RemiNavigationDestination.self, from: data)
     }
 
     static func remove(ids: [String]) {

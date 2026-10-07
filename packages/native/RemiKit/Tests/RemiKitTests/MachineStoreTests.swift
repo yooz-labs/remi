@@ -112,6 +112,21 @@ struct MachineStoreTests {
         #expect(machine.activeSessions.map(\.sessionId) == ["live"])
     }
 
+    @Test func notificationDestinationRoundTripsAllRoutingIdentity() throws {
+        let destination = RemiNavigationDestination(
+            machineID: "host.example:18765",
+            sessionID: "session-1",
+            questionID: "question-1",
+            agentID: "agent-1"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            RemiNavigationDestination.self,
+            from: JSONEncoder().encode(destination)
+        )
+        #expect(decoded == destination)
+    }
+
     @Test @MainActor func resolutionAndSnapshotsPruneDuplicateMachineCollections() throws {
         let resolved = try question(id: "question-1", sessionId: "session-1")
         let stillLive = try question(id: "question-2", sessionId: "session-1")

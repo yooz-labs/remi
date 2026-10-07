@@ -9,10 +9,12 @@ struct PhoneLiveRootView: View {
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
+    @State private var notificationRouter = PhoneNotificationRouter.shared
+    @State private var notificationPath: [RemiNavigationDestination] = []
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $notificationPath) {
             HomeScreen(
                 questions: allQuestions,
                 sessions: allSessions,
@@ -38,15 +40,19 @@ struct PhoneLiveRootView: View {
                 onRetryApproval: store.retryApproval,
                 onDismissError: store.clearLatestError
             )
+            .navigationDestination(for: RemiNavigationDestination.self) { destination in
+                notificationDestination(destination)
+            }
         }
         .task { store.start() }
+        .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
         .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
-        .onChange(of: Set(allQuestions.map(\.id)), initial: true) { oldValue, newValue in
+        .onChange(of: Set<String>(allQuestions.map(\.id)), initial: true) { oldValue, newValue in
             guard notificationBaselineEstablished else {
                 knownQuestionIDs = newValue
                 notificationBaselineEstablished = true
@@ -55,12 +61,15 @@ struct PhoneLiveRootView: View {
             let removed = knownQuestionIDs.subtracting(newValue)
             PhoneNotificationCoordinator.remove(ids: Array(removed))
             for id in newValue.subtracting(knownQuestionIDs) {
-                guard let question = allQuestions.first(where: { $0.id == id }) else { continue }
+                guard let question = allQuestions.first(where: { $0.id == id }),
+                      let destination = destination(forQuestionID: id)
+                else { continue }
                 Task {
                     await PhoneNotificationCoordinator.notify(
                         id: id,
                         title: "\(question.sessionName) needs you",
-                        body: question.text
+                        body: question.text,
+                        destination: destination
                     )
                 }
             }
@@ -68,6 +77,10 @@ struct PhoneLiveRootView: View {
                 questionFeedbackTrigger += 1
             }
             knownQuestionIDs = newValue
+        }
+        .onChange(of: notificationRouter.destination) { _, destination in
+            guard destination != nil else { return }
+            routePendingNotification()
         }
     }
 
@@ -260,6 +273,58 @@ struct PhoneLiveRootView: View {
 
     private func rawQuestion(_ id: String) -> QuestionMessage? {
         store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
+    }
+
+    private func destination(forQuestionID id: String) -> RemiNavigationDestination? {
+        for machine in store.machines {
+            if let message = machine.questions.first(where: { $0.question.id == id }) {
+                return RemiNavigationDestination(
+                    machineID: machine.id,
+                    sessionID: message.sessionId,
+                    questionID: id,
+                    agentID: message.question.agentId
+                )
+            }
+        }
+        return nil
+    }
+
+    private func routePendingNotification() {
+        guard let destination = notificationRouter.destination else { return }
+        selectedMachineID = destination.machineID
+        notificationPath = [destination]
+        notificationRouter.destination = nil
+    }
+
+    @ViewBuilder
+    private func notificationDestination(_ destination: RemiNavigationDestination) -> some View {
+        if let session = allSessions.first(where: {
+            $0.id == destination.sessionID && $0.machineID == destination.machineID
+        }) {
+            SessionScreen(
+                session: session,
+                transcript: transcript(session.id),
+                questions: questions(session.id),
+                views: store.sessionViewsBySession[session.id] ?? [],
+                initialConversationID: destination.agentID,
+                transcriptForView: transcript,
+                onSelectView: store.loadTranscript,
+                onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
+                onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
+                onCancel: { cancel(sessionId: session.id, questionId: $0) },
+                onSend: { sendChat(sessionId: session.id, content: $0) },
+                onTerminate: { store.terminateSession(sessionId: session.id) }
+            )
+            .onAppear {
+                store.loadTranscript(sessionId: destination.agentID ?? session.id)
+            }
+        } else {
+            ContentUnavailableView(
+                "Conversation unavailable",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("The session may have ended or the machine may be offline.")
+            )
+        }
     }
 
     private func reachability(_ status: MachineConnectionStatus) -> RemiMachineReachability {
