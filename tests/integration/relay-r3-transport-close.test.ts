@@ -13,17 +13,20 @@
  * The cause is the runtime's client close. Bun 1.3.11 (the CI and release pin) usually resets the
  * TCP connection right after sending its Close frame, so the peer gets ECONNRESET and can never
  * answer the Close: a Worker that is slow to get to the socket (a loaded machine) then writes its
- * reply into a reset connection and records the close as abnormal. Bun 1.4.2 ends the connection
- * with a FIN and keeps it open for the peer's answer, so a late answer still completes the closing
- * handshake.
+ * reply into a reset connection and records the close as abnormal, and it can lose what it had not
+ * read yet, the hub's BYE included (7 of 102 loaded runs, #1271 review). Bun 1.4.2 ends the
+ * connection with a FIN and keeps it open for the peer's answer, so a late answer still completes
+ * the closing handshake. The hub therefore leaves an orderly close to the far side for a bounded
+ * time after its BYE (`ORDERLY_CLOSE_GRACE_MS` in `hub-relay.ts`).
  *
  * The test is the slow peer: it answers each Close 300 ms late and records how the connection
  * ended. It asserts what each runtime does, so the day the pin moves this test says whether the
- * new runtime closes gracefully, and the R3 assertions that allow for the reset
- * (`relay-r3.test.ts`) can then be made exact again.
+ * new runtime closes gracefully, and the one allowance for the reset in `relay-r3.test.ts`
+ * (`expectHubClose`) can then go.
  *
  * Measured on macOS only. CI runs Linux, where nobody has observed how either runtime ends the
- * connection, so the test is skipped there rather than asserting an unseen behavior.
+ * connection, so the test is skipped there rather than asserting an unseen behavior: it guards
+ * only on a Mac, where the owner and the agents run the suite, not in CI.
  */
 import { expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
@@ -31,8 +34,10 @@ import { createHash } from 'node:crypto';
 /** How late the peer answers the client's Close: far longer than the client takes to close. */
 const ANSWER_DELAY_MS = 300;
 /**
- * Bun 1.3.11 resets about four connections in five (measured 4 of 5, twice, and 19 of 20 with a
- * reader that waits); with eight, the chance that none is reset is about 3 in a million.
+ * On Bun 1.3.11 most connections end without the late answer: measured 4 of 5 reset (twice, across
+ * processes), 8 of 8 in this test unloaded, and under load a few that ended with a FIN but no
+ * answer written (2 of 16 runs saw one), which `graceful` also counts as lost. With eight, the
+ * chance that none is lost is negligible.
  */
 const CONNECTIONS = 8;
 /** The Bun release whose client close is known to reset the connection (#1225). */
