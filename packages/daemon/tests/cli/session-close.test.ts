@@ -22,6 +22,7 @@ describe('disposeAndDismiss (#1223)', () => {
       pendingQuestionIds: [A, B],
       alreadyResolved: resolved,
       dismiss: (id) => events.push(`dismiss ${id}`),
+      onDisposeError: () => events.push('dispose error'),
     });
     expect(events).toEqual(['dispose', `dismiss ${B}`]);
   });

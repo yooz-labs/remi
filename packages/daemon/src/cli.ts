@@ -1260,6 +1260,8 @@ const sessionRegistry = new SessionRegistry(
           pendingQuestionIds,
           alreadyResolved: resolvedAtClose,
           dismiss: (questionId) => onQuestionResolved(sessionId, questionId, 'cancelled'),
+          onDisposeError: (error) =>
+            logError(`[Session ${sessionId}] dispose failed at close: ${errorToString(error)}`),
         });
       } finally {
         closingResolved = null;
