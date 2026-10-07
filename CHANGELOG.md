@@ -13,11 +13,12 @@ All notable changes to Remi are documented here.
 - Emptying a file in place needs every writer to append to it, as remi's own processes and launchd do. A daemon whose stdout or stderr was opened without append (started with `> ~/.remi/daemon.log` rather than `>>`) leaves that file alone and says so at startup. Another remi process rotating the same file would still corrupt it, so use `>>`.
 - The opt-in debug files are bounded the same way: `REMI_HOOK_DEBUG`'s `hook-diag.jsonl`, `REMI_QUESTION_TRACE`'s `question-trace.jsonl`, and the `REMI_PTY_CAPTURE` file. The capture file's rotation writes `<file>.1`, `<file>.2` and `<file>.lock` next to it, replacing files with those names.
 
-### Fixed
+### A phone that stops connecting stops getting pushes; muting works (#1254, #1258)
 
-- A hub, a session daemon or a wrapper that ran for a long time grew its log without limit: logs were rotated only when a process opened them, and a long-lived process never reopens. Each one now checks the files it writes to every five minutes and rotates them at 10 MB, keeping two backups. That covers `daemon.log`, `remi.log` and the LaunchAgent's `remi-stdout.log` and `remi-stderr.log`, which nothing rotated before.
-- A hub started with `remi start` lost its log: spawning a session renamed `daemon.log` away from under the hub, and two rotations later its file was deleted while the hub still wrote to it. Rotation now copies the log and empties it in place, so every process writing to it keeps writing to the live file. A few lines written during the copy can be lost.
-- The opt-in debug sinks (`REMI_HOOK_DEBUG`'s `hook-diag.jsonl` and `REMI_PTY_CAPTURE`) are bounded the same way.
+#### Fixed
+
+- A machine the phone had disconnected from kept pushing to it when the disconnect could not reach the machine (its daemon was down or unreachable at that moment), and kept doing so when the daemon came back. A phone's push registration now lasts while the phone stays connected or keeps reconnecting, and ends at once when you disconnect the machine in the app while it is reachable. Otherwise it expires `push_lease_hours` after the phone was last connected: a new `[notifications]` setting, default 24 hours, where 0 means it never expires. An expired phone gets nothing more from that machine, dismissals included, until it connects again. `device-tokens.json` is now readable by you only.
+- The per-device push switches in the app (#968) had no effect: the daemon dropped the phone's preferences before storing them, so every phone got every kind of push. They are now stored and honored, across all of a machine's daemons: every push re-reads the shared device list first, so a change made through one daemon applies to the next push from any of them.
 
 ### Third-party notices ship with remi (#1131)
 

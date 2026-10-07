@@ -11,15 +11,17 @@
  * Worth stating why this file exists at all: `relay-adapter-auth.test.ts` is
  * named for the adapter but only ever calls `Authenticator` directly, so the
  * relay handshake had no adapter-level coverage. Making the key exchange
- * mandatory broke none of its 29 tests.
+ * mandatory broke none of its 8 tests (a stale count of 29 stood here before;
+ * ADR 0014).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createAuthResponse,
+  createUserInput,
   decryptRelayPayload,
   deriveRelaySessionKeys,
   encryptRelayPayload,
@@ -67,12 +69,39 @@ class RecordingTransport implements RelayTransport {
     if (last === undefined) throw new Error('nothing was sent');
     return JSON.parse(last) as T;
   }
+
+  /** The type of the most recent payload when it is a plaintext handshake message. */
+  lastType(): string | undefined {
+    try {
+      return this.lastAsJson<{ type?: string }>().type;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
-/** Wait for the adapter's async handshake continuations to settle. */
+/**
+ * Wait until `done()` holds (#1260). The handshake signs, verifies and derives
+ * keys with real Ed25519 and P-256 keys, which under load takes longer than
+ * any fixed tick, so each step waits for the message it produces.
+ */
+async function until(done: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** Give the adapter a moment, before asserting that it sent NOTHING. A
+ *  positive step waits with `until` instead. */
+
+/** Each test's own limit: two key derivations plus the handshake, with room for
+ *  `until` to report which step it was waiting for before the test times out. */
+const TEST_TIMEOUT_MS = 20_000;
 async function settle(): Promise<void> {
   for (let i = 0; i < 12; i++) await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 50));
 }
 
 describe('relay adapter encrypts what the Worker carries', () => {
@@ -80,6 +109,8 @@ describe('relay adapter encrypts what the Worker carries', () => {
   let authenticator: Authenticator;
   let transport: RecordingTransport;
   let adapter: RelayAdapter | null = null;
+  /** The content of every `user_input` the adapter routed to the daemon. */
+  let inputs: string[];
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-relay-e2e-'));
@@ -88,6 +119,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
     const identity = await store.unlock('testpass');
     authenticator = new Authenticator({ identity, identityStore: store });
     transport = new RecordingTransport();
+    inputs = [];
   });
 
   afterEach(async () => {
@@ -106,7 +138,11 @@ describe('relay adapter encrypts what the Worker carries', () => {
         authenticator,
         createTransport: () => transport,
       },
-      {},
+      {
+        onUserInput: (_connectionId, _sessionId, content) => {
+          inputs.push(content);
+        },
+      },
     );
     await adapter.start();
   }
@@ -121,7 +157,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
   }> {
     const offerKex = options.offerKex !== false;
     transport.emit('peer-connected', 'client');
-    await settle();
+    await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
     const challenge = transport.lastAsJson<AuthChallengeMessage>();
     expect(challenge.type).toBe('auth_challenge');
@@ -167,103 +203,142 @@ describe('relay adapter encrypts what the Worker carries', () => {
         ),
       ),
     );
-    await settle();
+    await until(() => transport.lastType() === 'auth_result', 'the auth result');
+    if (offerKex) {
+      // A failed handshake also ends in an auth_result; every caller that
+      // offered the exchange needs it to have succeeded.
+      expect(transport.lastAsJson<{ success: boolean }>().success).toBe(true);
+    }
     return { keys, challenge };
   }
 
-  test('the challenge carries a signed ephemeral key', async () => {
-    await startAdapter();
-    transport.emit('peer-connected', 'client');
-    await settle();
+  test(
+    'the challenge carries a signed ephemeral key',
+    async () => {
+      await startAdapter();
+      transport.emit('peer-connected', 'client');
+      await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
-    const challenge = transport.lastAsJson<AuthChallengeMessage>();
-    expect(challenge.relayEphemeralKey).toBeTruthy();
-    expect(challenge.relayKexSignature).toBeTruthy();
-    // A raw uncompressed P-256 point is 65 bytes.
-    expect(fromBase64(challenge.relayEphemeralKey as string).byteLength).toBe(65);
-  });
+      const challenge = transport.lastAsJson<AuthChallengeMessage>();
+      expect(challenge.relayEphemeralKey).toBeTruthy();
+      expect(challenge.relayKexSignature).toBeTruthy();
+      // A raw uncompressed P-256 point is 65 bytes.
+      expect(fromBase64(challenge.relayEphemeralKey as string).byteLength).toBe(65);
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  test('the Worker never sees the plaintext of a relayed message', async () => {
-    await startAdapter();
-    const { keys } = await completeHandshake();
-    expect(keys).not.toBeNull();
+  test(
+    'the Worker never sees the plaintext of a relayed message',
+    async () => {
+      await startAdapter();
+      const { keys } = await completeHandshake();
+      expect(keys).not.toBeNull();
 
-    const before = transport.sent.length;
-    const secret = 'rm -rf /very/secret/path';
-    adapter?.broadcast({
-      type: 'agent_output',
-      id: '0199f3a1-0000-7000-8000-000000000001',
-      timestamp: new Date().toISOString(),
-      sessionId: '0199f3a1-0000-7000-8000-000000000002',
-      content: secret,
-      // biome-ignore lint/suspicious/noExplicitAny: minimal literal for the test
-    } as any);
-    await settle();
+      const before = transport.sent.length;
+      const secret = 'rm -rf /very/secret/path';
+      adapter?.broadcast({
+        type: 'agent_output',
+        id: '0199f3a1-0000-7000-8000-000000000001',
+        timestamp: new Date().toISOString(),
+        sessionId: '0199f3a1-0000-7000-8000-000000000002',
+        content: secret,
+        // biome-ignore lint/suspicious/noExplicitAny: minimal literal for the test
+      } as any);
+      await until(() => transport.sent.length > before, 'the relayed message');
+      await settle(); // and nothing after it
 
-    const onTheWire = transport.sent.slice(before);
-    expect(onTheWire.length).toBe(1);
-    const payload = onTheWire[0] as string;
+      const onTheWire = transport.sent.slice(before);
+      expect(onTheWire.length).toBe(1);
+      const payload = onTheWire[0] as string;
 
-    // The Worker's whole view of this message.
-    expect(payload).not.toContain(secret);
-    expect(payload).not.toContain('agent_output');
-    expect(payload).not.toContain('sessionId');
+      // The Worker's whole view of this message.
+      expect(payload).not.toContain(secret);
+      expect(payload).not.toContain('agent_output');
+      expect(payload).not.toContain('sessionId');
 
-    // ...and the legitimate peer can still read it.
-    const plaintext = await decryptRelayPayload((keys as RelaySessionKeys).receive, payload);
-    expect(JSON.parse(plaintext).content).toBe(secret);
-  });
+      // ...and the legitimate peer can still read it.
+      const plaintext = await decryptRelayPayload((keys as RelaySessionKeys).receive, payload);
+      expect(JSON.parse(plaintext).content).toBe(secret);
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  test('a message from the client is accepted only when correctly encrypted', async () => {
-    await startAdapter();
-    const { keys } = await completeHandshake();
+  test(
+    'a message from the client is accepted only when correctly encrypted',
+    async () => {
+      await startAdapter();
+      const { keys } = await completeHandshake();
+      const sessionId = '0199f3a1-0000-7000-8000-000000000004';
 
-    // Correctly sealed: routed normally (no disconnect).
-    transport.emit(
-      'relay',
-      await encryptRelayPayload(
-        (keys as RelaySessionKeys).send,
-        JSON.stringify({ type: 'ping', id: 'x', timestamp: new Date().toISOString() }),
-      ),
-    );
-    await settle();
-    expect(adapter?.hasConnection).toBeTruthy();
+      // Correctly sealed: routed to the daemon, and the peer stays.
+      transport.emit(
+        'relay',
+        await encryptRelayPayload(
+          (keys as RelaySessionKeys).send,
+          JSON.stringify(createUserInput(sessionId, 'sealed')),
+        ),
+      );
+      await until(() => inputs.length === 1, 'the sealed input to be routed');
+      expect(inputs).toEqual(['sealed']);
+      expect(adapter?.connectionCount).toBe(1);
 
-    // Plaintext after the handshake is either a downgrade attempt or a broken
-    // peer. Either way it must not be honored.
-    const beforeCount = transport.sent.length;
-    transport.emit('relay', JSON.stringify({ type: 'ping', id: 'y' }));
-    await settle();
-    expect(transport.sent.length).toBe(beforeCount);
-  });
+      // Plaintext after the handshake is either a downgrade attempt or a broken
+      // peer. Either way it is not routed, and the peer is dropped.
+      const beforeCount = transport.sent.length;
+      transport.emit('relay', JSON.stringify(createUserInput(sessionId, 'in the clear')));
+      await until(() => adapter?.connectionCount === 0, 'the peer to be dropped');
+      expect(inputs).toEqual(['sealed']);
+      expect(transport.sent.length).toBe(beforeCount);
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  test('a client that cannot do the key exchange is refused, not served in the clear', async () => {
-    // The old-app case. Refusing is the point: continuing would put session
-    // content back on the wire, which is the bug this closes.
-    await startAdapter();
-    const { keys } = await completeHandshake({ offerKex: false });
-    expect(keys).toBeNull();
+  test(
+    'a client that cannot do the key exchange is refused, not served in the clear',
+    async () => {
+      // The old-app case. Refusing is the point: continuing would put session
+      // content back on the wire, which is the bug this closes.
+      await startAdapter();
+      const { keys } = await completeHandshake({ offerKex: false });
+      expect(keys).toBeNull();
 
-    const result = transport.lastAsJson<{ type: string; success: boolean; error?: string }>();
-    expect(result.type).toBe('auth_result');
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('RELAY_KEX_FAILED');
-  });
+      const result = transport.lastAsJson<{ type: string; success: boolean; error?: string }>();
+      expect(result.type).toBe('auth_result');
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('RELAY_KEX_FAILED');
+    },
+    TEST_TIMEOUT_MS,
+  );
 
-  test('nothing is relayed before the key exchange completes', async () => {
-    await startAdapter();
-    transport.emit('peer-connected', 'client');
-    await settle();
+  test(
+    'nothing is relayed before the key exchange completes',
+    async () => {
+      await startAdapter();
+      transport.emit('peer-connected', 'client');
+      await until(() => transport.lastType() === 'auth_challenge', 'the challenge');
 
-    const before = transport.sent.length;
-    const sent = adapter?.broadcast({
-      type: 'ping',
-      id: '0199f3a1-0000-7000-8000-000000000003',
-      timestamp: new Date().toISOString(),
-      // biome-ignore lint/suspicious/noExplicitAny: minimal literal for the test
-    } as any);
-    void sent;
-    await settle();
-    expect(transport.sent.length).toBe(before);
-  });
+      const before = transport.sent.length;
+      // Capture the adapter's own refusal line; nothing it does is replaced.
+      const errors: string[] = [];
+      const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(' '));
+      });
+      try {
+        adapter?.broadcast({
+          type: 'ping',
+          id: '0199f3a1-0000-7000-8000-000000000003',
+          timestamp: new Date().toISOString(),
+          // biome-ignore lint/suspicious/noExplicitAny: minimal literal for the test
+        } as any);
+      } finally {
+        spy.mockRestore();
+      }
+      // Refused at the call, not queued and sent later (#1261 review).
+      expect(errors.some((e) => e.includes('before the key exchange completed'))).toBe(true);
+      await settle();
+      expect(transport.sent.length).toBe(before);
+    },
+    TEST_TIMEOUT_MS,
+  );
 });

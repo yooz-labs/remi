@@ -635,10 +635,31 @@ those two are both exactly `{token, title, body}`.
   literally was: `settings.notifications` was written by the settings panel and
   read by nothing. Preferences ride up on `register_device_token` (idempotent
   and keyed by token, so a toggle change is just a re-register) and the daemon
-  filters its per-token fan-out in `notifications/push-preferences.ts`.
+  filters its per-token fan-out in `notifications/push-preferences.ts`. Until
+  #1258 the `cli.ts` wiring dropped them, so every device was stored with the
+  defaults and muting did nothing; sibling daemons now also adopt the newest
+  registration (its preferences included) from the shared store.
+- **A phone is pushed only while its lease holds** (#1254, owner decision).
+  The registration lives while the phone keeps connecting: the app
+  re-registers on every connection, and the daemon renews the lease while the
+  connection stays open and stamps it when the connection closes; a phone
+  connected to a daemon never expires there (`isLive`). Disconnecting the
+  machine in the app (`unregister_device_token`, #690, sent only while the
+  machine is reachable) ends it at once; otherwise a phone not seen for
+  `[notifications] push_lease_hours` (default 24; 0 never expires) is dropped
+  from memory and from `device-tokens.json` the next time any daemon sharing
+  the file reads it. Every push path re-reads the file first
+  (`refreshFromDisk`, #1259 review), so an expiry, a removal or a mute
+  recorded by a sibling daemon applies to the next push. It covers a phone
+  that removed the machine while the daemon was unreachable, which the
+  unregister cannot reach. The Worker-side revocation (a phone telling the
+  Worker directly) is R7 work. The store file is written owner-only (0600).
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise. The next main-agent tool call or
+  of the device that asked for less noise. The one exception is a device that
+  is gone: unregistered, rejected by APNS, or past its lease gets nothing,
+  dismissals included, so a card it still holds stays until the app opens.
+  The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
   `turn_failed` push is outstanding), so a stale "Claude stopped" does not
   outlive the agent working again. A new prompt does not (#1226): at a usage

@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.16-dev.21'; // REMI_COMPILED_VERSION
+      return '0.7.16-dev.22'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.16-dev.21'; // REMI_COMPILED_VERSION
+    return '0.7.16-dev.22'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1270,18 +1270,46 @@ import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications. INTENTIONALLY persisted across
-// WebSocket disconnect — push notifications are the suspended-app path, so
-// dropping on disconnect breaks the only case they exist for. Cleanup happens
-// at process exit only. Issue #286.
+// Device tokens for push notifications. Kept across a WebSocket disconnect
+// (#286): push notifications are the suspended-app path, so dropping a token on
+// disconnect breaks the only case they exist for. They end on the explicit
+// removal (`unregister_device_token`), on an APNS rejection, or when the push
+// lease runs out (#1254).
 // Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
 // daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
 // can push immediately, and a dead token pruned on APNS rejection stays pruned.
 // `deviceTokens` is the store's live in-memory map (stable reference), so all the
-// existing Map consumers are unchanged.
-const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+// existing Map consumers are unchanged. Every push path re-reads the file first
+// (`refreshFromDisk`), so a sibling's removal, mute (#1258) or expiry applies.
+//
+// #1254: `connectionTokens` holds the token each live connection registered.
+// While the phone stays connected its push lease is renewed and it never
+// expires here (`isLive`), and when the connection closes the lease counts
+// from that moment. The app re-registers on every new connection.
+const connectionTokens = new Map<UUID, string>();
+const pushLeaseMs = remiConfig.notifications.push_lease_hours * 3_600_000;
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'), {
+  leaseMs: pushLeaseMs,
+  isLive: (token) => {
+    for (const held of connectionTokens.values()) if (held === token) return true;
+    return false;
+  },
+});
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
+const pushLeaseTouchTimer = setInterval(
+  () => {
+    if (connectionTokens.size > 0) deviceTokenStore.touch(connectionTokens.values());
+  },
+  pushLeaseMs > 0 ? Math.min(15 * 60_000, Math.max(1000, pushLeaseMs / 3)) : 15 * 60_000,
+);
+pushLeaseTouchTimer.unref?.();
+const forgetConnectionToken = (connectionId: UUID): void => {
+  const token = connectionTokens.get(connectionId);
+  if (token === undefined) return;
+  connectionTokens.delete(connectionId);
+  deviceTokenStore.touch([token]);
+};
 
 // Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
 // (#672): shared by every session's hook bridge so its escalation rate-limit
@@ -1291,6 +1319,7 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   liveSessionsRegistry,
   bindingStore,
   deviceTokens,
+  refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
   pushConfig: () => ({
     signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
     ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1316,6 +1345,8 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
   // local record is what makes a silent background decision auditable.
   log(`[SubagentAlert] ${title} - ${body}`);
 
+  // A device removed or expired by a sibling daemon gets nothing (#1259 review).
+  deviceTokenStore.refreshFromDisk();
   if (deviceTokens.size === 0) return;
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   for (const dt of deviceTokens.values()) {
@@ -1385,7 +1416,11 @@ const turnEvents = createTurnEventSink({
     onTurnComplete: remiConfig.notifications.on_turn_complete,
     turnCompleteMinSeconds: remiConfig.notifications.turn_complete_min_seconds,
   }),
-  deviceTokens: () => deviceTokens.values(),
+  // Read fresh, so a sibling's mute (#1258) or an expired lease (#1254) applies.
+  deviceTokens: () => {
+    deviceTokenStore.refreshFromDisk();
+    return deviceTokens.values();
+  },
   sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,
   notifiers: sessionNotifiers,
   signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,
@@ -1776,11 +1811,20 @@ const ptyMessageFanout = createPtyMessageFanout({
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
-  registerDeviceToken: (token, platform, connectionId) =>
-    deviceTokenStore.register(token, platform, connectionId),
+  // The phone's preferences are stored with the token (#1258: they were dropped
+  // here, so a muted push class kept arriving).
+  registerDeviceToken: (token, platform, connectionId, pushPrefs) => {
+    deviceTokenStore.register(token, platform, connectionId, pushPrefs);
+    connectionTokens.set(connectionId, token);
+  },
   // #690: explicit user removal of this server from the phone app. Never
   // fires on a mere disconnect/app suspension — those must keep pushing.
-  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
+  unregisterDeviceToken: (token) => {
+    deviceTokenStore.unregister(token);
+    for (const [connectionId, held] of connectionTokens) {
+      if (held === token) connectionTokens.delete(connectionId);
+    }
+  },
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
@@ -2135,6 +2179,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onPeerDisconnect: hubClientTracker
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
+  onConnectionClosed: forgetConnectionToken,
 });
 
 const sharedEvents = {
@@ -2409,6 +2454,7 @@ async function cleanup(): Promise<void> {
     updateWatcher.stop();
     updateWatcher = null;
   }
+  clearInterval(pushLeaseTouchTimer);
 
   if (mdnsPublisher) {
     try {

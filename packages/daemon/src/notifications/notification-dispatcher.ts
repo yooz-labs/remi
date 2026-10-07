@@ -413,11 +413,13 @@ export interface NotificationDispatcherDeps {
   /**
    * Pull in a removal/registration recorded by another daemon on this machine
    * since the shared store last read the file (#690). Wired to
-   * `DeviceTokenStore.refreshFromDisk` (read + reconcile, no write). Called at
-   * the top of every push decision so a server the user just removed stops
-   * getting pushed without waiting for this dispatcher's own next unrelated
-   * register/prune call. Absent => no refresh (tests / old callers); must be
-   * synchronous and non-throwing.
+   * `DeviceTokenStore.refreshFromDisk` (read + reconcile; it writes only when a
+   * push lease expired, #1254). Called at the top of every push decision,
+   * dismissals included, so a server the user just removed, a device that
+   * muted a class (#1258) or one whose lease ran out stops getting pushed
+   * without waiting for this dispatcher's own next unrelated register/prune
+   * call. Absent => no refresh (tests / old callers); must be synchronous and
+   * non-throwing.
    */
   refreshDeviceTokens?: () => void;
   /**
@@ -858,6 +860,7 @@ export class NotificationDispatcher {
    * symmetric with `maybePush` so the dismissal carries the same routing id.
    */
   dismiss(questionSessionId: UUID, questionId: UUID): void {
+    this.deps.refreshDeviceTokens?.();
     const { deviceTokens, pushConfig } = this.deps;
     if (deviceTokens.size === 0) return;
     const cfg = pushConfig();
