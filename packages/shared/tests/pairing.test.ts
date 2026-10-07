@@ -14,6 +14,7 @@ import {
   encodePairingLink,
   generatePairingNonce,
   isPairingNonce,
+  isPlainPairingText,
 } from '../src/pairing.ts';
 import { buildVectors } from './fixtures/pairing/generate.ts';
 
@@ -107,5 +108,16 @@ describe('encodePairingLink and nonces (#1275)', () => {
   test('a decode with the default clock refuses the old vectors as expired', () => {
     const result = decodePairingLink(vectors.valid[0]?.link as string);
     expect(result).toMatchObject({ ok: false, error: 'EXPIRED' });
+  });
+});
+
+describe('isPlainPairingText surrogates (#1275)', () => {
+  test('a pair is one code point; a lone or reversed surrogate is refused', () => {
+    expect(isPlainPairingText('mac \u{1F34E}', 64)).toBe(true);
+    expect(isPlainPairingText('\u{1F34E}'.repeat(64), 64)).toBe(true);
+    expect(isPlainPairingText('\u{1F34E}'.repeat(65), 64)).toBe(false);
+    for (const text of ['mac\ud800', 'mac\udc00', '\udc00\ud800', '\ud800x', '\ud800\ud800']) {
+      expect(isPlainPairingText(text, 64), JSON.stringify(text)).toBe(false);
+    }
   });
 });

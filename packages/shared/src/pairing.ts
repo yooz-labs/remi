@@ -170,10 +170,27 @@ export function isPairingHost(host: string): boolean {
   return labels.every((label) => DNS_LABEL.test(label));
 }
 
+/**
+ * Whether every surrogate in `text` is half of a pair, so it encodes as UTF-8 and a Swift `String`
+ * holds it unchanged. (`String.prototype.isWellFormed` is ES2024, newer than the web client's lib.)
+ */
+function isWellFormedText(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    }
+  }
+  return true;
+}
+
 /** Text a client can show and compare as it is: see {@link PairingCode.name}. */
 export function isPlainPairingText(text: unknown, maxCodePoints: number): text is string {
   if (typeof text !== 'string' || text.length === 0) return false;
-  if (!text.isWellFormed()) return false;
+  if (!isWellFormedText(text)) return false;
   if ([...text].length > maxCodePoints) return false;
   if (hasControl(text) || escapeUnsafeText(text) !== text) return false;
   return !text.includes('"') && !text.includes('\\');
