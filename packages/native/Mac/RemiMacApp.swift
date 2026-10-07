@@ -28,7 +28,7 @@ struct RemiMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Remi", id: "main") {
             Group {
                 if let store {
                     MacLiveRootView(store: store)
