@@ -668,7 +668,8 @@ those two are both exactly `{token, title, body}`.
   #1258 the `cli.ts` wiring dropped them, so every device was stored with the
   defaults and muting did nothing; sibling daemons now also adopt the newest
   registration (its preferences included) from the shared store.
-- **A phone is pushed only while its lease holds** (#1254, owner decision).
+- **On the legacy path, a phone is pushed only while its lease holds** (#1254,
+  owner decision; the secure path has no lease yet, see the end of this item).
   The registration lives while the phone keeps connecting: the app
   re-registers on every connection, and the daemon renews the lease while the
   connection stays open and stamps it when the connection closes; a phone
@@ -683,19 +684,20 @@ those two are both exactly `{token, title, body}`.
   that removed the machine while the daemon was unreachable, which the
   unregister cannot reach. The Worker-side revocation (a phone telling the
   Worker directly) is R7 work. The store file is written owner-only (0600).
-  The lease is the legacy path's only. A secure subscription has none: it is
-  read from disk under the interprocess lock at every fan-out
-  (`SecurePushStore.listCurrent`), so a mute, an unregister or a revoke
-  recorded by another process applies to the next push, and it ends on the
-  app's `secure_push_unregister_request` over the relay or on
+  Only the legacy path has the lease today. A secure subscription has none
+  yet; the owner's lease decision covers it too, and that change is planned
+  for R7. Until then it is read from disk under the interprocess lock at
+  every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister or a
+  revoke recorded by another process applies to the next push, and it ends
+  only on the app's `secure_push_unregister_request` over the relay or on
   `remi devices revoke`. A phone that dropped the machine while the hub was
-  unreachable keeps being sent sealed pushes until one of those; whether
-  secure subscriptions take a lease too is open (R7).
+  unreachable keeps being sent sealed pushes until one of those.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise. The one exception is a device that
-  is gone: unregistered, rejected by APNS, or past its lease gets nothing,
-  dismissals included, so a card it still holds stays until the app opens.
+  is gone: unregistered, rejected by APNS, or (on the legacy path) past its
+  lease gets nothing, dismissals included, so a card it still holds stays
+  until the app opens.
   The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a
   `turn_failed` push is outstanding), so a stale "Claude stopped" does not
