@@ -4,6 +4,19 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Resume a session from the app when the machine runs only a hub (#1129)
+
+#### Added
+
+- Tapping Resume on a stored session now works through `remi serve`. The hub starts a new session daemon for it with `--resume`, in the directory the session ran in, and the app opens it when it appears. Before, the hub answered "not supported yet" and the only way was `remi --resume <session>` at the machine's terminal.
+- The resume response names the new daemon's port (`port`, optional; absent from a session daemon's answer, which resumes in its own process). An older hub still refuses the request, and an older app ignores the field.
+
+#### Changed
+
+- A resume goes through the same checks as a create request that names `--resume`, so a session another live remi session already holds is refused ("already open in a live remi session on the host") instead of being started twice.
+- The app opens the resumed session only if you are still where you were when you tapped Resume; if you opened another session meanwhile, it stays put and the resumed one appears in the list. Telegram says the resumed session runs in its own daemon, which that chat is not attached to.
+- Not verified live: a real Claude's transcript binding and hooks in a session resumed through a hub. The spawn and `--resume` themselves were (ADR 0033, LV-4), and a test now shows the child's Claude receives them.
+
 ### A card says how it is answered and what resolved it (#1235, [ADR 0038](.context/decisions/0038-the-decision-object.md))
 
 #### Added

@@ -22,7 +22,7 @@ import { PROTOCOL_VERSION, generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { DAEMON_CAPABILITIES } from '../../../src/cli/capabilities.ts';
 import {
-  HUB_RESUME_UNSUPPORTED_CODE,
+  RESUME_UNSUPPORTED_CODE,
   createResumeSessionHandlers,
   harnessResumeUnsupportedMessage,
 } from '../../../src/cli/handlers/resume-session-events.ts';
@@ -184,7 +184,7 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
 
       expect(responses()).toHaveLength(1);
       expect(responses()[0]?.success).toBe(false);
-      expect(responses()[0]?.errorCode).toBe(HUB_RESUME_UNSUPPORTED_CODE);
+      expect(responses()[0]?.errorCode).toBe(RESUME_UNSUPPORTED_CODE);
       expect(responses()[0]?.requestId).toBe(REQ);
       expect(sent).toHaveLength(1);
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(false);

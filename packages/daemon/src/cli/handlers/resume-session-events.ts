@@ -78,7 +78,7 @@ export function harnessResumeUnsupportedMessage(harnessId: HarnessId): string {
 }
 
 /** Same code vocabulary as the `error` frame (see `connection.ts` UNSUPPORTED). */
-export const HUB_RESUME_UNSUPPORTED_CODE = 'UNSUPPORTED';
+export const RESUME_UNSUPPORTED_CODE = 'UNSUPPORTED';
 
 /** What a resume request names, or why it names nothing. */
 type ResumeTarget =
@@ -280,7 +280,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
             requestId,
             undefined,
             harnessResumeUnsupportedMessage(harnessId),
-            HUB_RESUME_UNSUPPORTED_CODE,
+            RESUME_UNSUPPORTED_CODE,
           ),
         );
         return;
