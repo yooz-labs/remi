@@ -19,7 +19,7 @@ native targets now, not planned behavior.
 | Local card notifications | Yes | Yes | Menu bar | iPhone foreground banner and dismissal are implemented. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
 | Kill/resume session | Yes | Kill only | No | iPhone can terminate daemon-owned sessions with confirmation. Hub resume remains unsupported (#1129), so native does not offer a misleading resume action. |
-| Subagent conversation picker | Yes | Yes | No | iPhone exposes active and finished subagents as read-only conversations; Mac support remains. |
+| Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
 | Haptics and notification preferences | Yes | Yes | N/A | iPhone preferences control local question alerts, sounds, and answer feedback. |
 | Relay connection | No shipped client path | No | No | Out of scope until relay v2 (#1242). |
 | Diff, files, terminal view | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
