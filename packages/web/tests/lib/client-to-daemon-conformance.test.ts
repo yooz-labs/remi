@@ -88,6 +88,7 @@ const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
   answer: 'onAnswer',
   bullet_expand_request: 'onBulletExpandRequest',
   session_list_request: 'onSessionListRequest',
+  recent_repositories_request: 'onRecentRepositoriesRequest',
   transcript_load_request: 'onTranscriptLoadRequest',
   create_session_request: 'onCreateSessionRequest',
   terminal_resize: 'onTerminalResize',
@@ -132,6 +133,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       onAnswer: record('onAnswer'),
       onBulletExpandRequest: record('onBulletExpandRequest'),
       onSessionListRequest: record('onSessionListRequest'),
+      onRecentRepositoriesRequest: record('onRecentRepositoriesRequest'),
       onTranscriptLoadRequest: record('onTranscriptLoadRequest'),
       onCreateSessionRequest: record('onCreateSessionRequest'),
       onTerminalResize: record('onTerminalResize'),
@@ -163,7 +165,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 18 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 19 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -171,7 +173,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(18);
+    expect(C2D_TYPES.length).toBe(19);
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {

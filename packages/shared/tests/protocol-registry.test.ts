@@ -120,6 +120,7 @@ describe('protocol registry golden equality (#895)', () => {
     'register_device_token',
     'unregister_device_token',
     'session_history_request',
+    'recent_repositories_request', // #1236 phase C
     'ping',
     'pong',
     'ack',

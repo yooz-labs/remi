@@ -74,6 +74,7 @@ const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
   answer: 'onAnswer',
   bullet_expand_request: 'onBulletExpandRequest',
   session_list_request: 'onSessionListRequest',
+  recent_repositories_request: 'onRecentRepositoriesRequest',
   transcript_load_request: 'onTranscriptLoadRequest',
   create_session_request: 'onCreateSessionRequest',
   terminal_resize: 'onTerminalResize',
@@ -109,6 +110,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       onAnswer: record('onAnswer'),
       onBulletExpandRequest: record('onBulletExpandRequest'),
       onSessionListRequest: record('onSessionListRequest'),
+      onRecentRepositoriesRequest: record('onRecentRepositoriesRequest'),
       onTranscriptLoadRequest: record('onTranscriptLoadRequest'),
       onCreateSessionRequest: record('onCreateSessionRequest'),
       onTerminalResize: record('onTerminalResize'),
@@ -131,11 +133,11 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
     await peer.dispose();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 18 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 19 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
-    expect(C2D_TYPES.length).toBe(18);
+    expect(C2D_TYPES.length).toBe(19);
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
