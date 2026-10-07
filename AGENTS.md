@@ -215,6 +215,9 @@ can also list/revoke, but cannot approve anyone or learn the local capability.
 Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
 answers return correlated actual child outcomes, and child discovery is aggregated
 by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
+On the Bun 1.3.11 pin the hub's pipe close can be reset, so a client may get the Worker's failure
+close (4400) after an orderly BYE; the stream verdict, from the authenticated BYE, is what counts
+(#1225, measured on macOS only).
 The old `RelayAdapter`, signaling code client and permanent code store are removed;
 `remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
 its legacy Authenticator methods have no current production callers. Direct

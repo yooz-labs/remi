@@ -102,6 +102,17 @@ drains the wrapper receive queue before the channel verdict while suppressing
 post-close application effects. The Worker's control `gone` notice is emitted
 only for pending peers; ready disconnect closes the pipe, which owns its drain.
 
+On Bun 1.3.11, the CI and release pin, the hub's WebSocket client close usually
+resets the connection instead of waiting for the Worker's Close reply (#1225). A
+Worker that gets to the socket late, as on a loaded machine, then records the pipe
+close as abnormal (1006) and closes the client with its failure close (4400,
+`closed`), even after an orderly BYE. The client's verdict comes from the
+authenticated BYE, not from the close code, so a BYE that arrived still reads
+`clean`; the web client reports that verdict and does not read the code. Measured
+on macOS against the local workerd, where `relay-r3-transport-close.test.ts` pins
+the runtime's behavior (Bun 1.4.2 closes gracefully); not measured on Linux or
+against the deployed Worker.
+
 ## Retirement and verification
 
 V1 `RelayAdapter`, signaling client, code store and `remi code` implementation are
