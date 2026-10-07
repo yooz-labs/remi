@@ -102,6 +102,17 @@ describe('hubSupport (#1237)', () => {
     });
   });
 
+  test('an ack without a version is version 1: a client on another version refuses it (#1269 review)', () => {
+    expect(hubSupport(legacy, [], 2)).toEqual({
+      supported: false,
+      reason: 'protocol-version',
+      missing: [],
+      message:
+        "This machine's remi (0.7.16) speaks protocol version 1, and this app speaks version 2. Update remi on that machine and restart it.",
+    });
+    expect(hubSupport(legacy, [], 1)).toEqual({ supported: true });
+  });
+
   test('a version that is not a positive integer is refused as unreadable', () => {
     for (const protocolVersion of ['1', 0, -1, 1.5, Number.NaN, null, true, [1]]) {
       expect(hubSupport({ ...current, protocolVersion })).toEqual({
