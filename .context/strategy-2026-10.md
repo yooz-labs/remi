@@ -109,13 +109,15 @@ One object for every "the agent needs you" moment:
 ```
 Decision {
   id, harness, harnessSessionId, agentId?,
-  kind: permission | question | plan | sandbox | trust,
+  kind: permission | question | plan,
   options[], optionsAreFallback,
   localRender: harness | remi | none,
   answerPath: structured | keystroke | none,
   resolvedBy: terminal | phone | lockscreen | harness | timeout
 }
 ```
+
+Frozen by ADR 0038 (#1235, 2026-10-07): it is the `question` message's `Question`. `answerPath` is on the question and `resolvedBy` on `question_resolved`, both optional (absent is unknown, never a guess). `localRender` stays typed-only. `kind` is an open set (an unknown kind is a generic card), and the sandbox and trust prompts stay kind-less terminal cards.
 
 Invariants: the first answer wins everywhere; remi never answers by guess; for Codex and OpenCode the harness is the arbiter of record; remi's hold is only for Claude; decisions never come from transcripts (chat does).
 

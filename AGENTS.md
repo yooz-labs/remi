@@ -713,6 +713,25 @@ It lists `workspaces` (#1236), the first; everything before #1237 is the baselin
 Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
 `serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
 
+### The decision object (#1235, ADR 0038)
+
+A "the agent needs you" moment is the `question` message's `Question` (`Decision` in `@remi/shared` is an alias), frozen for the native apps.
+- **`Question.answerPath`** (optional) says how a phone answer reaches the harness:
+  - `structured`: a held hook, or Codex's JSON-RPC response;
+  - `keystroke`: typed behind the screen guards; a rendered prompt, a multi-choice permission, an elicitation;
+  - `none`: every `terminalOnly` card.
+
+  The gate tells the tracker which path a pushed card takes (`onHeldEscalate(id, path)`), and one stamp in `message-api-setup.ts` writes it, forcing `none` for a terminal-only card. Absent is unknown.
+- **`question_resolved.resolvedBy`** (optional) says what resolved a card, sent only where the daemon knows:
+  - `phone` or `lockscreen` (the `/answer` endpoint): a phone answer that reached the agent;
+  - `terminal`: a run paired by `tool_use_id`;
+  - `harness`: a paired `PermissionDenied`, `SessionEnd`, a rotation, a subagent that ended with its hold open, Claude's process exiting (what ended the prompt, not who caused it: a person's /exit ends a session too);
+  - `timeout`: remi's hold deadline.
+
+  Nothing is named for a terminal No or Esc (no hook fires), Claude's hook timeout, a name-only match (a `PermissionDenied` included), an elicitation's result (a user's hook or a typed chat message can answer it), a Stop or new prompt sweep, Codex's `serverRequest/resolved` or exit, unstick, or a close remi made. A refused or late phone answer is now `cancelled`, not `answered`; `reason` is coarse and a client labels from `resolvedBy` when present. `phone` means remi delivered that answer first, not that it decided (ADR 0038), and a `none` card still takes a Cancel.
+- **The resolver.** Every dismissal goes through `createQuestionResolver` (`cli/question-resolution.ts`), which sends each card's resolution and its lock-screen dismissal once, so the first that names a cause wins; one that named none can be followed by one that does, never the reverse. It forgets a card the registry holds again.
+- **`kind` is open.** A client renders an unknown kind as a generic card, never as Allow/Deny. Sandbox and trust prompts have no kind (`source: 'pty'`). `localRender` stays off the wire.
+
 ### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
 
 `create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.

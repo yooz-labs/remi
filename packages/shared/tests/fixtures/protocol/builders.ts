@@ -132,6 +132,35 @@ const FIXED_QUESTION_OPTION: QuestionOption = {
   isNo: false,
 };
 
+const FIXED_NO_OPTION: QuestionOption = {
+  label: 'No',
+  value: 'no',
+  isRecommended: false,
+  isYes: false,
+  isNo: true,
+};
+
+/** Picks with descriptions, for an AskUserQuestion step or a plan approval (#1235). */
+const FIXED_PICK_A: QuestionOption = {
+  label: 'Option A',
+  value: '1',
+  description: 'The first approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+const FIXED_PICK_B: QuestionOption = {
+  label: 'Option B',
+  value: '2',
+  description: 'The second approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+
+/** A Codex thread id (a UUIDv7) for the Codex cards. */
+const CODEX_THREAD_ID = '0199b0a0-0000-7000-8000-000000000000';
+
 const FIXED_QUESTION: Question = {
   id: QUESTION_ID,
   text: 'Allow Bash: ls?',
@@ -438,6 +467,139 @@ export const FIXTURE_VARIANTS: Record<
       daemonVersion: '0.7.4-dev.1',
       harnesses: ['claude', 'codex'],
     }),
+  },
+  // The "agent needs you" object, frozen (#1235, ADR 0038): one card per kind and answer path,
+  // for Claude and Codex. `kind` is an open set: a client renders one it does not know as a
+  // generic card.
+  question_claude_permission: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_ask_user_question: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Which approach?',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'multi_question',
+          questions: [
+            {
+              header: 'Approach',
+              text: 'Which approach?',
+              multiSelect: false,
+              options: [FIXED_PICK_A, FIXED_PICK_B],
+            },
+          ],
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_plan_approval: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Approve this plan?',
+          detail: '# Plan\n1. Read the code\n2. Change it',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'plan_approval',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  // A prompt Claude draws in the terminal with no hook (sandbox network, trust): no kind, typed.
+  question_claude_terminal_prompt: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow network access to example.com?',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'pty',
+          answerPath: 'keystroke',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'mcp__custom__ask wants to ask you something',
+          options: [],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_codex_command: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow Codex to run: ls',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_codex_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Codex wants to change files',
+          options: [],
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_resolved_terminal: {
+    type: 'question_resolved',
+    build: () => createQuestionResolved(SESSION_ID, QUESTION_ID, 'cancelled', 'terminal'),
   },
 };
 

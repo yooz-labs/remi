@@ -1,0 +1,33 @@
+{
+  "type": "question",
+  "id": "4a62e9f0-0862-4ae6-b730-7e29b3a81e83",
+  "timestamp": "2026-10-07T21:19:37.304Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Allow network access to example.com?",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "yes",
+        "isRecommended": true,
+        "isYes": true,
+        "isNo": false
+      },
+      {
+        "label": "No",
+        "value": "no",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": true
+      }
+    ],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "source": "pty",
+    "answerPath": "keystroke"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
+  "claudeSessionId": "fixture-claude-session-id"
+}

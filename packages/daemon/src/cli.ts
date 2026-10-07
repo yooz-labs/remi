@@ -110,12 +110,11 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
-  createQuestionResolved,
   createQuestionSnapshot,
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
-import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, ResolvedBy, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
@@ -189,6 +188,7 @@ import {
 } from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
+import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -1183,7 +1183,7 @@ const sessionRegistry = new SessionRegistry(
         // session's dispatcher.
         for (const questionId of pendingQuestionIds) {
           if (!closingResolved.has(questionId)) {
-            onQuestionResolved(sessionId, questionId, 'cancelled');
+            onQuestionResolved(sessionId, questionId, 'cancelled', causeOfSessionClose(reason));
           }
         }
       } finally {
@@ -1229,6 +1229,8 @@ const sessionRegistry = new SessionRegistry(
     // construction; `refresh()` schedules only on a real change.
     onAttachStateChanged: () => statusWriter.refresh(),
     onQuestionsChanged: (sessionId, questions) => {
+      // #1235: a card that is live again can be resolved again.
+      questionResolver.noteLive(questions.map((q) => q.id));
       // Best-effort: a registry-file hiccup here must never take down the
       // question pipeline itself (the live WS `question`/`question_resolved`
       // broadcasts already happened before this fires).
@@ -1771,11 +1773,14 @@ remiAttachState = () => {
 
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
- * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
- * reason 'answered'), or (b) resolved without a user answer (an external
+ * being pending on ANY channel: (a) a phone answer remi applied (input-events
+ * `handleAnswer`, reason 'answered'), or (b) anything else: an external
  * resolution, a Stop / SubagentStop / SessionEnd sweep, a superseded render,
- * `remi unstick`; reason 'cancelled'). Since #1125 the daemon never sends the
- * protocol's 'auto_approved' / 'auto_denied' reasons. It does TWO throw-safe things:
+ * `remi unstick`, or a phone answer that was refused (reason 'cancelled'). Since
+ * #1125 the daemon never sends the protocol's 'auto_approved' / 'auto_denied'
+ * reasons. `resolvedBy` names the cause when the caller knows it (#1235, ADR 0038).
+ * `questionResolver` does the two throw-safe things, once per card (the first
+ * resolution that names a cause wins):
  *   1. Broadcast `question_resolved` to every connected client so each dismisses
  *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
  *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
@@ -1784,22 +1789,21 @@ remiAttachState = () => {
  * Each step is independently guarded so a failure in one never blocks the other,
  * and neither can propagate into the answer handler or the gate decision.
  */
+const questionResolver = createQuestionResolver({
+  broadcast: (message) => registry.broadcast(message),
+  dismissPush: (sessionId, questionId) =>
+    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId),
+  logError,
+});
+
 const onQuestionResolved = (
   sessionId: UUID,
   questionId: UUID,
   reason: 'answered' | 'cancelled',
+  resolvedBy?: ResolvedBy,
 ): void => {
   closingResolved?.add(questionId);
-  try {
-    registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
-  } catch (err) {
-    logError(`[QuestionResolved] broadcast failed for ${questionId}: ${errorToString(err)}`);
-  }
-  try {
-    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId);
-  } catch (err) {
-    logError(`[QuestionResolved] APNS dismissal failed for ${questionId}: ${errorToString(err)}`);
-  }
+  questionResolver.resolve(sessionId, questionId, reason, resolvedBy);
 };
 
 import { createPtyMessageFanout } from './cli/handlers/pty-message-fanout.ts';
@@ -1866,8 +1870,9 @@ const inputHandlers: InputHandlers = createInputHandlers({
   acceptsTypedChat: (sessionId) => harnessSessions.get(sessionId)?.acceptsTypedChat,
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
-  onQuestionResolved: (sessionId, questionId) =>
-    onQuestionResolved(sessionId, questionId, 'answered'),
+  // #1235: the handler says whether the answer was applied, and from where.
+  onQuestionResolved: (sessionId, questionId, resolution) =>
+    onQuestionResolved(sessionId, questionId, resolution.reason, resolution.resolvedBy),
   // The screen reads the answer guards need (#920 prompt currency, #1002 any
   // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
   // tracker (each session's `decisions.screen`, from the same per-sessionId

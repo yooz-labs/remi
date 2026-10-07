@@ -4,6 +4,21 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A card says how it is answered and what resolved it (#1235, [ADR 0038](.context/decisions/0038-the-decision-object.md))
+
+#### Added
+
+- Each card says how a phone answer reaches the agent (`answerPath`):
+  - as data, through Claude's held prompt or Codex's approval;
+  - typed into the terminal, so it can be refused if the screen changed;
+  - or not at all, for a card only the terminal can answer.
+- When a card is cleared, the message says what resolved it, if the machine knows (`resolvedBy`): another phone, a notification action, the terminal, the agent itself (its session ended, it moved on, or it decided), or remi's hold deadline. When it does not know (a No typed at the terminal fires nothing remi can see), it says nothing rather than guess.
+
+#### Changed
+
+- A phone answer that was refused (the screen changed, or the hold had already ended) is reported as `cancelled`, not `answered`.
+- A card is cleared once: a second signal for the same card no longer sends a second, possibly contradicting, resolution. The one exception is a resolution that knew no cause, which can be followed by one that does.
+
 ### Pair a phone by scanning a QR code (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md))
 
 #### Added
