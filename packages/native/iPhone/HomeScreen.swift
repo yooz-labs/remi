@@ -5,6 +5,7 @@ import SwiftUI
 struct HomeScreen: View {
     @State private var showingPairing = false
     @State private var showingNewSession = false
+    @State private var showingPreferences = false
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
@@ -137,6 +138,12 @@ struct HomeScreen: View {
                     Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
                         showingPairing = true
                     }
+
+                    Divider()
+
+                    Button("Preferences", systemImage: "gearshape") {
+                        showingPreferences = true
+                    }
                 } label: {
                     Label("Add", systemImage: "plus")
                         .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
@@ -160,6 +167,9 @@ struct HomeScreen: View {
                         }
                     }
             }
+        }
+        .sheet(isPresented: $showingPreferences) {
+            PhonePreferencesSheet()
         }
     }
 
