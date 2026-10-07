@@ -24,6 +24,12 @@ All notable changes to Remi are documented here.
 
 ## [0.7.16] - 2026-10-07
 
+### A Codex session keeps its name when another session starts (#1274)
+
+#### Fixed
+
+- When another session started on the machine, the session list a daemon sent to connected clients left out which agent each of its sessions runs, so a Codex session read as Claude until the list was asked for again. Both lists are now built the same way.
+
 ### Logs stay bounded on a machine that runs for weeks (#729)
 
 #### Fixed

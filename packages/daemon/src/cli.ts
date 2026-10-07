@@ -162,6 +162,7 @@ import {
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
+import { buildSessionList } from './cli/handlers/session-list-entries.ts';
 import {
   type TranscriptHandlers,
   createTranscriptHandlers,
@@ -1528,16 +1529,12 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
   const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
-  const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-  for (const remiId of [...managedIds]) {
-    const binding = bindingStore.get(remiId as UUID);
-    if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
-  }
-  const sessions = [
-    ...sessionRegistry.listSessions(),
-    ...transcriptDiscovery.discoverSessions(managedIds),
-  ];
-  return { sessions, newPorts };
+  // The same entries a session_list_request gets, harness identity included (#1274).
+  const { own, external } = buildSessionList(
+    { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+    true,
+  );
+  return { sessions: [...own, ...external], newPorts };
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
