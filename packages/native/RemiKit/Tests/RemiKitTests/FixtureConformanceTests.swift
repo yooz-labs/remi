@@ -45,6 +45,77 @@ struct FixtureConformanceTests {
         #expect(list.daemonPorts == [19924, 19925])
     }
 
+    @Test(arguments: [
+        "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result",
+        "question_resolved", "question_snapshot", "transcript_content",
+        "transcript_load_complete", "create_session_response", "error", "session_update"
+    ])
+    func inboundLiveMessageDecodes(_ name: String) throws {
+        let data = try Self.fixture(name)
+        switch name {
+        case "hello_ack", "hello_ack_legacy":
+            _ = try JSONDecoder().decode(HelloAckMessage.self, from: data)
+        case "auth_challenge":
+            _ = try JSONDecoder().decode(AuthChallengeMessage.self, from: data)
+        case "auth_result":
+            _ = try JSONDecoder().decode(AuthResultMessage.self, from: data)
+        case "question_resolved":
+            _ = try JSONDecoder().decode(QuestionResolvedMessage.self, from: data)
+        case "question_snapshot":
+            _ = try JSONDecoder().decode(QuestionSnapshotMessage.self, from: data)
+        case "transcript_content":
+            let message = try JSONDecoder().decode(TranscriptContentMessage.self, from: data)
+            #expect(message.usage?.inputTokens == 10)
+            #expect(message.contentBlocks?.first?.text == "Fixture transcript text")
+        case "transcript_load_complete":
+            _ = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self, from: data)
+        case "create_session_response":
+            _ = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: data)
+        case "error":
+            _ = try JSONDecoder().decode(ErrorMessage.self, from: data)
+        case "session_update":
+            _ = try JSONDecoder().decode(SessionUpdateMessage.self, from: data)
+        default:
+            Issue.record("Unhandled fixture \(name)")
+        }
+    }
+
+    @Test(arguments: [
+        "hello", "auth_response", "answer", "transcript_load_request", "session_list_request",
+        "create_session_request", "create_session_request_plain", "user_input"
+    ])
+    func outboundLiveMessageRoundTrips(_ name: String) throws {
+        let data = try Self.fixture(name)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        switch name {
+        case "hello":
+            let decoded = try decoder.decode(HelloMessage.self, from: data)
+            _ = try decoder.decode(HelloMessage.self, from: encoder.encode(decoded))
+        case "auth_response":
+            let decoded = try decoder.decode(AuthResponseMessage.self, from: data)
+            _ = try decoder.decode(AuthResponseMessage.self, from: encoder.encode(decoded))
+        case "answer":
+            let decoded = try decoder.decode(AnswerMessage.self, from: data)
+            _ = try decoder.decode(AnswerMessage.self, from: encoder.encode(decoded))
+        case "transcript_load_request":
+            let decoded = try decoder.decode(TranscriptLoadRequestMessage.self, from: data)
+            _ = try decoder.decode(TranscriptLoadRequestMessage.self, from: encoder.encode(decoded))
+        case "session_list_request":
+            let decoded = try decoder.decode(SessionListRequestMessage.self, from: data)
+            _ = try decoder.decode(SessionListRequestMessage.self, from: encoder.encode(decoded))
+        case "create_session_request", "create_session_request_plain":
+            let decoded = try decoder.decode(CreateSessionRequestMessage.self, from: data)
+            _ = try decoder.decode(CreateSessionRequestMessage.self, from: encoder.encode(decoded))
+        case "user_input":
+            let decoded = try decoder.decode(UserInputMessage.self, from: data)
+            _ = try decoder.decode(UserInputMessage.self, from: encoder.encode(decoded))
+        default:
+            Issue.record("Unhandled fixture \(name)")
+        }
+    }
+
     /// A session found from a Claude transcript on disk has no `name` (`name?` on the wire,
     /// `DiscoverableSession` in packages/shared/src/types.ts), and a hub lists such sessions
     /// whenever the request asks for external ones. The shape is what
