@@ -52,6 +52,19 @@ describe('hubSupport (#1237)', () => {
     });
   });
 
+  test('a missing capability the registry documents is named by what it does (#1236)', () => {
+    expect(hubSupport(legacy, ['workspaces'])).toEqual({
+      supported: false,
+      reason: 'capabilities',
+      missing: ['workspaces'],
+      message:
+        "This machine's remi (0.7.16) cannot start a session in a new git worktree. Update remi on that machine and restart it.",
+    });
+    expect(hubSupport({ ...current, capabilities: ['workspaces'] }, ['workspaces'])).toEqual({
+      supported: true,
+    });
+  });
+
   test('a capability the machine lists is supported; one it does not list is named', () => {
     const ack = { ...current, capabilities: ['a', 'c'] };
     expect(hubSupport(ack, ['a', 'c'])).toEqual({ supported: true });
