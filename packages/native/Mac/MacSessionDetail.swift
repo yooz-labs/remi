@@ -13,9 +13,11 @@ struct MacSessionDetail: View {
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
     let onSend: (String) -> Void
+    let onTerminate: () -> Void
 
     @State private var draft = ""
     @State private var selectedViewID = ""
+    @State private var confirmingTermination = false
 
     init(
         session: RemiSessionSummary,
@@ -27,7 +29,8 @@ struct MacSessionDetail: View {
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
-        onSend: @escaping (String) -> Void = { _ in }
+        onSend: @escaping (String) -> Void = { _ in },
+        onTerminate: @escaping () -> Void = {}
     ) {
         self.session = session
         self.transcript = transcript
@@ -39,11 +42,15 @@ struct MacSessionDetail: View {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onSend = onSend
+        self.onTerminate = onTerminate
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            MacSessionToolbarHeader(session: session)
+            MacSessionToolbarHeader(
+                session: session,
+                onTerminate: { confirmingTermination = true }
+            )
             if !views.isEmpty {
                 MacConversationPicker(views: views, selectedViewID: $selectedViewID)
                     .padding(.horizontal, RemiTheme.Spacing.m)
@@ -106,6 +113,16 @@ struct MacSessionDetail: View {
             if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
                 selectedViewID = ""
             }
+        }
+        .confirmationDialog(
+            "Exit \(session.name)?",
+            isPresented: $confirmingTermination,
+            titleVisibility: .visible
+        ) {
+            Button("Exit session", role: .destructive, action: onTerminate)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
     }
 
@@ -175,6 +192,7 @@ private struct MacConversationButton: View {
 
 private struct MacSessionToolbarHeader: View {
     let session: RemiSessionSummary
+    let onTerminate: () -> Void
 
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.s) {
@@ -186,6 +204,15 @@ private struct MacSessionToolbarHeader: View {
             }
             Spacer()
             RemiStatusBadge(status: session.status)
+            if session.canTerminate {
+                Menu("Session actions", systemImage: "ellipsis.circle") {
+                    Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                        onTerminate()
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.xs)
@@ -195,7 +222,15 @@ private struct MacSessionToolbarHeader: View {
 #if DEBUG
 #Preview("Subagent conversations") {
     MacSessionDetail(
-        session: RemiPreviewData.sessions[0],
+        session: RemiSessionSummary(
+            id: "native-ios",
+            machineName: "Studio",
+            name: "Native iOS",
+            harness: "Claude",
+            project: "remi",
+            status: .needsYou,
+            canTerminate: true
+        ),
         transcript: RemiPreviewData.transcript,
         questions: [],
         views: [

@@ -94,7 +94,8 @@ struct MacLiveRootView: View {
                                     content: content,
                                     claudeSessionId: binding
                                 )
-                            }
+                            },
+                            onTerminate: { store.terminateSession(sessionId: session.id) }
                         )
                         .task(id: session.id) { store.loadTranscript(sessionId: session.id) }
                     } else {
@@ -104,6 +105,13 @@ struct MacLiveRootView: View {
                         )
                     }
                 }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let message = store.latestOperationError ?? store.latestError?.message {
+                MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
+            } else if let message = store.latestOperationNotice {
+                MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
             }
         }
         .task {
@@ -244,6 +252,29 @@ struct MacLiveRootView: View {
         case .waitingForApproval(let fingerprint): "Approve \(fingerprint) locally"
         case .unavailable(let reason): reason ?? "Unavailable"
         }
+    }
+}
+
+private struct MacFeedbackBanner: View {
+    let message: String
+    let isError: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                .foregroundStyle(isError ? .orange : .blue)
+            Text(message)
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Dismiss", systemImage: "xmark", action: onDismiss)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+        }
+        .padding(.horizontal, RemiTheme.Spacing.m)
+        .padding(.vertical, RemiTheme.Spacing.s)
+        .background((isError ? Color.orange : Color.blue).opacity(0.1))
+        .accessibilityElement(children: .combine)
     }
 }
 
