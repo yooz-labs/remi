@@ -47,4 +47,33 @@ struct MachineStoreTests {
         #expect(session.machineID == "host.example:18765")
         #expect(session.machineName == "Studio")
     }
+
+    @Test func structuredQuestionAcceptsExactlyOneSingleSelectAnswer() {
+        let step = RemiQuestionStep(
+            id: "0",
+            text: "Which direction?",
+            options: [RemiQuestionOption(id: "0", label: "Native")]
+        )
+
+        #expect(RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: ["0"])]
+        ))
+        #expect(RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: [], text: "Another path")]
+        ))
+        #expect(!RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: ["0"], text: "Both")]
+        ))
+        #expect(!RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(
+                stepID: "0",
+                optionIDs: [],
+                text: String(repeating: "a", count: RemiQuestionForm.freeTextLimit + 1)
+            )]
+        ))
+    }
 }

@@ -131,6 +131,7 @@ struct PhoneLiveRootView: View {
                     header: step.header,
                     text: step.text,
                     allowsMultipleSelection: step.multiSelect,
+                    allowsFreeText: !step.multiSelect,
                     options: step.options.enumerated().map { optionIndex, option in
                         RemiQuestionOption(
                             id: String(optionIndex),
@@ -188,7 +189,8 @@ struct PhoneLiveRootView: View {
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
                     questionIndex: questionIndex,
-                    optionIndices: value.optionIDs.compactMap(Int.init).sorted()
+                    optionIndices: value.optionIDs.compactMap(Int.init).sorted(),
+                    text: value.text
                 )
             }
         )
