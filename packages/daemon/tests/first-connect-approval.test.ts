@@ -140,12 +140,13 @@ test('revoked key can request approval again but no stale candidate resurrects t
 
 test('queue capacity and storage errors are explicit unsuccessful handshake refusals', async () => {
   const { dir, store, auth, response } = await setup();
-  for (let i = 0; i < 32; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+  // The 28 ordinary slots; the other four are kept for pairing claims (#1275).
+  for (let i = 0; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
   const full = await auth.verifyResponse('full', await response('full'));
   expect(full.result.success).toBe(false);
   expect(full.result.error).toBe('PENDING_QUEUE_FULL');
   expect(full.verifiedFingerprint).toBeUndefined();
-  expect(store.listPendingKeys()).toHaveLength(32);
+  expect(store.listPendingKeys()).toHaveLength(28);
   fs.writeFileSync(path.join(dir, 'pending_keys.json'), '{corrupt');
   const corrupt = await auth.verifyResponse('store', await response('store'));
   expect(corrupt.result.success).toBe(false);

@@ -423,6 +423,8 @@ export class Connection {
     const { result, verifiedFingerprint } = await this.config.authenticator.verifyResponse(
       this.id,
       message,
+      // A pairing claim held for the person's decision stops waiting once this socket is gone.
+      { isOpen: () => this.state !== 'disconnected' && this.ws.readyState === WebSocket.OPEN },
     );
     this.send(result);
 

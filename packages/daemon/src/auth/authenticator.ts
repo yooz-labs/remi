@@ -17,7 +17,12 @@ import type {
   AuthResultMessage,
   UnlockedIdentity,
 } from '@remi/shared';
-import { errorToString, escapeUnsafeText, isPairingNonce } from '@remi/shared';
+import {
+  PAIRING_NAME_MAX_CODE_POINTS,
+  errorToString,
+  isPairingNonce,
+  isPlainPairingText,
+} from '@remi/shared';
 import {
   createAuthChallenge,
   createAuthResult,
@@ -52,6 +57,12 @@ export interface VerifyResponseOutcome {
   readonly verifiedFingerprint?: string;
 }
 
+/** What `verifyResponse` may be told about the connection it answers. */
+export interface VerifyResponseOptions {
+  /** Whether the connection is still open; a pairing claim stops waiting once it is not. */
+  readonly isOpen?: () => boolean;
+}
+
 export interface AuthenticatorConfig {
   readonly identity: UnlockedIdentity;
   readonly identityStore: IdentityStore;
@@ -66,19 +77,15 @@ export interface AuthenticatorConfig {
 const DEFAULT_PAIRING_WAIT_MS = 20_000;
 /** How often a held claim checks for the decision. */
 const PAIRING_POLL_MS = 250;
-const PAIRING_LABEL_MAX = 64;
 const DEFAULT_PAIRING_LABEL = 'paired device';
 
-/** A label for the terminal and the authorized-keys file: plain text, 1 to 64 characters. */
+/**
+ * A label for the terminal and the authorized-keys file: the phone's own choice, so held to the
+ * machine name's rule (plain text, 1 to 64 code points). It names the device; it proves nothing.
+ */
 function pairingLabelOf(label: string | undefined): string | null {
   if (label === undefined) return DEFAULT_PAIRING_LABEL;
-  if (typeof label !== 'string' || label.length === 0 || label.length > PAIRING_LABEL_MAX)
-    return null;
-  for (const ch of label) {
-    const c = ch.codePointAt(0) as number;
-    if (c <= 0x1f || (c >= 0x7f && c <= 0x9f)) return null;
-  }
-  return escapeUnsafeText(label) === label ? label : null;
+  return isPlainPairingText(label, PAIRING_NAME_MAX_CODE_POINTS) ? label : null;
 }
 
 export class Authenticator {
@@ -204,6 +211,7 @@ export class Authenticator {
   async verifyResponse(
     connectionId: string,
     response: AuthResponseMessage,
+    options: VerifyResponseOptions = {},
   ): Promise<VerifyResponseOutcome> {
     const challenge = this.pendingChallenges.get(connectionId);
     if (!challenge) {
@@ -251,7 +259,7 @@ export class Authenticator {
     // still approves at the terminal. Checked only after the signature, so a forged answer never
     // claims a code.
     if (!isAuthorized && response.pairingNonce !== undefined) {
-      return this.verifyPairing(challenge, response, derivedFingerprint);
+      return this.verifyPairing(challenge, response, derivedFingerprint, options.isOpen);
     }
 
     // #873: verified unknown identities request local human approval, never trust on first use.
@@ -299,19 +307,24 @@ export class Authenticator {
    * or a code the store refuses, is answered with its own error and registers nothing. A claimed
    * code is held for the person's decision for up to `pairingWaitMs`: an approval is answered with
    * the ordinary success, a rejection or cancellation with its error, and no decision with
-   * `PAIRING_PENDING`, after which the phone retries.
+   * `PAIRING_PENDING`, after which the phone retries. The wait reads without the lock, so another
+   * process holding it only delays a tick; it ends at once when the connection closes.
    */
   private async verifyPairing(
     challenge: string,
     response: AuthResponseMessage,
     fingerprint: string,
+    isOpen: () => boolean = () => true,
   ): Promise<VerifyResponseOutcome> {
     const fail = (code: string): VerifyResponseOutcome => ({
       result: createAuthResult(false, undefined, code),
     });
     const nonce = response.pairingNonce;
     const label = pairingLabelOf(response.pairingLabel);
-    if (!isPairingNonce(nonce) || label === null) return fail('PAIRING_MALFORMED');
+    if (!isPairingNonce(nonce) || label === null) {
+      console.log(`[Pairing] refused a malformed code or label from ${fingerprint}`);
+      return fail('PAIRING_MALFORMED');
+    }
     let outcome: string;
     try {
       outcome = await this.store.claimPairing(nonce, response.clientPublicKey, label);
@@ -319,20 +332,25 @@ export class Authenticator {
       console.error(`Auth store error during pairing claim: ${errorToString(err)}`);
       return fail('AUTH_STORE_ERROR');
     }
+    console.log(`[Pairing] ${fingerprint} presented a code: ${outcome}`);
     if (outcome !== 'CLAIMED') return fail(outcome);
 
     const deadline = Date.now() + this.pairingWaitMs;
+    let reported = false;
     for (;;) {
+      if (!isOpen()) return fail('PAIRING_PENDING');
       try {
         if (this.store.isAuthorized(response.clientPublicKey, fingerprint)) {
           return this.admit(challenge, fingerprint);
         }
-        const state = this.store.readPairing(nonce)?.state;
+        const state = this.store.peekPairing(nonce)?.state;
         if (state === 'rejected') return fail('PAIRING_REJECTED');
         if (state === 'cancelled') return fail('PAIRING_CANCELLED');
       } catch (err) {
-        console.error(`Auth store error while a pairing waits: ${errorToString(err)}`);
-        return fail('AUTH_STORE_ERROR');
+        // No decision this tick; the claim itself is safe in the store, and the phone retries.
+        if (!reported)
+          console.error(`Auth store error while a pairing waits: ${errorToString(err)}`);
+        reported = true;
       }
       const left = deadline - Date.now();
       if (left <= 0) return fail('PAIRING_PENDING');

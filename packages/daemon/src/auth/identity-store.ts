@@ -49,6 +49,11 @@ export interface PendingKey {
 }
 const PENDING_TTL_MS = 600_000;
 const MAX_PENDING_KEYS = 32;
+/**
+ * Pending slots only a pairing claim may take (#1275 review): a flood of unknown keys cannot keep a
+ * phone the person is pairing out of the queue. Ordinary first connections get the other 28.
+ */
+const PAIRING_RESERVED_SLOTS = 4;
 
 export class PairingLimitError extends Error {
   constructor() {
@@ -71,6 +76,12 @@ export interface PairingRecord {
   readonly expiresAt: string;
   readonly state: PairingState;
   readonly claim: PairingClaim | null;
+  /** Other keys that presented this code while it waited for the person's decision. */
+  readonly contested: number;
+  /** The fingerprint of the last of them, shown at the terminal; null when none. */
+  readonly lastContender: string | null;
+  /** Claims refused while the code was open because the pending queue was full. */
+  readonly queueFull: number;
 }
 /** What a claim came to: the key is pending on this code, or why not. */
 export type PairingClaimOutcome =
@@ -96,6 +107,17 @@ function claimMatchesState(state: string, claim: unknown): boolean {
   if (state === 'open') return claim === null;
   if (state === 'cancelled') return true;
   return claim !== null;
+}
+
+function isCount(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Decided, cancelled, or never claimed before it expired: nothing will happen to it any more. */
+function isFinished(record: PairingRecord, now: number): boolean {
+  if (record.state === 'claimed') return false;
+  if (record.state === 'open') return Date.parse(record.expiresAt) <= now;
+  return true;
 }
 
 function nonceHash(nonce: string): string {
@@ -297,17 +319,31 @@ export class IdentityStore {
   private writePendingKeys(keys: readonly PendingKey[]): void {
     this.atomicWrite(this.pendingKeysPath, JSON.stringify({ version: 1, keys }, null, 2));
   }
-  async registerPendingKey(publicKey: string): Promise<PendingKey> {
+  /**
+   * Registers a verified, unknown key as pending. `forPairing` lets it take one of the slots kept for
+   * pairing claims; only a claim (and a test filling the queue) passes it.
+   */
+  async registerPendingKey(
+    publicKey: string,
+    options: { readonly forPairing?: boolean } = {},
+  ): Promise<PendingKey> {
     const fingerprint = await validatePublicKey(publicKey);
-    return this.transaction(() => this.registerPendingInsideTransaction(publicKey, fingerprint));
+    return this.transaction(() =>
+      this.registerPendingInsideTransaction(publicKey, fingerprint, options.forPairing === true),
+    );
   }
   /** The pending registration, for a caller that already holds the lock (a pairing claim). */
-  private registerPendingInsideTransaction(publicKey: string, fingerprint: string): PendingKey {
+  private registerPendingInsideTransaction(
+    publicKey: string,
+    fingerprint: string,
+    forPairing: boolean,
+  ): PendingKey {
     const keys = this.pendingInsideTransaction();
     const existing = keys.find((key) => key.publicKey === publicKey);
     if (existing) return existing;
     if (this.isAuthorized(publicKey, fingerprint)) throw new DuplicateKeyError(fingerprint);
-    if (keys.length >= MAX_PENDING_KEYS) throw new PendingQueueFullError();
+    const limit = forPairing ? MAX_PENDING_KEYS : MAX_PENDING_KEYS - PAIRING_RESERVED_SLOTS;
+    if (keys.length >= limit) throw new PendingQueueFullError();
     const now = this.now();
     const key = {
       publicKey,
@@ -417,13 +453,21 @@ export class IdentityStore {
       const claim = isRecord(record) ? record['claim'] : undefined;
       if (
         !isRecord(record) ||
-        Object.keys(record).sort().join(',') !== 'claim,createdAt,expiresAt,nonceHash,state' ||
+        Object.keys(record).sort().join(',') !==
+          'claim,contested,createdAt,expiresAt,lastContender,nonceHash,queueFull,state' ||
         typeof record['nonceHash'] !== 'string' ||
         !/^[0-9a-f]{64}$/.test(record['nonceHash']) ||
         !validDate(record['createdAt']) ||
         !validDate(record['expiresAt']) ||
         Date.parse(record['expiresAt']) - Date.parse(record['createdAt']) !== PAIRING_TTL_MS ||
         !PAIRING_STATES.includes(record['state'] as string) ||
+        !isCount(record['contested']) ||
+        !isCount(record['queueFull']) ||
+        !(
+          record['lastContender'] === null ||
+          (typeof record['lastContender'] === 'string' &&
+            /^[0-9a-f]{16}$/.test(record['lastContender']))
+        ) ||
         seen.has(record['nonceHash']) ||
         !(
           claim === null ||
@@ -451,7 +495,26 @@ export class IdentityStore {
   private writePairings(records: readonly PairingRecord[]): void {
     this.atomicWrite(this.pairingsPath, JSON.stringify({ version: 1, pairings: records }, null, 2));
   }
-  /** A new code: the nonce goes to the caller to show, the record keeps only its hash. */
+  /** Changes one record by its nonce, under the lock; returns what the change function returns. */
+  private withPairing<T>(
+    nonce: string,
+    change: (record: PairingRecord | undefined, save: (next: PairingRecord) => void) => T,
+  ): T {
+    const hash = nonceHash(nonce);
+    return this.transaction(() => {
+      const records = this.pairingsInsideTransaction();
+      const index = records.findIndex((r) => r.nonceHash === hash);
+      return change(records[index], (next) => {
+        const updated = [...records];
+        updated[index] = next;
+        this.writePairings(updated);
+      });
+    });
+  }
+  /**
+   * A new code: the nonce goes to the caller to show, the record keeps only its hash. At the record
+   * cap, finished records (decided, cancelled, or expired unclaimed) make room, oldest first.
+   */
   createPairing(): { nonce: string; record: PairingRecord } {
     const nonce = generatePairingNonce();
     const now = this.now();
@@ -461,29 +524,51 @@ export class IdentityStore {
       expiresAt: new Date(now + PAIRING_TTL_MS).toISOString(),
       state: 'open',
       claim: null,
+      contested: 0,
+      lastContender: null,
+      queueFull: 0,
     };
     this.transaction(() => {
-      const records = this.pairingsInsideTransaction();
+      let records = this.pairingsInsideTransaction();
       const open = records.filter(
         (r) => (r.state === 'open' || r.state === 'claimed') && Date.parse(r.expiresAt) > now,
       );
-      if (open.length >= MAX_OPEN_PAIRINGS || records.length >= MAX_PAIRING_RECORDS)
-        throw new PairingLimitError();
+      if (open.length >= MAX_OPEN_PAIRINGS) throw new PairingLimitError();
+      if (records.length >= MAX_PAIRING_RECORDS) {
+        const surplus = records.length - MAX_PAIRING_RECORDS + 1;
+        const evicted = new Set(
+          records
+            .filter((r) => isFinished(r, now))
+            .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+            .slice(0, surplus)
+            .map((r) => r.nonceHash),
+        );
+        records = records.filter((r) => !evicted.has(r.nonceHash));
+        if (records.length >= MAX_PAIRING_RECORDS) throw new PairingLimitError();
+      }
       this.writePairings([...records, record]);
     });
     return { nonce, record };
   }
   readPairing(nonce: string): PairingRecord | null {
+    return this.withPairing(nonce, (record) => record ?? null);
+  }
+  /**
+   * The record as the file holds it, read without the lock (every write is an atomic rename, so a
+   * read sees one whole version). For a caller that only watches, such as a claim waiting for the
+   * person's decision, which must not stall or fail while another process holds the lock.
+   */
+  peekPairing(nonce: string): PairingRecord | null {
     const hash = nonceHash(nonce);
-    return this.transaction(
-      () => this.pairingsInsideTransaction().find((r) => r.nonceHash === hash) ?? null,
-    );
+    return this.readPairingsFile().find((r) => r.nonceHash === hash) ?? null;
   }
   /**
    * A verified key presenting a code (the authenticator calls this only after the signature
    * verifies). The first key claims an open, unexpired code and is registered as pending in the same
-   * transaction; the same key again is the same claim; anything else is refused by its own outcome
-   * and registers nothing.
+   * transaction, in a slot kept for pairing if the ordinary ones are full; the same key again is the
+   * same claim; anything else is refused by its own outcome and registers nothing. Another key
+   * presenting a code that waits for the decision is counted for the terminal, and so is a claim the
+   * full queue refused.
    */
   async claimPairing(
     nonce: string,
@@ -491,106 +576,80 @@ export class IdentityStore {
     label: string,
   ): Promise<PairingClaimOutcome> {
     const fingerprint = await validatePublicKey(publicKey);
-    const hash = nonceHash(nonce);
-    return this.transaction(() => {
-      const records = this.pairingsInsideTransaction();
-      const index = records.findIndex((r) => r.nonceHash === hash);
-      const record = records[index];
+    return this.withPairing(nonce, (record, save): PairingClaimOutcome => {
       if (record === undefined) return 'PAIRING_UNKNOWN';
       if (record.state === 'cancelled') return 'PAIRING_CANCELLED';
-      if (record.claim !== null) {
-        if (record.claim.publicKey !== publicKey) return 'PAIRING_USED';
-        if (record.state === 'rejected') return 'PAIRING_REJECTED';
-        if (record.state === 'approved') return 'PAIRING_USED';
-        // Claimed by this key: keep it pending (its candidate may have expired meanwhile).
-        try {
-          this.registerPendingInsideTransaction(publicKey, fingerprint);
-        } catch (err) {
-          if (err instanceof PendingQueueFullError) return 'PENDING_QUEUE_FULL';
-          if (err instanceof DuplicateKeyError) return 'PAIRING_USED';
-          throw err;
+      if (record.claim !== null && record.claim.publicKey !== publicKey) {
+        if (record.state === 'claimed') {
+          save({ ...record, contested: record.contested + 1, lastContender: fingerprint });
         }
-        return 'CLAIMED';
+        return 'PAIRING_USED';
       }
-      if (Date.parse(record.expiresAt) <= this.now()) return 'PAIRING_EXPIRED';
+      if (record.state === 'rejected') return 'PAIRING_REJECTED';
+      if (record.state === 'approved') return 'PAIRING_USED';
+      if (record.claim === null && Date.parse(record.expiresAt) <= this.now())
+        return 'PAIRING_EXPIRED';
+      // Open, or claimed by this key (its candidate may have expired meanwhile): pending again.
       try {
-        this.registerPendingInsideTransaction(publicKey, fingerprint);
+        this.registerPendingInsideTransaction(publicKey, fingerprint, true);
       } catch (err) {
-        if (err instanceof PendingQueueFullError) return 'PENDING_QUEUE_FULL';
+        if (err instanceof PendingQueueFullError) {
+          if (record.claim === null) save({ ...record, queueFull: record.queueFull + 1 });
+          return 'PENDING_QUEUE_FULL';
+        }
         if (err instanceof DuplicateKeyError) return 'PAIRING_USED';
         throw err;
       }
-      const claim = {
-        publicKey,
-        fingerprint,
-        label,
-        claimedAt: new Date(this.now()).toISOString(),
-      };
-      const next = [...records];
-      next[index] = { ...record, state: 'claimed', claim };
-      this.writePairings(next);
+      if (record.claim === null) {
+        const claim = {
+          publicKey,
+          fingerprint,
+          label,
+          claimedAt: new Date(this.now()).toISOString(),
+        };
+        save({ ...record, state: 'claimed', claim });
+      }
       return 'CLAIMED';
     });
   }
   /**
-   * The person said yes: the claiming key is authorized with the label the phone sent, through the
-   * one approval mutation, and the record marked approved in the same transaction. A claim stays
-   * approvable after its code expires, while its pending key lives.
+   * The person said yes to the fingerprint they were shown: that key is authorized with the label the
+   * phone sent, through the one approval mutation, and the record marked approved in the same
+   * transaction. A claim stays approvable after its code expires, while its pending key lives.
    */
-  async approvePairing(nonce: string): Promise<AuthorizedKey> {
+  async approvePairing(nonce: string, expectedFingerprint: string): Promise<AuthorizedKey> {
     const snapshot = this.readPairing(nonce);
     if (snapshot === null || snapshot.state !== 'claimed' || snapshot.claim === null)
       throw new Error('No claimed pairing to approve');
-    const { fingerprint, label } = snapshot.claim;
-    const grant = await this.prepareAuthorization(fingerprint, label);
-    const hash = snapshot.nonceHash;
-    return this.transaction(() => {
-      const records = this.pairingsInsideTransaction();
-      const index = records.findIndex((r) => r.nonceHash === hash);
-      const record = records[index];
-      if (
-        record === undefined ||
-        record.state !== 'claimed' ||
-        record.claim?.fingerprint !== fingerprint
-      )
+    if (snapshot.claim.fingerprint !== expectedFingerprint)
+      throw new Error('The pairing was claimed by a different key than the one shown');
+    const grant = await this.prepareAuthorization(expectedFingerprint, snapshot.claim.label);
+    return this.withPairing(nonce, (record, save) => {
+      if (record?.state !== 'claimed' || record.claim?.fingerprint !== expectedFingerprint)
         throw new Error('The pairing changed before it was approved');
-      const committed = this.commitAuthorizationInsideTransaction(fingerprint, grant);
-      const next = [...records];
-      next[index] = { ...record, state: 'approved' };
-      this.writePairings(next);
+      const committed = this.commitAuthorizationInsideTransaction(expectedFingerprint, grant);
+      save({ ...record, state: 'approved' });
       return committed;
     });
   }
   /** The person said no: the claim is rejected and its pending key removed. */
   rejectPairing(nonce: string): boolean {
-    const hash = nonceHash(nonce);
-    return this.transaction(() => {
-      const records = this.pairingsInsideTransaction();
-      const index = records.findIndex((r) => r.nonceHash === hash);
-      const record = records[index];
-      if (record === undefined || record.state !== 'claimed' || record.claim === null) return false;
+    return this.withPairing(nonce, (record, save) => {
+      if (record?.state !== 'claimed' || record.claim === null) return false;
       const fingerprint = record.claim.fingerprint;
       this.writePendingKeys(
         this.pendingInsideTransaction().filter((k) => k.fingerprint !== fingerprint),
       );
-      const next = [...records];
-      next[index] = { ...record, state: 'rejected' };
-      this.writePairings(next);
+      save({ ...record, state: 'rejected' });
       return true;
     });
   }
   /** `remi pair` stopped (Ctrl-C, expiry): the code is dead; a key that claimed it stays pending. */
   cancelPairing(nonce: string): boolean {
-    const hash = nonceHash(nonce);
-    return this.transaction(() => {
-      const records = this.pairingsInsideTransaction();
-      const index = records.findIndex((r) => r.nonceHash === hash);
-      const record = records[index];
+    return this.withPairing(nonce, (record, save) => {
       if (record === undefined || (record.state !== 'open' && record.state !== 'claimed'))
         return false;
-      const next = [...records];
-      next[index] = { ...record, state: 'cancelled' };
-      this.writePairings(next);
+      save({ ...record, state: 'cancelled' });
       return true;
     });
   }

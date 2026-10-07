@@ -131,7 +131,7 @@ export async function pairFlow(deps: PairFlowDeps): Promise<number> {
   const answer = deps.signal?.aborted ? null : await deps.ask('Approve this device? [y/N] ');
   if (answer !== null && /^(y|yes)$/i.test(answer.trim())) {
     try {
-      await store.approvePairing(nonce);
+      await store.approvePairing(nonce, phoneFingerprint);
     } catch (err) {
       write(`\nCould not approve it: ${escapeUnsafeText(String(err))}\n`);
       return 1;
