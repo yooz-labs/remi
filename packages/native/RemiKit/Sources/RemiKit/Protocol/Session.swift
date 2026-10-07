@@ -5,7 +5,8 @@ public struct DiscoverableSession: Codable, Sendable, Equatable, Identifiable {
     public var id: String { sessionId }
 
     public let sessionId: String
-    public let name: String
+    /// Absent for a session found from a transcript on disk (`source: "transcript"`).
+    public let name: String?
     public let projectPath: String
     public let status: String
     public let source: String
