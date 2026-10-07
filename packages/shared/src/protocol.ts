@@ -949,7 +949,10 @@ export interface WorkspaceRequest {
   readonly worktree?: { readonly branch: string; readonly base?: string | undefined } | undefined;
 }
 
-/** The workspace a session was started in (#1236, ADR 0036), as the hub resolved it. */
+/**
+ * The workspace a session was started in (#1236, ADR 0036), as the hub resolved it when it made
+ * it. Not `SessionGitWorkspace` (types.ts), which is what git says about a session's directory now.
+ */
 export interface SessionWorkspace {
   /** The repository's main worktree, whichever directory the request named. */
   readonly repository: string;

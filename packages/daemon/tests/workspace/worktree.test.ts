@@ -292,6 +292,17 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     }
   });
 
+  test('a worktree made from a submodule lands next to the submodule, never inside .git (#1276 review)', async () => {
+    const lib = makeRepo(root, 'lib');
+    const sup = makeRepo(root, 'super');
+    git(sup, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libsub');
+    const sub = path.join(sup, 'libsub');
+    const workspace = await ok({ repository: sub, worktree: { branch: 'feat' } });
+    expect(workspace.repository).toBe(sub);
+    expect(workspace.directory).toBe(path.join(sup, 'remi-worktrees', 'libsub-feat'));
+    expect(workspace.directory).not.toContain(`${path.sep}.git${path.sep}`);
+  });
+
   test('a directory outside any repository is refused', async () => {
     const plain = path.join(root, 'plain');
     fs.mkdirSync(plain);

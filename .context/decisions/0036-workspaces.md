@@ -1,6 +1,6 @@
 # ADR 0036: Workspaces, a session in a new worktree the hub creates
 
-**Status:** accepted for phase A (#1236, milestone "Protocol freeze"); phases B and C are planned below
+**Status:** accepted for phases A and B (#1236, milestone "Protocol freeze"); phase C is planned below
 **Date:** 2026-10-07
 **Owner:** Yahya
 
@@ -20,7 +20,7 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
    - Without `worktree`, the session starts in the repository's main worktree, even when `repository` names a linked one. To start in an existing worktree, a client sends its path as `directory`, with no `workspace`.
    - With `worktree`, the hub creates a worktree on a new branch `branch`, from `base` (default: the main worktree's `HEAD`, a detached one included), and starts the session in it. A resume (Claude's `--resume`, Codex's `resume`) is refused with a new worktree: a resumed session belongs to the directory it ran in.
    - `directory` is refused when it is set (not empty) and, resolved, differs from `repository`, so a request is never ambiguous about where it runs. A client sets it to `repository`, so a hub that ignored `workspace` would at worst start in that repository, never elsewhere; a client must not send `workspace` to a hub that does not list the capability (item 6).
-2. **The repository is the main worktree.** The hub asks git for the worktree list (`git worktree list --porcelain -z`, which needs git 2.36 or later) and takes the first entry, the main worktree, whatever directory the request named. A bare repository (the first entry is marked `bare`) is refused: it has no worktree to start in, and its layout has no "next to the repository". A main worktree whose path holds a control character is refused, as a requested `directory` with one is (#1179). An older git, a repository git does not trust (`safe.directory`) and a timeout each get their own refusal, not "not a repository".
+2. **The repository is the main worktree.** One resolver (`resolveRepository`, `workspace/git.ts`) asks git where the named directory sits (`rev-parse --path-format=absolute --is-bare-repository --git-dir --git-common-dir`, then `--show-toplevel`). A directory whose git directory is its common directory is its own repository, and the repository is its top level: a main worktree, a submodule (whose git directory lives under the superproject's `.git/modules`) or a checkout with a separate git directory. Only a linked worktree reads the worktree list (`git worktree list --porcelain -z`, which needs git 2.36 or later), whose first entry is the main worktree. Before the #1276 review the worktree list was read for every directory, which named a submodule's git directory as its repository and put a worktree made from a submodule inside `.git/modules`. A bare repository, or a linked worktree of one, is refused: it has no worktree to start in, and its layout has no "next to the repository". A main worktree whose path holds a control character is refused, as a requested `directory` with one is (#1179). An older git, a repository git does not trust (`safe.directory`) and a timeout each get their own refusal, not "not a repository".
 3. **The layout.** A new worktree is `<parent>/remi-worktrees/<name>-<branch>`, where `<parent>` and `<name>` are the main worktree's parent directory and name, and every `/` in the branch is a `-`. A worktree made from a linked worktree still lands next to the main one. Names can collide: branches `a/b` and `a-b`, or repository `x` with branch `a/b` and repository `x-a` with branch `b`, map to one directory. So the target is claimed with an exclusive `mkdir` before git runs, and the request that does not get it is refused as taken, concurrently too: before the claim, two such requests at once both reached `git worktree add`, and git's cleanup after the loser's failure removed the winner's worktree (#1270 review, reproduced in 40 of 40 trials). A name over 255 bytes is refused by the same `mkdir`, before git makes the branch. The hub never reuses or overwrites a directory.
 4. **Validation before git runs, and git without a shell.** Every value from the wire is checked first (`parseWorkspaceRequest`, `workspace/worktree.ts`):
    - `repository` is a string with no control character, absolute or under `~` (a relative path would resolve against wherever the hub happened to start);
@@ -42,10 +42,19 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
    A worktree made for a session that then fails to start stays, and the failure's log line names it: nothing deletes a worktree (owner decision), and an unused one costs a directory.
 6. **The capability.** The daemon lists `workspaces` in `hello_ack.capabilities` (ADR 0035), the first capability: an older hub ignores `workspace` and starts the session in `directory`, so a client checks `hubSupport(ack, ['workspaces'])` first.
 
-## Phases B and C (planned)
+## Decision (phase B): the workspace on the session
 
-- **B, the workspace on the session:** every session-list entry says its repository, its directory and, in a linked worktree, its branch, read from git for the session's directory, whether the hub created it or a person did.
-- **C, recent repositories:** a request for the repositories of the hub's recent sessions, main worktrees only, most recent first, so the app can offer "new session in repository X on machine Y".
+7. **A daemon's own session-list entry carries `workspace`:** `{ repository, directory, branch }`, the repository's main worktree (a bare repository's own directory), the top level of the worktree the session's directory is in, and the branch checked out there (null when HEAD is detached).
+   It is read from git for the session's directory (`readWorkspace`, `workspace/describe.ts`: the resolver of item 2, then `symbolic-ref -q HEAD` with `refs/heads/` removed, since `--short` writes `heads/<name>` when a tag shares the name; the same runner rules as phase A and a 5-second deadline), not remembered from a create request: a session a person started in a worktree is described too, and a branch the agent checks out later shows. Paths keep their spaces.
+   It is absent outside a repository, in a bare one or inside a `.git` directory, when a path or the branch holds a control, bidi or invisible character (the agent can name a branch, and it would reach clients as text), on transcript entries, and from an older daemon; a client reads absence as unknown, not as "no repository".
+8. **The list never waits on git.** `WorkspaceCache` answers from its last read at once and starts a read when it has none or the last is older than 10 seconds; reads of one directory never overlap. The registry asks once when the session registers, so the first read usually finishes before the first list; until it does, the entry has no `workspace`.
+   So a list can be stale: the first list more than 10 seconds after the last read still shows that read and starts a new one, and the list after it shows the change. Nothing pushes a change to clients yet; a broadcast on change waits for one builder of a daemon's own entry (#1274).
+   A read git cannot answer (missing, a timeout, git older than 2.36, a repository it does not trust) keeps the previous answer and is logged once per reason, so the field does not disappear while git is slow.
+   The registry builds the entry for both the requested list and the live-sessions broadcast, so both carry it (the broadcast still lacks the harness identity: #1274).
+
+## Phase C (planned)
+
+- **Recent repositories:** a request for the repositories of the hub's recent sessions, main worktrees only, most recent first, so the app can offer "new session in repository X on machine Y".
 
 ## Consequences
 

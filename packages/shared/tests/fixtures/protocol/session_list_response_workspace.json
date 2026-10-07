@@ -1,0 +1,33 @@
+{
+  "type": "session_list_response",
+  "id": "aa53076d-a230-44c0-9102-d8104233a520",
+  "timestamp": "2026-10-07T17:58:11.548Z",
+  "sessions": [
+    {
+      "sessionId": "fixture-session-id",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/remi-worktrees/project-feature-fixture",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "workspace": {
+        "repository": "/Users/fixture/project",
+        "directory": "/Users/fixture/remi-worktrees/project-feature-fixture",
+        "branch": "feature/fixture"
+      }
+    }
+  ],
+  "requestId": "fixture-request-id"
+}

@@ -188,6 +188,17 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     });
   });
 
+  test('the session list golden with a workspace: repository, directory and branch (#1236 phase B)', () => {
+    const listed = (
+      load('session_list_response_workspace')['sessions'] as { [key: string]: Json }[]
+    )[0];
+    expect(listed?.['workspace']).toEqual({
+      repository: '/Users/fixture/project',
+      directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+      branch: 'feature/fixture',
+    });
+  });
+
   test('the workspace goldens: a request for a new worktree, and the response that says where (#1236)', () => {
     expect(load('create_session_request_workspace')).toEqual({
       type: 'create_session_request',
