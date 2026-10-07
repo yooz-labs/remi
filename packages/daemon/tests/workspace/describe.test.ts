@@ -159,8 +159,12 @@ describe('WorkspaceCache: the session list never waits on git (#1236 phase B)', 
     const repo = makeRepo(root);
     const cache = new WorkspaceCache();
     for (let i = 0; i < 5; i++) cache.get(repo);
+    expect(cache.readsStarted()).toBe(1);
     expect(cache.inFlight()).toBe(1);
     await cache.settled(repo);
     expect(cache.inFlight()).toBe(0);
+    // Fresh now: more reads cost nothing.
+    for (let i = 0; i < 5; i++) cache.get(repo);
+    expect(cache.readsStarted()).toBe(1);
   });
 });
