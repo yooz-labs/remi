@@ -86,25 +86,53 @@ describe("the agent's process does not inherit remi's secrets (#1249)", () => {
   });
 });
 
+/** Every `.ts` file under packages/daemon/src, as text. */
+function daemonSources(): string[] {
+  const sources: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith('.ts')) sources.push(readFileSync(path, 'utf8'));
+    }
+  };
+  walk(join(import.meta.dir, '../src'));
+  return sources;
+}
+
+/**
+ * Secret-named literals that are not environment variables the daemon reads: two error codes of
+ * the relay epic's push paths (#1200) and the Worker's own `PUSH_SECRET`, named in a comment.
+ * The second test below checks that none of them is read from the environment.
+ */
+const NOT_ENVIRONMENT = new Set([
+  'LEGACY_PUSH_SECRET_REQUIRED',
+  'SECURE_PUSH_SECRET',
+  'PUSH_SECRET',
+]);
+
 describe('the denylist covers every secret the daemon reads (#1249)', () => {
   test('each environment variable read under packages/daemon/src whose name says secret is denied', async () => {
     const { REMI_SECRET_ENV } = await import('../src/pty/child-env');
     const names = new Set<string>();
-    const walk = (dir: string): void => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) walk(path);
-        else if (entry.name.endsWith('.ts')) {
-          for (const m of readFileSync(path, 'utf8').matchAll(/['"`]([A-Z][A-Z0-9_]+)['"`]/g)) {
-            const name = m[1] ?? '';
-            if (/(SECRET|TOKEN|PASSPHRASE|PASSWORD|PRIVATE_KEY)/.test(name)) names.add(name);
-          }
-        }
+    for (const source of daemonSources()) {
+      for (const m of source.matchAll(/['"`]([A-Z][A-Z0-9_]+)['"`]/g)) {
+        const name = m[1] ?? '';
+        if (/(SECRET|TOKEN|PASSPHRASE|PASSWORD|PRIVATE_KEY)/.test(name)) names.add(name);
       }
-    };
-    walk(join(import.meta.dir, '../src'));
+    }
 
     expect(names.size).toBeGreaterThan(0);
-    for (const name of names) expect(REMI_SECRET_ENV).toContain(name);
+    for (const name of names) {
+      if (!NOT_ENVIRONMENT.has(name)) expect(REMI_SECRET_ENV).toContain(name);
+    }
+  });
+
+  test('no exempted secret-named literal is read from the environment', () => {
+    const source = daemonSources().join('\n');
+    const read = [...NOT_ENVIRONMENT].filter((name) =>
+      new RegExp(`env(\\[['"\`]${name}['"\`]\\]|\\.${name}\\b)`).test(source),
+    );
+    expect(read).toEqual([]);
   });
 });
