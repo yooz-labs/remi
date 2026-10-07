@@ -62,24 +62,27 @@ The machine side ships here; the native app's scanner is being built against thi
      - Otherwise, or as soon as the phone's connection closes, the answer is `PAIRING_PENDING`.
      - A phone retries after `PAIRING_PENDING`, so it learns of an approval at once and asks at most every 20 seconds while it waits.
      - `AUTH_STORE_ERROR` (a store the machine could not read) is also worth a retry.
-   - **Logs.** The hub logs each claim attempt with the key's fingerprint and the outcome, never the nonce.
+   - **Logs.** The hub logs claim attempts with the key's fingerprint and the outcome, never the nonce, at most once a minute for the same key and outcome. The contest and full-queue counts stop at 999, and a repeat at that cap writes nothing, so a flood of attempts stops touching the file.
 4. **The terminal.** `remi pair` checks its preconditions, shows the code, waits and asks.
    - **Preconditions.** Each refusal says what to do, and none makes a record.
      - It needs an interactive terminal; otherwise it exits 2 and points at `remi keys` and `remi authorize`.
      - It needs a running hub; it says to start one with `remi start`.
      - It needs authentication on.
-     - It needs a bind a phone can reach. Loopback in any spelling is refused, and the message says how to set `daemon.bind`.
+     - It needs a bind a phone can reach. Loopback (localhost with or without a trailing dot, 127.0.0.0/8, `::1`, IPv4-mapped 127.x) and link-local binds are refused, and the message says how to set `daemon.bind`.
+     - A hub that does not say how it is bound yet (it may have just started) is asked about again before it is called older than `remi pair`.
    - **The address.** For a wildcard bind it offers LAN addresses first, then Tailscale, then the rest, then virtual bridges (Docker and VM interfaces); link-local addresses are never offered.
-     `--host` chooses one, but not a loopback or unspecified address. An IPv6 address is shown in brackets.
+     `--host` chooses one, but not a loopback, unspecified or link-local address. An IPv6 address is shown in brackets.
    - **Showing the code.** The host and name are checked before the record is made.
      It then prints the QR and a text fallback: the machine name, address, the machine's fingerprint, the expiry and the link. A terminal shorter than the QR gets a hint to enlarge the window.
-   - **The question.** When a key claims the code, the terminal shows that key's fingerprint and the label the phone sent. It says to approve only if the phone shows the same fingerprint, and names other keys that tried the code, if any. Then it asks yes or no.
-     - The answer is read only after the fingerprint is shown: anything typed while waiting (a stray `y`, a whole line) is read and dropped first.
-     - **Yes** approves the fingerprint that was shown, with the label as the key's label, through `approvePairing`, which ends in the same commit `remi authorize` uses (resolve the exact pending key inside the lock, write the grant, then drop the candidate). If the key was authorized another way meanwhile, the terminal says so.
-     - **No, or anything else** (an empty line, end of input) rejects: the claim is marked rejected and the pending key removed.
+   - **The question.** When a key claims the code, the terminal shows that key's fingerprint and the label the phone sent. It says to approve only if the phone shows the same fingerprint, and names other keys that tried the code, if any. Then it asks for the first four characters of that fingerprint.
+     - Approving takes those four characters (either case, spaces around them ignored), not a `y`. They cannot be typed before the fingerprint is known, so a keystroke that arrives late over a slow link cannot approve, and typing them means reading the fingerprint.
+     - The answer is also read only after the fingerprint is shown: anything typed while waiting (a stray key, a whole line) is read and dropped first, for 300 ms.
+     - **The four characters** approve the fingerprint that was shown, with the label as the key's label, through `approvePairing`, which ends in the same commit `remi authorize` uses (resolve the exact pending key inside the lock, write the grant, then drop the candidate). If the key was authorized another way meanwhile, the terminal says so.
+     - **Anything else** (`y`, an empty line, end of input) rejects: the claim is marked rejected and the pending key removed.
    - **Exit codes.**
      - While waiting, Ctrl-C, SIGTERM and SIGHUP cancel the code and exit 130, 143 and 129. A key that claimed the code stays an ordinary pending key, which `remi authorize` can still approve.
-     - At the question, Ctrl-C or one of those signals rejects the phone and exits with the same code.
+     - At the question, Ctrl-C or SIGTERM rejects the phone and exits 130 or 143. A terminal that closes there rejects too; the exit code is 1 or 129, whichever the process sees first (the end of input or the SIGHUP).
+     - A store error stops the run with the error shown; only an error about the pairing records adds the way out (delete the file, which holds only pairing codes).
      - An expired code exits 1 and reports any claims a full queue refused. A run that ends any other way also cancels a code nobody decided.
 5. **What the hub records for `remi pair`.** `daemon-status.json` gains the hub's `bind` and whether authentication is on, so `remi pair` can refuse a hub no phone could reach instead of showing a code that will not work.
 
@@ -100,7 +103,7 @@ The machine side ships here; the native app's scanner is being built against thi
 
 ## Consequences
 
-- The phone's first connection needs one scan and one "y" at the terminal; the manual flow (`remi keys`, `remi authorize`) stays.
+- The phone's first connection needs one scan and four characters typed at the terminal; the manual flow (`remi keys`, `remi authorize`) stays.
 - `auth_result` gains error codes a client shows one by one.
 - A new dependency, `uqr` (MIT, no dependencies of its own), draws the QR in the terminal; its notice ships in `THIRD_PARTY_NOTICES` like every bundled package (#1131).
 - Four pending slots are no longer available to ordinary first connections (28 of 32).

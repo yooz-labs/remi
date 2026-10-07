@@ -8,7 +8,7 @@ All notable changes to Remi are documented here.
 
 #### Added
 
-- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. The Remi app scans it, and you approve the phone at the terminal after checking that both show the same fingerprint. No released app scans the code yet; the native app's scanner is being aligned with it (#1283). Without a terminal, `remi keys` and `remi authorize` still work.
+- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. The Remi app scans it, and you approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. No released app scans the code yet; the native app's scanner is being aligned with it (#1283). Without a terminal, `remi keys` and `remi authorize` still work.
 - The code approves nothing on its own: the phone still proves its key, and you still say yes. A code someone else photographs gets them nothing but a request you can see and refuse. The connection is not encrypted by remi; use a trusted network, a VPN or an SSH tunnel.
 - `remi pair` needs the hub to listen on an address your phone can reach (`daemon.bind`) and authentication on, and says how to fix either. It needs the hub restarted once after upgrading, so the hub records how it is bound.
 - If another device tries the code after a phone claimed it, the terminal names it at the question; answer no unless the fingerprint is your phone's. Ctrl-C, SIGTERM or a closed terminal cancels a code nobody has claimed, and rejects one that is waiting for your answer. Keys typed while the code is up never answer the question.

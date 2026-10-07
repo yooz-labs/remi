@@ -354,7 +354,8 @@ const commandHelp: Record<Subcommand, string[]> = {
     '',
     'Needs an interactive terminal, a running hub with authentication on, and daemon.bind set',
     'to an address a phone can reach. The code works once, for five minutes, and approves',
-    'nothing by itself. Without a terminal, use remi keys and remi authorize.',
+    'nothing by itself: you approve the phone by typing the first four characters of its',
+    'fingerprint. Without a terminal, use remi keys and remi authorize.',
     'No released app scans the code yet (#1283).',
   ],
   keys: [

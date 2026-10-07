@@ -4,7 +4,8 @@
  * It shows a pairing link (the machine's name, address, public key, a single-use code and its
  * expiry) as a QR and as text, waits for a phone to claim the code over its first, signed
  * connection, shows that phone's fingerprint and name, and asks the person whether to approve it.
- * Yes approves through the same store mutation `remi authorize` uses; anything else rejects. The
+ * Typing the first four characters of that fingerprint approves, through the same store mutation
+ * `remi authorize` uses; anything else rejects. The
  * code alone authorizes nothing.
  *
  * {@link pairFlow} is the flow, given its store and its terminal; {@link pairPreconditions} decides

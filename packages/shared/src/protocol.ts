@@ -1157,7 +1157,11 @@ export interface AuthResponseMessage {
    * step is the person comparing fingerprints at the machine. Sent only by a key not yet authorized.
    */
   readonly pairingNonce?: string | undefined;
-  /** The name the person gave this device, shown at the terminal (1 to 64 characters, plain text). */
+  /**
+   * The name the person gave this device, shown at the terminal: 1 to 64 Unicode code points, with
+   * nothing `escapeUnsafeText` writes out and no `"` or `\` (`isPlainPairingText`). It names the
+   * device; it proves nothing.
+   */
   readonly pairingLabel?: string | undefined;
 }
 
