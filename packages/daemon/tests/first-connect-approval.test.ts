@@ -70,8 +70,9 @@ test('pending queue has fixed TTL, bounded capacity, restrictive modes and exact
   await store.registerPendingKey(client.publicKey);
   expect(store.listPendingKeys()[0]).toEqual(first);
   expect(Date.parse(first.expiresAt) - Date.parse(first.firstSeenAt)).toBe(600_000);
-  for (let i = 1; i < 32; i++) await store.registerPendingKey((await createIdentity()).publicKey);
-  expect(store.listPendingKeys()).toHaveLength(32);
+  // 28 of the 32 slots: four are kept for keys claiming a pairing code (#1275, #1281 review).
+  for (let i = 1; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+  expect(store.listPendingKeys()).toHaveLength(28);
   await expect(store.registerPendingKey((await createIdentity()).publicKey)).rejects.toThrow(
     'PENDING_QUEUE_FULL',
   );

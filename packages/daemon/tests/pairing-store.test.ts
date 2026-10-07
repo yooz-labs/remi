@@ -100,14 +100,14 @@ describe('pairing records (#1275)', () => {
     const { store } = setup();
     const a = await createIdentity();
     const { nonce } = store.createPairing();
-    await expect(store.approvePairing(nonce)).rejects.toThrow();
+    await expect(store.approvePairing(nonce, a.fingerprint)).rejects.toThrow();
     await store.claimPairing(nonce, a.publicKey, 'Sam phone');
-    const grant = await store.approvePairing(nonce);
+    const grant = await store.approvePairing(nonce, a.fingerprint);
     expect(grant).toMatchObject({ fingerprint: a.fingerprint, label: 'Sam phone' });
     expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(true);
     expect(store.listPendingKeys()).toHaveLength(0);
     expect(store.readPairing(nonce)?.state).toBe('approved');
-    await expect(store.approvePairing(nonce)).rejects.toThrow();
+    await expect(store.approvePairing(nonce, a.fingerprint)).rejects.toThrow();
     expect(store.rejectPairing(nonce)).toBe(false);
   });
 
@@ -117,7 +117,7 @@ describe('pairing records (#1275)', () => {
     const { nonce } = store.createPairing();
     await store.claimPairing(nonce, a.publicKey, 'x');
     clock.now += 300_001;
-    await store.approvePairing(nonce);
+    await store.approvePairing(nonce, a.fingerprint);
     expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(true);
   });
 
@@ -130,14 +130,78 @@ describe('pairing records (#1275)', () => {
     expect(() => store.createPairing()).toThrow(PairingLimitError);
   });
 
-  test('a full pending queue refuses the claim and leaves the code open', async () => {
+  test('ordinary unknown keys fill 28 slots; a pairing claim still gets one of the four kept for it', async () => {
     const { store } = setup();
-    for (let i = 0; i < 32; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+    for (let i = 0; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+    await expect(store.registerPendingKey((await createIdentity()).publicKey)).rejects.toThrow(
+      'PENDING_QUEUE_FULL',
+    );
+    const a = await createIdentity();
+    const { nonce } = store.createPairing();
+    expect(await store.claimPairing(nonce, a.publicKey, 'x')).toBe('CLAIMED');
+  });
+
+  test('a queue full even of kept slots refuses the claim, counts it, and leaves the code open', async () => {
+    const { store } = setup();
+    for (let i = 0; i < 28; i++) await store.registerPendingKey((await createIdentity()).publicKey);
+    for (let i = 0; i < 4; i++) {
+      await store.registerPendingKey((await createIdentity()).publicKey, { forPairing: true });
+    }
     const a = await createIdentity();
     const { nonce } = store.createPairing();
     expect(await store.claimPairing(nonce, a.publicKey, 'x')).toBe('PENDING_QUEUE_FULL');
-    expect(store.readPairing(nonce)?.state).toBe('open');
+    const record = store.readPairing(nonce);
+    expect(record?.state).toBe('open');
+    expect(record?.queueFull).toBe(1);
   });
+
+  test('another key trying a claimed code is counted, and the last one named, for the terminal', async () => {
+    const { store } = setup();
+    const a = await createIdentity();
+    const b = await createIdentity();
+    const c = await createIdentity();
+    const { nonce } = store.createPairing();
+    await store.claimPairing(nonce, a.publicKey, 'x');
+    await store.claimPairing(nonce, b.publicKey, 'y');
+    await store.claimPairing(nonce, c.publicKey, 'z');
+    expect(store.readPairing(nonce)).toMatchObject({
+      contested: 2,
+      lastContender: c.fingerprint,
+      claim: { fingerprint: a.fingerprint },
+    });
+  });
+
+  test('at the record cap, finished records make room; only live ones count against it', async () => {
+    const { store } = setup();
+    for (let i = 0; i < 16; i++) store.cancelPairing(store.createPairing().nonce);
+    expect(() => store.createPairing()).not.toThrow();
+  });
+
+  test('approval approves only the fingerprint the person was shown', async () => {
+    const { store } = setup();
+    const a = await createIdentity();
+    const { nonce } = store.createPairing();
+    await store.claimPairing(nonce, a.publicKey, 'x');
+    await expect(store.approvePairing(nonce, '0000000000000000')).rejects.toThrow();
+    expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(false);
+    await store.approvePairing(nonce, a.fingerprint);
+    expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(true);
+  });
+
+  test('peekPairing reads without the lock: it answers while another process holds it', async () => {
+    const { dir, store } = setup();
+    const { nonce } = store.createPairing();
+    const worker = path.join(import.meta.dir, 'lock-holder-worker.ts');
+    const holder = Bun.spawn([process.execPath, worker, dir, '2500'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    while (!fs.existsSync(path.join(dir, 'lock-held'))) await Bun.sleep(5);
+    const started = Date.now();
+    expect(store.peekPairing(nonce)?.state).toBe('open');
+    expect(Date.now() - started).toBeLessThan(500);
+    await holder.exited;
+  }, 20000);
 
   test('a corrupt pairings file fails closed', async () => {
     const { dir, store } = setup();

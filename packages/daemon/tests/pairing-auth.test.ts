@@ -28,6 +28,19 @@ async function setup(pairingWaitMs = 400) {
   });
   const client = await createIdentity();
   const unlocked = await unlockIdentity(client);
+  async function respondWith(
+    id: string,
+    pairing: { nonce: string; label?: string } | undefined,
+    isOpen: () => boolean,
+  ) {
+    const challenge = auth.createChallenge(id);
+    const signature = await sign(unlocked.privateKey, fromBase64(challenge.challenge));
+    return auth.verifyResponse(
+      id,
+      createAuthResponse(client.publicKey, signature, client.fingerprint, undefined, pairing),
+      { isOpen },
+    );
+  }
   async function respond(id: string, pairing?: { nonce: string; label?: string }, wrong = false) {
     const challenge = auth.createChallenge(id);
     const signature = await sign(
@@ -43,7 +56,7 @@ async function setup(pairingWaitMs = 400) {
     );
     return auth.verifyResponse(id, response);
   }
-  return { store, client, respond };
+  return { store, client, respond, respondWith, dir };
 }
 
 describe('pairing on the first connection (#1275)', () => {
@@ -52,7 +65,7 @@ describe('pairing on the first connection (#1275)', () => {
     const { nonce } = store.createPairing();
     const pending = respond('c1', { nonce, label: 'Sam phone' });
     while (store.readPairing(nonce)?.state !== 'claimed') await Bun.sleep(10);
-    await store.approvePairing(nonce);
+    await store.approvePairing(nonce, client.fingerprint);
     const outcome = await pending;
     expect(outcome.result.success).toBe(true);
     expect(outcome.result.serverSignature).toBeTruthy();
@@ -61,12 +74,12 @@ describe('pairing on the first connection (#1275)', () => {
   });
 
   test('an undecided claim is PAIRING_PENDING after the wait; a retry after approval succeeds', async () => {
-    const { store, respond } = await setup(300);
+    const { store, client, respond } = await setup(300);
     const { nonce } = store.createPairing();
     const started = Date.now();
     expect((await respond('c1', { nonce })).result.error).toBe('PAIRING_PENDING');
     expect(Date.now() - started).toBeGreaterThanOrEqual(250);
-    await store.approvePairing(nonce);
+    await store.approvePairing(nonce, client.fingerprint);
     expect((await respond('c2', { nonce })).result.success).toBe(true);
   });
 
@@ -118,6 +131,34 @@ describe('pairing on the first connection (#1275)', () => {
     expect((await respond('c2')).result.success).toBe(true);
   });
 
+  test('a claim waiting while another process holds the lock is still decided (#1281 review)', async () => {
+    const { store, client, respond, dir } = await setup(8000);
+    const { nonce } = store.createPairing();
+    const pending = respond('c1', { nonce });
+    while (store.readPairing(nonce)?.state !== 'claimed') await Bun.sleep(10);
+    const worker = path.join(import.meta.dir, 'lock-holder-worker.ts');
+    const holder = Bun.spawn([process.execPath, worker, dir, '2600'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    await holder.exited;
+    await store.approvePairing(nonce, client.fingerprint);
+    expect((await pending).result.success).toBe(true);
+  }, 20000);
+
+  test('a claim whose connection closed stops waiting at once', async () => {
+    const { store, respondWith } = await setup(8000);
+    const { nonce } = store.createPairing();
+    let open = true;
+    setTimeout(() => {
+      open = false;
+    }, 200);
+    const started = Date.now();
+    const outcome = await respondWith('c1', { nonce }, () => open);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(outcome.result.error).toBe('PAIRING_PENDING');
+  });
+
   test('without a code, an unknown key is pending as before (#873)', async () => {
     const { store, respond } = await setup();
     expect((await respond('c1')).result.error).toBe('UNKNOWN_KEY');
@@ -125,12 +166,12 @@ describe('pairing on the first connection (#1275)', () => {
   });
 
   test('a claim without a label is labeled for what it is', async () => {
-    const { store, respond } = await setup(5000);
+    const { store, client, respond } = await setup(5000);
     const { nonce } = store.createPairing();
     const pending = respond('c1', { nonce });
     while (store.readPairing(nonce)?.state !== 'claimed') await Bun.sleep(10);
     expect(store.readPairing(nonce)?.claim?.label).toBe('paired device');
-    await store.approvePairing(nonce);
+    await store.approvePairing(nonce, client.fingerprint);
     expect((await pending).result.success).toBe(true);
   });
 });
