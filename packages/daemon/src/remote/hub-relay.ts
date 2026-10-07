@@ -1215,8 +1215,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     this.running = false;
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.stable) clearTimeout(this.stable);
-    this.control?.stop();
+    // Forget the control before closing it: on Bun 1.3.11 its close handler runs inside close(),
+    // and while it is still the current control that handler treats the close as a lost control
+    // and closes every pipe with the failure close, before the orderly close below (#1225).
+    const control = this.control;
     this.control = undefined;
+    control?.stop();
     for (const peer of [...this.peers.values()]) void this.closePeer(peer, true);
     // Every close still running, including a pipe that was already in its grace (#1225).
     await Promise.all([...this.closingPeers].map((peer) => peer.closing));
