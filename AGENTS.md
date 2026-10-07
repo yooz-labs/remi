@@ -699,9 +699,20 @@ those two are both exactly `{token, title, body}`.
 Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks.
 The version changes only on a breaking change; an additive change never changes it, and the golden fixtures and `protocol-fixtures-additive.test.ts` hold every change to being additive.
 A capability names an additive feature a client cannot see in the messages themselves (a request field an older daemon would ignore); it is added by the change that ships the feature, documented in `PROTOCOL_CAPABILITIES`, and a test refuses an undocumented one.
-The list is empty: everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
+It lists `workspaces` (#1236), the first; everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
 Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
 `serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
+
+### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
+
+`create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.
+`parseWorkspaceRequest` (`workspace/worktree.ts`) checks the values as text before a port is probed (no control character, no leading hyphen, at most 200 characters, no `@{` in a branch); a `directory` that is set and resolves elsewhere is refused.
+Once a port is held, `prepareWorkspace` finds the main worktree (`git worktree list --porcelain -z`, first entry; bare refused), checks the branch (`check-ref-format --branch`, and that it does not exist: new branches only), resolves the base to a commit (default `HEAD`), refuses a target that exists, and runs `git worktree add -b <branch> <path> <commit>` at `<parent>/remi-worktrees/<name>-<branch>` (every `/` a `-`), with no shell, no standard input, no prompt, a 60-second limit and no inherited `GIT_*` or remi secret.
+The repository's own hooks run, as for the person at the machine.
+The child starts in the worktree, and `create_session_response.workspace` says `{repository, directory, worktree?: {branch, base}}` (the base as the commit).
+A refusal tells the client nothing it did not send; the log has git's reason, escaped.
+Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
+Not yet: the workspace on the session list (phase B) and a recent-repositories request (phase C).
 
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 

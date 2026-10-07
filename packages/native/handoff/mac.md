@@ -44,7 +44,7 @@ The iPhone track consumes RemiKit; keep its public API small, documented and sta
   - a `terminalOnly` card has no controls;
   - `PROMPT_WAITING` refuses chat while a prompt is up.
 - [ ] **Native notifications** for cards, and the menu bar extra live.
-- [ ] **New session:** creating a session through the hub (`create_session_request`). Worktree creation waits for #1236; until then the sheet takes a directory.
+- [ ] **New session:** creating a session through the hub (`create_session_request`). With `workspace` (#1236, ADR 0036) the hub makes a worktree on a new branch and the response says where; check the `workspaces` capability first. The hub's recent repositories (#1236 phase C) are not on the wire yet, so the sheet takes a repository path until they are.
 - **Done when** the owner can use it for a day on two machines instead of the WebView window.
 
 ## Out of scope for now

@@ -4,11 +4,20 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A session in a new worktree, made by the machine (#1236, [ADR 0036](.context/decisions/0036-workspaces.md))
+
+#### Added
+
+- `create_session_request` can name a workspace: a repository on the machine and, optionally, a new branch (and the branch, tag or commit to start it from). The machine creates a git worktree for it at `remi-worktrees/<repository>-<branch>`, next to the repository, and starts the session there. The response says where the session runs and which commit the worktree started from. This is what lets the sandboxed native apps start a session on a new branch without running git themselves.
+- Only new branches, and nothing deletes a worktree: closing a session leaves its worktree in place.
+- The machine checks every value before git runs and runs git without a shell. A refusal says what was wrong (an invalid branch name, a branch that exists, a base it cannot find) without naming anything on the machine; the remi log has git's reason.
+- A daemon that supports this lists the `workspaces` capability on `hello_ack`.
+
 ### The protocol has a version, and a daemon says what it supports (#1237, [ADR 0035](.context/decisions/0035-protocol-version-and-capabilities.md))
 
 #### Added
 
-- Every `hello_ack` names the protocol version (`protocolVersion`, now 1) and the daemon's capabilities (`capabilities`, empty for now). The version changes only on a breaking change; a capability names a feature added later that a client could not otherwise detect, such as a request field an older daemon would ignore.
+- Every `hello_ack` names the protocol version (`protocolVersion`, now 1) and the daemon's capabilities (`capabilities`; the first is `workspaces`, below). The version changes only on a breaking change; a capability names a feature added later that a client could not otherwise detect, such as a request field an older daemon would ignore.
 - `hubSupport` in `@remi/shared` tells a client whether a machine supports what it needs and, when not, which side to update. The native apps are its first users; the web client and the CLI need no capability yet.
 - An ack without the two fields comes from an older remi; a client reads it as protocol version 1 with no capabilities.
 

@@ -299,8 +299,8 @@ export interface HelloAckMessage {
   readonly protocolVersion?: number | undefined;
   /**
    * The additive features this daemon has that a client cannot see in the messages themselves,
-   * named in `PROTOCOL_CAPABILITIES` (#1237, ADR 0035). On every ack since #1237, empty until the
-   * first capability ships; a name a client does not know is ignored.
+   * named in `PROTOCOL_CAPABILITIES` (#1237, ADR 0035), such as `workspaces` (#1236). On every ack
+   * since #1237; a name a client does not know is ignored.
    */
   readonly capabilities?: readonly string[] | undefined;
   /**

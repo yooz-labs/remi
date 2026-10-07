@@ -24,7 +24,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   - the sessions of the selection, with status and the worktree or branch;
   - the session itself.
 - **The session view:** the transcript (agent messages, tool calls as compact chips that expand), the open cards inline, and a composer at the bottom.
-- **New session sheet:** pick the machine, repository, worktree (new branch or existing), harness (Claude Code, Codex) and model. The hub creates the worktree; until the workspace protocol lands (#1236) the sheet can only start a session in a directory.
+- **New session sheet:** pick the machine, repository, worktree (new branch or existing), harness (Claude Code, Codex) and model. The hub creates the worktree (`create_session_request.workspace`, #1236) when it lists the `workspaces` capability; for a hub that does not, the sheet starts a session in a directory.
 - **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays.
 - **Notifications:** native, grouped by machine. A card's notification opens it in place.
 
