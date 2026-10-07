@@ -19,6 +19,7 @@ struct PhoneLiveRootView: View {
                 machines: machineSummaries,
                 sessionMachines: store.machines,
                 recentRepositories: store.recentRepositoriesByMachine,
+                publicIdentity: store.publicIdentity,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
                 noticeMessage: store.latestOperationNotice,
@@ -34,6 +35,7 @@ struct PhoneLiveRootView: View {
                 onCreateSession: createSession,
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
+                onRetryApproval: store.retryApproval,
                 onDismissError: store.clearLatestError
             )
         }

@@ -108,6 +108,8 @@ public final class MachineStore {
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
 
+    public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
+
     public init(
         endpoints: [MachineEndpoint],
         identity: ClientIdentity,

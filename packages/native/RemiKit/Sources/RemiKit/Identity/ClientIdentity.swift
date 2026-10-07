@@ -31,6 +31,10 @@ public struct ClientIdentity: Sendable {
         "remi authorize \(fingerprint) --label device"
     }
 
+    public var publicIdentity: PublicClientIdentity {
+        PublicClientIdentity(publicKey: publicKeyBase64, fingerprint: fingerprint)
+    }
+
     public func signature(for challenge: Data) throws -> Data {
         try privateKey.signature(for: challenge)
     }
@@ -65,6 +69,27 @@ public struct ClientIdentity: Sendable {
         "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
         "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
     ]
+}
+
+public struct PublicClientIdentity: Sendable, Equatable {
+    public let publicKey: String
+    public let fingerprint: String
+
+    public init(publicKey: String, fingerprint: String) {
+        self.publicKey = publicKey
+        self.fingerprint = fingerprint
+    }
+
+    public var exportJSON: String {
+        #"{"publicKey":"\#(publicKey)"}"#
+    }
+
+    public func authorizeCommand(label: String) -> String {
+        let normalizedLabel = label.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let safeLabel = (normalizedLabel.isEmpty ? "device" : normalizedLabel)
+            .replacingOccurrences(of: "'", with: "'\\''")
+        return "remi authorize \(fingerprint) --label '\(safeLabel)'"
+    }
 }
 
 public enum ClientIdentityStoreError: Error, Equatable {

@@ -4,6 +4,18 @@ import Testing
 @testable import RemiKit
 
 struct ClientIdentityTests {
+    @Test func publicIdentityExportsCliCompatibleJSON() throws {
+        let identity = ClientIdentity()
+        let exported = identity.publicIdentity
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(exported.exportJSON.utf8)) as? [String: String]
+        )
+
+        #expect(object == ["publicKey": identity.publicKeyBase64])
+        #expect(exported.fingerprint == identity.fingerprint)
+        #expect(exported.authorizeCommand(label: "Yahya's iPhone").contains("'Yahya'\\''s iPhone'"))
+    }
+
     @Test func fingerprintMatchesSharedWireFormat() {
         let publicKey = Data(repeating: 0, count: 32)
         #expect(ClientIdentity.fingerprint(ofPublicKeyRaw: publicKey) == "66687aadf862bd77")
