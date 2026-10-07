@@ -80,6 +80,7 @@ Rebase on the epic branch at least daily.
 
 - **Branches:** the epic branch is `feature/issue-1239-epic-native`. The Mac agent works on `feature/issue-1243-native-mac` and the iPhone agent on `feature/issue-1244-native-ios`. Each has its own worktree under `../remi-worktrees/`.
 - **Pull requests** go into the epic branch, never into `develop` or `main`.
+- **Run `bun install` once in a new worktree.** The git hooks (lefthook with Biome) run from its `node_modules`; without it, a commit that stages TypeScript or JSON fails the hook.
 - **Commits:**
   - atomic: one logical change each;
   - message: subject under 50 characters, imperative, with the issue number;
