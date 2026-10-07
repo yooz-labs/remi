@@ -195,6 +195,19 @@ describe('pairing records (#1275)', () => {
     expect(store.isAuthorized(b.publicKey, b.fingerprint)).toBe(false);
   });
 
+  test('a code cancelled while approval validates the key is not approved', async () => {
+    const { store } = setup();
+    const a = await createIdentity();
+    const { nonce } = store.createPairing();
+    await store.claimPairing(nonce, a.publicKey, 'x');
+    // approvePairing reads its snapshot, then awaits key validation; the cancel lands in between.
+    const approving = store.approvePairing(nonce, a.fingerprint);
+    expect(store.cancelPairing(nonce)).toBe(true);
+    await expect(approving).rejects.toThrow('changed');
+    expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(false);
+    expect(store.readPairing(nonce)?.state).toBe('cancelled');
+  });
+
   test('peekPairing reads without the lock: it answers while another process holds it', async () => {
     const { dir, store } = setup();
     const { nonce } = store.createPairing();
