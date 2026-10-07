@@ -316,6 +316,35 @@ export type PushFn = typeof sendPushTrigger;
  */
 export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
 
+/**
+ * Every push delivery in flight, retries included, across all dispatchers in
+ * this process (#1223). A daemon whose agent exits closes its session and then
+ * exits within milliseconds; without waiting for these, the dismissals of the
+ * session's cards (and any last notice) never left before the process did.
+ */
+const inFlightDeliveries = new Set<Promise<unknown>>();
+
+/**
+ * Wait for the push deliveries in flight to finish, for at most `timeoutMs`
+ * (#1223). Deliveries started while waiting are waited for too. Never rejects;
+ * a delivery that is still going at the bound is abandoned with the process.
+ */
+export async function drainPushDeliveries(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (inFlightDeliveries.size > 0) {
+    const left = deadline - Date.now();
+    if (left <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...inFlightDeliveries]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+}
+
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
 /** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so a
@@ -567,7 +596,22 @@ export class NotificationDispatcher {
    * wording is owned by each caller (this helper never invents log formats —
    * changing a caller's strings is a deliberate, greppable act at the call site).
    */
-  private async pushOnceWithRetry(
+  private pushOnceWithRetry(
+    signalingUrl: string,
+    token: string,
+    opts: Parameters<PushFn>[2],
+    logCtx: { sent: string; failed: string },
+  ): Promise<boolean> {
+    const delivery = this.deliverWithRetry(signalingUrl, token, opts, logCtx);
+    inFlightDeliveries.add(delivery);
+    const settled = (): void => {
+      inFlightDeliveries.delete(delivery);
+    };
+    delivery.then(settled, settled);
+    return delivery;
+  }
+
+  private async deliverWithRetry(
     signalingUrl: string,
     token: string,
     opts: Parameters<PushFn>[2],

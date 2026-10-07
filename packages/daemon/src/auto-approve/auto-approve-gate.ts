@@ -890,19 +890,13 @@ export class AutoApproveGate {
 
   /** Remove a card from the registry and broadcast its dismissal, each step
    *  guarded so one failure cannot skip the other. Broadcasts only for a card
-   *  that was registered: a dismissal for a card no client holds is noise.
-   *  Once the session itself is gone (a real close: `closeSession` clears it
-   *  before it announces the close, so its cards cannot be looked up), every
-   *  open escalation is dismissed (#1223): it may have been pushed. */
+   *  that was registered: a dismissal for a card no client holds is noise. */
   private removeAndDismiss(questionId: UUID, reason: string, toolName?: string): void {
     // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
     // every client, a missed one strands a card.
     let wasRegistered = true;
     try {
-      const registry = this.deps.sessionRegistry;
-      wasRegistered =
-        registry.getSession(this.sessionId) === undefined ||
-        registry.getQuestion(this.sessionId, questionId) !== null;
+      wasRegistered = this.deps.sessionRegistry.getQuestion(this.sessionId, questionId) !== null;
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] getQuestion during card cleanup threw:`, err);
     }
