@@ -88,6 +88,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
 public final class MachineStore {
     public private(set) var machines: [MachineState]
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
+    public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
     public private(set) var latestError: ErrorMessage?
 
     @ObservationIgnored private let identity: ClientIdentity
@@ -300,6 +301,14 @@ public final class MachineStore {
             transcript.removeAll { $0.entryUuid == message.entryUuid }
             transcript.append(message)
             transcriptsBySession[message.sessionId] = transcript
+        case .sessionViews(let message):
+            sessionViewsBySession[message.sessionId] = message.subagents.sorted {
+                if $0.active != $1.active { return $0.active && !$1.active }
+                return $0.agentType.localizedCaseInsensitiveCompare($1.agentType) == .orderedAscending
+            }
+            for subagent in message.subagents {
+                routeBySession[subagent.agentId] = endpoint
+            }
         case .createSessionResponse(let response):
             if response.success, let port = response.port {
                 connect(MachineEndpoint(host: parent.host, port: port), parent: parent)

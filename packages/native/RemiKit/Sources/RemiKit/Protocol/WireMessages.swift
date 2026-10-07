@@ -258,6 +258,27 @@ public struct TranscriptLoadCompleteMessage: Decodable, Sendable, Equatable {
     public let requestId: String
 }
 
+public struct SessionViewMeta: Decodable, Sendable, Equatable, Identifiable {
+    public var id: String { agentId }
+    public let agentId: String
+    public let agentType: String
+    public let active: Bool
+
+    public init(agentId: String, agentType: String, active: Bool) {
+        self.agentId = agentId
+        self.agentType = agentType
+        self.active = active
+    }
+}
+
+public struct SessionViewsMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+    public let subagents: [SessionViewMeta]
+}
+
 public struct SessionListRequestMessage: Codable, Sendable, Equatable {
     public let type = "session_list_request"
     public let id: String
