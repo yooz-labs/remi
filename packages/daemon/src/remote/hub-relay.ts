@@ -371,7 +371,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }
       peer.receiveTail = peer.receiveTail
         .then(async () => {
-          if (!this.active(peer)) return;
+          if (!this.active(peer)) {
+            // In an orderly close's grace (#1225) the peer's reply BYE still arrives: open it so
+            // the stream ends clean. Only the channel reads it; nothing after the hub's BYE is
+            // acted on, and a data frame here is opened and dropped.
+            if (peer.orderlyClosing && peer.channel && typeof event.data !== 'string')
+              await peer.channel.receive(new Uint8Array(event.data)).catch(() => undefined);
+            return;
+          }
           if (peer.stage === 'admit') {
             const notice = relayV2.decodeNotice(event.data);
             if (pipeStage === 'nonce' && notice.t === 'nonce') {
