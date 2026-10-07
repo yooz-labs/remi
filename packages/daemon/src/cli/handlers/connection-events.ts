@@ -21,6 +21,7 @@ import type { CreateHelloAckOptions, HarnessId, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
+import { DAEMON_CAPABILITIES } from '../capabilities.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
@@ -47,6 +48,11 @@ export interface ConnectionHandlerDeps {
    * each ack so a command installed later is offered without a restart (#1179).
    */
   harnesses: () => readonly HarnessId[];
+  /**
+   * The capabilities named on every ack (#1237, ADR 0035): {@link DAEMON_CAPABILITIES} unless a
+   * test gives another list to see it reach each ack.
+   */
+  capabilities?: readonly string[];
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -83,6 +89,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     harnessId,
     hubMode,
     harnesses,
+    capabilities = DAEMON_CAPABILITIES,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -95,12 +102,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onConnectionClosed,
   } = deps;
 
-  /** Every hello_ack names the daemon's version and the harnesses it can start (#539, #1179). */
+  /**
+   * Every hello_ack names the daemon's version, the harnesses it can start and its capabilities
+   * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
+   */
   const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) =>
     createHelloAck('1.0.0', sessionId, {
       ...options,
       daemonVersion: remiVersion,
       harnesses: harnesses(),
+      capabilities,
     });
 
   /** The current binding for hello_ack: who the session is, and the transcript it writes. */

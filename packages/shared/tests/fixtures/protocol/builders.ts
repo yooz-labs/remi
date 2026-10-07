@@ -64,6 +64,8 @@ import {
   createTranscriptLoadRequest,
   createUnregisterDeviceToken,
   createUserInput,
+  generateId,
+  now,
 } from '../../../src/protocol.ts';
 import type {
   HubPendingQuestion,
@@ -293,6 +295,7 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
       attachState: 'attached',
       daemonVersion: '0.7.4-dev.1',
       harnesses: ['claude', 'codex'],
+      capabilities: ['workspaces'],
     }),
   agent_output: () => createAgentOutput(FIXED_MESSAGE),
   structured_agent_output: () => createStructuredAgentOutput(FIXED_STRUCTURED_MESSAGE, false, [1]),
@@ -415,6 +418,50 @@ export const FIXTURE_VARIANTS: Record<
   create_session_request_plain: {
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
+  },
+  // A session in a new worktree (#1236, ADR 0036): the request a client sends to a hub that lists
+  // the `workspaces` capability, and the response that says where the session runs.
+  create_session_request_workspace: {
+    type: 'create_session_request',
+    build: () =>
+      createCreateSessionRequest('/Users/fixture/project', {
+        workspace: {
+          repository: '/Users/fixture/project',
+          worktree: { branch: 'feature/fixture', base: 'main' },
+        },
+      }),
+  },
+  create_session_response_workspace: {
+    type: 'create_session_response',
+    build: () =>
+      createCreateSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, 19924, undefined, {
+        repository: '/Users/fixture/project',
+        directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+        worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
+      }),
+  },
+  // The ack of a daemon before #1237 (ADR 0035), written out field by field rather than derived
+  // from the registry golden: a field added to `hello_ack` later must not appear in the ack of a
+  // daemon that predates it. A client must accept it.
+  hello_ack_legacy: {
+    type: 'hello_ack',
+    build: () => ({
+      type: 'hello_ack',
+      id: generateId(),
+      timestamp: now(),
+      serverVersion: '1.0.0',
+      sessionId: SESSION_ID,
+      isResume: false,
+      replayCount: 0,
+      nextBulletId: 1,
+      claudeSessionId: CLAUDE_SESSION_ID,
+      harness: 'claude',
+      harnessSessionId: CLAUDE_SESSION_ID,
+      transcriptPath: '/Users/fixture/transcript.jsonl',
+      attachState: 'attached',
+      daemonVersion: '0.7.4-dev.1',
+      harnesses: ['claude', 'codex'],
+    }),
   },
 };
 
