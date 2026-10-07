@@ -67,17 +67,26 @@ describe('createQuestionResolver (#1235)', () => {
     expect(errors.join('\n')).toContain('socket gone');
   });
 
-  test('it remembers a bounded number of resolved cards', () => {
-    const { resolver, sent } = setup();
+  test('it remembers the last 1024 resolved cards', () => {
+    const { resolver } = setup();
     const ids = Array.from(
-      { length: 1100 },
+      { length: 1025 },
       (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` as UUID,
     );
-    for (const id of ids) resolver.resolve(SID, id, 'cancelled');
-    // The oldest has been forgotten, so it can be resolved again; the newest has not.
-    expect(resolver.resolve(SID, ids[0] as UUID, 'cancelled')).toBe(true);
-    expect(resolver.resolve(SID, ids[1099] as UUID, 'cancelled')).toBe(false);
-    expect(sent).toHaveLength(1101);
+    for (const id of ids) resolver.resolve(SID, id, 'cancelled', 'timeout');
+    // The 1025th pushed the first out; the second is still remembered.
+    expect(resolver.resolve(SID, ids[1] as UUID, 'cancelled', 'timeout')).toBe(false);
+    expect(resolver.resolve(SID, ids[0] as UUID, 'cancelled', 'timeout')).toBe(true);
+  });
+
+  test('a resolution with no cause can be followed by one that names it; never the reverse (#1292 review)', () => {
+    const { resolver, sent } = setup();
+    // A render superseded the card while the phone's typed answer was being applied.
+    expect(resolver.resolve(SID, Q1, 'cancelled')).toBe(true);
+    expect(resolver.resolve(SID, Q1, 'answered', 'phone')).toBe(true);
+    expect(resolver.resolve(SID, Q1, 'cancelled')).toBe(false);
+    expect(resolver.resolve(SID, Q1, 'cancelled', 'terminal')).toBe(false);
+    expect(sent.map((m) => m.resolvedBy)).toEqual([undefined, 'phone']);
   });
 });
 

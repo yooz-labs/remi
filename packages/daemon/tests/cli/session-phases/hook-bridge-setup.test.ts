@@ -125,7 +125,11 @@ function fakePTY(submits: string[]): PTYSession {
 }
 
 interface MessageApiCallLog {
-  resetCalls: { n: number };
+  resetCalls: {
+    n: number;
+    /** How each card reached the real MessageAPI: the push options the tracker or bridge gave (#1235). */
+    questionPaths?: Array<{ id: string; answerPath: string | undefined }>;
+  };
   statusCalls: string[];
   questionCalls: number;
 }
@@ -325,8 +329,13 @@ describe('setupHookBridge', () => {
       ? new MessageAPI(
           { sessionId: SID, initialBulletId: 1 },
           {
-            onQuestion: (question) => {
+            onQuestion: (question, questionOpts) => {
               messageApiLog.questionCalls += 1;
+              if (messageApiLog.questionPaths === undefined) messageApiLog.questionPaths = [];
+              messageApiLog.questionPaths.push({
+                id: question.id,
+                answerPath: questionOpts?.answerPath,
+              });
               sessionRegistry.addQuestion(SID, question, question.source ?? 'unknown');
             },
             onStatusChange: (status) => {
@@ -2153,6 +2162,57 @@ describe('setupHookBridge', () => {
       });
       return { ...built, hook, card, handlers, sent };
     }
+
+    describe('how each card is answered, and sweeps that name no cause (#1235, #1292 review)', () => {
+      /** The answer path the card was pushed with, as the real MessageAPI received it. */
+      const pathOf = (id: string) =>
+        messageApiLog.questionPaths?.find((p) => p.id === id)?.answerPath;
+
+      test('a held binary card is structured', async () => {
+        const { card, handle } = held('claude-path-held');
+        expect(pathOf(card.id)).toBe('structured');
+        handle.gate.forceRelease('test');
+      });
+
+      test('a multi-choice permission is typed', async () => {
+        const { card } = held('claude-path-multi', {
+          permission_suggestions: ['Option A', 'Option B', 'Option C'],
+        });
+        expect(pathOf(card.id)).toBe('keystroke');
+      });
+
+      test('a question-shaped tool that is not AskUserQuestion is pushed as typed, terminal only', async () => {
+        const { card } = held('claude-path-mcp-ask', {
+          tool_name: 'mcp__custom__ask',
+          tool_input: { questions: [{ question: 'Proceed?', options: ['A', 'B'] }] },
+        });
+        expect(card.terminalOnly).toBe(true);
+        // The gate says keystroke (not held); the stamp turns every terminal-only card into none,
+        // which message-api-setup.test.ts pins.
+        expect(pathOf(card.id)).toBe('keystroke');
+      });
+
+      for (const event of ['Stop', 'UserPromptSubmit'] as const) {
+        test(`a ${event} that sweeps an open card names no cause`, async () => {
+          const broadcastResolvedLog: Array<{
+            questionId: UUID;
+            reason: string;
+            resolvedBy?: string;
+          }> = [];
+          const { card } = held(
+            `claude-sweep-${event}`,
+            { permission_suggestions: ['Option A', 'Option B', 'Option C'] },
+            { broadcastResolvedLog },
+          );
+          hookServer.fire(event, {
+            session_id: `claude-sweep-${event}`,
+            hook_event_name: event,
+            ...(event === 'UserPromptSubmit' ? { prompt: 'next' } : {}),
+          });
+          expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+        });
+      }
+    });
 
     test('the card is pushed at hook time with options by meaning, before any render', async () => {
       const { card, hook, handle } = held('claude-held-card', {
@@ -4010,6 +4070,10 @@ describe('setupHookBridge', () => {
       expect(questions[0]?.source).toBe('elicitation');
       expect(questions[0]?.allowsFreeText).toBe(true);
       expect(questions[0]?.options).toEqual([]);
+      // No hold stands behind it: a phone answer is typed (#1235).
+      expect(messageApiLog.questionPaths?.find((p) => p.id === questions[0]?.id)?.answerPath).toBe(
+        'keystroke',
+      );
     });
 
     test('ElicitationResult resolves the exact card by elicitation_id', () => {
@@ -4038,8 +4102,9 @@ describe('setupHookBridge', () => {
       expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
-      // Accepted at the terminal's MCP dialog (#1235).
-      expect(broadcastResolvedLog[0]?.resolvedBy).toBe('terminal');
+      // An answer may come from a user's own hook or from a chat message typed into the dialog,
+      // so an accepted elicitation names no cause (#1292 review).
+      expect(broadcastResolvedLog[0]).not.toHaveProperty('resolvedBy');
     });
 
     test('an ElicitationResult cancel names no cause: an Esc, a client, or a timeout (#1235)', () => {

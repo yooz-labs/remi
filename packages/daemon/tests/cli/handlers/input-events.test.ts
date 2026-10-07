@@ -2743,6 +2743,99 @@ describe('createInputHandlers', () => {
       ]);
     });
 
+    describe('a Cancel and a failed submit (#1235, #1292 review)', () => {
+      function registerWith(
+        capture: { writes: string[]; submits: string[]; writeError?: Error; submitError?: Error },
+        withQuestion = true,
+      ): UUID {
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(capture),
+          fakeMessageAPI(new Map()),
+        );
+        if (withQuestion) {
+          sessionRegistry.addQuestion(sessionId, {
+            id: QID,
+            text: 'proceed?',
+            options: [
+              { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+              { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+            ],
+            allowsFreeText: false,
+            isAnswered: false,
+          });
+        }
+        return sessionId;
+      }
+      function handlersWith(
+        resolutions: unknown[],
+        answerHeld?: () => 'resolved' | 'closed' | 'unknown',
+      ) {
+        return createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          ...(answerHeld ? { answerHeld } : {}),
+          onQuestionResolved: (_s, q, resolution) => resolutions.push({ q, ...resolution }),
+        });
+      }
+
+      test('a Cancel the hook took is the phone', async () => {
+        const resolutions: unknown[] = [];
+        const sessionId = registerWith({ writes: [], submits: [] });
+        await handlersWith(resolutions, () => 'resolved').onAnswer(
+          CID,
+          sessionId,
+          QID,
+          '',
+          undefined,
+          {
+            cancel: true,
+          },
+        );
+        expect(resolutions).toEqual([{ q: QID, reason: 'answered', resolvedBy: 'phone' }]);
+      });
+
+      test('a Cancel that wrote the Esc is the phone; one whose Esc failed only cleared the card', async () => {
+        const written: unknown[] = [];
+        const ok = registerWith({ writes: [], submits: [] });
+        await handlersWith(written).onAnswer(CID, ok, QID, '', undefined, { cancel: true });
+        expect(written).toEqual([{ q: QID, reason: 'answered', resolvedBy: 'phone' }]);
+        await sessionRegistry.shutdown();
+        sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+        registryForScreen = sessionRegistry;
+        const failed: unknown[] = [];
+        const broken = registerWith({ writes: [], submits: [], writeError: new Error('pty gone') });
+        await handlersWith(failed).onAnswer(CID, broken, QID, '', undefined, { cancel: true });
+        expect(failed).toEqual([{ q: QID, reason: 'cancelled' }]);
+      });
+
+      test('a Cancel for a card already gone only clears it', async () => {
+        const resolutions: unknown[] = [];
+        const sessionId = registerWith({ writes: [], submits: [] }, false);
+        await handlersWith(resolutions).onAnswer(CID, sessionId, QID, '', undefined, {
+          cancel: true,
+        });
+        expect(resolutions).toEqual([{ q: QID, reason: 'cancelled' }]);
+      });
+
+      test('a typed answer whose submit threw only cleared the card', async () => {
+        const resolutions: unknown[] = [];
+        const sessionId = registerWith({
+          writes: [],
+          submits: [],
+          submitError: new Error('pty gone'),
+        });
+        await expect(
+          handlersWith(resolutions).onAnswer(CID, sessionId, QID, 'y'),
+        ).rejects.toThrow();
+        expect(resolutions).toEqual([{ q: QID, reason: 'cancelled' }]);
+      });
+    });
+
     test('a throwing onQuestionResolved never breaks answer handling', async () => {
       const sessionId = registerWithQuestion(QID);
       const handlers = createInputHandlers({

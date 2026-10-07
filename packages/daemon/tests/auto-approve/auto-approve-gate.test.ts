@@ -544,7 +544,20 @@ describe('AutoApproveGate external resolution (#673)', () => {
       expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: undefined }]);
     });
 
-    test('a PermissionDenied means the harness decided', async () => {
+    test('a PermissionDenied paired by tool_use_id means the harness decided', async () => {
+      const { g, causes } = causeGate();
+      void g.resolvePermission(
+        pr({ permission_suggestions: ['A', 'B', 'C'], tool_use_id: 'use-d' }),
+      );
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, toolUseId: 'use-d' },
+        'PermissionDenied',
+        { resolvedBy: 'harness' },
+      );
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: 'harness' }]);
+    });
+
+    test('a PermissionDenied matched by name and input alone names no cause: it may be another call', async () => {
       const { g, causes } = causeGate();
       void g.resolvePermission(pr({ permission_suggestions: ['A', 'B', 'C'] }));
       g.cancelExternallyResolved(
@@ -552,7 +565,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
         'PermissionDenied',
         { resolvedBy: 'harness' },
       );
-      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: 'harness' }]);
+      expect(causes).toEqual([{ qid: escalatedIds[0] as UUID, by: undefined }]);
     });
 
     test("remi's own hold deadline is timeout", async () => {
