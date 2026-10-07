@@ -349,6 +349,19 @@ export const FIXTURE_VARIANTS: Record<
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
   },
+  // The ack of a daemon before #1237 (ADR 0035): the same as the registry golden, without the
+  // protocol version and capabilities, which every ack now carries. A client must accept it.
+  hello_ack_legacy: {
+    type: 'hello_ack',
+    build: () => {
+      const {
+        protocolVersion: _version,
+        capabilities: _capabilities,
+        ...before
+      } = FIXTURE_BUILDERS.hello_ack();
+      return before;
+    },
+  },
 };
 
 /**

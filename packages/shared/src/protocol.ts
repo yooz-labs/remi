@@ -11,6 +11,7 @@
  */
 
 import type { HarnessId, SessionIdentity } from './harness.ts';
+import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -283,7 +284,25 @@ export interface HelloAckMessage {
   readonly type: 'hello_ack';
   readonly id: UUID;
   readonly timestamp: Timestamp;
+  /**
+   * A constant that never versioned anything: the daemon's acks send `'1.0.0'` and a bare
+   * `Connection` sends `'0.1.0'`. Kept because the WebView Mac app's `HubProtocol.swift` requires it
+   * to decode an ack; read {@link protocolVersion} instead (ADR 0035). It goes only with a protocol
+   * version change.
+   */
   readonly serverVersion: string;
+  /**
+   * The wire's version, `PROTOCOL_VERSION` (#1237, ADR 0035). It changes only on a breaking
+   * change. Every ack carries it since #1237 (`createHelloAck` stamps it); an ack without it comes
+   * from an older daemon, whose wire is the baseline of version 1. Decide with `hubSupport`.
+   */
+  readonly protocolVersion?: number | undefined;
+  /**
+   * The additive features this daemon has that a client cannot see in the messages themselves,
+   * named in `PROTOCOL_CAPABILITIES` (#1237, ADR 0035). On every ack since #1237, empty until the
+   * first capability ships; a name a client does not know is ignored.
+   */
+  readonly capabilities?: readonly string[] | undefined;
   /**
    * The daemon's primary session (null on a session-less hub daemon, #542):
    * a hub boots with no session of its own, so a connecting client still
@@ -1430,6 +1449,11 @@ export interface CreateHelloAckOptions {
   /** The harnesses this daemon can start (#1179), on every ack. */
   harnesses?: readonly HarnessId[] | undefined;
   /**
+   * The daemon's capabilities (#1237, ADR 0035), on every ack it sends; none when omitted. The
+   * protocol version needs no option: every ack is stamped with `PROTOCOL_VERSION`.
+   */
+  capabilities?: readonly string[] | undefined;
+  /**
    * The harness this daemon hosts, for an ack with no `binding` (the brief window before its session
    * exists). Ignored when a binding is given, which names the harness itself. A hub hosts none and
    * passes nothing.
@@ -1445,12 +1469,14 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness } = options;
+  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness, capabilities } =
+    options;
   return {
     type: 'hello_ack',
     id: generateId(),
     timestamp: now(),
     serverVersion,
+    protocolVersion: PROTOCOL_VERSION,
     sessionId,
     ...(resumeInfo && {
       isResume: resumeInfo.isResume,
@@ -1471,6 +1497,7 @@ export function createHelloAck(
     ...(attachState !== undefined && { attachState }),
     ...(daemonVersion !== undefined && { daemonVersion }),
     ...(harnesses !== undefined && { harnesses }),
+    capabilities: capabilities ?? [],
   };
 }
 

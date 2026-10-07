@@ -73,11 +73,16 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
 
   /** `created` records every launch the handler asks `cli.ts`'s `createNewSession` for. */
   const created: UUID[] = [];
-  function handlers(harnesses: () => readonly HarnessId[], harnessId: HarnessId = 'claude') {
+  function handlers(
+    harnesses: () => readonly HarnessId[],
+    harnessId: HarnessId = 'claude',
+    capabilities?: readonly string[],
+  ) {
     return createResumeSessionHandlers({
       hubMode: false,
       harnessId,
       harnesses,
+      ...(capabilities !== undefined && { capabilities }),
       sessionRegistry,
       sessionStore,
       bindingStore: new SessionBindingStore(sessionStore),
@@ -128,6 +133,31 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
       expect(key in (acks()[0] as object)).toBe(false);
     }
   });
+  test('a capability list given to the handlers reaches the ack for a live session (#1237)', async () => {
+    const live = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(live, '/test/dir', pty(), messageApi());
+    await handlers(() => ['claude'], 'claude', ['x.one']).onResumeSessionRequest(CID, live, REQ);
+    expect(acks().map((a) => a.capabilities)).toEqual([['x.one']]);
+  });
+
+  test('a capability list given to the handlers reaches the ack for a stored session (#1237)', async () => {
+    const projectDir = path.join(tmpDir, 'project');
+    fs.mkdirSync(projectDir);
+    sessionStore.save({
+      remiSessionId: REMI_ID,
+      claudeSessionId: '44444444-4444-4444-8444-444444444444',
+      projectPath: projectDir,
+      port: 0,
+      pid: null,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+    await handlers(() => ['claude'], 'claude', ['x.one']).onResumeSessionRequest(CID, REMI_ID, REQ);
+    expect(created).toHaveLength(1);
+    expect(acks().map((a) => a.capabilities)).toEqual([['x.one']]);
+  });
+
   describe('a daemon that hosts Codex', () => {
     const responses = () =>
       sent.filter((m): m is ResumeSessionResponseMessage => m.type === 'resume_session_response');

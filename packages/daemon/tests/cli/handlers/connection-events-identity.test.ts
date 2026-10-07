@@ -67,6 +67,7 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     current?: () => CurrentOwnedSession | null;
     /** A hub hosts no session, so its session-less ack names no harness. */
     hubMode?: boolean;
+    capabilities?: readonly string[];
   }) {
     return createConnectionHandlers({
       sessionRegistry,
@@ -74,6 +75,7 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
       hubMode: opts.hubMode ?? false,
       harnessId: opts.harnessId,
       harnesses: opts.harnesses ?? (() => ['codex']),
+      ...(opts.capabilities !== undefined && { capabilities: opts.capabilities }),
       trackConnection: () => {},
       untrackConnection: () => {},
       onConnectionAdded: () => {},
@@ -125,6 +127,19 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
       [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
       [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
       [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
+  });
+
+  test('a capability list given to the handlers reaches every ack (#1237)', async () => {
+    const h = handlers({ harnessId: 'claude', capabilities: ['x.one', 'x.two'] });
+    await connect(h); // session-less
+    withPrimarySession();
+    await connect(h); // attaches
+    await connect(h, 'query'); // acks without attaching
+    expect(acks().map((a) => a.capabilities)).toEqual([
+      ['x.one', 'x.two'],
+      ['x.one', 'x.two'],
+      ['x.one', 'x.two'],
     ]);
   });
 
