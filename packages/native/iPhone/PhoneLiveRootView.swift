@@ -7,6 +7,9 @@ struct PhoneLiveRootView: View {
     @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
+    @State private var questionFeedbackTrigger = 0
+    @State private var answerFeedbackTrigger = 0
+    @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
         NavigationStack {
@@ -35,6 +38,12 @@ struct PhoneLiveRootView: View {
         }
         .task { store.start() }
         .task { await PhoneNotificationCoordinator.requestAuthorization() }
+        .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
+            hapticsEnabled
+        }
+        .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
+            hapticsEnabled
+        }
         .onChange(of: Set(allQuestions.map(\.id)), initial: true) { oldValue, newValue in
             guard notificationBaselineEstablished else {
                 knownQuestionIDs = newValue
@@ -52,6 +61,9 @@ struct PhoneLiveRootView: View {
                         body: question.text
                     )
                 }
+            }
+            if !newValue.subtracting(knownQuestionIDs).isEmpty {
+                questionFeedbackTrigger += 1
             }
             knownQuestionIDs = newValue
         }
@@ -171,6 +183,7 @@ struct PhoneLiveRootView: View {
     }
 
     private func answer(sessionId: String, questionId: String, value: String) {
+        answerFeedbackTrigger += 1
         store.answer(
             sessionId: sessionId,
             questionId: questionId,
@@ -184,6 +197,7 @@ struct PhoneLiveRootView: View {
         questionId: String,
         values: [RemiQuestionStepSelection]
     ) {
+        answerFeedbackTrigger += 1
         store.answer(
             sessionId: sessionId,
             questionId: questionId,
@@ -201,6 +215,7 @@ struct PhoneLiveRootView: View {
     }
 
     private func cancel(sessionId: String, questionId: String) {
+        answerFeedbackTrigger += 1
         store.answer(
             sessionId: sessionId,
             questionId: questionId,
