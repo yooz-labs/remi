@@ -38,20 +38,10 @@ final class HubClientIntegrationTests: XCTestCase {
         return binary
     }
 
-    /// #872: how the spawned hub treats loopback auth. `.disabled` is the
-    /// pre-#872 default every other test in this file relies on (`--no-auth`,
-    /// no client identity involved at all). The other two flip on exactly
-    /// what #873 will make the real default: `[daemon] require_local_auth`,
-    /// which is config-file-only (no CLI flag) — see
-    /// packages/daemon/src/config/config.ts.
     private enum AuthMode {
+        case stock
+        /// Only unrelated legacy hub-status tests opt out explicitly.
         case disabled
-        /// `require_local_auth = true`, TOFU auto-accepts (the daemon's
-        /// real default per cli.ts `tofuMode` — no approval UI to build).
-        case requireLocalAuthTOFU
-        /// `require_local_auth = true` AND `--no-tofu`: an unknown key is
-        /// rejected outright. Exercises HubClient's `.rejected` phase.
-        case requireLocalAuthNoTOFU
     }
 
     /// Spawns a real hub (session-less `serve`) on `port` with an isolated
@@ -61,7 +51,7 @@ final class HubClientIntegrationTests: XCTestCase {
     /// launchctl/systemctl involved, just the fs marker the hub checks for.
     private func spawnHub(
         binary: String, port: Int, withAutostartInstalled: Bool = false,
-        authMode: AuthMode = .disabled
+        authMode: AuthMode = .stock
     ) throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("remi-macos-it-\(UUID().uuidString)")
@@ -80,29 +70,17 @@ final class HubClientIntegrationTests: XCTestCase {
             "serve", "--port", String(port), "--bind", "127.0.0.1",
             "--no-mdns", "--no-relay", "--no-telegram",
         ]
-        switch authMode {
-        case .disabled:
-            arguments.append("--no-auth")
-        case .requireLocalAuthTOFU, .requireLocalAuthNoTOFU:
-            arguments.append("--auth")
-            if authMode == .requireLocalAuthNoTOFU {
-                arguments.append("--no-tofu")
-            }
-            let remiDir = home.appendingPathComponent(".remi")
-            try FileManager.default.createDirectory(at: remiDir, withIntermediateDirectories: true)
-            let configPath = remiDir.appendingPathComponent("config.toml")
-            try "[daemon]\nrequire_local_auth = true\n".write(
-                to: configPath, atomically: true, encoding: .utf8)
-        }
+        if authMode == .disabled { arguments.append("--no-auth") }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
         proc.arguments = arguments
-        var env = ProcessInfo.processInfo.environment
-        env["HOME"] = home.path
-        env.removeValue(forKey: "REMI_PORT")
-        env.removeValue(forKey: "REMI_SPAWNED_CHILD")
-        proc.environment = env
+        // Explicit private state; never inherit the developer's REMI_HOME or credentials.
+        proc.environment = [
+            "HOME": home.path,
+            "REMI_HOME": home.appendingPathComponent(".remi").path,
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        ]
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
         try proc.run()
@@ -113,7 +91,7 @@ final class HubClientIntegrationTests: XCTestCase {
         let binary = try requireBinary()
         // Port inside the app's scan range but above the common live ones.
         let port = 18781
-        try spawnHub(binary: binary, port: port)
+        try spawnHub(binary: binary, port: port, authMode: .disabled)
 
         // 1. The scanner finds the hub via the real HTTP probe.
         var responders: [Int] = []
@@ -163,7 +141,7 @@ final class HubClientIntegrationTests: XCTestCase {
         //    connect -> handshake -> hub_status all the way to the published
         //    state the menu bar reads. scanPorts injected so the client
         //    cannot latch onto unrelated daemons on the standard range.
-        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
         await MainActor.run { client.start() }
         var connectedAsHub = false
         for _ in 0..<60 {  // up to ~15 s
@@ -206,9 +184,9 @@ final class HubClientIntegrationTests: XCTestCase {
     func testHubWithAutostartInstalledReportsInstalled() async throws {
         let binary = try requireBinary()
         let port = 18784
-        try spawnHub(binary: binary, port: port, withAutostartInstalled: true)
+        try spawnHub(binary: binary, port: port, withAutostartInstalled: true, authMode: .disabled)
 
-        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
         await MainActor.run { client.start() }
         var autostart: String?
         for _ in 0..<60 {  // up to ~15 s
@@ -236,13 +214,13 @@ final class HubClientIntegrationTests: XCTestCase {
         let binary = try requireBinary()
         let port = 18782
 
-        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
         await MainActor.run { client.forceUnreachableForTesting() }
 
         // Start the real hub on that port, and wait for it to actually
         // bind before rescanning — rescanNow() fires one scan pass, not
         // a retry loop.
-        try spawnHub(binary: binary, port: port)
+        try spawnHub(binary: binary, port: port, authMode: .disabled)
         for _ in 0..<40 {  // up to ~10 s
             let responders = await HubClient.probe(ports: [port])
             if responders.contains(port) { break }
@@ -276,9 +254,9 @@ final class HubClientIntegrationTests: XCTestCase {
     func testRescanNowIsNoOpWhileConnected() async throws {
         let binary = try requireBinary()
         let port = 18783
-        try spawnHub(binary: binary, port: port)
+        try spawnHub(binary: binary, port: port, authMode: .disabled)
 
-        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
         await MainActor.run { client.start() }
         var connectedAsHub = false
         for _ in 0..<60 {  // up to ~15 s
@@ -298,59 +276,159 @@ final class HubClientIntegrationTests: XCTestCase {
         XCTAssertEqual(phaseAfter, .connected(port: port, isHub: true))
     }
 
-    /// #872: with `require_local_auth = true` the daemon challenges this
-    /// connection on open (packages/daemon/src/server/connection.ts sends
-    /// `auth_challenge` immediately) instead of exempting it as a loopback
-    /// peer. The daemon's TOFU defaults to auto-accept (cli.ts `tofuMode`),
-    /// so a brand-new identity should still reach `connected(isHub: true)`
-    /// with no approval step — proving HubClient's sign-and-respond path
-    /// works against the REAL daemon, not just a hand-rolled fixture.
-    func testConnectsThroughRequiredLocalAuthWithTOFU() async throws {
+    /// Stock hub challenges an unknown app, records a candidate, and admits it
+    /// only after a human's local CLI authorization (#873). Both endpoints are real.
+    func testStockPendingLocalApprovalReconnectAndPersistence() async throws {
         let binary = try requireBinary()
         let port = 18787
-        try spawnHub(binary: binary, port: port, authMode: .requireLocalAuthTOFU)
-
+        try spawnHub(binary: binary, port: port)
         let identity = ClientIdentity(privateKey: .init())
         let client = await MainActor.run { HubClient(scanPorts: [port], identity: identity) }
         await MainActor.run { client.start() }
-        var connectedAsHub = false
-        for _ in 0..<60 {  // up to ~15 s
-            let phase = await MainActor.run { client.phase }
-            if case .connected(let p, let isHub) = phase, isHub {
-                XCTAssertEqual(p, port)
-                connectedAsHub = true
-                break
-            }
-            try await Task.sleep(nanoseconds: 250_000_000)
-        }
-        XCTAssertTrue(
-            connectedAsHub,
-            "HubClient never reached connected(isHub: true) through the real auth handshake")
+        try await waitForApproval(client, port: port)
+        let fingerprint = await MainActor.run { client.publicFingerprint }
+        XCTAssertEqual(fingerprint, identity.fingerprint)
+        let exported = await MainActor.run { client.publicIdentityJSON }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(exported.utf8)) as? [String: String])
+        XCTAssertEqual(Set(object.keys), Set(["publicKey", "fingerprint"]))
+        XCTAssertEqual(object["publicKey"], identity.publicKeyRaw.base64EncodedString())
+        XCTAssertTrue(try localCLI(binary, ["keys"]).contains(fingerprint))
+        _ = try localCLI(binary, ["authorize", fingerprint, "--label", "macos-integration"])
+        await MainActor.run { client.rescanNow() }
+        try await waitForConnected(client, port: port)
+        let approvalAfterSuccess = await MainActor.run { client.approvalErrorCode }
+        XCTAssertNil(approvalAfterSuccess)
+        await MainActor.run { client.stopForTesting() }
+
+        // Restart the REAL hub using its same private auth store.
+        let previous = try XCTUnwrap(process)
+        previous.terminate()
+        previous.waitUntilExit()
+        let restarted = Process()
+        restarted.executableURL = previous.executableURL
+        restarted.arguments = previous.arguments
+        restarted.environment = previous.environment
+        restarted.standardOutput = Pipe()
+        restarted.standardError = Pipe()
+        try restarted.run()
+        process = restarted
+        let relaunched = await MainActor.run { HubClient(scanPorts: [port], identity: identity) }
+        await MainActor.run { relaunched.start() }
+        try await waitForConnected(relaunched, port: port)
+        await MainActor.run { relaunched.stopForTesting() }
     }
 
-    /// #872: `--no-tofu` makes the daemon reject a key it has never seen
-    /// (`UNKNOWN_KEY`) instead of auto-accepting it. HubClient must land on
-    /// `.rejected` with a human-readable reason — not spin forever, and not
-    /// silently fall back to `.unreachable` as if the hub weren't there.
-    func testRejectedWhenNoTofuAndUnknownKey() async throws {
+    func testStockUnknownKeyRemainsRejectedWithoutLocalApproval() async throws {
         let binary = try requireBinary()
         let port = 18788
-        try spawnHub(binary: binary, port: port, authMode: .requireLocalAuthNoTOFU)
-
+        try spawnHub(binary: binary, port: port)
         let identity = ClientIdentity(privateKey: .init())
         let client = await MainActor.run { HubClient(scanPorts: [port], identity: identity) }
         await MainActor.run { client.start() }
-        var rejectedReason: String?
-        for _ in 0..<60 {  // up to ~15 s
+        try await waitForApproval(client, port: port)
+        XCTAssertTrue(try localCLI(binary, ["keys"]).contains(identity.fingerprint))
+        await MainActor.run { client.rescanNow() }
+        try await waitForApproval(client, port: port)
+        await MainActor.run { client.stopForTesting() }
+    }
+
+    /// Real hub with deliberately inconsistent public identity metadata; no fake gateway.
+    func testRejectsRealHubWhoseClaimedFingerprintDoesNotMatchItsKey() async throws {
+        try await rejectHubMetadata(port: 18789, publicKey: nil, fingerprint: "ffffffffffffffff", expectedReason: "fingerprint")
+    }
+
+    func testRejectsSmallOrderHubKeyBeforeSigning() async throws {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("fixtures/ed25519-server-keys.json")
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+        let item = try XCTUnwrap(cases.first { $0["smallOrder"] as? Bool == true })
+        let publicKey = try XCTUnwrap(item["publicKey"] as? String)
+        let fingerprint = try XCTUnwrap(item["fingerprint"] as? String)
+        try await rejectHubMetadata(port: 18790, publicKey: publicKey, fingerprint: fingerprint, expectedReason: "public key is invalid")
+    }
+
+    private func rejectHubMetadata(port: Int, publicKey: String?, fingerprint: String, expectedReason: String) async throws {
+        let binary = try requireBinary()
+        try spawnHub(binary: binary, port: port)
+        let home = try XCTUnwrap(homeDir)
+        let identityFile = home.appendingPathComponent(".remi/identity.json")
+        for _ in 0..<60 {
+            if FileManager.default.fileExists(atPath: identityFile.path) { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let previous = try XCTUnwrap(process)
+        previous.terminate()
+        previous.waitUntilExit()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: identityFile)) as? [String: Any])
+        object["fingerprint"] = fingerprint
+        if let publicKey { object["publicKey"] = publicKey }
+        try JSONSerialization.data(withJSONObject: object).write(to: identityFile, options: .atomic)
+        let restarted = Process()
+        restarted.executableURL = previous.executableURL
+        restarted.arguments = previous.arguments
+        restarted.environment = previous.environment
+        restarted.standardOutput = Pipe()
+        restarted.standardError = Pipe()
+        try restarted.run()
+        process = restarted
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: ClientIdentity(privateKey: .init())) }
+        await MainActor.run { client.start() }
+        for _ in 0..<60 {
             let phase = await MainActor.run { client.phase }
-            if case .rejected(let p, let reason) = phase {
-                XCTAssertEqual(p, port)
-                rejectedReason = reason
-                break
+            if case .rejected(_, let reason) = phase {
+                let code = await MainActor.run { client.approvalErrorCode }
+                XCTAssertNil(code, "A false server fingerprint must never register pending client approval")
+                XCTAssertTrue(reason.contains(expectedReason), reason)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".remi/pending_keys.json").path))
+                await MainActor.run { client.stopForTesting() }
+                return
             }
             try await Task.sleep(nanoseconds: 250_000_000)
         }
-        let reason = try XCTUnwrap(rejectedReason, "HubClient never reached .rejected")
-        XCTAssertTrue(reason.contains("does not trust"), reason)
+        XCTFail("Client never rejected the server's inconsistent key/fingerprint")
+    }
+
+    private func localCLI(_ binary: String, _ arguments: [String]) throws -> String {
+        let home = try XCTUnwrap(homeDir)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: binary)
+        proc.arguments = arguments
+        proc.environment = ["HOME": home.path, "REMI_HOME": home.appendingPathComponent(".remi").path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let output = Pipe()
+        proc.standardOutput = output
+        proc.standardError = output
+        try proc.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual(proc.terminationStatus, 0, text)
+        return text
+    }
+
+    private func waitForApproval(_ client: HubClient, port: Int) async throws {
+        for _ in 0..<60 {
+            let phase = await MainActor.run { client.phase }
+            if case .rejected(let actualPort, let reason) = phase {
+                XCTAssertEqual(actualPort, port)
+                XCTAssertTrue(reason.contains("waiting for local approval"), reason)
+                let code = await MainActor.run { client.approvalErrorCode }
+                XCTAssertEqual(code, "UNKNOWN_KEY")
+                return
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTFail("Stock hub never reported pending local approval")
+    }
+
+    private func waitForConnected(_ client: HubClient, port: Int) async throws {
+        for _ in 0..<60 {
+            let phase = await MainActor.run { client.phase }
+            if case .connected(let actualPort, let isHub) = phase, isHub {
+                XCTAssertEqual(actualPort, port)
+                return
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTFail("HubClient never connected after explicit local approval")
     }
 }

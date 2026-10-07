@@ -42,7 +42,7 @@ import type {
 import {
   formatHelpMessage,
   formatMessageForTelegram,
-  formatQuestionKeyboard,
+  formatQuestionCard,
   formatSessionList,
   isValidContent,
   stripTerminalCodes,
@@ -159,6 +159,25 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   /** Rate limiter: last input timestamp per session key */
   private readonly lastInputTimestamp: Map<string, number> = new Map();
+
+  /** `/interrupt` requests waiting on the daemon (see `handleInterrupt`), keyed
+   *  by a per-request id that is also sent as the input's message id, so the
+   *  daemon's `error` can name the request it refuses. Per request, not per
+   *  connection: two concurrent `/interrupt`s on one topic must not clobber or
+   *  remove each other's entry. */
+  private readonly pendingInterrupts: Map<UUID, { connectionId: UUID; refused: boolean }> =
+    new Map();
+
+  /** Answer-button taps waiting on the daemon (see `handleAnswerCallback`),
+   *  keyed per tap, so the reply can say whether the answer was applied
+   *  (#1127 review S2). A refusal is an `error` sent to the connection while
+   *  the tap is in flight: one naming a question concerns only that
+   *  question's taps; one naming none concerns every tap in flight on the
+   *  connection, which errs toward not claiming success. */
+  private readonly pendingAnswers: Map<
+    UUID,
+    { connectionId: UUID; questionId: UUID; refused: boolean }
+  > = new Map();
 
   /** Minimum interval between inputs in milliseconds */
   private static readonly RATE_LIMIT_MS = 1000;
@@ -279,13 +298,14 @@ export class TelegramAdapter implements ConnectionAdapter {
       return false;
     }
 
-    // Create inline keyboard for question
-    const keyboard = formatQuestionKeyboard(question);
+    // The message and its answer buttons; a card answered in the app or the
+    // terminal gets none (#1127 review S2).
+    const card = formatQuestionCard(question);
 
     this.bot.api
-      .sendMessage(session.chatId, question.text, {
+      .sendMessage(session.chatId, card.text, {
         message_thread_id: session.topicId,
-        reply_markup: keyboard,
+        ...(card.keyboard !== undefined ? { reply_markup: card.keyboard } : {}),
       })
       .catch((err) => {
         console.error('Failed to send Telegram question:', err);
@@ -306,8 +326,9 @@ export class TelegramAdapter implements ConnectionAdapter {
     }
 
     // Show typing indicator while the agent is busy: thinking, executing, or
-    // auto-approve evaluating a permission (#576). 'approved'/'starting' are
-    // transient/non-busy and intentionally produce no typing action.
+    // (from a daemon older than #1125) auto-approve evaluating a permission
+    // (#576). 'approved'/'starting' are transient/non-busy and intentionally
+    // produce no typing action.
     if (status === 'thinking' || status === 'executing' || status === 'evaluating') {
       // Send typing indicator repeatedly while working
       this.bot.api
@@ -397,6 +418,8 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       case 'error': {
         const err = message as ErrorMessage;
+        this.noteErrorForInterrupts(connectionId, err);
+        this.noteErrorForAnswers(connectionId, err);
         const errSession = this.getSession(connectionId);
         if (errSession && this.bot) {
           this.bot.api
@@ -810,11 +833,62 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
-    // Send Escape key to interrupt Claude
-    // The daemon will handle this by sending \x1b to the PTY
-    this.events.onUserInput?.(session.connectionId, session.sessionId, '\x1b');
+    // Escape is a keystroke, not chat text: send it RAW, as the web client's
+    // Escape button does. The daemon then writes exactly `\x1b` to the PTY
+    // (structured input would append an Enter, which lands on whatever Claude
+    // draws next) and never refuses it for a prompt menu on screen (#1140),
+    // so `/interrupt` works with or without one.
+    //
+    // The reply reports the outcome: when the daemon cannot take the input it
+    // sends this connection an `error` (rendered to the chat by `sendRaw`'s
+    // `error` case) before `onUserInput` settles, and "Interrupt sent" is then
+    // not claimed. A raw terminal write that fails is reported the same way
+    // (INPUT_NOT_DELIVERED). The request id doubles as the input's message id,
+    // which the daemon echoes in the errors it names a message in.
+    const requestId = generateId();
+    const pending = { connectionId: session.connectionId, refused: false };
+    this.pendingInterrupts.set(requestId, pending);
+    try {
+      await this.events.onUserInput?.(
+        session.connectionId,
+        session.sessionId,
+        '\x1b',
+        true,
+        undefined,
+        requestId,
+      );
+    } finally {
+      this.pendingInterrupts.delete(requestId);
+    }
+    if (pending.refused) return;
 
     await ctx.reply('⏹️ Interrupt sent to Claude (Escape key)');
+  }
+
+  /**
+   * An `error` went to `connectionId`: mark the `/interrupt` requests it
+   * concerns as refused. An error that names a message id concerns only the
+   * request with that id (a concurrent interrupt's own error is not this
+   * one's); an error that names none (nothing to correlate) concerns every
+   * request in flight on the connection, which errs toward not claiming
+   * success.
+   */
+  private noteErrorForInterrupts(connectionId: UUID, err: ErrorMessage): void {
+    const named = err.details?.['messageId'];
+    for (const [requestId, pending] of this.pendingInterrupts) {
+      if (pending.connectionId !== connectionId) continue;
+      if (typeof named !== 'string' || named === requestId) pending.refused = true;
+    }
+  }
+
+  /** An `error` went to `connectionId`: mark the answer taps it concerns as
+   *  refused (see `pendingAnswers`). */
+  private noteErrorForAnswers(connectionId: UUID, err: ErrorMessage): void {
+    const named = err.details?.['questionId'];
+    for (const pending of this.pendingAnswers.values()) {
+      if (pending.connectionId !== connectionId) continue;
+      if (typeof named !== 'string' || named === pending.questionId) pending.refused = true;
+    }
   }
 
   private async handlePause(ctx: Context): Promise<void> {
@@ -885,8 +959,35 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
-    // Notify daemon of answer
-    this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
+    // Notify the daemon and wait for its verdict (#1127 review S2): a
+    // refusal arrives as an `error` on this connection (rendered to the chat
+    // by `sendRaw`) before `onAnswer` settles, and "Sent!" is then not
+    // claimed and the buttons stay (a refused held card keeps its prompt).
+    const tapId = generateId();
+    const pending = { connectionId: session.connectionId, questionId, refused: false };
+    this.pendingAnswers.set(tapId, pending);
+    try {
+      await this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
+    } catch (err) {
+      // The handler threw instead of answering with an `error`: say so in
+      // the chat, which the toast below points to (verification review 3).
+      console.error('Telegram answer failed:', err);
+      pending.refused = true;
+      const message = err instanceof Error ? err.message : String(err);
+      await this.bot?.api
+        .sendMessage(session.chatId, `Error: ${message}`, {
+          message_thread_id: session.topicId,
+        })
+        .catch(() => {
+          /* ignore send errors */
+        });
+    } finally {
+      this.pendingAnswers.delete(tapId);
+    }
+    if (pending.refused) {
+      await ctx.answerCallbackQuery('Not applied (see the message)');
+      return;
+    }
 
     // Acknowledge the callback
     await ctx.answerCallbackQuery('Sent!');

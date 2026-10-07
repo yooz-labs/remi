@@ -1,8 +1,12 @@
+import { ApprovalNeeded } from './ApprovalNeeded';
+import type { ConnectionState } from '@/types';
 /**
  * ConnectModal component.
  *
- * Simplified connection flow: enter a host to discover sessions,
- * or use a connection code for remote access via WebRTC.
+ * Simplified connection flow: enter a host to discover sessions.
+ * A connection-code tab exists behind `onConnectCode`, but `App.tsx` does not
+ * pass it and no client code opens a relay room, so it is never rendered; it
+ * returns with the relay rebuild.
  */
 
 import { useKeyboard } from '@/hooks/useKeyboard';
@@ -22,6 +26,8 @@ import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } fr
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
 
 interface ConnectModalProps {
+  readonly approvalConnection?: ConnectionState;
+  readonly onRetryApproval?: () => void;
   readonly isOpen: boolean;
   readonly onClose: () => void;
   readonly onConnectDirect: (url: string, directory?: string) => void;
@@ -199,6 +205,8 @@ function PassphraseView({
 
 export function ConnectModal({
   isOpen,
+  approvalConnection,
+  onRetryApproval,
   onClose,
   onConnectDirect,
   onConnectCode,
@@ -279,6 +287,17 @@ export function ConnectModal({
   const isConnecting = connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
   const isAuthenticating = connectionStatus === 'authenticating';
   const isConnected = connectionStatus === 'connected';
+
+  if (approvalConnection?.approval) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60" style={backdropStyle}>
+        <div className="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-t-[28px] bg-[var(--color-surface)] p-4 pb-[max(env(safe-area-inset-bottom),16px)]">
+          <button type="button" className="mb-3 text-sm text-[var(--color-text-secondary)]" onClick={onClose}>Close</button>
+          <ApprovalNeeded approval={approvalConnection.approval} host={approvalConnection.connectionId} onRetry={onRetryApproval} retrying={approvalConnection.status === 'connecting' || approvalConnection.status === 'authenticating' || approvalConnection.status === 'reconnecting'} />
+        </div>
+      </div>
+    );
+  }
 
   // Show passphrase view when auth is needed: either the WebSocket is
   // already mid-handshake and got an auth_challenge (post-connect), or the
@@ -526,9 +545,7 @@ export function ConnectModal({
                 <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
               <p className="text-xs text-[var(--color-text-muted)]">
-                Enter the 8-digit code from{' '}
-                <span className="font-mono text-[var(--color-text-secondary)]">remi code</span> for
-                remote access.
+                Four letters and four digits, for example ABCD-2345.
               </p>
             </div>
           )}

@@ -1,8 +1,9 @@
 /**
  * sharedEvents handlers for whole-session lifecycle requests:
  *   onSessionListRequest, enumerate daemon + external sessions
- *   onKillSessionRequest, gracefully end a session (type Claude /exit, with a
- *     force-close fallback) and notify any active client
+ *   onKillSessionRequest, gracefully end a session (type the harness's exit
+ *     input, Claude's /exit, with a force-close fallback) and notify any
+ *     active client
  *   onDetachSession, release a session's active connection without killing it
  *
  * These three are grouped because they all operate on session records via
@@ -23,6 +24,7 @@ import {
 } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
+import type { Harness } from '../../harness/types.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -30,12 +32,18 @@ import type {
 } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
+import type { PromptUp } from './prompt-up.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
+  /**
+   * What a Stop types (`gracefulExitInput`; null force-closes at once) and
+   * how each listed session's transcript path is derived (`transcriptPath`).
+   */
+  harness: Pick<Harness, 'gracefulExitInput' | 'transcriptPath'>;
   liveSessionsRegistry: SessionRegistryFile;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
@@ -44,6 +52,19 @@ export interface SessionHandlerDeps {
   /** Decrement the statusWriter connection count (third-party detach only). */
   onConnectionRemoved: () => void;
   send: SendToConnection;
+  /**
+   * Is a prompt up on a session's screen (#1140, #1155)? The same signal the
+   * chat guard reads (`promptUpDeps`, built once by `cli.ts`): a held main
+   * prompt, a hook-backed prompt waiting in the terminal, or a numbered menu
+   * the tracker observes. A Stop types `/exit` + Enter, and into a Claude
+   * dialog that Enter confirms the highlighted option, usually "1. Yes", so
+   * a Stop while a prompt is up does not type and force-closes instead.
+   * This stays so even while a `terminal` entry may be stale (its dialog
+   * answered No at the terminal, which fires no hook): a forced close types
+   * nothing, so it is always safe, only less graceful (#1155 lead decision).
+   * Absent, or null (nothing up): `/exit` is typed as before.
+   */
+  promptUp?: (sessionId: UUID) => PromptUp | null;
   /** Force-close delay after a graceful /exit; injectable for tests. */
   exitFallbackMs?: number;
 }
@@ -61,11 +82,13 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     sessionRegistry,
     bindingStore,
     transcriptDiscovery,
+    harness,
     liveSessionsRegistry,
     currentPort,
     untrackConnection,
     onConnectionRemoved,
     send,
+    promptUp,
     exitFallbackMs = EXIT_FALLBACK_MS,
   } = deps;
 
@@ -110,20 +133,32 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
-      // Decorate daemon-sourced sessions with their pre-assigned Claude
-      // binding (#429). transcriptPath is derived from the same encoding
-      // rule transcript-discovery uses, so the client can show "you are
-      // talking to port X / claude <short-uuid>" without round-tripping.
+      // Decorate daemon-sourced sessions with their harness identity (#1179) and,
+      // for a Claude session, its pre-assigned binding (#429): `harness` always,
+      // `harnessSessionId` once known (for Claude it equals `claudeSessionId`).
+      // transcriptPath comes from the harness, the same derivation every other
+      // transcript-path site uses, so the client can show "you are talking to
+      // port X / claude <short-uuid>" without round-tripping.
       // A failed lookup on any one entry must not nuke the entire list
       // response — the connection would hang waiting for a reply. Fall
       // back to the undecorated entry on per-entry failure.
       const daemonSessionsRaw = sessionRegistry.listSessions();
       const daemonSessions = daemonSessionsRaw.map((s) => {
         try {
-          const binding = bindingStore.get(s.sessionId as UUID);
-          if (!binding?.claudeSessionId) return s;
-          const transcriptPath = `${transcriptDiscovery.getProjectTranscriptDir(s.projectPath)}/${binding.claudeSessionId}.jsonl`;
-          return { ...s, claudeSessionId: binding.claudeSessionId, transcriptPath };
+          // Null: no record, or a harness this build does not know. Neither is guessed at.
+          const identity = bindingStore.getIdentity(s.sessionId as UUID);
+          if (!identity) return s;
+          const { harness: harnessName, harnessSessionId } = identity;
+          const named = {
+            ...s,
+            harness: harnessName,
+            ...(harnessSessionId !== null && { harnessSessionId }),
+          };
+          if (harnessName !== 'claude' || harnessSessionId === null) return named;
+          const transcriptPath = harness.transcriptPath(s.projectPath, harnessSessionId);
+          // No file to name (a harness without a transcript): decorate the id only.
+          if (transcriptPath === null) return { ...named, claudeSessionId: harnessSessionId };
+          return { ...named, claudeSessionId: harnessSessionId, transcriptPath };
         } catch (err) {
           logError(
             `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,
@@ -190,20 +225,43 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       const sessionName = session.name;
       log(`Stopping session: ${sessionName} (${sessionId})`);
 
-      // Graceful stop (#641): type `/exit` on our own PTY so Claude quits cleanly
-      // (flushing its transcript + emitting the resume hint) and the PTY-exit path
-      // tears the session down and frees the daemon. Writing to our own PTY avoids
-      // the write-lock requirement a client-side input would have. A force-close
-      // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
-      session.pty.submitInput('/exit').catch((err) => {
-        logError(
-          `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+      // Graceful stop (#641): type the harness's exit input (Claude: `/exit`) on
+      // our own PTY so Claude quits cleanly (flushing its transcript + emitting
+      // the resume hint) and the PTY-exit path tears the session down and frees
+      // the daemon. Writing to our own PTY avoids the write-lock requirement a
+      // client-side input would have. A force-close fallback covers a Claude that
+      // ignores /exit (e.g. stuck mid-task). A harness with no exit input
+      // (`gracefulExitInput` null) skips the typing and force-closes, the same
+      // path a prompt that is up takes.
+      //
+      // #1140, #1155: not while a prompt is up (`promptUp`: a held main
+      // prompt, a hook-backed prompt waiting in the terminal, or a numbered
+      // menu on screen). The Enter after "/exit" would confirm the
+      // highlighted option (usually "1. Yes"), approving whatever the prompt
+      // asks. Nothing is typed then; the session is force-closed below, the
+      // same path a failed /exit write takes.
+      const up = promptUp?.(sessionId) ?? null;
+      const exitInput = harness.gracefulExitInput;
+      const forceClose = up !== null || exitInput === null;
+      if (up !== null) {
+        log(
+          `[Stop] a prompt is up for ${sessionName} (${up}); not typing ${exitInput ?? 'an exit command'} into it, forcing close`,
         );
-        sessionRegistry.closeSession(sessionId, 'forced');
-      });
+      } else if (exitInput === null) {
+        log(`[Stop] ${sessionName} has no graceful exit input; forcing close`);
+      } else {
+        session.pty.submitInput(exitInput).catch((err) => {
+          logError(
+            `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+          );
+          sessionRegistry.closeSession(sessionId, 'forced');
+        });
+      }
       const fallbackTimer = setTimeout(() => {
         if (sessionRegistry.getSession(sessionId)) {
-          log(`Session ${sessionName} did not exit on /exit within ${exitFallbackMs}ms; forcing`);
+          log(
+            `Session ${sessionName} did not exit on ${exitInput ?? 'a forced close'} within ${exitFallbackMs}ms; forcing`,
+          );
           sessionRegistry.closeSession(sessionId, 'forced');
         }
       }, exitFallbackMs);
@@ -224,6 +282,11 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         fallbackTimer,
       });
       log(`Session stop initiated: ${sessionName}`);
+
+      // After the pending stop is registered, so the close resolves it: the
+      // registry's onSessionClosed drives `resolveStopOnClose`, which acks the
+      // requester and notifies the other attached clients.
+      if (forceClose) sessionRegistry.closeSession(sessionId, 'forced');
     },
 
     onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID): void => {

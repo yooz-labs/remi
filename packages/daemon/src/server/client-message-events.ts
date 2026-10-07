@@ -37,7 +37,34 @@
  * in `cli.ts`'s `sharedEvents` assembly. That work is inherent business
  * logic, not the duplication this module removes.
  */
-import type { AnswerExtras, PushPreferences, UUID } from '@remi/shared';
+import type {
+  AnswerExtras,
+  CreateSessionRequestMessage,
+  PushPreferences,
+  UUID,
+} from '@remi/shared';
+
+/**
+ * What a create request asks of a harness (#1179), as it arrived: untrusted JSON, so `unknown`.
+ * The handler checks both fields (`isHarnessId`, the harness's remote allowlist) before it spawns.
+ */
+export interface CreateSessionExtra {
+  readonly harness?: unknown;
+  readonly args?: unknown;
+}
+
+/**
+ * The `extra` argument of `onCreateSessionRequest`, built from the wire message: undefined for a
+ * plain request, so an older caller's request reads exactly as before. Both transports call it
+ * (`connection.ts`, `relay-adapter.ts`), so they cannot drift on which fields they forward.
+ */
+export function createSessionExtra(
+  message: Pick<CreateSessionRequestMessage, 'harness' | 'args'>,
+): CreateSessionExtra | undefined {
+  return message.harness === undefined && message.args === undefined
+    ? undefined
+    : { harness: message.harness, args: message.args };
+}
 
 /**
  * Every client-to-daemon event's argument list, WITHOUT `connectionId`.
@@ -76,8 +103,12 @@ export interface ClientMessageEventArgs {
   /** Transcript load request received. */
   onTranscriptLoadRequest: [sessionId: string, requestId: UUID];
 
-  /** Create session request received. */
-  onCreateSessionRequest: [directory: string | undefined, requestId: UUID];
+  /** Create session request received. `extra` carries the unvalidated `harness` and `args` (#1179). */
+  onCreateSessionRequest: [
+    directory: string | undefined,
+    requestId: UUID,
+    extra?: CreateSessionExtra,
+  ];
 
   /** Terminal resize from attached CLI client. */
   onTerminalResize: [cols: number, rows: number];
@@ -157,9 +188,16 @@ const _allKeysCovered: true = true as _AllKeysCovered;
 void _allKeysCovered;
 
 /** `ClientMessageEventArgs` as callback signatures -- what a single
- *  `Connection` (already scoped to one peer) exposes. */
+ *  `Connection` (already scoped to one peer) exposes. Every event is
+ *  fire-and-forget (`void`) except `onUserInput` and `onAnswer`, whose
+ *  handlers are async and which a caller may await: the Telegram
+ *  `/interrupt` waits for the daemon's verdict on its Escape (#1140), and a
+ *  Telegram answer button for the verdict on its answer (#1127 review S2),
+ *  so their result is `void | Promise<void>`. */
 export type ClientMessageEvents = {
-  [K in keyof ClientMessageEventArgs]: (...args: ClientMessageEventArgs[K]) => void;
+  [K in keyof ClientMessageEventArgs]: (
+    ...args: ClientMessageEventArgs[K]
+  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
 };
 
 /** `ClientMessageEvents` with `connectionId` prepended -- what a fan-out
@@ -169,7 +207,7 @@ export type ClientMessageEventsWithConnectionId = {
   [K in keyof ClientMessageEventArgs]: (
     connectionId: UUID,
     ...args: ClientMessageEventArgs[K]
-  ) => void;
+  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
 };
 
 /**

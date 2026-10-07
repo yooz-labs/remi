@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { generateId, now } from '@remi/shared';
+import { generateId, identityFromClaudeId, now } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createMessageApiForSession } from '../../../src/cli/session-phases/message-api-setup.ts';
@@ -48,14 +48,27 @@ const noOpt: QuestionOption = {
 };
 
 describe('selectPushCategory', () => {
-  test('returns REMI_YN for 2 options', () => {
+  // Chosen by meaning since #1134; the full decision table is in
+  // tests/notifications/notification-dispatcher.test.ts.
+  test('returns REMI_YN for [Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
   });
-  test('returns REMI_YNA for 3 options', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_YNA');
+  test('returns REMI_YNA for [Yes, an always-allow rule, No]', () => {
+    const yesAlways: QuestionOption = {
+      ...yesOpt,
+      value: 'a',
+      label: 'Yes, always',
+      standingGrant: 'addRules',
+    };
+    expect(selectPushCategory([yesOpt, yesAlways, noOpt])).toBe('REMI_YNA');
   });
-  test('returns REMI_MULTI for 4 options', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
+  test('returns no category for a standing option outside [Yes, Yes, No]', () => {
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBeUndefined();
+  });
+  test('returns REMI_MULTI for picks', () => {
+    const pick = (v: string): QuestionOption => ({ ...noOpt, value: v, label: v, isNo: false });
+    expect(selectPushCategory([pick('a'), pick('b'), pick('c'), pick('d')])).toBe('REMI_MULTI');
   });
   test('returns undefined for other counts', () => {
     expect(selectPushCategory([yesOpt])).toBeUndefined();
@@ -147,6 +160,67 @@ describe('createMessageApiForSession', () => {
     expect(questionMsgs).toHaveLength(1);
     const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
     expect(pending[0]?.text).toBe('proceed?');
+
+    // The harness identity fields are typed on QuestionMessage but no producer
+    // sets them yet (#1162, ADR 0032): the real emit site must not add them.
+    const emitted = Object.keys(questionMsgs[0]?.message ?? {});
+    expect(emitted).not.toContain('harness');
+    expect(emitted).not.toContain('harnessSessionId');
+  });
+
+  test('the log line for a detected question names its text, and only its length when told to redact it (#1178)', () => {
+    const lines: string[] = [];
+    configureLogger({ writeLog: (line) => lines.push(line) });
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const q = { ...questionWith([yesOpt, noOpt]), text: 'Allow Codex to run: sk-command-secret' };
+    for (const redactQuestionLogs of [false, true]) {
+      const { messageApi } = createMessageApiForSession(
+        {
+          sessionRegistry,
+          transcriptWatchers,
+          deviceTokens,
+          pushConfig: () => ({ signalingUrl: 'ws://fake-signaling' }),
+          updateRemiStatus: () => {},
+          maxBulletLength: 4000,
+          sendMessage: () => {},
+          redactQuestionLogs,
+        },
+        sessionId,
+      );
+      messageApi.handleQuestion(q, { held: true });
+    }
+    const detected = lines.filter((l) => l.includes('Question detected'));
+    expect(detected).toHaveLength(2);
+    expect(detected[0]).toContain('Allow Codex to run: sk-command-secret');
+    expect(detected[1]).toContain(`(${q.text.length} chars)`);
+    expect(detected[1]).not.toContain('sk-command-secret');
+  });
+
+  test('a held push is stamped held on the wire and in the registry', () => {
+    // Since #1125 a held push is a card pushed by id before its render; the
+    // stamp keys handleAnswer's free-text-on-held-card refusal (#1134).
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const { messageApi } = build(sessionId);
+
+    expect(messageApi.handleQuestion(questionWith([yesOpt, noOpt]), { held: true })).toEqual({
+      status: 'held',
+    });
+
+    const sent = sendCalls.find((c) => c.message.type === 'question')?.message;
+    expect(sent?.type === 'question' ? sent.question.held : 'missing').toBe(true);
+    const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.held).toBe(true);
   });
 
   test('onQuestion does NOT push when a client is attached', () => {
@@ -339,7 +413,10 @@ describe('createMessageApiForSession', () => {
           sendMessage: (sid, message) => {
             sendCalls.push({ sessionId: sid, message });
           },
-          getClaudeSessionId: get,
+          getIdentity: () => {
+            const id = get();
+            return id === null ? null : identityFromClaudeId(id);
+          },
         },
         sessionId,
       );

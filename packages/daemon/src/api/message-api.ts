@@ -248,10 +248,11 @@ export class MessageAPI {
    * for why callers must not be left to guess.
    */
   handleQuestion(question: Question, opts?: { held?: boolean }): QuestionRegistrationOutcome {
-    // A HELD escalation (Model B, #573) bypasses the content-dedup: its card is
-    // load-bearing — it registers the question that makes the held hook
-    // answerable — not a PTY/hook echo. Deduping it away would leave the hook
-    // held with no answerable question until it fails open (#603 Phase 3, R7).
+    // A `held` push (`pushHeldHook`) bypasses the content-dedup: its card is
+    // load-bearing, not a PTY/hook echo. Built for held hooks (Model B, #573),
+    // where a deduped card left the hook with no answerable question (#603
+    // Phase 3, R7); the callers are held binary prompts (#1126) and
+    // multi-choice / design escalations, whose push is the only one they get.
     // Its outcome is reported as its own distinct 'held' status, not folded
     // into 'registered': a held push never passes through the dedup gate
     // below, so conflating the two would misrepresent what actually happened.

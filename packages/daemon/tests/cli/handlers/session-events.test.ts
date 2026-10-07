@@ -5,14 +5,19 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
+import { type PromptUpDeps, promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
+import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from '../../parser/fixtures/claude-dialogs.ts';
 
 /** Minimal fakes matching the pattern established in input-events.test.ts. */
 function fakePTY(): PTYSession {
@@ -81,11 +86,12 @@ describe('createSessionHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers(opts: { exitFallbackMs?: number } = {}) {
+  function makeHandlers(opts: { exitFallbackMs?: number; screen?: PromptUpDeps } = {}) {
     const handlers = createSessionHandlers({
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       liveSessionsRegistry,
       currentPort: () => PORT,
       untrackConnection: (id) => {
@@ -95,6 +101,7 @@ describe('createSessionHandlers', () => {
         connectionRemovedCount += 1;
       },
       send,
+      ...opts.screen,
       ...(opts.exitFallbackMs !== undefined && { exitFallbackMs: opts.exitFallbackMs }),
     });
     registryOnClose = (sessionId) => handlers.resolveStopOnClose(sessionId);
@@ -322,6 +329,111 @@ describe('createSessionHandlers', () => {
       expect(ack.type).toBe('kill_session_response');
       expect(ack.success).toBe(true);
       expect(sendCalls[0]?.connectionId).toBe(CID);
+    });
+  });
+
+  /**
+   * #1140: a Stop types "/exit" + Enter, and into a numbered selection menu
+   * that Enter confirms the highlighted option (usually "1. Yes"). With a menu
+   * on screen the Stop types nothing and force-closes. Real tracker (through
+   * `promptUpDeps`, the wiring cli.ts uses, here with no gate: a hook-less
+   * prompt) observing the real captured dialog through the real parser; the
+   * terminal records what reaches it. The gate's half of the signal (#1155)
+   * is tested end to end in hook-bridge-setup.test.ts.
+   */
+  describe('onKillSessionRequest with a prompt on screen (#1140)', () => {
+    function stoppableSession() {
+      const submitted: string[] = [];
+      const pty = {
+        id: generateId(),
+        write: () => {},
+        submitInput: async (text: string) => {
+          submitted.push(text);
+        },
+        close: async () => {},
+      } as unknown as PTYSession;
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
+      sessionRegistry.attachConnection(sessionId, CID);
+      const tracker = new QuestionPresenceTracker(() => undefined);
+      const screen = promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      );
+      return { submitted, sessionId, tracker, screen };
+    }
+
+    function observe(tracker: QuestionPresenceTracker, screenBytes: string): void {
+      const parsed = parseQuestion(screenBytes);
+      if (!parsed.question) throw new Error('the screen did not parse as a prompt');
+      tracker.onPTYPromptVisible(parsed.question);
+    }
+
+    test('a numbered menu on screen: /exit is not typed, the session is force-closed and the requester acked', () => {
+      const { submitted, sessionId, tracker, screen } = stoppableSession();
+      observe(tracker, WRAPPED_DIRECTORY_DIALOG);
+      expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+
+      makeHandlers({ screen }).onKillSessionRequest(CID, sessionId, REQ);
+
+      expect(submitted).toEqual([]);
+      expect(sessionRegistry.getSession(sessionId)).toBeUndefined();
+      expect(sendCalls).toHaveLength(1);
+      const ack = sendCalls[0]?.message as { type: string; success: boolean; requestId: UUID };
+      expect(ack.type).toBe('kill_session_response');
+      expect(ack.success).toBe(true);
+      expect(ack.requestId).toBe(REQ);
+      expect(sendCalls[0]?.connectionId).toBe(CID);
+    });
+
+    test('a third-party client is told the session ended, before the requester is acked', () => {
+      const { sessionId, tracker, screen } = stoppableSession();
+      sessionRegistry.attachConnection(sessionId, OTHER_CID);
+      observe(tracker, WRAPPED_DIRECTORY_DIALOG);
+
+      makeHandlers({ screen }).onKillSessionRequest(CID, sessionId, REQ);
+
+      const types = sendCalls.map((c) => ({
+        to: c.connectionId,
+        type: c.message.type,
+        code: (c.message as { code?: string }).code,
+      }));
+      expect(types).toEqual([
+        { to: OTHER_CID, type: 'error', code: 'SESSION_ENDED' },
+        { to: CID, type: 'kill_session_response', code: undefined },
+      ]);
+    });
+
+    test('a (y/n) prompt on screen takes the graceful /exit as before', () => {
+      const { submitted, sessionId, tracker, screen } = stoppableSession();
+      observe(tracker, 'Overwrite existing file? (y/n) ');
+      expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['y', 'n']);
+
+      makeHandlers({ screen }).onKillSessionRequest(CID, sessionId, REQ);
+
+      expect(submitted).toEqual(['/exit']);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+      expect(sendCalls).toHaveLength(0);
+    });
+
+    test('nothing observed, and a menu cleared by a non-waiting status: /exit is typed', () => {
+      const { submitted, sessionId, tracker, screen } = stoppableSession();
+      observe(tracker, WRAPPED_DIRECTORY_DIALOG);
+      tracker.onStatusChange('thinking');
+      expect(tracker.observedPromptOptions()).toBeNull();
+
+      makeHandlers({ screen }).onKillSessionRequest(CID, sessionId, REQ);
+
+      expect(submitted).toEqual(['/exit']);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+    });
+
+    test('screen deps not wired: /exit is typed as before', () => {
+      const { submitted, sessionId } = stoppableSession();
+
+      makeHandlers().onKillSessionRequest(CID, sessionId, REQ);
+
+      expect(submitted).toEqual(['/exit']);
     });
   });
 

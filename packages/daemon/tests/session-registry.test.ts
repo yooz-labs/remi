@@ -160,6 +160,32 @@ describe('SessionRegistry', () => {
       expect(result.currentQuestions.map((q) => q.id)).toEqual([q1, q2]);
     });
 
+    test("redactQuestionLogs keeps a question's text out of the eviction warning; the default keeps it (#1178)", async () => {
+      const lines: string[] = [];
+      const original = console.warn;
+      console.warn = (line: string) => lines.push(line);
+      const extra = new SessionRegistry({ orphanTimeoutMs: 60000, redactQuestionLogs: true });
+      try {
+        for (const r of [registry, extra]) {
+          const sid = generateId();
+          r.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+          for (let i = 0; i < 9; i++) {
+            r.addQuestion(sid, {
+              ...mkQuestion(generateId()),
+              text: `Allow Codex to run: sk-cmd-${i}`,
+            });
+          }
+        }
+      } finally {
+        console.warn = original;
+        await extra.shutdown();
+      }
+      const [plain, redacted] = lines;
+      expect(plain).toContain('text="Allow Codex to run: sk-cmd-0"');
+      expect(redacted).toContain('chars=');
+      expect(redacted).not.toContain('sk-cmd');
+    });
+
     describe('onQuestionsChanged (#786/#787)', () => {
       test('fires with the full current set on addQuestion', () => {
         const sid = generateId();
@@ -509,7 +535,7 @@ describe('SessionRegistry', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout', []);
       expect(pty.close).toHaveBeenCalled();
     });
   });
@@ -656,7 +682,7 @@ describe('SessionRegistry', () => {
       registry.closeSession(sessionId, 'forced');
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'forced');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'forced', []);
       expect(pty.close).toHaveBeenCalled();
     });
 
@@ -667,7 +693,27 @@ describe('SessionRegistry', () => {
 
       registry.handlePTYExit(sessionId);
 
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', []);
+    });
+
+    test('hands the ids of the cards it still held to onSessionClosed (#1223)', () => {
+      // The registry clears the session before it announces the close, so the
+      // close handler can only dismiss those cards from this list.
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const held = generateId();
+      registry.addQuestion(sessionId, {
+        id: held,
+        text: 'Allow Bash?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      } as never);
+
+      registry.handlePTYExit(sessionId);
+
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', [held]);
+      expect(registry.getQuestion(sessionId, held)).toBeNull();
     });
   });
 
@@ -752,6 +798,25 @@ describe('SessionRegistry', () => {
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.status).toBe('active');
       expect(sessions[0]?.canAttach).toBe(true);
+    });
+
+    test('listSessions entries carry no harness identity (#1162)', () => {
+      // `harness` and `harnessSessionId` are typed on DiscoverableSession but no
+      // producer sets them yet (ADR 0032).
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        true,
+      );
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.sessionId).toBe(sessionId);
+      expect(Object.keys(sessions[0] ?? {})).not.toContain('harness');
+      expect(Object.keys(sessions[0] ?? {})).not.toContain('harnessSessionId');
     });
 
     test('orphanedCount excludes locally-owned sessions', () => {
@@ -986,7 +1051,7 @@ describe('SessionRegistry', () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(pty.close).toHaveBeenCalled();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout', []);
     });
 
     test('persistent session is closed when the Claude process exits (pty_exit)', () => {
@@ -1005,7 +1070,7 @@ describe('SessionRegistry', () => {
       registry.handlePTYExit(sessionId);
 
       expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit', []);
     });
 
     test('persistent + explicit detach stays detached with no timeout', async () => {

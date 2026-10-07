@@ -18,8 +18,8 @@
  * id so replays re-emit with the id the client knows).
  */
 
-import { createStructuredAgentOutput, generateId, now } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
+import { createQuestion, createStructuredAgentOutput, generateId, now } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, SessionIdentity, UUID } from '@remi/shared';
 
 import type { MessageAPIEvents } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
@@ -53,14 +53,20 @@ export interface MessageApiSetupDeps {
   maxBulletLength: number;
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
   /**
-   * Returns the current Claude session UUID this PTY is bound to (#429).
-   * Called on every question emission; returns null if no binding is
-   * recorded for this session (the normal spawn path sets one pre-spawn,
-   * so null is rare in production). Same synchronous/non-throwing
-   * contract as pushConfig — implementations must absorb their own I/O
-   * errors rather than throwing into the emission path.
+   * Returns the session's current harness identity (#429, #1179): Claude's
+   * bound session UUID, or another harness's own id, null until it is learned.
+   * Called on every question emission; returns null if the session has no
+   * record (the normal spawn path writes one pre-spawn, so null is rare in
+   * production). Same synchronous/non-throwing contract as pushConfig:
+   * implementations must absorb their own I/O errors rather than throwing
+   * into the emission path.
    */
-  getClaudeSessionId?: () => UUID | null;
+  getIdentity?: () => SessionIdentity | null;
+  /**
+   * Log a detected question's length, not its first 50 characters (#1178): a Codex approval
+   * card's text is the command Codex asks to run, which a log must not carry. Default: the text.
+   */
+  redactQuestionLogs?: boolean;
 }
 
 export interface MessageApiHandle {
@@ -88,7 +94,8 @@ export function createMessageApiForSession(
     updateRemiStatus,
     maxBulletLength,
     sendMessage,
-    getClaudeSessionId,
+    getIdentity,
+    redactQuestionLogs,
   } = deps;
 
   const sendAndRecord = (message: ProtocolMessage): void => {
@@ -134,22 +141,22 @@ export function createMessageApiForSession(
       log(`Message ${msgId} finalized`);
     },
     onQuestion: (question: Question, opts?: { held?: boolean }) => {
-      log(`Question detected: ${question.text.substring(0, 50)}...`);
+      log(
+        redactQuestionLogs
+          ? `Question detected (${question.text.length} chars)`
+          : `Question detected: ${question.text.substring(0, 50)}...`,
+      );
       const questionSessionId = getPrimarySessionId() ?? sessionId;
-      const claudeSessionId = getClaudeSessionId?.() ?? undefined;
+      const identity = getIdentity?.() ?? null;
       // #753: stamp held-ness onto the question itself so every downstream
-      // copy (live message, registry entry, attach-time re-send) carries it —
-      // the terminal attach client banners ONLY held questions, the one class
-      // that never renders on the PTY.
+      // copy (live message, registry entry, attach-time re-send) carries it.
+      // A `held` push is a card pushed by id at hook time: a held binary
+      // permission prompt (#1126) or an AskUserQuestion / ExitPlanMode /
+      // multi-choice card. The stamp keys `handleAnswer`'s refusal of free
+      // text on a card that takes options (#1134, `free-text-on-held-card`)
+      // and the terminal attach client's banner.
       const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
-      const msg: ProtocolMessage = {
-        type: 'question',
-        id: generateId(),
-        timestamp: now(),
-        question: stamped,
-        sessionId: questionSessionId,
-        ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
-      };
+      const msg: ProtocolMessage = createQuestion(stamped, questionSessionId, identity);
       sendAndRecord(msg);
       // #808: `source` (QuestionSource: 'permission_request' | 'notification' |
       // 'pty' | 'elicitation', #889) is the richest "why did this appear"
@@ -158,10 +165,10 @@ export function createMessageApiForSession(
       sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
 
       // Push: a non-held question only pushes when no client is attached (the
-      // client sees it in-app). A HELD escalation (#603 Phase 3) always also
-      // pushes to the lock screen — the attached client may be backgrounded.
-      // maybePush records the delivery outcome (#603 Phase 1) for the gate to
-      // probe; the regular question path does not await it. Fire-and-forget
+      // client sees it in-app). A `held` push (`pushHeldHook`, #603 Phase 3)
+      // always also pushes to the lock screen — the attached client may be
+      // backgrounded. The question path does not await the delivery outcome
+      // maybePush returns. Fire-and-forget
       // from this synchronous hook callback, so guard against a future
       // pushConfig/refreshDeviceTokens contract change surfacing as an
       // unhandled rejection (matches the escalator's #672 push guard).

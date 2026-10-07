@@ -17,10 +17,10 @@
  * every event remi's hook server accepts, recording only the FIRST time a
  * given `prompt_id` is seen.
  *
- * UPDATE (#893, Q9): remi now registers `UserPromptSubmit`
- * (`REMI_REGISTERED_HOOK_EVENTS`) for an unrelated reason -- it is the
- * primary source for the auto-approve authority summary, `auto-approve/
- * authority.ts`. `onAnyEvent` fires for it like any other accepted event
+ * UPDATE (#893, Q9): remi registers `UserPromptSubmit`
+ * (`REMI_REGISTERED_HOOK_EVENTS`), originally for the auto-approve authority
+ * summary (deleted in #1125; the registration now stays for this timer).
+ * `onAnyEvent` fires for it like any other accepted event
  * (`hook-server.ts`), and `UserPromptSubmit` fires at the moment the human
  * submits the prompt, BEFORE any tool call -- earlier than every other
  * registered event for that turn. So as an intended side effect, this is now
@@ -186,7 +186,7 @@ function truncate(text: string, max: number): string {
  * caller sends no `category`/`questionId` (see `cli.ts`'s wiring), so this
  * only needs display text, not answer affordances. Title names the session,
  * following the `${sessionName}: <event>` house style used by
- * `notification-dispatcher.ts`'s `buildPushText` / `pushHoldTimeoutHandoff`.
+ * `notification-dispatcher.ts`'s `buildPushText`.
  */
 export function buildTurnCompleteText(
   sessionName: string,

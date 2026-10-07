@@ -5,8 +5,8 @@
  * implementation while conforming to the adapter interface.
  */
 
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
-import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, UUID } from '@remi/shared';
+import { createAgentOutput, createSessionUpdate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import { pickClientMessageEvents } from '../server/client-message-events.ts';
 import {
@@ -43,9 +43,6 @@ export interface WebSocketAdapterConfig extends AdapterConfig {
 
   /** Local capability token this daemon accepts (#869). */
   readonly capabilityToken?: string;
-
-  /** Retire the loopback auth exemption (#869). */
-  readonly requireLocalAuth?: boolean;
 }
 
 const DEFAULT_PORT = 8765;
@@ -73,7 +70,6 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.authenticator && { authenticator: config.authenticator }),
       ...(config.allowedOrigins && { allowedOrigins: config.allowedOrigins }),
       ...(config.capabilityToken && { capabilityToken: config.capabilityToken }),
-      ...(config.requireLocalAuth !== undefined && { requireLocalAuth: config.requireLocalAuth }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -154,9 +150,6 @@ export class WebSocketAdapter implements ConnectionAdapter {
       }),
       ...(this.config.allowedOrigins && { allowedOrigins: this.config.allowedOrigins }),
       ...(this.config.capabilityToken && { capabilityToken: this.config.capabilityToken }),
-      ...(this.config.requireLocalAuth !== undefined && {
-        requireLocalAuth: this.config.requireLocalAuth,
-      }),
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,
@@ -185,15 +178,6 @@ export class WebSocketAdapter implements ConnectionAdapter {
     }
 
     const protocolMessage = createAgentOutput(message);
-    return this.server.sendTo(connectionId, protocolMessage);
-  }
-
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    if (!this.server) {
-      return false;
-    }
-
-    const protocolMessage = createQuestion(question, sessionId);
     return this.server.sendTo(connectionId, protocolMessage);
   }
 

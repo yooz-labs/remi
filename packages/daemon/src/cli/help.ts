@@ -32,7 +32,7 @@ function dim(text: string): string {
 /** Pad command to fixed width and dim the description. */
 function entry(cmd: string, desc: string, width = 30): string {
   // A term at or past the column runs straight into its description
-  // (`--auto-approve-multichoice-model MAlt-model for ...`). `padEnd` cannot
+  // (`remi authorize <key> --label "name"Name ...`). `padEnd` cannot
   // separate them — it is a no-op once the string is already wide enough — so
   // guarantee one space rather than assuming every term fits.
   return `  ${cmd.padEnd(width)}${cmd.length >= width ? ' ' : ''}${dim(desc)}`;
@@ -42,7 +42,11 @@ function entry(cmd: string, desc: string, width = 30): string {
 // Per-command help
 // ---------------------------------------------------------------------------
 
+import { configPathForDisplay } from '../config/remi-home.ts';
 import type { Subcommand } from './arg-parser.ts';
+
+/** `~/.remi/config.toml`, or the real path under `REMI_HOME` (#1126). */
+const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
   ls: [
@@ -94,6 +98,10 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi new --dir <path>', 'Start session in directory'),
     entry('remi new --recent', 'Pick from recent directories'),
     entry('remi new --host <ip>', 'Create on remote daemon (requires no active session)'),
+    entry(
+      'remi new --host <ip> --harness codex',
+      'Create a Codex session there (it must list codex)',
+    ),
     entry('remi new -- --resume', 'Pass flags to Claude Code'),
     '',
     bold('Options:'),
@@ -101,6 +109,85 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--recent', 'Pick from recent project directories'),
     entry('--host HOST', 'Create session on remote daemon'),
     entry('--port PORT', 'Remote daemon port'),
+    entry('--harness ID', 'The harness to start: claude (default) or codex'),
+    '',
+    dim('  With --host only the words after `--` are sent, and a loose word is refused (exit 2).'),
+    dim('  A remi that lists the harness applies them after checking them against its own list'),
+    dim(
+      '  (Claude: --resume <uuid>, --fork-session with it, --model <name>; --resume before the --',
+    ),
+    dim('  is refused); an older remi does not know'),
+    dim('  the field, so this command refuses to send arguments or a harness to one that does not'),
+    dim('  list the harness, and nothing is started.'),
+  ],
+  codex: [
+    'Start a Codex session with monitoring (checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet).',
+    '',
+    dim(
+      '  Runs `codex --no-alt-screen` in a terminal session the phone can see: the session and its',
+    ),
+    dim(
+      '  status (working, waiting, idle) show up, and so does a command Codex asks to run: answer',
+    ),
+    dim(
+      '  it from the phone or in the terminal, the first answer wins. Other requests (file changes,',
+    ),
+    dim(
+      '  extra permissions, questions) show up as a notice to answer in the terminal. With Codex',
+    ),
+    dim("  'Approve for me' Codex approves commands itself and remi sees no request."),
+    dim(
+      '  A finished turn is pushed when it ran at least `turn_complete_min_seconds` (60 by default),',
+    ),
+    dim(
+      '  ended with a final answer, `notifications.on_turn_complete` is on and a device wants it;',
+    ),
+    dim(
+      '  a failed turn is pushed to a device with failure notices on. The session history is shown',
+    ),
+    dim('  read-only (turn pushes and history: not run against a real Codex yet).'),
+    dim('  A message typed from the phone is refused: type in the terminal.'),
+    dim(
+      '  remi never starts or stops the shared Codex app-server; if it cannot be reached for 30 s',
+    ),
+    dim(
+      '  it logs that and sends a system message (some clients, the web client today, do not show it).',
+    ),
+    '',
+    bold('Usage:'),
+    entry('remi codex', 'Start Codex in the current directory'),
+    entry('remi codex "fix the tests"', 'Start Codex with a first prompt'),
+    entry('remi codex -m <model>', 'Also allowed: -a, -s, --add-dir, -i, --yolo'),
+    entry('', '(-a takes only on-request or never in Codex 0.160.0)'),
+    entry('', '(-i/--image cannot be combined with resume)'),
+    entry('remi codex resume <thread id>', 'Resume a Codex thread (the whole id)'),
+    entry('remi --sessions', 'Lists Codex sessions, with the id to resume'),
+    entry('remi codex --host <ip> -- -m <model>', 'Start Codex on a remote remi instead'),
+    '',
+    bold('Options:'),
+    entry('--dir PATH', 'Working directory (mutually exclusive with --recent)'),
+    entry('--recent', 'Pick from recent project directories'),
+    entry('--host HOST', 'Start the session on a remote remi (it must list codex)'),
+    entry('--port PORT', 'WebSocket port'),
+    '',
+    dim('  With --host the words after `--` are not a prompt: the remote remi accepts only'),
+    dim('  -m/--model <name>, -s read-only and `resume <thread id>`, and refuses the request'),
+    dim(
+      "  otherwise: a remote request may tighten the host's sandbox setting, never loosen it, and",
+    ),
+    dim(
+      "  carries no -a at all (no value of it can be shown to tighten the host's approval policy;",
+    ),
+    dim("  set that in the host's Codex configuration). The session has no terminal:"),
+    dim('  Codex may wait at an Update or Trust prompt that only a terminal can answer; if it'),
+    dim('  does not respond, answer it in the session this command attaches you to (unverified'),
+    dim('  against a real Codex); `remi attach <host>:<port>/<id>` reaches it from anywhere else.'),
+    '',
+    dim('  remi reads its own flags (-h, --help, -v, --version, --dir, --port, --resume, ...)'),
+    dim('  wherever they stand before a `--`, so a Codex flag with the same name cannot be passed'),
+    dim('  through remi. Everything after `--` is the first prompt, as text, never a flag: put a'),
+    dim('  prompt that starts with a dash there. Any other Codex flag, and every Codex subcommand'),
+    dim('  but `resume`, is refused: run codex directly for those.'),
   ],
   recent: [
     'Browse recent project directories from session history.',
@@ -114,7 +201,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'Daemon port'),
   ],
   config: [
-    'Show or initialize the configuration file (~/.remi/config.toml).',
+    `Show or initialize the configuration file (${CONFIG_HINT}).`,
     '',
     bold('Usage:'),
     entry('remi config', 'Show effective configuration'),
@@ -124,14 +211,14 @@ const commandHelp: Record<Subcommand, string[]> = {
     dim('  Config file provides defaults. CLI flags and env vars take precedence.'),
   ],
   code: [
-    'Show or refresh the remote access connection code.',
+    'Show or refresh the permanent relay code.',
     '',
     bold('Usage:'),
-    entry('remi code', 'Show current connection code'),
-    entry('remi code --refresh', 'Generate a new code'),
+    entry('remi code', 'Show the permanent relay code'),
+    entry('remi code --refresh', 'Generate a new permanent relay code'),
     '',
-    dim('  Use the code in the Remi web/mobile app to connect remotely.'),
-    dim('  Codes rotate by default. Use --permanent-code for a fixed code.'),
+    dim('  No shipped client connects through the relay yet, and it is off by default.'),
+    dim('  The code is used only by --auth --permanent-code.'),
   ],
   reload: [
     'Reload configuration on all running daemons.',
@@ -139,50 +226,44 @@ const commandHelp: Record<Subcommand, string[]> = {
     bold('Usage:'),
     entry('remi reload', 'Validate config on all running daemons'),
     '',
-    dim('  Hot-reloads settings from ~/.remi/config.toml.'),
+    dim(`  Hot-reloads settings from ${CONFIG_HINT}.`),
     dim('  Currently all settings require a daemon restart to take effect.'),
     dim('  Future versions will support hot-reloading select settings.'),
   ],
   model: [
-    'Manage the local LLM the auto-approve evaluator runs on.',
+    'Removed in #1125: remi no longer runs a local model to judge permissions.',
+    '',
+    dim('  Claude Code decides permissions itself now; remi relays what it still asks.'),
+    dim('  `remi model` prints this notice and exits 2.'),
+  ],
+  'migrate-permissions': [
+    'Print your old [auto_approve] allow/deny rules as Claude Code permissions.',
     '',
     bold('Usage:'),
-    entry('remi model ls', 'Inventory: size on disk, downloaded, resident'),
-    entry('remi model ps', 'Models resident in memory right now'),
-    entry('remi model status', 'Engine reachable? which model? download in flight?'),
-    entry('remi model pull <id>', 'Download weights (does not change the active model)'),
-    entry('remi model cancel <id>', 'Abort an in-flight download'),
-    entry('remi model rm <id>', 'Delete weights, reporting disk reclaimed'),
-    entry('remi model cleanup', "Engine's one-shot disk-hygiene sweep"),
-    entry('remi model load <id>', 'Load already-downloaded weights'),
-    entry('remi model unload <id>', 'Free a model from memory'),
-    entry('remi model use <id>', 'Set the default model (persisted in config)'),
-    entry('remi model restart', 'Relaunch the engine on the version remi pins'),
+    entry('remi migrate-permissions', `Read ${CONFIG_HINT}`),
+    entry('remi migrate-permissions <file>', 'Read another config file (exit 1 if missing)'),
     '',
-    '',
-    dim('  Models are named by their registered HuggingFace repo id, e.g.'),
-    dim('  "YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx". The engine also accepts its'),
-    dim('  own short id for the same model; either works wherever <id> is taken.'),
-    '',
-    dim('  Replaces "ollama pull/ls/ps": the Yooz engine ships no CLI of its own.'),
-    dim('  No daemon needed -- a verb that needs an engine starts one (fetching'),
-    dim('  the helper on first use). "status" deliberately does not, so it can'),
-    dim('  report an engine being down, and "use" needs none at all.'),
-    dim('  A first pull downloads several GB from HuggingFace. Progress may sit at'),
-    dim('  0% throughout (engine bug); completion is detected from bytes on disk.'),
-    dim('  "use" writes remi config -- the engine forgets its own preference on'),
-    dim('  restart -- so restart running daemons for it to take effect.'),
+    dim('  remi no longer judges permissions (#1125); Claude Code decides them.'),
+    dim('  Prints {"permissions":{"allow":[...],"deny":[...]}} to stdout. An allow'),
+    dim('  command becomes Bash(<command>:*); a deny command becomes Bash(<command>*),'),
+    dim('  which Claude Code matches only at the start of a command where remi'),
+    dim('  matched it anywhere. Known tool names and Tool(...) rules pass through.'),
+    dim('  Entries with no faithful form (bare Bash, shell operators, mid-command'),
+    dim('  deny patterns like "push --force", groups, level, per-agent sections)'),
+    dim('  are listed on stderr under "NOT carried over"; a mid-command allow entry'),
+    dim('  is kept as a prefix rule and flagged, since it matches only commands'),
+    dim('  that start with it. Never writes a file: paste the block into'),
+    dim('  ~/.claude/settings.json yourself.'),
   ],
   unstick: [
-    'Force-release stuck auto-approve evals / held permissions.',
+    'Resolve and dismiss stuck permission cards on running daemons.',
     '',
     bold('Usage:'),
     entry('remi unstick', 'Unstick every running daemon'),
     entry('remi unstick <port>', 'Unstick only the daemon on <port>'),
     '',
-    dim('  The "just get me out" lever when the LLM eval and a question are wedged.'),
-    dim('  Releases held permissions to the native terminal prompt, cancels the'),
-    dim('  in-flight eval (freeing the GPU), and drains the eval queue.'),
+    dim('  The "just get me out" lever when a card is stuck on a phone: every'),
+    dim('  open permission card the daemon tracks is resolved and dismissed.'),
   ],
   start: [
     'Start the Remi hub in the background (session-less).',
@@ -198,7 +279,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'WebSocket port'),
     entry('--bind HOST', 'Bind address (default: 127.0.0.1, loopback only)'),
     entry('--auth / --no-auth', 'Authentication control'),
-    entry('--no-relay', 'Disable signaling relay'),
+    entry('--no-relay', 'Keep the relay off (off unless network.relay = true)'),
     entry('--no-mdns', 'Disable mDNS advertising'),
     entry('--push-secret SECRET', 'APNS push auth secret'),
     entry('--orphan-timeout SECS', 'Orphan session timeout (default: 300s)'),
@@ -216,7 +297,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'WebSocket port'),
     entry('--bind HOST', 'Bind address (default: 127.0.0.1, loopback only)'),
     entry('--auth / --no-auth', 'Authentication control'),
-    entry('--no-relay', 'Disable signaling relay'),
+    entry('--no-relay', 'Keep the relay off (off unless network.relay = true)'),
     entry('--no-mdns', 'Disable mDNS advertising'),
     '',
     dim('  Spawns no session of its own; sessions come from the app or `remi new`.'),
@@ -256,18 +337,19 @@ const commandHelp: Record<Subcommand, string[]> = {
     dim('  Identity stored at ~/.remi/identity.json'),
   ],
   authorize: [
-    'Add a client public key to authorized keys.',
+    'Approve an exact pending fingerprint or import a client public key.',
     '',
     bold('Usage:'),
-    entry('remi authorize <key-file>', 'Authorize a client'),
+    entry('remi authorize <fingerprint> --label phone', 'Approve a pending client locally'),
+    entry('remi authorize <key-file>', 'Import a public key'),
     entry('remi authorize <key> --label "name"', 'With a label'),
     entry('remi authorize --remove <fp>', 'Remove by fingerprint'),
   ],
   keys: [
-    'List authorized client keys.',
+    'List authorized and pending client public keys.',
     '',
     bold('Usage:'),
-    entry('remi keys', 'Show fingerprints, labels, dates'),
+    entry('remi keys', 'Show public keys, fingerprints and pending expiry'),
   ],
   'export-key': [
     'Export your identity for sharing across devices.',
@@ -316,35 +398,12 @@ export function formatHelp(version: string): string {
     '',
     bold('Quick Start:'),
     entry('remi', 'Start Claude with monitoring'),
-    entry('remi --auto-approve', 'Start with LLM auto-approve (Yooz engine)'),
+    entry(
+      'remi codex',
+      'Start Codex with monitoring (command approvals reach the phone; checked live against Codex 0.160.0)',
+    ),
     entry('remi ls', 'List running sessions'),
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
-    '',
-    bold('Auto-Approve (LLM):'),
-    // The model commands live here, not under Configuration, because the
-    // models exist only to serve this evaluator -- and commands come before
-    // flags because `remi model` is a ten-verb subsystem, not a setting. It
-    // shipped in 0.7.0 listed nowhere at all (#843), then spent 0.7.1 as one
-    // line at the bottom of Configuration, where a user read the whole help
-    // output and still did not find it (#850).
-    //
-    // "which one remi uses", not "active": `ls` marks remi's CONFIGURED model
-    // with `*`, while a possibly different row is labelled `engine active` for
-    // the engine picker's resident tier. Calling the first one "active" is the
-    // same conflation `remi model rm` used to make.
-    entry('remi model ls', "What's downloaded, and which one remi uses"),
-    entry('remi model use <id>', 'Switch the model auto-approve runs on'),
-    entry('remi model --help', 'All model commands (pull, rm, ps, ...)'),
-    entry('--auto-approve', 'Enable LLM auto-approve for permissions'),
-    entry('--no-auto-approve', 'Disable auto-approve (overrides config)'),
-    entry('--auto-approve-model M', 'LLM model (default: the engine 4B qat-lean)'),
-    entry('--auto-approve-provider P', 'yooz | llamacpp | openrouter | custom URL'),
-    entry('--auto-approve-api-key K', 'API key (OpenRouter, etc.)'),
-    entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, per-segment prefix)'),
-    entry('--auto-approve-deny STR', 'Deny-list pattern (repeatable, substring match)'),
-    entry('--auto-approve-instructions T', 'Natural-language guidance for the LLM'),
-    entry('--auto-approve-multichoice MODE', 'skip (default) | evaluate (LLM picks index)'),
-    entry('--auto-approve-multichoice-model M', 'Alt-model for multi-choice; empty = main model'),
     '',
     bold('Remote Access:'),
     entry('remi ls --host <ip>', 'List sessions on remote machine'),
@@ -352,8 +411,8 @@ export function formatHelp(version: string): string {
     entry('remi new --host <ip>', 'Create session on remote daemon'),
     entry('remi attach host:port/name', 'Attach to remote session'),
     entry('remi kill host:port/name', 'Kill a remote session'),
-    entry('remi code', 'Show connection code for phone/browser'),
-    entry('remi code --refresh', 'Generate a new connection code'),
+    entry('remi code', 'Show the permanent relay code'),
+    entry('remi code --refresh', 'Generate a new permanent relay code'),
     '',
     bold('Session Management:'),
     entry('remi new --dir <path>', 'Start session in directory'),
@@ -363,6 +422,7 @@ export function formatHelp(version: string): string {
     entry('remi kill <name>', 'Kill a session'),
     entry('remi detach [name]', 'Detach from session'),
     entry('remi --resume [id]', 'Resume a previous session'),
+    entry('remi codex resume <id>', 'Resume a Codex thread (the whole id)'),
     entry('remi --sessions', 'List running sessions'),
     entry('remi --sessions all', 'List all sessions (including exited)'),
     entry('remi --sessions exited', 'List exited sessions only'),
@@ -371,6 +431,7 @@ export function formatHelp(version: string): string {
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
+    entry('remi migrate-permissions', 'Print old allow/deny rules as Claude Code JSON'),
     '',
     bold('Service:'),
     entry('remi start', 'Start the hub in the background'),
@@ -384,7 +445,7 @@ export function formatHelp(version: string): string {
     bold('Identity & Auth:'),
     entry('remi keygen', 'Generate Ed25519 keypair'),
     entry('remi authorize <key>', 'Add client public key'),
-    entry('remi keys', 'List authorized keys'),
+    entry('remi keys', 'List authorized and pending keys'),
     entry('remi export-key', 'Export identity JSON'),
     entry('remi import-key [file]', 'Import identity from file or stdin'),
     '',
@@ -394,11 +455,14 @@ export function formatHelp(version: string): string {
     entry('--bind HOST', 'Bind address (default: 127.0.0.1, loopback only)'),
     entry('--local', 'Localhost-only mode'),
     entry('--auth / --no-auth', 'Authentication control'),
-    entry('--no-relay', 'Disable relay'),
-    entry('--permanent-code', 'Persistent connection code'),
+    entry('--no-relay', 'Keep the relay off (off unless network.relay = true)'),
+    entry(
+      '--permanent-code',
+      'Fixed relay code (needs auth on; turns the relay on, even if network.relay = false)',
+    ),
     '',
     entry('--no-mdns', 'Disable mDNS advertising'),
-    entry('--no-tofu', 'Reject unknown clients'),
+    entry('--no-tofu', 'Retired: unknown clients always need local approval'),
     entry('--push-secret SECRET', 'APNS push auth (env: REMI_PUSH_SECRET)'),
     entry('--orphan-timeout SECS', 'Orphan session timeout (default: 300)'),
     entry('--max-bullet-length N', 'Truncate bullets (default: 500, 0=off)'),
@@ -409,6 +473,7 @@ export function formatHelp(version: string): string {
     dim('  Environment: REMI_PORT, REMI_PASSPHRASE, REMI_PUSH_SECRET, REMI_MAX_BULLET_LENGTH'),
     dim('  Pass -- to separate remi flags from Claude Code arguments.'),
     dim('  Unrecognized flags are passed through to Claude Code.'),
+    dim("  remi codex: the words after -- are Codex's first prompt, not flags."),
     '',
   ];
 

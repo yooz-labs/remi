@@ -34,6 +34,11 @@ export interface SessionRegistryConfig {
   readonly orphanTimeoutMs?: number;
   /** Maximum messages to keep for replay. Default: 1000 */
   readonly maxReplayHistory?: number;
+  /**
+   * Leave a pending question's text out of the registry's log lines (#1178). A Codex approval
+   * card's text is the command Codex asks to run, which a log must not carry. Default: false.
+   */
+  readonly redactQuestionLogs?: boolean;
 }
 
 /** Result of attempting to attach a connection to a session */
@@ -68,7 +73,17 @@ export interface SessionRegistryEvents {
   /** Session was created */
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
-  onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
+  /**
+   * The session closed. `pendingQuestionIds` are the cards it still held,
+   * snapshotted before the session was cleared (#1223): by the time this fires
+   * the registry no longer has them, so whoever must dismiss them on clients
+   * and lock screens reads them from here.
+   */
+  onSessionClosed?: (
+    sessionId: UUID,
+    reason: 'timeout' | 'pty_exit' | 'forced',
+    pendingQuestionIds: readonly UUID[],
+  ) => void;
   /** The session's last attached connection detached, leaving it with none.
    *  Fires for ALL such detach reasons, not only genuine orphans: a plain
    *  non-locally-owned, non-persistent session becomes orphaned (orphan
@@ -194,15 +209,21 @@ export interface ManagedSession {
  */
 export class SessionRegistry {
   private session: ManagedSession | null = null;
+  /** Per-session "never evict this question" reads (#1126), see
+   *  `setQuestionEvictionGuard`. */
+  private readonly evictionGuards = new Map<UUID, (questionId: UUID) => boolean>();
   private readonly events: SessionRegistryEvents;
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
   /** Buffer for messages received before session registration (from readExisting transcript) */
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
+  private readonly redactQuestionLogs: boolean;
+
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
     this.maxReplayHistory = config.maxReplayHistory ?? 1000;
+    this.redactQuestionLogs = config.redactQuestionLogs ?? false;
     this.events = events;
   }
 
@@ -234,9 +255,18 @@ export class SessionRegistry {
     // `currentQuestions` getter below can close over it directly, rather than
     // reading `this.session.questionStore` (which would not exist yet at
     // getter-definition time inside the same literal).
-    const questionStore = new QuestionStore(sessionId, {
-      onQuestionsChanged: (questions) => this.events.onQuestionsChanged?.(sessionId, questions),
-    });
+    const questionStore = new QuestionStore(
+      sessionId,
+      {
+        onQuestionsChanged: (questions) => this.events.onQuestionsChanged?.(sessionId, questions),
+      },
+      // #1126: read live, so a guard installed before or after this
+      // registration (the hook bridge is set up first) applies.
+      {
+        isPinned: (questionId) => this.evictionGuards.get(sessionId)?.(questionId) ?? false,
+        redactText: this.redactQuestionLogs,
+      },
+    );
     this.session = {
       sessionId,
       name,
@@ -536,6 +566,16 @@ export class SessionRegistry {
     this.session.questionStore.clear(signal, 'SessionRegistry.clearQuestions');
   }
 
+  /**
+   * Install the read that pins a question against the pending-question cap's
+   * eviction (#1126): the permission gate pins every card whose hook it
+   * holds. May be called before the session registers. See
+   * `QuestionStoreOptions.isPinned`.
+   */
+  setQuestionEvictionGuard(sessionId: UUID, isPinned: (questionId: UUID) => boolean): void {
+    this.evictionGuards.set(sessionId, isPinned);
+  }
+
   /** Look up a pending question by id (null if not awaitable). */
   getQuestion(sessionId: UUID, questionId: UUID): Question | null {
     if (this.session === null || this.session.sessionId !== sessionId) return null;
@@ -562,10 +602,13 @@ export class SessionRegistry {
       });
     }
 
+    // The cards it still holds, before they go with it (#1223).
+    const pendingQuestionIds = [...this.session.questionStore.questions.keys()];
+
     // Clear the session
     this.session = null;
 
-    this.events.onSessionClosed?.(sessionId, reason);
+    this.events.onSessionClosed?.(sessionId, reason, pendingQuestionIds);
   }
 
   /**

@@ -8,8 +8,8 @@
  * already-answered question replays indistinguishably from a pending one.
  * The registry's `currentQuestions` (returned by every successful
  * `attachConnection`) is the source of truth. Clients dedupe by
- * `question.id`; the terminal attach client banners the held ones (the class
- * that never renders on the PTY).
+ * `question.id`; the terminal attach client banners held-stamped ones
+ * (see `Question.held`).
  *
  * Shared by every attach surface (#760 review finding 2): the hello attach
  * path (connection-events) and the resume-request attach path
@@ -43,16 +43,16 @@
  */
 
 import { createQuestion, createQuestionSnapshot } from '@remi/shared';
-import type { ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { ProtocolMessage, Question, SessionIdentity, UUID } from '@remi/shared';
 
 export function resendPendingQuestions(
   send: (message: ProtocolMessage) => void,
   sessionId: UUID,
   pendingQuestions: readonly Question[],
-  claudeSessionId?: UUID,
+  identity?: SessionIdentity | null,
 ): number {
   for (const question of pendingQuestions) {
-    send(createQuestion(question, sessionId, claudeSessionId));
+    send(createQuestion(question, sessionId, identity));
   }
   // Sent AFTER the live questions so the client has already registered them
   // and cannot prune one it is about to be told about in the same batch.

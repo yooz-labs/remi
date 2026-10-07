@@ -1,0 +1,221 @@
+/**
+ * `REMI_HOME` relocates remi's whole state directory (#1126 prerequisite,
+ * `config/remi-home.ts`). The unit tests pin the resolution rules; the
+ * subprocess tests run the real `cli.ts` with a sandbox HOME and a separate
+ * REMI_HOME and check that state lands only in REMI_HOME: a module that still
+ * built `~/.remi` itself would write into the sandbox HOME instead.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  configPathForDisplay,
+  isRemiHomeOverridden,
+  remiHome,
+  serviceCommandRefusal,
+} from '../src/config/remi-home.ts';
+import { CLI_TS, findTestPort, isolatedEnv, pollUntil } from './integration/hub-test-utils.ts';
+
+describe('remiHome()', () => {
+  test('defaults to <home>/.remi when REMI_HOME is unset or empty', () => {
+    expect(remiHome({}, '/u/me')).toBe(path.join('/u/me', '.remi'));
+    expect(remiHome({ REMI_HOME: '' }, '/u/me')).toBe(path.join('/u/me', '.remi'));
+    expect(isRemiHomeOverridden({})).toBe(false);
+    expect(isRemiHomeOverridden({ REMI_HOME: '' })).toBe(false);
+  });
+
+  test('an absolute REMI_HOME is the state directory, normalized', () => {
+    expect(remiHome({ REMI_HOME: '/tmp/scratch/../state/' }, '/u/me')).toBe(
+      path.normalize('/tmp/state/'),
+    );
+    expect(isRemiHomeOverridden({ REMI_HOME: '/tmp/state' })).toBe(true);
+  });
+
+  test('a relative REMI_HOME is refused, never resolved against the cwd', () => {
+    expect(() => remiHome({ REMI_HOME: 'state' }, '/u/me')).toThrow(/absolute path/);
+    expect(() => remiHome({ REMI_HOME: './state' }, '/u/me')).toThrow(/absolute path/);
+  });
+
+  test('hints name the config file the daemon actually reads', () => {
+    expect(configPathForDisplay({}, '/u/me')).toBe(path.join('~', '.remi', 'config.toml'));
+    expect(configPathForDisplay({ REMI_HOME: '/tmp/state' }, '/u/me')).toBe(
+      path.join('/tmp/state', 'config.toml'),
+    );
+    // Under the home directory it is still shown with ~.
+    expect(configPathForDisplay({ REMI_HOME: '/u/me/scratch' }, '/u/me')).toBe(
+      path.join('~', 'scratch', 'config.toml'),
+    );
+  });
+
+  test('--install and --uninstall are refused under an override, in one line', () => {
+    expect(serviceCommandRefusal('--install', {})).toBeNull();
+    expect(serviceCommandRefusal('--uninstall', { REMI_HOME: '' })).toBeNull();
+    for (const flag of ['--install', '--uninstall'] as const) {
+      const refusal = serviceCommandRefusal(flag, { REMI_HOME: '/tmp/state' });
+      expect(refusal).toContain(`remi ${flag}`);
+      expect(refusal).toContain('REMI_HOME');
+      expect(refusal).toContain('~/.remi');
+      expect(refusal).not.toContain('\n');
+    }
+  });
+});
+
+describe('REMI_HOME moves the state a real cli.ts writes', () => {
+  let home: string;
+  let state: string;
+  let work: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-home-sandbox-'));
+    state = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-home-state-'));
+    work = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-home-work-'));
+  });
+
+  afterEach(() => {
+    for (const d of [home, state, work]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  test('remi config path names the config inside REMI_HOME', async () => {
+    const proc = Bun.spawn(['bun', CLI_TS, 'config', 'path'], {
+      cwd: work,
+      env: isolatedEnv(home, { REMI_HOME: state }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    expect(code).toBe(0);
+    expect(out.trim()).toBe(path.join(state, 'config.toml'));
+  });
+
+  test('remi serve writes its status and pid files under REMI_HOME and nothing under ~/.remi', async () => {
+    const port = await findTestPort();
+    const proc = Bun.spawn(
+      [
+        'bun',
+        CLI_TS,
+        'serve',
+        '--port',
+        String(port),
+        '--no-relay',
+        '--no-telegram',
+        '--no-mdns',
+        '--no-auth',
+      ],
+      {
+        cwd: work,
+        env: isolatedEnv(home, { REMI_HOME: state }),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+    try {
+      const statusFile = path.join(state, 'daemon-status.json');
+      await pollUntil(
+        () => {
+          if (proc.exitCode !== null) throw new Error(`hub exited early (${proc.exitCode})`);
+          try {
+            return JSON.parse(fs.readFileSync(statusFile, 'utf-8')).wsPort === port;
+          } catch {
+            return false;
+          }
+        },
+        15000,
+        'hub status file under REMI_HOME',
+      );
+      expect(fs.existsSync(path.join(state, 'daemon.pid'))).toBe(true);
+      expect(fs.existsSync(path.join(home, '.remi'))).toBe(false);
+    } finally {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+  }, 30000);
+
+  test('remi --uninstall under REMI_HOME refuses before touching any service', async () => {
+    // --uninstall, never --install: if the refusal ever regressed, this
+    // sandbox HOME has no service file, so the command would only print
+    // "No LaunchAgent installed." instead of loading anything.
+    const proc = Bun.spawn(['bun', CLI_TS, '--uninstall'], {
+      cwd: work,
+      env: isolatedEnv(home, { REMI_HOME: state }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(1);
+    // Strip the ANSI color the logger adds. Another test in the suite may
+    // leave an env var behind that the CLI warns about on its own line, so
+    // the refusal is matched as one whole line, not as all of stderr.
+    const lines = err
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .trim()
+      .split('\n');
+    expect(lines).toContain(
+      'remi --uninstall does not run with REMI_HOME set: the service always uses ~/.remi. Unset REMI_HOME and run it again.',
+    );
+    expect(out).not.toContain('LaunchAgent');
+    expect(out).not.toContain('systemd');
+  }, 30000);
+
+  test('a relative REMI_HOME stops the CLI instead of writing anywhere', async () => {
+    const proc = Bun.spawn(['bun', CLI_TS, 'config', 'path'], {
+      cwd: work,
+      env: isolatedEnv(home, { REMI_HOME: 'relative-state' }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [err, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(1);
+    // One clear line, not a stack trace from a module that computed a state
+    // path at import time (#1126 review).
+    expect(err.trim()).toBe(
+      'REMI_HOME must be an absolute path, got "relative-state". Unset it to use ~/.remi.',
+    );
+    expect(fs.existsSync(path.join(work, 'relative-state'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.remi'))).toBe(false);
+  }, 30000);
+});
+
+/**
+ * #1155: the README recommends exporting `REMI_HOME` to run remi from source,
+ * and tests that expect the default state layout failed when it was exported.
+ * Both `bunfig.toml` files preload `tests/unset-remi-home.ts`, which removes
+ * it. Each case runs a real `bun test` of a probe file with `REMI_HOME`
+ * exported, from the repo root and from this package (each reads its own
+ * `bunfig.toml`); the probe passes only if the variable was removed.
+ */
+describe('an exported REMI_HOME never reaches a test process (#1155)', () => {
+  const DAEMON_DIR = path.resolve(import.meta.dir, '..');
+  const REPO_ROOT = path.resolve(DAEMON_DIR, '..', '..');
+  const PROBE = path.join(DAEMON_DIR, 'tests', 'fixtures', 'remi-home-probe.ts');
+
+  test.each([
+    ['the repo root', REPO_ROOT],
+    ['packages/daemon', DAEMON_DIR],
+  ])(
+    'bun test from %s',
+    async (_where, cwd) => {
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-home-preload-'));
+      try {
+        const proc = Bun.spawn(['bun', 'test', `./${path.relative(cwd, PROBE)}`], {
+          cwd,
+          env: { ...process.env, REMI_HOME: scratch },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const code = await proc.exited;
+        const output = `${await new Response(proc.stdout).text()}${await new Response(proc.stderr).text()}`;
+        expect({ code, output }).toMatchObject({ code: 0 });
+        expect(output).toContain('1 pass');
+      } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+});

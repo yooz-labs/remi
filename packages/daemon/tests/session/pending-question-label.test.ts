@@ -59,9 +59,9 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Exit plan mode and start implementing?');
   });
 
-  test('a StopFailure question (no source) uses the text verbatim', () => {
-    const q = mkQuestion({ text: 'Session stop failed (timeout). Retry?' });
-    expect(buildPendingQuestionLabel(q)).toBe('Session stop failed (timeout). Retry?');
+  test('a source-less question uses the text verbatim', () => {
+    const q = mkQuestion({ text: 'Continue with the other approach?' });
+    expect(buildPendingQuestionLabel(q)).toBe('Continue with the other approach?');
   });
 
   test('a PTY-fallback question (source pty) uses the text verbatim', () => {
@@ -69,13 +69,13 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Overwrite existing file?');
   });
 
-  test('a summary, when present, is preferred over text for non-permission questions', () => {
+  test('the deprecated summary is ignored: the label is the question text (#1125)', () => {
     const q = mkQuestion({
-      text: 'Allow Bash: git push --force origin main',
-      summary: 'Force-push to main?',
+      text: 'Overwrite existing file?',
+      summary: 'Overwrite?',
       source: 'pty',
     });
-    expect(buildPendingQuestionLabel(q)).toBe('Force-push to main?');
+    expect(buildPendingQuestionLabel(q)).toBe('Overwrite existing file?');
   });
 
   test('a multi_question AskUserQuestion joins sub-question headers', () => {
@@ -108,5 +108,43 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
   test('whitespace runs (PTY column-aligned garble) collapse to single spaces', () => {
     const q = mkQuestion({ text: 'Do   you\n\nwant   to proceed?', source: 'pty' });
     expect(buildPendingQuestionLabel(q)).toBe('Do you want to proceed?');
+  });
+});
+
+describe('a card that carries its own fixed label (#1178)', () => {
+  test('the label is returned as it is, whatever the text, the kind and the questions say', () => {
+    const secret = 'sk-live-do-not-write-this-to-disk';
+    for (const q of [
+      mkQuestion({
+        text: `Allow Codex to run: curl -H "Authorization: Bearer ${secret}"`,
+        pendingLabel: 'Permission: Codex command',
+      }),
+      mkQuestion({
+        kind: 'multi_question',
+        text: secret,
+        questions: [{ header: secret, text: secret, multiSelect: false, options: [] }],
+        pendingLabel: 'Codex asks for approval',
+      }),
+      mkQuestion({
+        source: 'permission_request',
+        text: `Allow Bash: ${secret}`,
+        pendingLabel: 'Codex asks for approval',
+      }),
+    ]) {
+      const label = buildPendingQuestionLabel(q);
+      expect(label).toBe(q.pendingLabel as string);
+      expect(label).not.toContain(secret);
+    }
+  });
+
+  test("a card with no fixed label is labeled as before: Claude's output is unchanged", () => {
+    expect(
+      buildPendingQuestionLabel(
+        mkQuestion({ text: 'Allow Bash: ls', source: 'permission_request' }),
+      ),
+    ).toBe('Permission: Bash');
+    expect(buildPendingQuestionLabel(mkQuestion({ text: 'Proceed with the plan?' }))).toBe(
+      'Proceed with the plan?',
+    );
   });
 });

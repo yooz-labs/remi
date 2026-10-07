@@ -1,8 +1,19 @@
 # ADR 0004: PTY-as-arbiter for subagent question routing
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-07-09
 **Owner:** Yahya
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md).**
+> A background subagent's dialog does not render while its hook is held (verified live), so the route depends on the session.
+> With a local terminal (wrapper mode) the request is still answered `passthrough` and parked, but its render pushes an informational "answer at the terminal" notice, never an answerable card: nothing is typed into a hook-backed prompt.
+> With no local terminal (daemon or hub mode) nobody could answer a rendered dialog, so the request is held and pushed as an answerable card, exactly like a main-agent prompt.
+
+> **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
+> The PTY is still the arbiter of whether a parked subagent prompt reaches the phone: a subagent-tagged request is parked and answered `passthrough`, and its card pushes only when its prompt renders on the main PTY.
+> What is gone is every evaluation around that: the render-time LLM arbitration (`arbitrateParkedRender`, #814), the main-eval buffer window (#484, #767) and the 2026-08-08 amendment's hook-time deterministic approve (#1024) were all deleted in #1125.
+> No subagent request is answered by remi any more; each one either renders and is pushed, or is handled by Claude Code's own permission flow without a card.
+> The body below is kept as history.
 
 ## Context
 
@@ -100,7 +111,10 @@ implementation and cannot drift, per ADR 0015/0017's shared-list caution):
   directly. No park, no PTY render, no LLM call, no queue wait. The
   `onSubagentPassthrough` observation cue still fires — unchanged from the
   park path — so `subagent_alert` visibility does not depend on how the hook
-  was answered.
+  was answered. (Historical: this layer was removed by #1125, and the
+  `onSubagentPassthrough` cue itself by #1155, which feeds `subagent_alert`
+  from the tool hooks instead, since a call the allow rules permit fires no
+  `PermissionRequest`; see ADR 0031's #1155 amendment.)
 - **Deny-covered, or no deterministic verdict**: parks + passes through
   exactly as the pre-amendment rule did. A hook-time deny is still not
   produced for a subagent match: unlike a main-context deny (which can carry

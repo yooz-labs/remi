@@ -3,7 +3,7 @@
  * human actually typed, or something Claude Code (or a subagent) put in that
  * role instead?
  *
- * This is a TRANSCRIPT concern, not an auto-approve one: `UserEntry`
+ * This is a TRANSCRIPT concern: `UserEntry`
  * (`types.ts`) is structurally identical whether a human typed it or Claude
  * Code injected it — same `role: "user"`, same `content: string`. This
  * module is what makes the two distinguishable at all, and it is consumed by
@@ -13,16 +13,11 @@
  *    injected entry as a message the human sent (#936).
  *  - `transcript-discovery.ts` — must not surface an injected entry as a
  *    session-list preview (#936).
- *  - `auto-approve/authority.ts`'s `extractUserEntryText` — must not let an
- *    injected entry (especially a subagent's own words) become "authority"
- *    the auto-approve prompt trusts as the human's own instruction (#893).
  *
- * That last consumer is a POLICY layer built on top of this one, not the
- * other way round — import direction matters here specifically because a
- * change to (or removal of) the auto-approve module must never be able to
- * break transcript ingestion. Originally this lived inside `authority.ts`
- * and was imported backwards into the transcript module for #936; moved
- * here on review (same day) once that inversion was noticed.
+ * Originally this lived inside the auto-approve authority module (#893) and
+ * was imported backwards into the transcript module for #936; it moved here
+ * on review so that removing the auto-approve module could never break
+ * transcript ingestion, which is what happened in #1125 (ADR 0030).
  *
  * Measured across real transcripts under `~/.claude/projects/...` (#893
  * issue thread; corrected after an audit caught a first-pass miscount), a
@@ -53,8 +48,8 @@
  *    (`types.ts`). This is the important one to get right: an
  *    `<agent-message>` entry is a SUBAGENT's own words in a user envelope —
  *    filtering ONLY on `role === "user"` + `typeof content === "string"`
- *    would let a subagent's report render as the human's own chat message,
- *    or worse, write its own auto-approve authority. Every consumer checks
+ *    would let a subagent's report render as the human's own chat message.
+ *    Every consumer checks
  *    `entry.isMeta` FIRST, before any content-shape logic, specifically so
  *    this cohort can never slip through by content shape alone.
  * 3. **`<command-name>` and `<local-command-stdout>`** (confirmed: 0 of 36
@@ -94,15 +89,8 @@
  * rest of this list: the real captured samples (module doc) put a
  * human-readable preamble sentence BEFORE the `<agent-message from="...">`
  * tag, so the entry does not start with a tag at all — a plain prefix match
- * against `<agent-message` would miss it. This entry matters MORE than the
- * others on `auto-approve/authority.ts`'s PRIMARY (hook) path specifically:
- * `UserPromptSubmitHookInput` (`hook-types.ts`) carries no `isMeta` field at
- * all — that flag exists only on transcript entries — so if a cross-session
- * agent message is EVER delivered through `UserPromptSubmit.prompt`
- * (unconfirmed; same epistemic status as the `!`-bash-mode question, #938),
- * this literal-sentence prefix is the ONLY defense available on that path.
- * On every other call site here it is pure redundancy on top of the
- * `isMeta` check.
+ * against `<agent-message` would miss it. On every current call site it is
+ * redundancy on top of the `isMeta` check.
  */
 const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
   '<command-name>',
@@ -120,66 +108,8 @@ const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
  *  Consumed by `transcript-message-bridge.ts` and `transcript-discovery.ts`
  *  (#936) — DISPLAY surfaces, where the right failure direction is OPEN: an
  *  unrecognized wrapper renders as a chat message, which is noise. Dropping a
- *  message the human really typed would be worse.
- *
- *  NOT sufficient for the authority path — use `isNonHumanForAuthority` there.
- *  See its doc for the measured reason. */
+ *  message the human really typed would be worse. */
 export function isWrappedNonHumanText(text: string): boolean {
   const trimmed = text.trimStart();
   return NON_HUMAN_WRAPPER_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
-
-/**
- * Does the text OPEN with a markup tag (`<task-notification>`,
- * `<agent-message from="...">`, `<bash-input>`)? Shape-based, so it catches
- * wrappers this file has never heard of.
- *
- * Requires a letter-initial tag name so an arithmetic or prose `<` (`<5 min`,
- * `a < b`) is not mistaken for markup.
- */
-function startsWithMarkupTag(text: string): boolean {
-  return /^<[a-zA-Z][a-zA-Z0-9_-]*(\s|\/?>)/.test(text.trimStart());
-}
-
-/**
- * True if a user-role string must NOT be treated as the human's own words for
- * AUTHORITY purposes (#982). Strictly wider than `isWrappedNonHumanText`.
- *
- * ## Why the authority path needs its own, stricter predicate
- *
- * The two paths have OPPOSITE failure directions, exactly like allow vs deny
- * matching (ADR 0010). A display surface that wrongly drops text hides the
- * user's own message — bad. An authority surface that wrongly ACCEPTS text
- * lets a machine speak as the user into a permission decision — worse. So
- * display keeps the denylist and fails open; authority adds a shape rule and
- * fails CLOSED.
- *
- * ## The measurement that forced this (#982)
- *
- * `UserPromptSubmit` is authority's PRIMARY source, and `authority.ts`'s
- * premise was that Claude Code puts only the human's keystrokes there. Over a
- * live capture window (`~/.remi/hook-diag.jsonl`, 2026-07-31..08-02), of 206
- * prompts carrying text, **72 (35%) were machine-generated**: 69
- * `<task-notification>` and 3 `<agent-message>`. Every one PASSED
- * `isWrappedNonHumanText`, so all 72 were being recorded as the human's turns.
- *
- * Note the module doc above already flagged a cross-session agent message on
- * this path as possible but "unconfirmed". The 3 `<agent-message>` captures
- * confirm it.
- *
- * ## Why shape, not a wider denylist
- *
- * The denylist fails open by design (see the module doc), and #982 is three
- * proofs of that in one sample. Adding the three observed tags fixes today and
- * not tomorrow — the next wrapper Claude Code introduces is undiscoverable by
- * construction. A shape rule makes an UNKNOWN wrapper fail closed, which is the
- * only direction that survives a contract that keeps growing.
- *
- * Measured cost on the same 208-prompt corpus: **zero**. No human-typed prompt
- * began with `<` at all, tag-shaped or otherwise. The theoretical cost is a
- * human opening a message with a markup-looking tag, who loses that turn from
- * the authority window — a nuisance, and the safe direction.
- */
-export function isNonHumanForAuthority(text: string): boolean {
-  return isWrappedNonHumanText(text) || startsWithMarkupTag(text);
 }

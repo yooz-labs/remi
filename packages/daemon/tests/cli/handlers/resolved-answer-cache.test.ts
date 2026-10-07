@@ -75,4 +75,17 @@ describe('ResolvedAnswerCache (#752)', () => {
     // Selections win over the answer string (AUQ answers carry an empty/dummy answer).
     expect(answerCacheKey('ignored', [{ questionIndex: 1, optionIndices: [0] }])).toContain('auq:');
   });
+
+  test('answerCacheKey: free text is part of the key, and malformed selections still serialize (#1127)', () => {
+    const teal = answerCacheKey('', [{ questionIndex: 0, optionIndices: [], text: 'Teal' }]);
+    const navy = answerCacheKey('', [{ questionIndex: 0, optionIndices: [], text: 'Navy' }]);
+    expect(teal).not.toBe(navy);
+    // Off the wire, unvalidated: an entry without indices must not throw.
+    const malformed = [{ questionIndex: 0 }] as unknown as Parameters<typeof answerCacheKey>[1];
+    expect(answerCacheKey('', malformed)).toBe('auq:[[0,null,null]]');
+    // A non-array `selections` is no selections at all.
+    expect(answerCacheKey('Yes', 'abc' as unknown as Parameters<typeof answerCacheKey>[1])).toBe(
+      'Yes',
+    );
+  });
 });

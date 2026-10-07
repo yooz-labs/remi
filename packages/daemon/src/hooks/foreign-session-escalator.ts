@@ -25,7 +25,7 @@
  *      is blocked waiting in that OTHER process, not ours — so an "answer"
  *      from the phone would have nowhere valid to go. Reusing the normal
  *      Question/hold machinery would risk exactly that: an answer routed back
- *      through OUR `resolveHeld` would inject into OUR PTY, the wrong session
+ *      through OUR answer path would inject into OUR PTY, the wrong session
  *      entirely (the evil twin of #538). The push therefore carries no
  *      `category` and no `options`: iOS only renders action buttons for the
  *      three registered categories (REMI_YN / REMI_YNA / REMI_MULTI,
@@ -70,7 +70,11 @@ import type { PushConfig, PushFn } from '../notifications/notification-dispatche
 import { sendPushTrigger } from '../notifications/push-client.ts';
 import { tokensWanting } from '../notifications/push-preferences.ts';
 import type { SessionBindingStore } from '../session/index.ts';
-import { type SessionRegistryFile, claudeChildLooksAlive } from '../session/index.ts';
+import {
+  type SessionRegistryFile,
+  claudeChildLooksAlive,
+  couldBeClaudeEntry,
+} from '../session/index.ts';
 import { MARKER_SETTLE_MS, readTranscriptOwnerPort } from '../transcript/transcript-owner.ts';
 import type { PermissionRequestHookInput } from './hook-types.ts';
 
@@ -92,6 +96,10 @@ export interface ForeignSessionEscalatorDeps {
   liveSessionsRegistry: SessionRegistryFile;
   bindingStore: SessionBindingStore;
   deviceTokens: Map<string, DeviceTokenEntry>;
+  /** Re-read the shared device-token file before a push, so a removal, mute
+   *  or expired lease a sibling daemon recorded applies here (#1259 review).
+   *  Absent => no refresh (tests). Must be synchronous and non-throwing. */
+  refreshDeviceTokens?: () => void;
   pushConfig: () => PushConfig;
   currentPort: () => number;
   /** Test override for the push transport; defaults to the real sendPushTrigger. */
@@ -188,7 +196,8 @@ export class ForeignSessionEscalator {
    * silently falling through to an escalation.
    */
   private classifyOwnership(input: PermissionRequestHookInput): Ownership {
-    const live = this.deps.liveSessionsRegistry.listLive();
+    // A daemon that hosts Codex owns no Claude transcript and holds no Claude session id (#1179).
+    const live = this.deps.liveSessionsRegistry.listLive().filter(couldBeClaudeEntry);
 
     const stored = this.deps.bindingStore.getByClaudeSessionId(input.session_id);
     if (stored) {
@@ -264,6 +273,7 @@ export class ForeignSessionEscalator {
     input: PermissionRequestHookInput,
     callerSessionId: UUID,
   ): Promise<void> {
+    this.deps.refreshDeviceTokens?.();
     const { deviceTokens, pushConfig } = this.deps;
     const shortId = input.session_id.slice(0, 8);
     // A permission request in a session remi does not manage is still a

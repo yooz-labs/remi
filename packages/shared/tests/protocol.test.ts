@@ -4,7 +4,12 @@
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
+  INPUT_NOT_DELIVERED_ERROR_CODE,
+  INPUT_NOT_DELIVERED_MESSAGE,
   MessageIdTracker,
+  PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
   createAuqAnswer,
@@ -18,8 +23,10 @@ import {
   createHello,
   createHelloAck,
   createHubStatus,
+  createInputNotDeliveredError,
   createPing,
   createPong,
+  createPromptWaitingError,
   createQuestion,
   createQuestionResolved,
   createQuestionSnapshot,
@@ -38,6 +45,7 @@ import {
   createUserInput,
   deserialize,
   generateId,
+  isValidMessage,
   now,
   serialize,
 } from '../src/protocol.ts';
@@ -456,7 +464,6 @@ describe('createRemiStatus() (#754)', () => {
       sessionId: null,
       repo: 'remi',
       branch: 'develop',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
       attached: true,
       queuedCount: 1,
     };
@@ -472,7 +479,8 @@ describe('createRemiStatus() (#754)', () => {
     if (parsed?.type === 'remi_status') {
       expect(parsed.status.attached).toBe(true);
       expect(parsed.status.queuedCount).toBe(1);
-      expect(parsed.status.autoApprove.lastVerdict).toBe('none');
+      // #1125: a current daemon no longer emits the deprecated field.
+      expect('autoApprove' in parsed.status).toBe(false);
     }
   });
 
@@ -480,9 +488,17 @@ describe('createRemiStatus() (#754)', () => {
     const status = mkRemiStatus();
     const msg = createRemiStatus(generateId(), status);
     status.attached = false;
-    status.autoApprove.inFlight = 5;
     expect(msg.status.attached).toBe(true);
-    expect(msg.status.autoApprove.inFlight).toBe(0);
+  });
+
+  test('an older status that still carries autoApprove is copied one level deep', () => {
+    const status = {
+      ...mkRemiStatus(),
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
+    };
+    const msg = createRemiStatus(generateId(), status);
+    status.autoApprove.inFlight = 5;
+    expect(msg.status.autoApprove?.inFlight).toBe(0);
   });
 });
 
@@ -697,6 +713,66 @@ describe('Message factory functions', () => {
         field: 'email',
         reason: 'invalid format',
       });
+    });
+  });
+
+  describe('createPromptWaitingError() (#1140)', () => {
+    test('is an error message with the PROMPT_WAITING code and the user-facing text', () => {
+      const msg = createPromptWaitingError('session-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('PROMPT_WAITING');
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).',
+      );
+      expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+    });
+
+    test('while a hook is held it says the prompt may be finishing, never that a dialog is up (#1126)', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1', PROMPT_WAITING_HELD_MESSAGE);
+
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.',
+      );
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('names the refused input message when the client sent an id', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('survives the wire: serialize, deserialize and validate', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+      const wire = serialize(msg);
+      const back = deserialize(wire);
+
+      expect(back).toEqual(msg);
+      expect(isValidMessage(JSON.parse(wire))).toBe(true);
+    });
+  });
+
+  describe('createInputNotDeliveredError() (#1140)', () => {
+    test('is an error message with the INPUT_NOT_DELIVERED code and the user-facing text', () => {
+      const msg = createInputNotDeliveredError('session-1', 'message-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('INPUT_NOT_DELIVERED');
+      expect(msg.code).toBe(INPUT_NOT_DELIVERED_ERROR_CODE);
+      expect(msg.message).toBe('Input was not delivered: the terminal is not accepting input.');
+      expect(msg.message).toBe(INPUT_NOT_DELIVERED_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('details carry no message id when the client sent none, and the error survives the wire', () => {
+      const msg = createInputNotDeliveredError('session-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+      expect(deserialize(serialize(msg))).toEqual(msg);
     });
   });
 
@@ -1047,6 +1123,29 @@ describe('Message factory functions', () => {
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('resume_session_response');
+    });
+
+    test('carries an optional machine-readable errorCode on failure (#1124)', () => {
+      const requestId = generateId();
+      const msg = createResumeSessionResponse(
+        false,
+        requestId,
+        undefined,
+        'Hub cannot resume',
+        'UNSUPPORTED',
+      );
+      expect(msg.success).toBe(false);
+      expect(msg.error).toBe('Hub cannot resume');
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+      const roundTrip = deserialize(serialize(msg));
+      expect((roundTrip as { errorCode?: string } | null)?.errorCode).toBe('UNSUPPORTED');
+    });
+
+    test('omits errorCode when none is given, so existing failures are unchanged (#1124)', () => {
+      const msg = createResumeSessionResponse(false, generateId(), undefined, 'Session not found');
+      expect('errorCode' in msg).toBe(false);
+      const ok = createResumeSessionResponse(true, generateId(), generateId());
+      expect('errorCode' in ok).toBe(false);
     });
   });
 

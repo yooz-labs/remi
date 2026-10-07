@@ -49,7 +49,7 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
-import type { ClientMessageEvents } from './client-message-events.ts';
+import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
 /** Connection state */
@@ -89,7 +89,11 @@ export interface ConnectionConfig {
   /** Connection timeout in ms */
   readonly connectionTimeout?: number;
 
-  /** Skip sending HelloAck from Connection (let daemon handle it) */
+  /**
+   * Skip sending HelloAck from Connection (let daemon handle it). The production daemon always sets
+   * it: the ack Connection would send carries no `daemonVersion`, no `harnesses` and no harness
+   * identity (#1179), so it never reaches a client in production.
+   */
   readonly skipHelloAck?: boolean;
 
   /** Authenticator instance (if set, authentication is required) */
@@ -459,9 +463,10 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
-      // No daemonVersion here (#539): the production daemon always sets
-      // skipHelloAck and acks via connection-events.ts, which stamps it.
-      // This branch only serves library consumers of WebSocketServer.
+      // No daemonVersion here (#539) and no `harnesses` or harness identity (#1179): the
+      // production daemon always sets skipHelloAck and acks via connection-events.ts, which
+      // stamps all three, so this ack never reaches a client in production. This branch only
+      // serves library consumers of WebSocketServer.
       this.send(createHelloAck(this.config.serverVersion, this.sessionId));
     }
 
@@ -504,10 +509,13 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify. Forward the structured AskUserQuestion parts (#627) when present so
-    // the daemon can drive the TUI (selections) or escape it (cancel).
+    // the daemon can answer the held hook (selections, #1127) or cancel it, and a
+    // "No"'s message for a held permission prompt (#1126).
     const extra: AnswerExtras | undefined =
-      message.selections !== undefined || message.cancel !== undefined
-        ? { selections: message.selections, cancel: message.cancel }
+      message.selections !== undefined ||
+      message.cancel !== undefined ||
+      message.message !== undefined
+        ? { selections: message.selections, cancel: message.cancel, message: message.message }
         : undefined;
     this.events.onAnswer?.(
       message.sessionId,
@@ -549,7 +557,11 @@ export class Connection {
 
   private handleCreateSessionRequest(message: CreateSessionRequestMessage): void {
     this.sendAck(message.id, 'delivered');
-    this.events.onCreateSessionRequest?.(message.directory, message.id);
+    this.events.onCreateSessionRequest?.(
+      message.directory,
+      message.id,
+      createSessionExtra(message),
+    );
   }
 
   private handleKillSessionRequest(message: KillSessionRequestMessage): void {

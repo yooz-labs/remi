@@ -7,6 +7,9 @@
  * Callers MUST check `error` before using any other field.
  */
 
+import { HARNESS_IDS, isHarnessId } from '@remi/shared';
+import type { HarnessId } from '@remi/shared';
+
 const SUBCOMMAND_LIST = [
   'ls',
   'attach',
@@ -29,6 +32,8 @@ const SUBCOMMAND_LIST = [
   'logs',
   'serve',
   'model',
+  'migrate-permissions',
+  'codex',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];
@@ -44,6 +49,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
   'detach',
   'unstick',
   'model',
+  'migrate-permissions',
 ]);
 
 /** Subcommands that take a VERB plus its own operands (`remi model pull <id>`),
@@ -51,6 +57,22 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
  *  are collected into `subcommandArgs` instead of falling through to
  *  `claudeArgs` -- a stray `pull` reaching Claude would be nonsense. #819 */
 const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>(['model']);
+
+/** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
+const REMOVED_SWITCH_FLAGS: ReadonlySet<string> = new Set(['--auto-approve', '--no-auto-approve']);
+
+/** Auto-approve flags removed in #1125 that took a value. Accepted and ignored,
+ *  value included. */
+const REMOVED_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--auto-approve-model',
+  '--auto-approve-provider',
+  '--auto-approve-api-key',
+  '--auto-approve-allow',
+  '--auto-approve-deny',
+  '--auto-approve-instructions',
+  '--auto-approve-multichoice',
+  '--auto-approve-multichoice-model',
+]);
 
 export function isSubcommand(s: string): s is Subcommand {
   return SUBCOMMANDS.has(s);
@@ -105,20 +127,47 @@ export interface ParsedArgs {
   readonly recent: boolean;
   readonly pushSecret: string | undefined;
   readonly orphanTimeout: number | undefined;
-  readonly autoApprove: boolean | undefined;
-  readonly autoApproveModel: string | undefined;
-  readonly autoApproveProvider: string | undefined;
-  readonly autoApproveApiKey: string | undefined;
-  readonly autoApproveAllow: readonly string[];
-  readonly autoApproveDeny: readonly string[];
-  readonly autoApproveInstructions: string | undefined;
-  readonly autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
-  readonly autoApproveMultichoiceModel: string | undefined;
+  /**
+   * Removed auto-approve flags that were given (#1125, ADR 0030), in order,
+   * without their values. Accepted and ignored so existing LaunchAgent plists
+   * and scripts keep starting; the caller prints one notice naming them.
+   */
+  readonly removedFlags: readonly string[];
   readonly claudeArgs: readonly string[];
+  /**
+   * The words `claudeArgs` holds, with the user's own `--` kept in place (#1177). `remi codex`
+   * validates the words after a `--` as prompt text, not as flags, so it must see where they begin.
+   */
+  readonly passthroughArgs: readonly string[];
+  /**
+   * The tokens after the first `--`, and only those, without the `--` (#1179). This is what a
+   * hub appends to a child daemon's command line, last (`create-session-events.ts`), so a daemon
+   * reads its harness's arguments from here and ignores stray tokens: an existing LaunchAgent
+   * plist with a loose word in it starts exactly as before.
+   */
+  readonly explicitArgs: readonly string[];
+  /**
+   * The harness `--harness <id>` names: how a hub tells a child daemon its harness (#1177), and how
+   * `remi new --host <ip> --harness codex` asks a remote hub for one (#1179). User-facing; the help
+   * of `new` lists it.
+   */
+  readonly harness: HarnessId | undefined;
   readonly showVersion: boolean;
   readonly showHelp: boolean;
   /** Callers MUST check this before using any other field. */
   readonly error: string | undefined;
+}
+
+/**
+ * The words that are neither a remi flag nor after a `--` (#1179 review): `claudeArgs` holds them
+ * first and then the tokens after the `--` (`explicitArgs`), so they are what is left at the front.
+ * A command that sends its harness arguments somewhere that reads only `explicitArgs` (`--host`, a
+ * Codex `--daemon`) must refuse these, or the person gets what they did not ask for, silently.
+ */
+export function looseArgs(
+  parsed: Pick<ParsedArgs, 'claudeArgs' | 'explicitArgs'>,
+): readonly string[] {
+  return parsed.claudeArgs.slice(0, parsed.claudeArgs.length - parsed.explicitArgs.length);
 }
 
 export function parseArgs(args: readonly string[]): ParsedArgs {
@@ -155,19 +204,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let pushSecret: string | undefined;
   let dir: string | undefined;
   let recent = false;
-  let autoApprove: boolean | undefined;
-  let autoApproveModel: string | undefined;
-  let autoApproveProvider: string | undefined;
-  let autoApproveApiKey: string | undefined;
-  const autoApproveAllow: string[] = [];
-  const autoApproveDeny: string[] = [];
-  let autoApproveInstructions: string | undefined;
-  let autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
-  let autoApproveMultichoiceModel: string | undefined;
+  const removedFlags: string[] = [];
   let showVersion = false;
   let showHelp = false;
   let error: string | undefined;
   const claudeArgs: string[] = [];
+  const passthroughArgs: string[] = [];
+  const explicitArgs: string[] = [];
+  let harness: HarnessId | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -175,9 +219,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
 
     // Standard Unix: everything after '--' is passthrough
     if (arg === '--') {
+      passthroughArgs.push('--');
       for (let j = i + 1; j < args.length; j++) {
         const a = args[j];
-        if (a) claudeArgs.push(a);
+        if (a) {
+          claudeArgs.push(a);
+          passthroughArgs.push(a);
+          explicitArgs.push(a);
+        }
       }
       break;
     }
@@ -336,71 +385,34 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
-    } else if (arg === '--auto-approve') {
-      autoApprove = true;
-    } else if (arg === '--no-auto-approve') {
-      autoApprove = false;
-    } else if (arg === '--auto-approve-model') {
+    } else if (arg === '--harness') {
       if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-model requires a value.';
+        error = 'Error: --harness requires a value.';
+      } else if (!isHarnessId(nextArg)) {
+        error = `Error: unknown harness "${nextArg}". Known: ${HARNESS_IDS.join(', ')}.`;
       } else {
-        autoApproveModel = nextArg;
+        harness = nextArg;
         i++;
       }
-    } else if (arg === '--auto-approve-provider') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-provider requires a value.';
-      } else {
-        autoApproveProvider = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-api-key') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-api-key requires a value.';
-      } else {
-        autoApproveApiKey = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-allow') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-allow requires a value.';
-      } else {
-        autoApproveAllow.push(nextArg);
-        i++;
-      }
-    } else if (arg === '--auto-approve-deny') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-deny requires a value.';
-      } else {
-        autoApproveDeny.push(nextArg);
-        i++;
-      }
-    } else if (arg === '--auto-approve-instructions') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-instructions requires a value.';
-      } else {
-        autoApproveInstructions = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-multichoice') {
-      if (nextArg !== 'skip' && nextArg !== 'evaluate') {
-        error = 'Error: --auto-approve-multichoice requires "skip" or "evaluate".';
-      } else {
-        autoApproveMultichoice = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-multichoice-model') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-multichoice-model requires a value.';
-      } else {
-        autoApproveMultichoiceModel = nextArg;
-        i++;
-      }
+    } else if (arg !== undefined && REMOVED_SWITCH_FLAGS.has(arg)) {
+      removedFlags.push(arg);
+    } else if (arg !== undefined && REMOVED_VALUE_FLAGS.has(arg)) {
+      // Swallow the value too, so it is not mistaken for a Claude argument or
+      // a subcommand. A missing value is not an error any more: nothing reads it.
+      removedFlags.push(arg);
+      if (nextArg !== undefined && !nextArg.startsWith('-')) i++;
     } else if (arg === '--version' || arg === '-v') {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
       showHelp = true;
-    } else if (isSubcommand(arg as string)) {
+    } else if (
+      isSubcommand(arg as string) &&
+      subcommand !== 'codex' &&
+      !(arg === 'codex' && subcommand !== undefined)
+    ) {
+      // Once `codex` is the subcommand, the words after it are Codex's (a prompt may say
+      // "status" or "config"), so a later subcommand name is not a subcommand. And `codex`
+      // itself is a subcommand only when none was given: `remi stop codex` stops.
       subcommand = arg as Subcommand;
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
@@ -450,9 +462,19 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       !arg.startsWith('-')
     ) {
       subcommandArg = arg;
-    } else {
-      if (arg) claudeArgs.push(arg);
+    } else if (arg) {
+      claudeArgs.push(arg);
+      passthroughArgs.push(arg);
     }
+  }
+
+  if (
+    error === undefined &&
+    subcommand === 'codex' &&
+    harness !== undefined &&
+    harness !== 'codex'
+  ) {
+    error = `Error: --harness ${harness} conflicts with the codex subcommand.`;
   }
 
   return {
@@ -488,17 +510,12 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     pushSecret,
     dir,
     recent,
-    autoApprove,
-    autoApproveModel,
-    autoApproveProvider,
-    autoApproveApiKey,
-    autoApproveAllow,
-    autoApproveDeny,
-    autoApproveInstructions,
-    autoApproveMultichoice,
-    autoApproveMultichoiceModel,
+    removedFlags,
     orphanTimeout,
     claudeArgs,
+    passthroughArgs,
+    explicitArgs,
+    harness,
     showVersion,
     showHelp,
     error,

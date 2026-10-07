@@ -53,15 +53,18 @@ function extractPermissionToolName(text: string): string | null {
 
 /**
  * Build a short label for a pending question (#786/#787):
+ *   - a question that carries its own fixed `pendingLabel` (a Codex card, whose text is a
+ *     command that must not be written to the registry file): that label, as it is
  *   - a multi-question AskUserQuestion form: the topics (header, or text)
  *     of every sub-question, comma-joined
  *   - a permission-request question shaped like "Allow <tool>: <command>"
  *     (or its subagent-prefixed variant): "Permission: <tool>"
  *   - everything else (AskUserQuestion/ExitPlanMode toolQuestion prompts,
- *     StopFailure, PTY-parsed fallback prompts): the summary or question
- *     text, truncated to `PENDING_QUESTION_LABEL_MAX` characters
+ *     PTY-parsed fallback prompts): the question text,
+ *     truncated to `PENDING_QUESTION_LABEL_MAX` characters
  */
 export function buildPendingQuestionLabel(question: Question): string {
+  if (question.pendingLabel !== undefined) return question.pendingLabel;
   if (question.kind === 'multi_question' && question.questions && question.questions.length > 0) {
     const topics = question.questions.map((s) => s.header || s.text).join(', ');
     return truncateLabel(topics, PENDING_QUESTION_LABEL_MAX);
@@ -70,5 +73,5 @@ export function buildPendingQuestionLabel(question: Question): string {
     const toolName = extractPermissionToolName(question.text);
     if (toolName) return `Permission: ${toolName}`;
   }
-  return truncateLabel(question.summary || question.text, PENDING_QUESTION_LABEL_MAX);
+  return truncateLabel(question.text, PENDING_QUESTION_LABEL_MAX);
 }

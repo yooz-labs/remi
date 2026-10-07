@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
+import { looseArgs, parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
 
 describe('parseArgs', () => {
   // -------------------------------------------------------------------------
@@ -706,126 +706,79 @@ describe('parseHostPath', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Auto-approve flags
+// Removed auto-approve flags (#1125, ADR 0030): accepted and ignored, so an
+// existing LaunchAgent plist or script keeps starting. Nothing reads their
+// values; the caller prints one notice naming them.
 // ---------------------------------------------------------------------------
-describe('parseArgs - auto-approve flags', () => {
-  test('--auto-approve sets autoApprove true', () => {
-    const r = parseArgs(['--auto-approve']);
-    expect(r.autoApprove).toBe(true);
+describe('parseArgs - removed auto-approve flags', () => {
+  test('no removed flags by default', () => {
+    expect(parseArgs([]).removedFlags).toEqual([]);
   });
 
-  test('--no-auto-approve sets autoApprove false', () => {
-    const r = parseArgs(['--no-auto-approve']);
-    expect(r.autoApprove).toBe(false);
+  test('--auto-approve and --no-auto-approve are accepted, recorded, not passed to Claude', () => {
+    const r = parseArgs(['--auto-approve', '--no-auto-approve']);
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual(['--auto-approve', '--no-auto-approve']);
+    expect(r.claudeArgs).toEqual([]);
   });
 
-  test('auto-approve defaults to undefined', () => {
-    const r = parseArgs([]);
-    expect(r.autoApprove).toBeUndefined();
-  });
-
-  test('--auto-approve-model sets model', () => {
-    const r = parseArgs(['--auto-approve-model', 'qwen3.5:4b']);
-    expect(r.autoApproveModel).toBe('qwen3.5:4b');
-  });
-
-  test('--auto-approve-model without value errors', () => {
-    const r = parseArgs(['--auto-approve-model']);
-    expect(r.error).toContain('--auto-approve-model requires a value');
-  });
-
-  test('--auto-approve-provider sets provider', () => {
-    const r = parseArgs(['--auto-approve-provider', 'openrouter']);
-    expect(r.autoApproveProvider).toBe('openrouter');
-  });
-
-  test('--auto-approve-provider without value errors', () => {
-    const r = parseArgs(['--auto-approve-provider']);
-    expect(r.error).toContain('--auto-approve-provider requires a value');
-  });
-
-  test('--auto-approve-api-key sets api key', () => {
-    const r = parseArgs(['--auto-approve-api-key', 'sk-test-123']);
-    expect(r.autoApproveApiKey).toBe('sk-test-123');
-  });
-
-  test('--auto-approve-api-key without value errors', () => {
-    const r = parseArgs(['--auto-approve-api-key']);
-    expect(r.error).toContain('--auto-approve-api-key requires a value');
-  });
-
-  test('combined auto-approve flags', () => {
+  test('value flags swallow their value, so it never reaches Claude or the subcommand', () => {
     const r = parseArgs([
-      '--auto-approve',
       '--auto-approve-model',
       'yooz-light-v3',
       '--auto-approve-provider',
       'yooz',
-    ]);
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveModel).toBe('yooz-light-v3');
-    expect(r.autoApproveProvider).toBe('yooz');
-  });
-
-  test('auto-approve flags with new subcommand', () => {
-    const r = parseArgs(['new', '--auto-approve', '--auto-approve-model', 'llama3.2']);
-    expect(r.subcommand).toBe('new');
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveModel).toBe('llama3.2');
-  });
-
-  test('--auto-approve-allow is repeatable', () => {
-    const r = parseArgs([
+      '--auto-approve-api-key',
+      'sk-test-123',
       '--auto-approve-allow',
       'git push',
-      '--auto-approve-allow',
-      'bun test',
-      '--auto-approve-allow',
-      'Read',
-    ]);
-    expect(r.autoApproveAllow).toEqual(['git push', 'bun test', 'Read']);
-  });
-
-  test('--auto-approve-deny is repeatable', () => {
-    const r = parseArgs(['--auto-approve-deny', 'rm -rf /', '--auto-approve-deny', 'sudo ']);
-    expect(r.autoApproveDeny).toEqual(['rm -rf /', 'sudo ']);
-  });
-
-  test('--auto-approve-allow defaults to empty array', () => {
-    const r = parseArgs([]);
-    expect(r.autoApproveAllow).toEqual([]);
-    expect(r.autoApproveDeny).toEqual([]);
-  });
-
-  test('--auto-approve-allow without value errors', () => {
-    const r = parseArgs(['--auto-approve-allow']);
-    expect(r.error).toContain('--auto-approve-allow requires a value');
-  });
-
-  test('--auto-approve-instructions sets guidance string', () => {
-    const r = parseArgs(['--auto-approve-instructions', 'Approve all bun test runs']);
-    expect(r.autoApproveInstructions).toBe('Approve all bun test runs');
-  });
-
-  test('--auto-approve-instructions without value errors', () => {
-    const r = parseArgs(['--auto-approve-instructions']);
-    expect(r.error).toContain('--auto-approve-instructions requires a value');
-  });
-
-  test('allow and deny flags mixed with other auto-approve flags', () => {
-    const r = parseArgs([
-      '--auto-approve',
-      '--auto-approve-allow',
-      'git status',
       '--auto-approve-deny',
       'sudo ',
       '--auto-approve-instructions',
       'Be conservative',
+      '--auto-approve-multichoice',
+      'evaluate',
+      '--auto-approve-multichoice-model',
+      'big',
     ]);
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveAllow).toEqual(['git status']);
-    expect(r.autoApproveDeny).toEqual(['sudo ']);
-    expect(r.autoApproveInstructions).toBe('Be conservative');
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual([
+      '--auto-approve-model',
+      '--auto-approve-provider',
+      '--auto-approve-api-key',
+      '--auto-approve-allow',
+      '--auto-approve-deny',
+      '--auto-approve-instructions',
+      '--auto-approve-multichoice',
+      '--auto-approve-multichoice-model',
+    ]);
+    expect(r.claudeArgs).toEqual([]);
+  });
+
+  test('a removed value flag with no value is not an error any more', () => {
+    const r = parseArgs(['--auto-approve-model']);
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual(['--auto-approve-model']);
+  });
+
+  test('a removed value flag does not swallow a following flag', () => {
+    const r = parseArgs(['--auto-approve-model', '--daemon']);
+    expect(r.removedFlags).toEqual(['--auto-approve-model']);
+    expect(r.daemonMode).toBe(true);
+  });
+
+  test('removed flags alongside a subcommand and real flags', () => {
+    const r = parseArgs([
+      'serve',
+      '--auto-approve',
+      '--auto-approve-model',
+      'llama3.2',
+      '--port',
+      '19001',
+    ]);
+    expect(r.subcommand).toBe('serve');
+    expect(r.port).toBe(19001);
+    expect(r.removedFlags).toEqual(['--auto-approve', '--auto-approve-model']);
   });
 
   describe('--all (#859)', () => {
@@ -849,5 +802,267 @@ describe('parseArgs - auto-approve flags', () => {
     test('remi --sessions all still selects the sessions view', () => {
       expect(parseArgs(['--sessions', 'all']).showSessions).toBe('all');
     });
+  });
+});
+
+describe('parseArgs - remi codex and --harness (#1177)', () => {
+  const UUID = '00000000-0000-7000-8000-0000000000aa';
+
+  test('codex is a subcommand, and the words after it are Codex arguments', () => {
+    const r = parseArgs(['codex']);
+    expect(r.subcommand).toBe('codex');
+    expect(r.claudeArgs).toEqual([]);
+    expect(r.passthroughArgs).toEqual([]);
+    expect(r.harness).toBeUndefined();
+
+    const resume = parseArgs(['codex', 'resume', UUID]);
+    expect(resume.subcommand).toBe('codex');
+    expect(resume.claudeArgs).toEqual(['resume', UUID]);
+    expect(resume.passthroughArgs).toEqual(['resume', UUID]);
+  });
+
+  test('remi still reads its own flags beside the Codex words, and leaves the Codex ones alone', () => {
+    const r = parseArgs([
+      'codex',
+      '--port',
+      '19000',
+      '--dir',
+      '/tmp/x',
+      '-m',
+      'some-model',
+      '--yolo',
+    ]);
+    expect(r.port).toBe(19000);
+    expect(r.dir).toBe('/tmp/x');
+    expect(r.claudeArgs).toEqual(['-m', 'some-model', '--yolo']);
+    expect(r.passthroughArgs).toEqual(['-m', 'some-model', '--yolo']);
+  });
+
+  test("-h and --help beside codex are remi's, so `remi codex -h` shows the codex help", () => {
+    for (const flag of ['-h', '--help']) {
+      const r = parseArgs(['codex', flag]);
+      expect(r.showHelp).toBe(true);
+      expect(r.subcommand).toBe('codex');
+      expect(r.claudeArgs).toEqual([]);
+    }
+  });
+
+  test("remi -c stays Claude's --continue: a Claude argument, not a subcommand", () => {
+    const r = parseArgs(['-c']);
+    expect(r.subcommand).toBeUndefined();
+    expect(r.claudeArgs).toEqual(['-c']);
+    expect(r.harness).toBeUndefined();
+  });
+
+  test("the user's own -- is kept in place in passthroughArgs, and what follows it is not remi's", () => {
+    const r = parseArgs(['codex', '-m', 'x', '--', 'fix', '--port', '1', '-h']);
+    expect(r.claudeArgs).toEqual(['-m', 'x', 'fix', '--port', '1', '-h']);
+    expect(r.passthroughArgs).toEqual(['-m', 'x', '--', 'fix', '--port', '1', '-h']);
+    expect(r.port).toBeUndefined();
+    expect(r.showHelp).toBe(false);
+  });
+
+  test('a -- first, or an empty word after it, behaves the same way', () => {
+    expect(parseArgs(['codex', '--', 'hello']).passthroughArgs).toEqual(['--', 'hello']);
+    expect(parseArgs(['codex', '--']).passthroughArgs).toEqual(['--']);
+    expect(parseArgs(['codex', '--', '', 'x']).passthroughArgs).toEqual(['--', 'x']);
+  });
+
+  test('once codex is the subcommand, a later word that names a subcommand is a Codex word', () => {
+    for (const word of ['status', 'config', 'new', 'logs', 'stop', 'ls', 'kill', 'code']) {
+      const r = parseArgs(['codex', word]);
+      expect(r.subcommand, word).toBe('codex');
+      expect(r.claudeArgs, word).toEqual([word]);
+    }
+    const prompt = parseArgs(['codex', 'fix', 'the', 'config']);
+    expect(prompt.subcommand).toBe('codex');
+    expect(prompt.claudeArgs).toEqual(['fix', 'the', 'config']);
+  });
+
+  test('the word codex after another subcommand is not the subcommand (W15)', () => {
+    // `remi stop codex` must stop, not launch Codex; `remi new codex` is a new Claude session.
+    for (const cmd of [
+      'stop',
+      'new',
+      'ls',
+      'logs',
+      'status',
+      'config',
+      'serve',
+      'start',
+    ] as const) {
+      const r = parseArgs([cmd, 'codex']);
+      expect(r.subcommand, cmd).toBe(cmd);
+    }
+    // Where the subcommand takes a word of its own, that word is it, as before.
+    const attach = parseArgs(['attach', 'codex']);
+    expect(attach.subcommand).toBe('attach');
+    expect(attach.subcommandArg).toBe('codex');
+    // A second `codex` word after the argument is no longer a subcommand either.
+    const second = parseArgs(['attach', 'a', 'codex']);
+    expect(second.subcommand).toBe('attach');
+    expect(second.subcommandArg).toBe('a');
+    expect(second.claudeArgs).toEqual(['codex']);
+    // Flags first, then codex: still the subcommand.
+    expect(parseArgs(['--daemon', 'codex']).subcommand).toBe('codex');
+    expect(parseArgs(['--host', 'h', 'codex']).subcommand).toBe('codex');
+  });
+
+  test("that rule is codex's alone: for every other subcommand the last one still wins", () => {
+    expect(parseArgs(['new', 'ls']).subcommand).toBe('ls');
+    expect(parseArgs(['status', 'config']).subcommand).toBe('config');
+  });
+
+  test('for every other command passthroughArgs is claudeArgs with the -- kept', () => {
+    const r = parseArgs(['new', '--host', 'h', '--', '--resume']);
+    expect(r.claudeArgs).toEqual(['--resume']);
+    expect(r.passthroughArgs).toEqual(['--', '--resume']);
+    const plain = parseArgs(['--verbose', 'x']);
+    expect(plain.passthroughArgs).toEqual(plain.claudeArgs);
+  });
+
+  describe('--harness', () => {
+    test('names the harness, for any known id', () => {
+      expect(parseArgs(['--harness', 'codex']).harness).toBe('codex');
+      expect(parseArgs(['--daemon', '--harness', 'claude']).harness).toBe('claude');
+      expect(parseArgs(['--harness', 'opencode']).harness).toBe('opencode');
+    });
+
+    test('is not a Codex or Claude argument', () => {
+      const r = parseArgs(['--harness', 'codex', '--daemon']);
+      expect(r.claudeArgs).toEqual([]);
+      expect(r.passthroughArgs).toEqual([]);
+      expect(r.daemonMode).toBe(true);
+      // Its value is consumed: `codex` here is not the subcommand, nor `claude` a Claude word.
+      expect(r.subcommand).toBeUndefined();
+      expect(parseArgs(['--harness', 'claude']).claudeArgs).toEqual([]);
+    });
+
+    test('an unknown id, a missing value and a flag as the value are errors', () => {
+      expect(parseArgs(['--harness', 'bogus']).error).toContain('unknown harness "bogus"');
+      expect(parseArgs(['--harness', 'bogus']).error).toContain('claude, codex, opencode');
+      expect(parseArgs(['--harness']).error).toContain('requires a value');
+      expect(parseArgs(['--harness', '--daemon']).error).toContain('requires a value');
+    });
+
+    test('is case-sensitive', () => {
+      expect(parseArgs(['--harness', 'Codex']).error).toContain('unknown harness');
+    });
+
+    test('conflicts with a different subcommand harness, and agrees with the same one', () => {
+      expect(parseArgs(['codex', '--harness', 'claude']).error).toContain(
+        '--harness claude conflicts with the codex subcommand',
+      );
+      expect(parseArgs(['--harness', 'opencode', 'codex']).error).toContain('conflicts');
+      const same = parseArgs(['codex', '--harness', 'codex']);
+      expect(same.error).toBeUndefined();
+      expect(same.harness).toBe('codex');
+    });
+
+    test('an earlier error is not replaced by the conflict', () => {
+      expect(parseArgs(['codex', '--port', 'x', '--harness', 'claude']).error).toContain(
+        'Invalid port',
+      );
+    });
+
+    test('after a user -- it is a word, not a flag', () => {
+      const r = parseArgs(['codex', '--', '--harness', 'claude']);
+      expect(r.harness).toBeUndefined();
+      expect(r.error).toBeUndefined();
+      expect(r.passthroughArgs).toEqual(['--', '--harness', 'claude']);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // explicitArgs: what a hub appends to a child's command line (#1179)
+  // -------------------------------------------------------------------------
+  describe('explicitArgs (#1179)', () => {
+    test('are the tokens after the first --, without the --', () => {
+      const r = parseArgs(['--daemon', '--harness', 'codex', '--', '-m', 'some-model']);
+      expect(r.explicitArgs).toEqual(['-m', 'some-model']);
+      expect(r.harness).toBe('codex');
+      expect(r.daemonMode).toBe(true);
+    });
+
+    test('are empty without a --, and a stray word is still only a Claude argument', () => {
+      const r = parseArgs(['--daemon', 'stray', 'words']);
+      expect(r.explicitArgs).toEqual([]);
+      expect(r.claudeArgs).toEqual(['stray', 'words']);
+    });
+
+    test('do not include a stray word that came before the --', () => {
+      const r = parseArgs(['stray', '--', '--continue']);
+      expect(r.explicitArgs).toEqual(['--continue']);
+      expect(r.passthroughArgs).toEqual(['stray', '--', '--continue']);
+    });
+
+    test('a second -- is one of the arguments', () => {
+      expect(parseArgs(['--', '--', 'x']).explicitArgs).toEqual(['--', 'x']);
+    });
+
+    test('remi flags after the -- are arguments, not flags: a remote client cannot reach --no-auth', () => {
+      const r = parseArgs([
+        '--daemon',
+        '--bind',
+        'localhost',
+        '--',
+        '--no-auth',
+        '--bind',
+        '0.0.0.0',
+      ]);
+      expect(r.auth).toBeUndefined();
+      expect(r.bindHost).toBe('localhost');
+      expect(r.explicitArgs).toEqual(['--no-auth', '--bind', '0.0.0.0']);
+    });
+
+    test('remi flags before the -- are still read, in any order', () => {
+      const r = parseArgs([
+        '--no-auth',
+        '--harness',
+        'claude',
+        '--no-relay',
+        '--',
+        '--model',
+        'opus',
+      ]);
+      expect(r.auth).toBe(false);
+      expect(r.noRelay).toBe(true);
+      expect(r.harness).toBe('claude');
+      expect(r.explicitArgs).toEqual(['--model', 'opus']);
+    });
+  });
+});
+
+describe('looseArgs: the words that are neither remi flags nor after a -- (#1179 review, G2, G3)', () => {
+  test('a Codex flag with no -- before it is loose, in order, whatever the subcommand', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '-s', 'read-only']))).toEqual([
+      '-s',
+      'read-only',
+    ]);
+    expect(looseArgs(parseArgs(['--daemon', '--harness', 'codex', '-m', 'x']))).toEqual([
+      '-m',
+      'x',
+    ]);
+    expect(looseArgs(parseArgs(['new', '--host', 'h', '--model', 'sonnet']))).toEqual([
+      '--model',
+      'sonnet',
+    ]);
+  });
+
+  test('what follows a -- is not loose: it is the arguments, kept apart', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '--', '-s', 'read-only']))).toEqual([]);
+    expect(looseArgs(parseArgs(['--daemon', '--', '--model', 'opus']))).toEqual([]);
+  });
+
+  test('a loose word before a -- is still loose, and only that word', () => {
+    expect(looseArgs(parseArgs(['codex', 'stray', '--host', 'h', '--', '-m', 'x']))).toEqual([
+      'stray',
+    ]);
+  });
+
+  test('no words at all, and remi flags alone, are loose-free', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '--port', '9', '--dir', '/tmp']))).toEqual(
+      [],
+    );
+    expect(looseArgs(parseArgs([]))).toEqual([]);
   });
 });

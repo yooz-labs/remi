@@ -1,5 +1,7 @@
 # Native iOS handoff — Live Activities + content-available + NSE (epic #571, deferred on #575)
 
+> **Partly historical (2026-10-01).** Since #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)) the daemon no longer emits the `evaluating` / `approved` statuses or any auto-resolve: the states below reduce to `waiting` and the plain working states, and `question_resolved` reasons to answered or cancelled. Design a Live Activity against those, not the cue this guide describes.
+
 The daemon/web/signaling side of issue 6 is done (relay, pre-wake payload, dismissal, status). The remaining pieces need Xcode + an Apple Developer profile + a device, so they're a maintainer task. This is the implementation guide. Team `9DQ459HAZB`, bundle `com.yooz.remi`.
 
 ## Already shipped (verify / deploy, no Xcode-target work)
@@ -11,8 +13,8 @@ The daemon/web/signaling side of issue 6 is done (relay, pre-wake payload, dismi
 
 Goal: a lock-screen / Dynamic Island card showing the live agent state (`evaluating → needs you → approved`, the question text, elapsed seconds) with Yes/No buttons.
 
-1. **Add a Widget Extension target** (Xcode → File → New → Target → Widget Extension, check "Include Live Activity"). Bundle `com.yooz.remi.activity`. Add it to the App Store provisioning under team `9DQ459HAZB`.
-2. **Entitlements/Info.plist:** set `NSSupportsLiveActivities = YES` in the MAIN app `Info.plist`; add an **App Group** (`group.com.yooz.remi`) to both the app and the widget so they share state.
+1. **Add a Widget Extension target** (Xcode → File → New → Target → Widget Extension, check "Include Live Activity"). Bundle `live.yooz.remi.activity` (corrected 2026-10-06: the app's bundle id is `live.yooz.remi`). Add it to the App Store provisioning under team `9DQ459HAZB`.
+2. **Entitlements/Info.plist:** set `NSSupportsLiveActivities = YES` in the MAIN app `Info.plist`; add an **App Group** (`group.live.yooz.remi`) to both the app and the widget so they share state.
 3. **`ActivityAttributes`** (shared file, both targets):
    ```swift
    struct RemiQuestionActivity: ActivityAttributes {
@@ -36,6 +38,8 @@ Goal: a lock-screen / Dynamic Island card showing the live agent state (`evaluat
 
 ## B. Notification Service Extension (NSE) — limited; likely skip
 
+> **Superseded (2026-10-06).** The NSE ships (`packages/web/ios/App/RemiNotificationService`, bundle `live.yooz.remi.RemiNotificationService`) and is central to secure push since R5 (#1200): it opens the sealed payload. What follows is the July reasoning about button titles, still accurate on that point.
+
 NSE can rewrite a notification's **content** (title/body/attachments) but **cannot** change **action-button titles** — `UNNotificationAction` titles are fixed per `UNNotificationCategory` at registration. So "dynamic button labels via NSE" is not achievable. The notification **body already lists the real options** (Phase 3), which covers the visibility need. Only add an NSE if you later want decrypted/richer content or attachments; otherwise skip.
 
 ## Integration points the backend already provides
@@ -47,7 +51,7 @@ NSE can rewrite a notification's **content** (title/body/attachments) but **cann
 
 ## Provisioning checklist
 
-- App Group `group.com.yooz.remi` on app + widget targets.
+- App Group `group.live.yooz.remi` on app + widget targets.
 - `NSSupportsLiveActivities = YES`.
 - Widget bundle id + provisioning profile under team `9DQ459HAZB`.
 - (If using ActivityKit push) APNS auth key already used by the signaling worker covers the `liveactivity` push type — no new key, just the topic suffix.

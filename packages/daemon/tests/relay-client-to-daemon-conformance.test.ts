@@ -13,24 +13,22 @@
  * The relay has no real client-side implementation to drive the other end
  * of the wire: #881 is that the web client's key-exchange half was never
  * built, so a real remote client cannot complete the relay handshake this
- * daemon-side adapter expects. Building a second, parallel client
- * implementation just for this test would itself be exactly the kind of
- * synthetic counterparty AGENTS.md warns about (`relay-encryption.test.ts`
- * drove the daemon with a test-local client that performed a handshake step
- * no real client did, and #543 shipped half-built as a result).
+ * daemon-side adapter expects. The client half is therefore played by
+ * `remote/relay-test-peer.ts` from the shared crypto primitives, the same way
+ * `remote/relay-encryption.test.ts` does it. These tests prove the daemon's
+ * dispatch, not interoperability with a client.
  *
- * Instead, this drives the REAL, shipping `RelayAdapter`
- * (packages/daemon/src/remote/relay-adapter.ts) through its `createTransport`
- * seam -- a `RelayTransport` stand-in, documented in relay-adapter.ts as
- * existing "so a test can stand in for the transport without a network or a
- * Worker" (#543). The daemon-side class, its handler map, and its dispatch
- * logic are all real and unmodified; only the signaling Worker connection is
- * replaced with a fake event emitter that a real client's traffic would look
- * identical to on the wire (plain JSON `ProtocolMessage` payloads emitted on
- * a `relay` event, matching what `handleRelayMessage` expects once
- * authenticated). No `authenticator` is configured here (default
- * rotating-code mode), so the adapter accepts the fake peer immediately on
- * `peer-connected` without needing to fake the Ed25519 challenge-response.
+ * What is real: the shipping `RelayAdapter`
+ * (packages/daemon/src/remote/relay-adapter.ts), a real `Authenticator` over a
+ * real `IdentityStore`, a real Ed25519 challenge-response, a real key exchange
+ * and AES-GCM sealing of every inbound payload. Only the signaling Worker
+ * connection is replaced, through the adapter's `createTransport` seam,
+ * documented in relay-adapter.ts as existing "so a test can stand in for the
+ * transport without a network or a Worker" (#543).
+ *
+ * The adapter runs in permanent-code mode because that is the only mode that
+ * accepts a peer (#1193): without an authenticator it refuses every peer, which
+ * `remote/relay-fail-closed.test.ts` pins.
  *
  * For every `ClientToDaemonType` this asserts the daemon's real
  * `AdapterEvents` callback fires. `hello`/`ping`/`pong`/`ack` are explicit
@@ -46,10 +44,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MESSAGE_DIRECTION, deserialize } from '@remi/shared';
+import { MESSAGE_DIRECTION, createCreateSessionRequest, deserialize } from '@remi/shared';
 import type { ProtocolMessage, ProtocolMessageMap, UUID } from '@remi/shared';
 import type { AdapterEvents } from '../src/adapters/connection-adapter.ts';
-import { RelayAdapter, type RelayTransport } from '../src/remote/relay-adapter.ts';
+import {
+  type AuthenticatedRelayPeer,
+  startAuthenticatedRelayPeer,
+} from './remote/relay-test-peer.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(HERE, '../../shared/tests/fixtures/protocol');
@@ -84,60 +85,8 @@ const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
   unregister_device_token: 'onUnregisterDeviceToken',
 };
 
-/**
- * Stands in for `SignalingClient` (the real Worker transport) via the seam
- * `RelayAdapter` already exposes for exactly this. A real client's traffic
- * looks identical to `emitRelay` on the wire once past the handshake: plain
- * JSON `ProtocolMessage` payloads. `sent` records everything the adapter
- * tried to send back (`sendRelay`), the same seam production code uses for
- * challenges, auth results, and error replies.
- */
-class FakeRelayTransport implements RelayTransport {
-  readonly isConnected = true;
-  readonly connectionCode: string | null = 'TEST-CODE';
-  readonly sent: string[] = [];
-  // Matches RelayTransport's own catch-all `on` overload (`any[]`, same reason: the emitter is heterogeneous by design).
-  // biome-ignore lint/suspicious/noExplicitAny: matches RelayTransport's catch-all overload
-  private readonly listeners = new Map<string, Array<(...args: any[]) => void>>();
-
-  // biome-ignore lint/suspicious/noExplicitAny: implements RelayTransport's catch-all overload signature
-  on(event: string, cb: (...args: any[]) => void): void {
-    const list = this.listeners.get(event) ?? [];
-    list.push(cb);
-    this.listeners.set(event, list);
-  }
-
-  // biome-ignore lint/suspicious/noExplicitAny: forwarding whatever `on` was registered with
-  private fire(event: string, ...args: any[]): void {
-    for (const cb of this.listeners.get(event) ?? []) cb(...args);
-  }
-
-  sendRelay(payload: string): void {
-    this.sent.push(payload);
-  }
-
-  connect(): void {}
-  close(): void {}
-
-  /** Simulate the peer (client) connecting -- fires the adapter's real
-   *  `peer-connected` handler. */
-  emitPeerConnected(): void {
-    this.fire('peer-connected');
-  }
-
-  /** Simulate the peer sending one plaintext protocol message -- fires the
-   *  adapter's real `relay` handler, exactly as an authenticated client's
-   *  traffic would (no `sessionKeys` here since no authenticator is
-   *  configured, so the adapter processes it as plaintext, matching #881:
-   *  the DEFAULT rotating-code path never derives session keys). */
-  emitRelay(message: ProtocolMessage): void {
-    this.fire('relay', JSON.stringify(message));
-  }
-}
-
 describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899, NOT end-to-end)', () => {
-  let transport: FakeRelayTransport;
-  let adapter: RelayAdapter;
+  let peer: AuthenticatedRelayPeer;
   let connectionId: UUID | null = null;
   const eventCalls: Array<{ event: string; args: unknown[] }> = [];
 
@@ -148,7 +97,6 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
   }
 
   beforeEach(async () => {
-    transport = new FakeRelayTransport();
     connectionId = null;
     eventCalls.length = 0;
     const events: Partial<AdapterEvents> = {
@@ -172,24 +120,15 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       onUnregisterDeviceToken: record('onUnregisterDeviceToken'),
     };
 
-    adapter = new RelayAdapter(
-      {
-        enabled: true,
-        signalingUrl: 'wss://ignored.example.com',
-        createTransport: () => transport,
-      },
-      events,
-    );
-    await adapter.start();
-    transport.emitPeerConnected();
-    if (!connectionId) throw new Error('peer-connected did not fire onConnect');
+    peer = await startAuthenticatedRelayPeer(events);
+    if (!connectionId) throw new Error('the handshake did not fire onConnect');
     // Reset AFTER the connect handshake so each test's assertions only see
     // calls caused by the message it emits, not the setup's own onConnect.
     eventCalls.length = 0;
   });
 
   afterEach(async () => {
-    await adapter.stop();
+    await peer.dispose();
   });
 
   test('every ClientToDaemonType has a fixture, and the set is exactly the 18 INBOUND_ROUTED types', () => {
@@ -200,19 +139,53 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
   });
 
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
-    test('emitted relay message is routed to the correct real AdapterEvents callback', () => {
+    test('emitted relay message is routed to the correct real AdapterEvents callback', async () => {
       const fixture = loadFixture(type);
-      transport.emitRelay(fixture);
+      await peer.send(fixture, () => eventCalls.length > 0);
 
       expect(eventCalls).toHaveLength(1);
       expect(eventCalls[0]?.event).toBe(EXPECTED_EVENT[type]);
       expect(eventCalls[0]?.args[0]).toBe(connectionId);
       // No rejection was sent back for a type the router does recognize.
-      expect(transport.sent).toHaveLength(0);
+      expect(peer.sentAfterHandshake()).toHaveLength(0);
     });
   });
 
-  test('answer selections/cancel are forwarded as extra over relay (#899: previously dropped)', () => {
+  test('a create request carries its harness and args to onCreateSessionRequest as extra (#1179)', async () => {
+    // The shipping factory builds the request, as the CLI and the web client do.
+    const request = createCreateSessionRequest('/work/project', {
+      harness: 'codex',
+      args: ['-m', 'some-model'],
+    });
+    await peer.send(request);
+
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.event).toBe('onCreateSessionRequest');
+    // onCreateSessionRequest(connectionId, directory, requestId, extra)
+    expect(eventCalls[0]?.args.slice(1)).toEqual([
+      '/work/project',
+      request.id,
+      { harness: 'codex', args: ['-m', 'some-model'] },
+    ]);
+  });
+
+  test('a plain create request has no extra, and a hostile one reaches the handler untouched to be refused there (#1179)', async () => {
+    await peer.send(createCreateSessionRequest('/work/project'));
+    expect(eventCalls[0]?.args[3]).toBeUndefined();
+
+    // Nothing is validated in the transport: a field that is not what the type says flows
+    // through for the handler's trust-boundary checks, as every other field does.
+    eventCalls.length = 0;
+    const hostile = {
+      ...createCreateSessionRequest('/work/project'),
+      harness: 5,
+      args: 'not an array',
+    } as unknown as ProtocolMessage;
+    await peer.send(hostile);
+    expect(eventCalls[0]?.args[3]).toEqual({ harness: 5, args: 'not an array' });
+  });
+
+  test('answer selections/cancel are forwarded as extra over relay (#899: previously dropped)', async () => {
     const fixture = loadFixture('answer');
     if (fixture.type !== 'answer') throw new Error('unreachable');
     const withSelections: ProtocolMessage = {
@@ -220,7 +193,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       answer: '',
       selections: [{ questionIndex: 0, optionIndices: [1] }],
     };
-    transport.emitRelay(withSelections);
+    await peer.send(withSelections, () => eventCalls.length > 0);
 
     expect(eventCalls).toHaveLength(1);
     expect(eventCalls[0]?.event).toBe('onAnswer');
@@ -231,20 +204,50 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
     });
   });
 
-  test('hello over relay is a no-op: connection is already established via peer-connected', () => {
-    const fixture = loadFixture('hello');
-    transport.emitRelay(fixture);
+  test('a free-text AskUserQuestion answer (AnswerSelection.text) is forwarded verbatim over relay (#1127)', async () => {
+    const fixture = loadFixture('answer');
+    if (fixture.type !== 'answer') throw new Error('unreachable');
+    const selections = [
+      { questionIndex: 0, optionIndices: [], text: 'Teal with a hint of gold' },
+      { questionIndex: 1, optionIndices: [0, 2] },
+    ];
+    await peer.send({ ...fixture, answer: '', selections }, () => eventCalls.length > 0);
 
-    expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(0);
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.event).toBe('onAnswer');
+    expect(eventCalls[0]?.args[5]).toEqual({ selections, cancel: undefined });
   });
 
-  test('ping over relay is a no-op: no reply needed', () => {
-    const fixture = loadFixture('ping');
-    transport.emitRelay(fixture);
+  test("a held card's deny message is forwarded as extra.message over relay (#1126)", async () => {
+    const fixture = loadFixture('answer');
+    if (fixture.type !== 'answer') throw new Error('unreachable');
+    const withMessage: ProtocolMessage = {
+      ...fixture,
+      answer: 'No',
+      message: 'run the tests first',
+    };
+    await peer.send(withMessage, () => eventCalls.length > 0);
+
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.event).toBe('onAnswer');
+    const extra = eventCalls[0]?.args[5] as { message?: string } | undefined;
+    expect(extra?.message).toBe('run the tests first');
+  });
+
+  test('hello over relay is a no-op: connection is already established via peer-connected', async () => {
+    const fixture = loadFixture('hello');
+    await peer.send(fixture);
 
     expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(0);
+    expect(peer.sentAfterHandshake()).toHaveLength(0);
+  });
+
+  test('ping over relay is a no-op: no reply needed', async () => {
+    const fixture = loadFixture('ping');
+    await peer.send(fixture);
+
+    expect(eventCalls).toHaveLength(0);
+    expect(peer.sentAfterHandshake()).toHaveLength(0);
   });
 
   // #899's trap, pinned end-to-end through the real adapter's real 'relay'
@@ -252,49 +255,49 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
   // case for 'pong'/'ack' at all, so both were rejected as UNSUPPORTED even
   // though MESSAGE_DIRECTION tags both 'both' (real client-to-daemon
   // types) and connection.ts has always accepted them as no-ops.
-  test('pong over relay does not produce an UNSUPPORTED rejection (#899 trap)', () => {
+  test('pong over relay does not produce an UNSUPPORTED rejection (#899 trap)', async () => {
     const fixture = loadFixture('pong');
-    transport.emitRelay(fixture);
+    await peer.send(fixture);
 
     expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(0);
+    expect(peer.sentAfterHandshake()).toHaveLength(0);
   });
 
-  test('ack over relay does not produce an UNSUPPORTED rejection (#899 trap)', () => {
+  test('ack over relay does not produce an UNSUPPORTED rejection (#899 trap)', async () => {
     const fixture = loadFixture('ack');
-    transport.emitRelay(fixture);
+    await peer.send(fixture);
 
     expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(0);
+    expect(peer.sentAfterHandshake()).toHaveLength(0);
   });
 
-  test('a genuinely unregistered type is rejected as UNSUPPORTED, naming the type (control)', () => {
+  test('a genuinely unregistered type is rejected as UNSUPPORTED, naming the type (control)', async () => {
     const bogus = {
       type: 'totally_unknown_future_type',
       id: 'bogus-id',
       timestamp: new Date().toISOString(),
     } as unknown as ProtocolMessage;
-    transport.emitRelay(bogus);
+    await peer.send(bogus, () => peer.sentAfterHandshake().length > 0);
 
     expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(1);
-    const parsed = JSON.parse(transport.sent[0] as string);
+    expect(peer.sentAfterHandshake()).toHaveLength(1);
+    const parsed = JSON.parse(peer.sentAfterHandshake()[0] as string);
     expect(parsed.type).toBe('error');
     expect(parsed.code).toBe('UNSUPPORTED');
     expect(parsed.message).toContain('totally_unknown_future_type');
   });
 
-  test('a registered d2c-only type arriving over relay is rejected as UNSUPPORTED', () => {
+  test('a registered d2c-only type arriving over relay is rejected as UNSUPPORTED', async () => {
     // 'question' is a real registry type but tagged 'd2c' -- not a key in
     // the relay's handler map. Preserves relay's pre-#899 behavior for this
     // exact scenario (see connection.ts's analogous UNKNOWN_MESSAGE case in
     // the web-side conformance test).
     const fixture = loadFixture('question');
-    transport.emitRelay(fixture);
+    await peer.send(fixture, () => peer.sentAfterHandshake().length > 0);
 
     expect(eventCalls).toHaveLength(0);
-    expect(transport.sent).toHaveLength(1);
-    const parsed = JSON.parse(transport.sent[0] as string);
+    expect(peer.sentAfterHandshake()).toHaveLength(1);
+    const parsed = JSON.parse(peer.sentAfterHandshake()[0] as string);
     expect(parsed.code).toBe('UNSUPPORTED');
     expect(parsed.message).toContain('question');
   });

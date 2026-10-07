@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { identityFromClaudeId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
@@ -80,6 +82,7 @@ describe('createTranscriptHandlers', () => {
   ) {
     return createTranscriptHandlers({
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       transcriptWatchers,
       bindingStore,
       transcriptIndex,
@@ -114,6 +117,7 @@ describe('createTranscriptHandlers', () => {
       sessionId: 'cccccccc-0000-0000-0000-000000000000' as UUID,
       claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
       transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+      identity: identityFromClaudeId('22222222-2222-2222-2222-222222222222'),
     };
     makeHandlers(() => current).onTranscriptLoadRequest(
       CID,

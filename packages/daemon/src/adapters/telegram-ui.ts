@@ -88,6 +88,151 @@ export function formatMessageForTelegram(message: Message): string {
   return content;
 }
 
+/** Telegram's message limit is 4096 characters; a question body stays
+ *  below it. */
+const TELEGRAM_QUESTION_MAX = 4000;
+
+/** A question card as Telegram sends it: the message text, and its answer
+ *  buttons, or none when the card is answered in the app or the terminal. */
+export interface TelegramQuestionCard {
+  readonly text: string;
+  readonly keyboard: InlineKeyboard | undefined;
+}
+
+/** Bound a text to Telegram's limit, marking the cut. */
+function boundText(text: string): string {
+  return text.length > TELEGRAM_QUESTION_MAX
+    ? `${text.slice(0, TELEGRAM_QUESTION_MAX - 3)}...`
+    : text;
+}
+
+/** `text` followed by `tail`, the text cut (marked) so the tail survives
+ *  whole within Telegram's limit. The caller makes sure the tail leaves
+ *  room for the cut text (`listFits`). */
+function boundTextKeepingTail(text: string, tail: string): string {
+  if (tail.length === 0) return boundText(text);
+  const room = TELEGRAM_QUESTION_MAX - tail.length;
+  return `${text.length > room ? `${text.slice(0, room - 3)}...` : text}${tail}`;
+}
+
+/** Whether a label list leaves room for at least a cut, marked ask
+ *  ("x...") in one message. */
+function listFits(list: string): boolean {
+  return list.length + 4 <= TELEGRAM_QUESTION_MAX;
+}
+
+/**
+ * The line a card gets instead of buttons when its full label list does not
+ * fit in one message with it (#1155 review). Numbered buttons whose list was
+ * cut away would name options the message no longer shows.
+ */
+const OPTIONS_DO_NOT_FIT = '\n\nAnswer in the app: the options do not fit in a Telegram message.';
+
+/** The longest button text remi sends; a longer label is cut with "...". */
+const BUTTON_LABEL_MAX = 32;
+
+/**
+ * Whether any option's button would be cut (#1155). The cut used to remove
+ * exactly what a standing option grants ("Yes, allow touch x.txt for this
+ * session" lost "for this session"), so when it happens the message lists
+ * every option's full label (`fullLabelList`) and the buttons are numbered
+ * to match. Buttons stay short: a Telegram client shortens a long button on
+ * its own, so a longer button would not show the whole label either.
+ */
+function buttonsAreCut(question: Question): boolean {
+  return question.options.some((o) => decoratedLabel(o).length > BUTTON_LABEL_MAX);
+}
+
+/** The options' full labels, numbered as their buttons, for the message
+ *  body; empty when no button is cut. */
+function fullLabelList(question: Question): string {
+  if (!buttonsAreCut(question)) return '';
+  const lines = question.options.map((o, i) => `${i + 1}. ${o.label}`);
+  return `\n\nOptions:\n${lines.join('\n')}`;
+}
+
+/**
+ * Why a card gets no answer buttons on Telegram (#1127 review S2), or null
+ * when its options can be tapped: an AskUserQuestion with several questions
+ * or a multi-select (one button cannot answer it), one no phone answer can
+ * be applied to (`terminalOnly`), and a plan with no text to read.
+ */
+function noButtonsReason(question: Question): string | null {
+  if (question.terminalOnly === true) {
+    return 'Answer this question in the terminal (or cancel it in the app).';
+  }
+  // A plan whose text is missing or blank (reached only then: a plan with
+  // text takes the detail branch of `formatQuestionCard`) is never approved
+  // unread either.
+  if (question.kind === 'plan_approval') {
+    return 'Plan text unavailable; answer in the app or the terminal.';
+  }
+  const steps = question.questions;
+  if (
+    question.kind === 'multi_question' &&
+    steps !== undefined &&
+    (steps.length > 1 || steps.some((s) => s.multiSelect))
+  ) {
+    return 'Answer in the app.';
+  }
+  return null;
+}
+
+/**
+ * The message and buttons a question card is sent with (#1127 review S2).
+ * A card about a long text (a plan to approve) carries that text below its
+ * ask, so the approval is made reading it; when the text does not fit
+ * Telegram's limit it is cut, the message says how much is missing, and NO
+ * buttons are offered: a plan is not approved unread. A card one button
+ * cannot answer (`noButtonsReason`) gets a line saying where to answer it
+ * and no buttons either.
+ *
+ * When a button label is cut, the full label list (`fullLabelList`) counts
+ * toward the limit (#1155 review): a plan keeps its buttons only when it
+ * fits whole WITH its list, and a card whose list cannot fit gets no
+ * buttons (`OPTIONS_DO_NOT_FIT`) rather than numbered buttons whose labels
+ * the message no longer shows.
+ */
+export function formatQuestionCard(question: Question): TelegramQuestionCard {
+  const detail = question.detail?.trim() ?? '';
+  const list = fullLabelList(question);
+  if (detail.length > 0) {
+    const plan = `${question.text}\n\n${detail}`;
+    if (plan.length + list.length <= TELEGRAM_QUESTION_MAX) {
+      return { text: `${plan}${list}`, keyboard: formatQuestionKeyboard(question) };
+    }
+    // The plan fits but not with its list: shown whole, answered in the app.
+    // (Before, this fell through to the cut path and reported "0 more
+    // characters" missing.)
+    if (list.length > 0 && plan.length + OPTIONS_DO_NOT_FIT.length <= TELEGRAM_QUESTION_MAX) {
+      return { text: `${plan}${OPTIONS_DO_NOT_FIT}`, keyboard: undefined };
+    }
+    // Leave room for the notice line, whose count is at most 7 digits.
+    const noun = question.kind === 'plan_approval' ? 'Plan' : 'Command';
+    const notice = (missing: number) =>
+      `\n\n[${noun} truncated: ${missing} more characters. Read it and answer in the app.]`;
+    const room = TELEGRAM_QUESTION_MAX - question.text.length - 2 - notice(9_999_999).length;
+    const shown = detail.slice(0, Math.max(0, room));
+    return {
+      text: `${question.text}\n\n${shown}${notice(detail.length - shown.length)}`,
+      keyboard: undefined,
+    };
+  }
+  const reason = noButtonsReason(question);
+  if (reason !== null)
+    return { text: boundText(`${question.text}\n\n${reason}`), keyboard: undefined };
+  if (!listFits(list)) {
+    return {
+      text: boundTextKeepingTail(question.text, OPTIONS_DO_NOT_FIT),
+      keyboard: undefined,
+    };
+  }
+  return {
+    text: boundTextKeepingTail(question.text, list),
+    keyboard: formatQuestionKeyboard(question),
+  };
+}
+
 /**
  * Format a Question with inline keyboard buttons.
  */
@@ -95,11 +240,13 @@ export function formatQuestionKeyboard(question: Question): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
   if (question.options.length > 0) {
-    // Add buttons for each option
-    for (const option of question.options) {
-      const label = formatOptionLabel(option);
+    // Numbered to match the message's full label list when a label is cut
+    // (#1155, `fullLabelList`).
+    const numbered = buttonsAreCut(question);
+    question.options.forEach((option, i) => {
+      const label = formatOptionLabel(option, numbered ? i + 1 : null);
       keyboard.text(label, `answer:${question.id}:${option.value}`);
-    }
+    });
 
     // Arrange in rows (max 3 buttons per row for readability)
     // grammY automatically handles row arrangement
@@ -111,27 +258,23 @@ export function formatQuestionKeyboard(question: Question): InlineKeyboard {
   return keyboard;
 }
 
-/**
- * Format an option label for display.
- */
-function formatOptionLabel(option: QuestionOption): string {
-  let label = option.label;
-
-  // Add visual indicators
-  if (option.isRecommended) {
-    label = `✓ ${label}`;
-  } else if (option.isYes) {
-    label = `✅ ${label}`;
-  } else if (option.isNo) {
-    label = `❌ ${label}`;
-  }
-
-  // Truncate long labels (Telegram button text limit)
-  if (label.length > 32) {
-    label = `${label.slice(0, 29)}...`;
-  }
-
+/** An option's label with its visual indicator. */
+function decoratedLabel(option: QuestionOption, number: number | null = null): string {
+  const label = number === null ? option.label : `${number}. ${option.label}`;
+  if (option.isRecommended) return `✓ ${label}`;
+  if (option.isYes) return `✅ ${label}`;
+  if (option.isNo) return `❌ ${label}`;
   return label;
+}
+
+/**
+ * Format an option's button text: its decorated label, numbered when the
+ * message lists the full labels, cut to `BUTTON_LABEL_MAX` (the list then
+ * carries the whole label, #1155).
+ */
+function formatOptionLabel(option: QuestionOption, number: number | null): string {
+  const label = decoratedLabel(option, number);
+  return label.length > BUTTON_LABEL_MAX ? `${label.slice(0, BUTTON_LABEL_MAX - 3)}...` : label;
 }
 
 /**
@@ -147,7 +290,8 @@ export function formatStatusText(status: AgentStatus): string {
       return '⚡ Executing...';
     case 'waiting':
       return '⏳ Waiting for input';
-    // Auto-approve + session-lifecycle states (#576).
+    // Session-lifecycle states (#576); evaluating/approved come only from a
+    // daemon older than #1125 (DeprecatedAgentStatus).
     case 'evaluating':
       return '⏳ Evaluating…';
     case 'approved':
@@ -168,11 +312,13 @@ export function formatQuestionText(question: Question): string {
   // Add question indicator
   text = `❓ ${text.trim()}`;
 
-  // Add hint for free text if allowed and no options
+  // Add hint for free text if allowed and no options. A card WITH options takes
+  // a pick, not text, so it gets no "or reply with custom text" hint: the
+  // parser was the only producer of allowsFreeText together with options (it
+  // marked every selection box that way), and since #1140 it does not. Text
+  // sent against a menu would only be ignored, with the Enter confirming "1. Yes".
   if (question.allowsFreeText && question.options.length === 0) {
     text += '\n\n💬 Reply with your answer';
-  } else if (question.allowsFreeText && question.options.length > 0) {
-    text += '\n\n💬 Or reply with custom text';
   }
 
   return text;
@@ -235,7 +381,7 @@ export function formatHelpMessage(): string {
     '',
     '/start [directory] - Start new session',
     '/stop - End current session',
-    '/interrupt - Send Esc to Claude (cancel current action)',
+    '/interrupt - Send Escape to Claude (interrupts its work; declines a pending prompt)',
     '/pause - Pause the session',
     '/resume - Resume paused session',
     '/status - Show session info',

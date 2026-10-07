@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../src/cli/path-resolver.ts';
+import { SessionBindingStore } from '../src/session/session-binding-store.ts';
 import {
   AmbiguousSessionIdentityError,
   MalformedSessionStoreError,
@@ -31,6 +32,24 @@ function makeSession(overrides: Partial<StoredSession> = {}): StoredSession {
     ...overrides,
   };
 }
+
+describe('AmbiguousSessionIdentityError', () => {
+  // A Claude or remi id is a random v4 UUID, so its first eight characters name it; a Codex
+  // thread id is a UUIDv7 that starts with a timestamp, so its last eight do (review Q2).
+  test('names a Claude or remi id by its first eight characters and a harness id by its last eight', () => {
+    const v4 = 'aabbccdd-1111-4222-8333-444455556666';
+    const v7 = '01a106f2-2f1c-7a35-9d4e-8b6f1c2d3e4a';
+    expect(new AmbiguousSessionIdentityError('Claude', v4, 2).message).toBe(
+      'Ambiguous Claude session ID aabbccdd: 2 records; refusing to choose one',
+    );
+    expect(new AmbiguousSessionIdentityError('Remi', v4, 3).message).toBe(
+      'Ambiguous Remi session ID aabbccdd: 3 records; refusing to choose one',
+    );
+    expect(new AmbiguousSessionIdentityError('codex', v7, 2).message).toBe(
+      'Ambiguous codex session ID 1c2d3e4a: 2 records; refusing to choose one',
+    );
+  });
+});
 
 describe('SessionStore', () => {
   let filePath: string;
@@ -488,6 +507,251 @@ describe('SessionStore', () => {
         sessions: StoredSession[];
       };
       expect(raw.sessions[0]?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
+    });
+  });
+
+  // Harness seam, phase 1 (#1162). A Claude record carries exactly these eight
+  // keys on disk. No `harness` or `harnessSessionId` key may materialize, so an
+  // older daemon that rewrites the same sessions.json never meets (or drops)
+  // anything it does not know. The list is spelled out here, not derived from
+  // the StoredSession type, so the pin does not move when the type does.
+  describe('legacy record shape (#1162)', () => {
+    const LEGACY_KEYS = [
+      'claudeSessionId',
+      'exitCode',
+      'exitedAt',
+      'pid',
+      'port',
+      'projectPath',
+      'remiSessionId',
+      'startedAt',
+    ];
+
+    function diskRecords(): Record<string, unknown>[] {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        version: number;
+        sessions: Record<string, unknown>[];
+      };
+      expect(raw.version).toBe(1);
+      return raw.sessions;
+    }
+
+    test('a legacy record keeps exactly 8 keys through save, markExited and read', () => {
+      const session = makeSession({ claudeSessionId: 'claude-legacy' });
+      store.save(session);
+      expect(Object.keys(diskRecords()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+
+      // Every read path returns the same eight keys, no more.
+      expect(Object.keys(store.findByRemiSessionId(session.remiSessionId) ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+      expect(Object.keys(store.findByClaudeSessionId('claude-legacy') ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+      expect(Object.keys(store.list()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+
+      store.markExited(session.remiSessionId, 0);
+      const afterExit = diskRecords();
+      expect(afterExit).toHaveLength(1);
+      expect(Object.keys(afterExit[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(afterExit[0]?.['exitCode']).toBe(0);
+      expect(typeof afterExit[0]?.['exitedAt']).toBe('string');
+      expect(Object.keys(store.findByRemiSessionId(session.remiSessionId) ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+    });
+
+    test('a hand-written legacy file keeps exactly 8 keys through every rewriting operation', () => {
+      // Written as a literal, not through makeSession or save(), so this is the
+      // shape an older binary left on disk.
+      const legacy = {
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        projectPath: '/tmp/project',
+        port: 18765,
+        pid: process.pid,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        exitedAt: null,
+        exitCode: null,
+      };
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessions: [legacy] }, null, 2));
+
+      // updateClaudeSessionId rewrites the file.
+      store.updateClaudeSessionId(legacy.remiSessionId as UUID, 'claude-adopted');
+      expect(Object.keys(diskRecords()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(diskRecords()[0]?.['claudeSessionId']).toBe('claude-adopted');
+
+      // Saving a different session rewrites the file too.
+      const other = makeSession({ claudeSessionId: 'claude-other' });
+      store.save(other);
+      for (const record of diskRecords()) {
+        expect(Object.keys(record).sort()).toEqual(LEGACY_KEYS);
+      }
+
+      // purgeStale rewrites it when it changes something: an exited row older
+      // than seven days is removed, the legacy row stays.
+      store.save(makeSession({ exitedAt: '2020-01-01T00:00:00.000Z', exitCode: 0 }));
+      expect(store.purgeStale()).toBe(true);
+      for (const record of diskRecords()) {
+        expect(Object.keys(record).sort()).toEqual(LEGACY_KEYS);
+      }
+
+      store.markExited(legacy.remiSessionId as UUID, 1);
+      const final = diskRecords().find((r) => r['remiSessionId'] === legacy.remiSessionId);
+      expect(Object.keys(final ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(final?.['exitCode']).toBe(1);
+    });
+  });
+
+  // Harness identity fields (#1162, ADR 0032). The store rebuilds every record
+  // from the keys it knows, so a field it does not copy is dropped on the next
+  // rewrite by any daemon. These tests construct a real SessionStore over real
+  // files; the "unknown" shapes are hand-written because no code writes them yet.
+  describe('harness identity fields (#1162)', () => {
+    function writeFile(sessions: Record<string, unknown>[]): void {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessions }, null, 2));
+    }
+
+    function diskFile(): { version: number; sessions: Record<string, unknown>[] } {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    }
+
+    function legacyRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        projectPath: '/tmp/project',
+        port: 18765,
+        pid: process.pid,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        exitedAt: null,
+        exitCode: null,
+        ...overrides,
+      };
+    }
+
+    test('well-typed harness and harnessSessionId survive save, read and every rewrite', () => {
+      const session = makeSession({ harness: 'codex', harnessSessionId: 'thread-1' });
+      store.save(session);
+      expect(diskFile().sessions[0]?.['harness']).toBe('codex');
+      expect(diskFile().sessions[0]?.['harnessSessionId']).toBe('thread-1');
+
+      expect(store.findByRemiSessionId(session.remiSessionId)).toMatchObject({
+        harness: 'codex',
+        harnessSessionId: 'thread-1',
+      });
+      expect(store.list()[0]).toMatchObject({ harness: 'codex', harnessSessionId: 'thread-1' });
+
+      // A different session's save and this one's markExited each rewrite the file.
+      store.save(makeSession());
+      store.markExited(session.remiSessionId, 0);
+      const kept = diskFile().sessions.find((r) => r['remiSessionId'] === session.remiSessionId);
+      expect(kept?.['harness']).toBe('codex');
+      expect(kept?.['harnessSessionId']).toBe('thread-1');
+      expect(kept?.['exitCode']).toBe(0);
+    });
+
+    test('a null harnessSessionId is a well-typed value and is kept', () => {
+      const row = legacyRow({ harness: 'codex', harnessSessionId: null });
+      writeFile([row]);
+
+      store.markExited(row['remiSessionId'] as UUID, 0);
+      const kept = diskFile().sessions[0];
+      expect(kept?.['harness']).toBe('codex');
+      expect(kept?.['harnessSessionId']).toBeNull();
+    });
+
+    test('an unknown harness string neither throws nor bricks the file, and survives a rewrite', () => {
+      const future = legacyRow({
+        harness: 'a-harness-from-a-newer-daemon',
+        harnessSessionId: 'x-1',
+      });
+      const plain = legacyRow({ claudeSessionId: 'claude-plain' });
+      writeFile([future, plain]);
+
+      // Reading the file must not throw because of the unknown harness.
+      expect(store.list()).toHaveLength(2);
+      expect(store.findByClaudeSessionId('claude-plain')?.remiSessionId).toBe(
+        plain['remiSessionId'] as string,
+      );
+
+      // A write by this build keeps the unknown record verbatim.
+      store.markExited(plain['remiSessionId'] as UUID, 0);
+      const file = diskFile();
+      expect(file.version).toBe(1);
+      const kept = file.sessions.find((r) => r['remiSessionId'] === future['remiSessionId']);
+      expect(kept?.['harness']).toBe('a-harness-from-a-newer-daemon');
+      expect(kept?.['harnessSessionId']).toBe('x-1');
+    });
+
+    test('ill-typed harness fields are ignored, not thrown on, and dropped on rewrite', () => {
+      const row = legacyRow({
+        claudeSessionId: 'claude-ill',
+        harness: 5,
+        harnessSessionId: { id: 'not-a-string' },
+      });
+      writeFile([row]);
+
+      const found = store.findByClaudeSessionId('claude-ill');
+      expect(found?.remiSessionId).toBe(row['remiSessionId'] as string);
+      expect(Object.keys(found ?? {})).not.toContain('harness');
+      expect(Object.keys(found ?? {})).not.toContain('harnessSessionId');
+
+      // Treated as absent, so the identity is Claude's (the guarantee that an
+      // unrecognized harness reads as null covers strings only, ADR 0032).
+      const binding = new SessionBindingStore(store);
+      expect(binding.getIdentity(row['remiSessionId'] as UUID)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-ill',
+      });
+
+      store.markExited(row['remiSessionId'] as UUID, 0);
+      expect(Object.keys(diskFile().sessions[0] ?? {}).sort()).toEqual([
+        'claudeSessionId',
+        'exitCode',
+        'exitedAt',
+        'pid',
+        'port',
+        'projectPath',
+        'remiSessionId',
+        'startedAt',
+      ]);
+    });
+
+    test('every non-string harness is treated as absent: reads as Claude and is dropped on rewrite', () => {
+      const illTyped: unknown[] = [5, null, true, ['codex'], { name: 'codex' }];
+      const rows = illTyped.map((harness, i) =>
+        legacyRow({ claudeSessionId: `claude-nonstring-${i}`, harness, harnessSessionId: 'x' }),
+      );
+      writeFile(rows);
+      const binding = new SessionBindingStore(store);
+
+      rows.forEach((row, i) => {
+        expect(binding.getIdentity(row['remiSessionId'] as UUID)).toEqual({
+          harness: 'claude',
+          harnessSessionId: `claude-nonstring-${i}`,
+        });
+      });
+
+      // Any write by this build rewrites every record; the ill-typed harness is gone.
+      store.markExited(rows[0]?.['remiSessionId'] as UUID, 0);
+      for (const record of diskFile().sessions) {
+        expect(Object.keys(record)).not.toContain('harness');
+      }
+    });
+
+    test('a record with the harness fields still needs a valid base record', () => {
+      // The tolerance is for the two optional fields only; a bad required field
+      // still rejects the file, as before.
+      writeFile([legacyRow({ harness: 'codex', port: 'not-a-port' })]);
+      expect(() => store.list()).toThrow(MalformedSessionStoreError);
+    });
+
+    test('the file stays version 1, which an older daemon requires', () => {
+      store.save(makeSession({ harness: 'codex', harnessSessionId: 'thread-1' }));
+      expect(diskFile().version).toBe(1);
     });
   });
 });

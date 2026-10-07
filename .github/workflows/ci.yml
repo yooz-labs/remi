@@ -61,10 +61,16 @@ jobs:
       # entirely. Given #543/#881's history here, an undetected type error
       # in this package is the more serious half of #946's gap.
       - run: bun run typecheck:signaling
+      # Every package the binary bundles must have a license file, or its notice
+      # cannot ship (#1131); fails here on the PR that adds such a dependency.
+      - run: bun scripts/third-party-notices.ts --check
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    # A normal run takes about 4 minutes. A hung `bun test` spins until the job limit (#1206), so
+    # cap it well above a slow run instead of the 360-minute default.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -72,14 +78,20 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - name: Test with coverage
-        run: bun test --coverage --coverage-reporter=text --coverage-reporter=lcov
+        # The output is kept for the threshold check below, so the suite runs once, not twice
+        # (a second run doubled the job time and the exposure to the #1206 hang).
+        # pipefail keeps a failing `bun test` failing the step through `tee`.
+        run: |
+          set -o pipefail
+          bun test --coverage --coverage-reporter=text --coverage-reporter=lcov 2>&1 | tee test-output.txt
       - name: Check coverage threshold
         run: |
           # The "All files" row is pipe-delimited: File | % Funcs | % Lines | Uncovered.
+          # Treat the stream as text: test-runner diagnostics may contain NUL/control bytes.
           # % Lines is the 3rd field. Strip ANSI colour codes first (bun colourises
           # on a TTY) and fail loudly if parsing yields a non-number — the previous
           # `awk '{print $NF}'` extracted the trailing "|", silently passing the gate.
-          COVERAGE=$(bun test --coverage 2>&1 | grep "All files" | head -1 \
+          COVERAGE=$(grep -a "All files" test-output.txt | head -1 \
             | sed 's/\x1b\[[0-9;]*m//g' | awk -F'|' '{gsub(/[[:space:]]/,"",$3); print $3}' | tr -d '%')
           echo "Line coverage: ${COVERAGE}%"
           if ! echo "$COVERAGE" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then

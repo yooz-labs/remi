@@ -1,55 +1,91 @@
-# Plan
+# Plan: the roadmap
 
-Current state, priorities, and the full backlog map live in
-[handoff.md](handoff.md) (updated 2026-07-28).
-Standing architecture decisions live in [decisions/](decisions/) as ADRs.
-Historical journals live in [archive/](archive/).
+Updated 2026-10-06.
+One page: where remi stands, what comes next and in what order, and how each step is tested.
+The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
-## Where things stand (2026-07-28, end of day)
+## Where things stand
 
-**Shipped today, all merged to `develop` (0.7.4-dev):** the security floor
-(#536 allow/deny asymmetry, #535 origin policy), #543 relay encryption
-*daemon side only, see below*, #872 macOS Ed25519 identity, #875 sealed
-lock-screen answers, #869 part 1 (capability token). Public docs refreshed to
-0.7.3 and live at `docs.yooz.live`; `remi.yooz.live` live. TestFlight build 10
-uploaded for macOS and iOS.
+- **Released:** 0.7.15 (stable on npm and Homebrew).
+- **On develop (0.7.16-dev), not released yet:**
+  - no local judge: Claude Code decides permissions, remi relays them (#1125, ADR 0030);
+  - held-hook answers (#1126, #1127, ADR 0031);
+  - the Codex adapter (epic #1175, ADR 0033);
+  - first-connect approval: every client key is approved once with `remi authorize` (#873);
+  - the relay off by default and fail-closed (#1193);
+  - one `turn_failed` alert per failure until the agent works again (#1153, #1226).
+- **On the relay epic branch** (`feature/issue-1195-epic-relay`): relay v2 R1 to R5 and the daemon side of R6 (#1205, #1214, #1219, #1220, #1222), always-on end-to-end encryption, sealed push. Not in develop yet.
+- **Apps today:**
+  - a sandboxed macOS menu-bar app that hosts the web UI;
+  - the Capacitor iPhone app with a Notification Service Extension;
+  - the web client.
 
-**Open, in priority order:**
+  Native SwiftUI apps are planned: [native-apps-plan-2026-10.md](native-apps-plan-2026-10.md).
 
-1. **#881 — the relay path is non-functional end to end.** #543 shipped the
-   daemon half of the key exchange and no client half
-   (`useConnectionManager.ts:213` never passes `relayKex`), so permanent-code
-   mode rejects every real client and rotating-code mode refuses to send.
-   *Latent, not live*: code-pairing is unreachable in the UI (`App.tsx` never
-   passes `onConnectCode`, `mode: 'relay'` is never assigned). Fix it **with**
-   whatever re-enables code-pairing, not before.
-2. **#880 — `auth.enabled = "auto"` resolves to `false` on every bind**,
-   including `0.0.0.0`. **The LAN exposure is closed**: `daemon.bind` now
-   defaults to `127.0.0.1`, so a stock daemon is not reachable off-machine. The
-   `'auto'` semantics are UNCHANGED and still resolve false — fixing them needs
-   TOFU fixed in the same change, because `cli.ts` builds the Authenticator with
-   `tofuMode: 'auto-accept'`, so auth-on-a-network-bind is first-comer-wins and
-   persists the attacker's key. Still gates #873, and #869/#875/#543 remain
-   inert on a default install since each hangs off an authenticator that does
-   not exist when auth is off. Two paths the bind change does NOT cover: the
-   relay (default-on, dials outward, plaintext in rotating mode — #881) and any
-   local process (#869).
-3. **#883 — protocol-message fan-out**: 13 non-test files per message type, and
-   a missed consumer fails silently.
+## Milestones, in order
 
-**Two epics under exploration** (Fable architects, running as of 2026-07-28):
+Each milestone is a GitHub milestone of the same name. Issues outside a milestone belong to a track (below).
 
-- *Hook contract + question lifecycle + real-time state.* Map Claude Code's hook
-  contract as a durable artifact, rebuild the question lifecycle on it, then
-  exploit it for thinking/tool-activity/subagent state. Subsumes
-  [plan-eval-quality-and-question-lifecycle.md](plan-eval-quality-and-question-lifecycle.md),
-  which carries the measured baseline: 309 escalations, ~92% LLM verdicts, top
-  causes `rm -rf <build artifact>` (~48) and project file edits (~49).
-- *Module contracts* (#883). Derived from seams that measurably hurt, never
-  designed speculatively; every contract point needs a **two-sided** conformance
-  test. Boundary: the first epic owns the lifecycle state machine, this one owns
-  the declare/dispatch mechanism.
+| # | Milestone | What it delivers | Done when |
+|---|---|---|---|
+| 1 | **0.7.16 release** | Develop shipped to users, with its release blockers fixed: #1223 (legacy cards not dismissed on a real close), #729 (the always-on hub's logs never rotate), #1131 (third-party notices in the packages), #1249 (the agent's process inherits remi's secrets), #1254 (a machine the phone disconnected from keeps pushing to it) | The owner approves the release (#1233); `develop` to `main` is merged; the upgrade notes cover the one-time `remi authorize` and stopping the old engine by hand |
+| 2 | **Relay R7** | Relay v2 finished and merged into develop, still off by default: #1224, #1225, R7 (#1202); then close #1195, #1199, #1200, #544, #373 | The R7 suite passes against a real Durable Object (session over an hour; replay, displacement, stranger and revoke refused; ciphertext only); the owner's signed-device and deployed-Worker gates pass |
+| 3 | **Protocol freeze** | The wire a native client builds on: machine object (#1234), Decision (#1235), workspaces and worktrees (#1236), version and capabilities (#1237), fixture coverage (#1238), multiple profiles per session (#1157), the file tunnel's frames (#1170), plus #1129, #534, #695, #791 | Every message a native client uses has a golden fixture and an ADR records each new shape |
+| 4 | **Native foundations (X0-X2)** | Repo prep for Xcode's agents (#1240), the `RemiKit` core (#1241), relay v2 in Swift and native answers (#1242, #1201) | Every fixture round-trips in Swift; all relay v2 vectors pass in Swift; a TypeScript hub accepts a Swift-signed answer |
+| 5 | **Native apps (X3-X4)** | The Conductor-like Mac app (#1243) and the iPhone app (#1244) | The Mac app replaces the WebView window for daily use on two machines; the iPhone app reaches parity with the Capacitor app |
+| 6 | **Native depth (X5-X6)** | Diffs, files and a terminal view (#1245); Live Activities, Watch and widgets (#1246) | Per phase issue |
 
-**Standing constraint from today:** transport encryption is scoped to the relay
-only (ADR 0009). Direct, LAN, Tailscale, VPN and SSH-tunnel connections carry no
-relay crypto and should not gain any.
+Milestones 2 and 3 run in parallel.
+On 2026-10-06 the owner started the native apps (milestones 4 and 5) in parallel too: two Codex agents in Xcode, one for the Mac app and one for the iPhone app, on the epic branch `feature/issue-1239-epic-native` (`packages/native/AGENTS.md` and `packages/native/handoff/`).
+They build against today's wire and adopt the freeze's shapes as they land.
+The epic for 4 to 6 is #1239.
+
+## Tracks (work outside the milestones)
+
+Labeled by area and prioritized P1 to P3.
+Take P1 and P2 items between milestones; P3 items when they are in the way.
+
+- **claude** (the Claude Code harness): #375 (P1, suspend and resume loses input), then #808, #1147, #940, #1189 with #1211, #1137.
+- **codex:** #1192 (Guardian reviews), #1187; #1207 waits on an owner decision.
+- **web:** #1146, then the P3 list.
+- **quality:**
+  - #1232: one port helper; it supersedes #1150, #1159 and #1169.
+  - #1213, which likely causes the hub-create flake.
+  - #1206, the `bun test` hang, capped in CI by #1215.
+  - #855, #1191.
+- **docs:** #1145, a new notification-flow diagram.
+- **backlog:** ideas, not scheduled.
+
+## Owner decisions
+
+Collected in #1233. Decided on 2026-10-06:
+- **Release 0.7.16:** yes, once milestone 1 is done.
+- **Release automation:** the Bun, npm and Homebrew pipeline stays automated (`release.yml`). The native apps go to TestFlight by pushing the archive directly, the way transit and whisper do; the owner runs the upload (#1240).
+- **Mac app distribution:** the App Store if the sandbox allows it; otherwise Developer ID.
+- **Minimum OS:** macOS 26 and iOS 26.
+- **Capacitor iOS app:** it retires once the same mechanics are designed natively, at X4 parity (#1244).
+- **Worktrees:** hub-created worktrees live in `../remi-worktrees`, next to the repository (#1236).
+- **Freeze scope:** the file tunnel (#1170) and multiple profiles per session (#1157) join the protocol freeze.
+- **Remote and hub posture:** the host passes its default (#1208, #1192).
+- **Old epics:** #548 and #885 are closed, their leftovers tracked on their own.
+
+- **Project structure:** the native apps use a checked-in Xcode project with synchronized folders (`packages/native/Remi.xcodeproj`); `packages/macos` keeps xcodegen until it retires.
+- **Native apps start now,** in parallel with the protocol freeze.
+
+Still open:
+- the push lease: how many days a phone can go without reconnecting before a machine stops pushing to it (#1254; proposed 30);
+- whether closing a session deletes its worktree (until decided, it does not);
+- Codex typed chat (#1207).
+
+## How every step is tested
+
+- A pin test is committed first, and it must fail; then the fix.
+- Each part of a fix is mutation-checked: revert it and a test fails.
+- No mocks that replace business logic.
+- Gates on every PR:
+  - the full `bun test` on Bun 1.4.2 and on the CI-pinned Bun 1.3.11;
+  - `bun run typecheck`, `bunx biome check`, `typos`;
+  - the macOS `RemiTests` for Swift changes;
+  - the integration scripts and browser tests when the daemon wire or the web client changes.
+- Each PR gets a Sonnet review, and every finding is fixed or recorded with its reason.
+- Owner hardware gates (signed builds, real devices, a deployed Worker) are listed in their milestone and are never claimed as passed without the owner's run (ADR 0011).

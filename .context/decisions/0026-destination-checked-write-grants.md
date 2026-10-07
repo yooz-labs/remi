@@ -1,6 +1,6 @@
 # ADR 0026: Write grants for decidable shell shapes, checked by destination
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-15
 **Owner:** epic #1057 Phase 2 (#996, #1041, #1060)
 
@@ -72,7 +72,7 @@ curated veto profiles the allow path does not.
 - The redirection (50%) and heredoc (13%) miss buckets from #996 become
   coverable; `cat > notes.md <<'EOF'` compositions approve at 0ms when the
   destination proves out. Measured deltas live in
-  `.context/approval-rate-baseline-2026-08.md`'s successor runs.
+  `.context/archive/2026-h2/approval-rate-baseline-2026-08.md`'s successor runs.
 - ADR 0010's Decision line is amended by this ADR: shell control is refused
   *unless a destination-checked grant proved the specific clause*, and the
   enforcement point moves one step earlier (clause deletion) without touching

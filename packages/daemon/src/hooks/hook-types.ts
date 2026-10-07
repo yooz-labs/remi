@@ -183,15 +183,17 @@ export interface SessionStartHookInput extends HookCommonInput {
  *     "userSettings" | "cliArg"` on every variant (binary enum `hor`; the
  *     5th value, `cliArg`, was missing from this comment until #886).
  *
- * `optionsFromSuggestions` (hook-event-bridge.ts) is the single place that
- * interprets this union into option labels; an answer that picks a
- * suggestion-derived option round-trips the ORIGINAL entry back to Claude
- * Code as `hookSpecificOutput.decision.updatedPermissions` (real "Yes,
- * always", #718) — per the docs, "a hook can echo one of the
- * permission_suggestions it received as its own updatedPermissions output,
- * which is equivalent to the user selecting that 'always allow' option in
- * the dialog." The wider shape is open: callers must treat unknown `type`
- * values as opaque and skip them rather than guess.
+ * `standingGrantFor` (hook-event-bridge.ts) is the single place that
+ * decides which entries a held card offers and what a phone answer sends
+ * back for one (#1126): `setMode` and an allow `addRules`, both echoed with
+ * `destination: "session"` (lead decision), nothing else (live, an echoed
+ * `addDirectories` did not stop the repeat prompt). The echo is the hook's
+ * `hookSpecificOutput.decision.updatedPermissions` — per the docs, "a hook
+ * can echo one of the permission_suggestions it received as its own
+ * updatedPermissions output, which is equivalent to the user selecting that
+ * 'always allow' option in the dialog." The wider shape is open: callers
+ * must treat unknown `type` values as opaque and skip them rather than
+ * guess.
  */
 export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
 
@@ -237,10 +239,9 @@ export interface UserPromptSubmitHookInput extends HookCommonInput {
   hook_event_name: 'UserPromptSubmit';
   /** Binary: `hook_event_name:"UserPromptSubmit",prompt:e,...!1,
    *  session_title:fv(kt())` — the human's typed input, handed to the hook
-   *  directly. This is the PRIMARY authority source Q9 (#893) uses in place of
-   *  transcript-JSONL filtering (see `auto-approve/authority.ts`); registered
-   *  in `REMI_REGISTERED_HOOK_EVENTS` and consumed by the listener in
-   *  `hook-bridge-setup.ts`. Was typed as an empty event body before #886;
+   *  directly. Registered in `REMI_REGISTERED_HOOK_EVENTS` (#893, originally
+   *  for the auto-approve authority summary deleted in #1125); the turn timer
+   *  now anchors each turn on it. Was typed as an empty event body before #886;
    *  the `...!1` spread in the minified source looks like a build-time-folded
    *  conditional (spreading `false` is a no-op in JS), not a real extra
    *  field. */
@@ -299,25 +300,37 @@ export interface TaskCompletedHookInput extends HookCommonInput {
   team_name: string;
 }
 
-/** Fired when the stop hook itself fails */
+/**
+ * Fired INSTEAD of `Stop` when a turn ends because of an API error (usage or
+ * rate limit, authentication, billing, a server error, and similar). It is not
+ * about a stop hook failing, and nothing in Claude waits for a reply: the
+ * response is ignored. remi turns it into a `turn_failed` push, never a card
+ * (#1153).
+ *
+ * Fields, from the binary (`{...Kf(void 0,void 0,t),hook_event_name:
+ * "StopFailure",error:s,error_details:e.errorDetails,last_assistant_message:i}`
+ * where `s=e.error??"unknown"`, #886) and the hooks docs
+ * (code.claude.com/docs/en/hooks): there is no `error_type` field, which an
+ * earlier version of this type declared and the old "Retry?" card read, so
+ * every card said "(undefined)" (#905).
+ */
 export interface StopFailureHookInput extends HookCommonInput {
   hook_event_name: 'StopFailure';
   /**
-   * Binary: `{...Kf(void 0,void 0,t),hook_event_name:"StopFailure",
-   * error:s,error_details:e.errorDetails,last_assistant_message:i}` where
-   * `s=e.error??"unknown"` (#886) — there is no `error_type` field. `error`
-   * is kept alongside the pre-existing (wrong) `error_type` rather than
-   * replacing it, because `error_type` is read at runtime
-   * (hook-event-bridge.ts:509, `Session stop failed (${input.error_type})`)
-   * and by several test fixtures; removing it here would be a type change
-   * with a real behavior consequence (a user-facing message going from
-   * "undefined" to something else), which is out of scope for this PR. Filed
-   * as #905: `hook-event-bridge.ts` reads a field Claude Code never sends, so
-   * that retry prompt has shown "(undefined)" since it was written.
+   * Why the turn ended. The documented values are `rate_limit`, `overloaded`,
+   * `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`,
+   * `billing_error`, `invalid_request`, `model_not_found`, `server_error`,
+   * `max_output_tokens`, `cloud_credential_error` and `unknown`; kept an open
+   * string because a newer Claude Code may send another. Typed optional
+   * because the wire is untrusted input; the binary always sends one.
    */
-  error_type: string;
   error?: string;
+  /** Extra detail from the API. Untyped on purpose: the docs call it
+   *  "additional error information" and no capture has carried it, so it may
+   *  be a string or an object; only a string is ever shown. */
   error_details?: unknown;
+  /** The assistant's last message before the error. All 3 real captures
+   *  (#905) carry `API Error: 500 Internal server error. ...` here. */
   last_assistant_message?: string;
 }
 
@@ -629,19 +642,18 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  *     into the SAME external-resolution funnel PreToolUse/PostToolUse use
  *     (`AutoApproveGate.cancelExternallyResolved`).
  *
- *     It DOES carry a `tool_use_id`, unlike `PermissionRequest` — but that id
- *     buys nothing yet, and an earlier draft of this comment claimed it did
- *     ("taking advantage of its exact `tool_use_id`"). Matching is
- *     `tool_name` + `tool_input` + `agentId`; the id is consulted only when
- *     BOTH sides carry one (`findOpenQuestionMatching`,
- *     `auto-approve-gate.ts`). The registered side is built from the
- *     `PermissionRequest` that opened the escalation, and that event never
- *     sends a `tool_use_id` (see `PermissionRequestHookInput` above, read out
- *     of the binary), so `sig.toolUseId` is always `undefined` and the exact-id
- *     branch is unreachable from this path today. Passing the id through is
- *     forward-compatible dead weight, not a live disambiguator — worth stating
- *     precisely, because "it matches on an exact id" would read as stronger
- *     than the signature match it actually performs.
+ *     It DOES carry a `tool_use_id`, unlike `PermissionRequest`, and since
+ *     #1126 that id is a live disambiguator. The registered side is built
+ *     from the `PermissionRequest` that opened the escalation, which sends no
+ *     `tool_use_id` (see `PermissionRequestHookInput` above, read out of the
+ *     binary), so the gate pairs it on arrival with the in-flight
+ *     `PreToolUse` of the same agent, tool and input (`pairToolUse`,
+ *     `auto-approve-gate.ts`) and records that call's id. A paired escalation
+ *     is then matched by exact id (`findOpenQuestionMatching`: when BOTH
+ *     sides carry one, the id alone decides); an unpaired one (two identical
+ *     calls in flight) falls back to `tool_name` + `tool_input` + `agentId`.
+ *     (Before #1126 nothing was paired and this paragraph said the id branch
+ *     was unreachable; that stopped being true with the pairing.)
  *   - `Elicitation` / `ElicitationResult`: an MCP dialog previously arrived
  *     only as a PTY orphan (`hook-event-bridge.ts`'s `handleNotification`
  *     logs and ignores `notification_type === 'elicitation_dialog'`, and the
@@ -663,14 +675,12 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * Q9 (#893) registers a 4th: `UserPromptSubmit`. Unlike Q4's three, THIS one
  * fires once per HUMAN TURN rather than per tool call — far lower frequency
  * (a 2-day capture logged ~4,800 per-tool-call hook roundtrips against a
- * human-paced turn count several orders smaller), and it hands the daemon the
- * human's own typed `prompt` directly, which is the PRIMARY source
- * `auto-approve/authority.ts` uses to build the auto-approve prompt's
- * CONVERSATION CONTEXT block (replacing a transcript-JSONL scrape that cannot
- * structurally tell a genuine prompt apart from a `!`-command's captured
- * stdout — see that file's module doc). Its listener (`hook-bridge-setup.ts`)
- * is a single array push into a per-session ring buffer — cheaper than the Q4
- * three, not more expensive — and IT gets its own short timeout
+ * human-paced turn count several orders smaller). It was registered to feed
+ * the auto-approve authority summary; that consumer was deleted in #1125
+ * (ADR 0030) and the registration stays because the turn-complete timer
+ * anchors each turn on it (`notifications/turn-timer.ts`). Its listener
+ * (`hook-bridge-setup.ts`) only drives the binder, and it gets its own short
+ * timeout
  * (`hookTimeoutFor`, `hook-config-manager.ts`) rather than the flat 5s, since
  * #889's own text got that number wrong for its three (see above) and this
  * issue is not repeating the mistake.
@@ -683,10 +693,9 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * on. #889's own text asserted the opposite ("HookServer answers `{}` BEFORE
  * doing work"), which is why this is written down here rather than left as
  * folklore: every registration below is safe because each handler is a map
- * lookup, a signature compare, or (UserPromptSubmit) an array push — not
- * because responding is free. Anything heavier (an LLM call, a file read, a
- * network hop) must move off the listener — the way `PermissionRequest` does
- * with its hold/park design — before its event is added to this list.
+ * lookup or a signature compare — not because responding is free. Anything
+ * heavier (a model call, a file read, a network hop) must move off the
+ * listener before its event is added to this list.
  *
  * #930 REMOVES one: `SessionStart` was part of "the original 6" (see the
  * Q4 comment above) but is deliberately NOT registered as of this issue.

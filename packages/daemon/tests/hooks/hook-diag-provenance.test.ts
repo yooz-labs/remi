@@ -17,6 +17,7 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { LOG_MAX_BYTES } from '../../src/cli/log-rotation.ts';
 
 const WORKER = path.join(import.meta.dir, 'hook-diag-provenance-worker.ts');
 
@@ -73,6 +74,20 @@ describe('HookServer REMI_HOOK_DEBUG provenance stamp (#934)', () => {
       // real Claude Code capture without inspecting cwd/session_id at all.
       expect(record['_provenance']).toBe('test');
       expect(typeof record['_ts']).toBe('string');
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  test('the file is bounded: at 10 MB it is rotated before the next line (#729)', async () => {
+    const tmpHome = makeTmpHome();
+    try {
+      const file = path.join(tmpHome, '.remi', 'hook-diag.jsonl');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, Buffer.alloc(LOG_MAX_BYTES, 'x'));
+      await runWorker(tmpHome, true);
+      expect(fs.statSync(`${file}.1`).size).toBe(LOG_MAX_BYTES);
+      expect(readDiagLines(tmpHome).length).toBe(1);
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

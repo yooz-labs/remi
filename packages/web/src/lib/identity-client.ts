@@ -19,6 +19,20 @@ export type { KnownHost };
 
 const IDENTITY_KEY = 'remi-identity';
 const KNOWN_HOSTS_KEY = 'remi-known-hosts';
+let identityRevision = 0;
+
+/** Revision includes removal/re-import of the SAME key, not just public-key changes. */
+export function getIdentityRevision(): number { return identityRevision; }
+
+function identityChanged(publicKey: string | null): void {
+  ++identityRevision;
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('remi:identity-changed', { detail: publicKey }));
+}
+
+// Another tab's storage mutation must cancel this tab's in-flight imports too.
+if (typeof window !== 'undefined') window.addEventListener('storage', (event) => {
+  if (event.key === IDENTITY_KEY || event.key === null) identityChanged(null);
+});
 
 /** Load stored identity (still encrypted). Returns null if not found. Throws on corrupt data. */
 export function loadIdentity(): RemiIdentity | null {
@@ -37,11 +51,13 @@ export function loadIdentity(): RemiIdentity | null {
 /** Save identity to localStorage */
 export function saveIdentity(identity: RemiIdentity): void {
   localStorage.setItem(IDENTITY_KEY, serializeIdentity(identity));
+  identityChanged(identity.publicKey);
 }
 
 /** Remove identity from localStorage */
 export function removeIdentity(): void {
   localStorage.removeItem(IDENTITY_KEY);
+  identityChanged(null);
 }
 
 /** Check if an identity exists */
@@ -62,7 +78,12 @@ export async function unlockStoredIdentity(passphrase?: string): Promise<Unlocke
   if (!identity) {
     throw new Error('No identity found');
   }
-  return unlockIdentity(identity, passphrase);
+  const revision = getIdentityRevision();
+  const unlocked = await unlockIdentity(identity, passphrase);
+  if (getIdentityRevision() !== revision || loadIdentity()?.publicKey !== identity.publicKey) {
+    throw new Error('Identity changed during unlock. Try again with the current identity.');
+  }
+  return unlocked;
 }
 
 /** Check if the stored identity has an encrypted private key. */
@@ -76,7 +97,15 @@ export function isIdentityEncrypted(): boolean {
 export async function ensureIdentity(): Promise<RemiIdentity> {
   const existing = loadIdentity();
   if (existing) return existing;
-  return generateIdentity();
+  const revision = getIdentityRevision();
+  const fresh = await createIdentity();
+  // A startup generation may not overwrite a removal/import performed while
+  // real crypto was running (#873). Its own save below is the only expected write.
+  if (getIdentityRevision() !== revision || loadIdentity() !== null) {
+    throw new Error('Identity changed during setup. Connect again with the current identity.');
+  }
+  saveIdentity(fresh);
+  return fresh;
 }
 
 /** Import identity from JSON string */
@@ -135,11 +164,12 @@ function normalizeHostKey(url: string): string {
 export function checkKnownHost(
   serverUrl: string,
   fingerprint: string,
+  publicKey: string,
 ): 'new' | 'match' | 'mismatch' {
   const hosts = loadKnownHosts();
   const existing = hosts[normalizeHostKey(serverUrl)];
   if (!existing) return 'new';
-  return existing.fingerprint === fingerprint ? 'match' : 'mismatch';
+  return existing.fingerprint === fingerprint && existing.publicKey === publicKey ? 'match' : 'mismatch';
 }
 
 /** Record a server fingerprint (TOFU - trust on first use) */

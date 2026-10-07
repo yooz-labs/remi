@@ -34,7 +34,7 @@ REMI=""
 # avoid duplicating the remi fields just above the bar.
 REMI_STATUS_FILE="${remiDir}/status-\$REMI_PORT.json"
 if [ "\$REMI_STATUS_BAR" != "1" ] && [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT S_ATTACHED S_QUEUED < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0, (.attached | if . == null then "unset" else tostring end), .queuedCount // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH S_ATTACHED S_QUEUED < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", (.attached | if . == null then "unset" else tostring end), .queuedCount // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     # #755: label from the real attach state (exclusive PTY slot + queue), not
     # the raw connection counter (which also counts remi ls / kill / phone
@@ -48,22 +48,9 @@ if [ "\$REMI_STATUS_BAR" != "1" ] && [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS
     else
       [ "\${S_QUEUED:-0}" != "0" ] && CLIENT_INFO="\${S_QUEUED} waiting"
     fi
-    # The status segment reflects auto-approve state when a permission is being
-    # decided, otherwise Claude's agent status (#560). All arithmetic is guarded
-    # (:-0) so a status file from an older daemon (no autoApprove key) renders
-    # cleanly. The evaluating cap (600s) is leak-safety; "needs you" decays after
-    # 60s so a stale escalate never sticks across sessions.
-    NOW=\$(date +%s)
-    AA_ELAPSED=\$((NOW - \${AA_SINCE:-0}))
-    AA_AGE=\$((NOW - \${AA_LASTAT:-0}))
+    # The status segment is Claude's agent status. The auto-approve cue that
+    # used to replace it (#560) was removed with the evaluator (#1125).
     STATE="\$S_STATUS"
-    if [ "\${AA_INFLIGHT:-0}" -gt 0 ] 2>/dev/null && [ "\$AA_ELAPSED" -lt 600 ] 2>/dev/null; then
-      STATE="evaluating \${AA_ELAPSED}s"
-    elif [ "\$AA_LASTV" = "escalated" ] && [ "\$AA_AGE" -lt 60 ] 2>/dev/null; then
-      STATE="needs you"
-    elif [ "\$AA_LASTV" = "approved" ] && [ "\$AA_AGE" -lt 5 ] 2>/dev/null; then
-      STATE="approved"
-    fi
     REMI="remi:\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${STATE}"
   fi
 fi
@@ -82,15 +69,23 @@ echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
  *
  * `claudeSettingsPath` is exposed for tests that need to run against an
  * isolated settings file. Production callers omit it.
+ *
+ * `registerInClaudeSettings` false writes the script but leaves Claude's
+ * settings alone. The daemon passes false under a `REMI_HOME` override
+ * (`config/remi-home.ts`): that directory is usually scratch, and pointing
+ * the user's global Claude statusLine at a script inside it would outlive
+ * the run that created it.
  */
 export function installStatusLine(
   remiDir: string,
   claudeSettingsPath: string = path.join(os.homedir(), '.claude', 'settings.json'),
+  registerInClaudeSettings = true,
 ): void {
   try {
     fs.mkdirSync(remiDir, { recursive: true });
     const scriptPath = path.join(remiDir, 'statusline.sh');
     fs.writeFileSync(scriptPath, buildStatuslineScript(remiDir), { mode: 0o755 });
+    if (!registerInClaudeSettings) return;
 
     // Auto-configure Claude Code settings if no statusLine key exists.
     // Preserves all other settings but rewrites the file.

@@ -5,7 +5,11 @@ export type {
   PermissionDecision,
   PermissionResolver,
 } from './hook-server.ts';
-export { HookConfigManager } from './hook-config-manager.ts';
+export {
+  DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+  HookConfigManager,
+  PERMISSION_REQUEST_HOOK_TIMEOUT,
+} from './hook-config-manager.ts';
 export { HookEventBridge } from './hook-event-bridge.ts';
 export { ForeignSessionEscalator } from './foreign-session-escalator.ts';
 export type { ForeignSessionEscalatorDeps } from './foreign-session-escalator.ts';

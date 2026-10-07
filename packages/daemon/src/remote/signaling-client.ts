@@ -28,6 +28,13 @@ export function generateConnectionCode(): string {
   return `${alpha}-${numeric}`;
 }
 
+/**
+ * How many distinct unknown frame types are logged. A socket that never joined
+ * can have the Worker forward `offer`, `answer` and `ice-candidate` frames to
+ * the host without limit, so the log line is once per type and bounded.
+ */
+const MAX_UNKNOWN_TYPES_LOGGED = 16;
+
 export interface SignalingClientOptions {
   /** Rotate to a new code on each auto-reconnect (default: true) */
   rotateOnReconnect?: boolean;
@@ -35,8 +42,10 @@ export interface SignalingClientOptions {
 
 export interface SignalingClientEvents {
   registered: (code: string, expiresAt: string) => void;
-  'peer-connected': () => void;
-  'peer-disconnected': () => void;
+  /** `role` is the Worker's word for who joined: `client` for a client. */
+  'peer-connected': (role?: string) => void;
+  /** `role` is the CLOSING socket's role (`client`, `host`, or `pending` for one that never joined). */
+  'peer-disconnected': (role?: string) => void;
   relay: (payload: string) => void;
   error: (code: string, message: string) => void;
   close: () => void;
@@ -52,6 +61,7 @@ export class SignalingClient extends EventEmitter {
   private closed = false;
   private code: string | null = null;
   private isReconnect = false;
+  private readonly unknownTypesLogged = new Set<string>();
 
   constructor(baseUrl: string, options?: SignalingClientOptions) {
     super();
@@ -96,10 +106,10 @@ export class SignalingClient extends EventEmitter {
             this.emit('registered', msg.code, msg.expiresAt);
             break;
           case 'peer-connected':
-            this.emit('peer-connected');
+            this.emit('peer-connected', msg.role);
             break;
           case 'peer-disconnected':
-            this.emit('peer-disconnected');
+            this.emit('peer-disconnected', msg.role);
             break;
           case 'relay':
             this.emit('relay', msg.payload);
@@ -108,7 +118,7 @@ export class SignalingClient extends EventEmitter {
             this.emit('error', msg.code, msg.message);
             break;
           default:
-            console.warn(`Unknown signaling message type: ${msg.type}`);
+            this.logUnknownType(msg.type);
         }
       } catch (e) {
         console.warn('Failed to parse signaling message:', e instanceof Error ? e.message : e);
@@ -151,6 +161,14 @@ export class SignalingClient extends EventEmitter {
 
   get connectionCode(): string | null {
     return this.code;
+  }
+
+  private logUnknownType(type: unknown): void {
+    const name = String(type).slice(0, 64);
+    if (this.unknownTypesLogged.has(name)) return;
+    if (this.unknownTypesLogged.size >= MAX_UNKNOWN_TYPES_LOGGED) return;
+    this.unknownTypesLogged.add(name);
+    console.warn(`Unknown signaling message type: ${name}`);
   }
 
   private send(msg: Record<string, unknown>): void {

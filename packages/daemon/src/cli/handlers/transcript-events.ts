@@ -9,6 +9,10 @@
  * session (daemon-owned or external) by its UUID. If the UUID is a Remi
  * session ID, the handler falls back to the live watcher's file path so
  * callers don't need to know which naming scheme the session uses.
+ *
+ * A session whose harness reads its own history (`HarnessSession.chat`, Codex,
+ * #1180) is answered from that chat instead, by remi session id, before any
+ * file is looked up.
  */
 
 import * as fs from 'node:fs';
@@ -17,6 +21,7 @@ import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
+import type { Harness, HarnessChat } from '../../harness/types.ts';
 import type { SessionBindingStore, TranscriptIndex } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
@@ -30,6 +35,8 @@ import type { SendToConnection } from './trivial-events.ts';
 
 export interface TranscriptHandlerDeps {
   transcriptDiscovery: TranscriptDiscovery;
+  /** Rebuilds a transcript path from the durable index's project path and id. */
+  harness: Pick<Harness, 'transcriptPath'>;
   /** Live watchers keyed by Remi session ID (for Remi-UUID fallback resolution). */
   transcriptWatchers: Map<UUID, TranscriptWatcherType>;
   /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
@@ -45,7 +52,21 @@ export interface TranscriptHandlerDeps {
   /** Resolves a subagent agentId -> its transcript file so the client can load a
    *  subagent view by the agentId it got in `session_views` (#499 phase 3). */
   subagentViews: Pick<SubagentViewRegistry, 'resolvePath'>;
+  /**
+   * The chat of a session whose harness reads its own history (Codex, #1180), by remi session
+   * id; undefined for every other id, which takes the transcript-file path below. Optional so a
+   * handler built without it behaves as it always did.
+   */
+  chatFor?: (remiSessionId: UUID) => HarnessChat | undefined;
   send: SendToConnection;
+}
+
+/** A send to the requester of a history load was refused: its connection is gone. */
+class RequesterGone extends Error {
+  constructor() {
+    super('the requester of the history load went away');
+    this.name = 'RequesterGone';
+  }
 }
 
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
@@ -53,17 +74,59 @@ export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
   const {
     transcriptDiscovery,
+    harness,
     transcriptWatchers,
     bindingStore,
     transcriptIndex,
     currentOwnedSession,
     subagentViews,
+    chatFor,
     send,
   } = deps;
+
+  /**
+   * Stream a harness chat's history to the requester and complete the load, or tell it the read
+   * failed. What was sent before a failure stays sent. A chat that throws before it returns a
+   * promise is the same failure, not a throw out of this void handler.
+   */
+  function loadFromChat(
+    chat: HarnessChat,
+    connectionId: UUID,
+    sessionId: string,
+    requestId: UUID,
+  ): void {
+    void (async () => {
+      const count = await chat.readHistory((message) => {
+        // A send that is refused means the requester's connection is gone: the read stops here,
+        // so no page more is asked for on its behalf.
+        if (!send(connectionId, message)) throw new RequesterGone();
+      });
+      log(`Chat history load complete for ${sessionId}: ${count} messages`);
+      send(connectionId, createTranscriptLoadComplete(sessionId, count, requestId));
+    })().catch((error: unknown) => {
+      if (error instanceof RequesterGone) {
+        log(`Chat history load for ${sessionId} stopped: the requester went away`);
+        return;
+      }
+      logError(`[TranscriptLoad] Failed to read the chat of ${sessionId}:`, error);
+      send(
+        connectionId,
+        createError('LOAD_FAILED', `Failed to load transcript: ${errorToString(error)}`),
+      );
+    });
+  }
 
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
       log(`Transcript load request from ${connectionId} for session ${sessionId}`);
+
+      // A harness that reads its own history answers first: its session id is a remi id, which no
+      // transcript file carries, and a file that happens to bear the same name is not its chat.
+      const chat = chatFor?.(sessionId as UUID);
+      if (chat !== undefined) {
+        loadFromChat(chat, connectionId, sessionId, requestId);
+        return;
+      }
 
       // First try finding by Claude session ID embedded in the filename.
       let filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
@@ -114,8 +177,13 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            const candidate = `${transcriptDiscovery.getProjectTranscriptDir(indexed.projectPath)}/${indexed.claudeSessionId}.jsonl`;
-            if (fs.existsSync(candidate)) {
+            const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
+            if (candidate === null) {
+              // The harness names no file for this binding, so there is nothing to load.
+              log(
+                `[TranscriptLoad] Durable index hit for ${sessionId} (claude=${indexed.claudeSessionId.slice(0, 8)}) but the harness has no transcript file`,
+              );
+            } else if (fs.existsSync(candidate)) {
               filePath = candidate;
               log(
                 `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via durable index ${indexed.claudeSessionId.slice(0, 8)}`,

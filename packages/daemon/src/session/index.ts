@@ -14,9 +14,12 @@ export {
 export {
   AmbiguousSessionIdentityError,
   InterprocessFileLockError,
+  isClaudeRecord,
   MalformedSessionStoreError,
   resolveStoredSession,
+  SessionHarnessMismatchError,
   SessionStore,
+  storedHarness,
   type StoredSession,
 } from './session-store.ts';
 
@@ -29,6 +32,7 @@ export {
   type LiveSessionEntry,
   type PendingQuestionEntry,
   claudeChildLooksAlive,
+  couldBeClaudeEntry,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
 } from './session-registry-file.ts';

@@ -1,6 +1,6 @@
 # ADR 0023: Deletion approves only when the target is provably derived — amending #956's blanket rule
 
-**Status:** proposed
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-10
 **Owner:** Yahya
 

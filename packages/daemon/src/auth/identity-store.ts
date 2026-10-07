@@ -1,15 +1,7 @@
-/**
- * IdentityStore - Persistent storage for daemon identity and authorized keys.
- *
- * Stores:
- * - ~/.remi/identity.json - Daemon's Ed25519 keypair (private key encrypted)
- * - ~/.remi/authorized_keys.json - Client public keys allowed to connect
- */
-
+/** Durable daemon identity, authorized keys and bounded first-connect candidates (#873). */
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
 import type {
   AuthorizedKey,
   AuthorizedKeysFile,
@@ -22,10 +14,17 @@ import {
   createAuthorizedKeysFile,
   createIdentity,
   deserializeIdentity,
+  errorToString,
+  fromBase64,
+  importPublicKey,
   isEncrypted,
+  isSmallOrderPublicKey,
   serializeIdentity,
+  toBase64,
   unlockIdentity,
 } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
+import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
 
 export class DuplicateKeyError extends Error {
   constructor(fingerprint: string) {
@@ -33,164 +32,297 @@ export class DuplicateKeyError extends Error {
     this.name = 'DuplicateKeyError';
   }
 }
+export class PendingQueueFullError extends Error {
+  constructor() {
+    super('PENDING_QUEUE_FULL: approve or wait for expiry of existing requests');
+  }
+}
+export interface PendingKey {
+  readonly publicKey: string;
+  readonly fingerprint: string;
+  readonly firstSeenAt: string;
+  readonly expiresAt: string;
+}
+const PENDING_TTL_MS = 600_000;
+const MAX_PENDING_KEYS = 32;
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
-const IDENTITY_FILE = 'identity.json';
-const AUTHORIZED_KEYS_FILE = 'authorized_keys.json';
+/** Strict raw Ed25519 representation; alternate Base64 encodings are not identities. */
+function publicKeyBytes(publicKey: string): ArrayBuffer {
+  const raw = fromBase64(publicKey);
+  if (raw.byteLength !== 32 || toBase64(raw) !== publicKey) {
+    throw new Error('Expected canonical Base64 32-byte Ed25519 public key');
+  }
+  return raw;
+}
+function derivedFingerprint(publicKey: string): string {
+  return createHash('sha256')
+    .update(new Uint8Array(publicKeyBytes(publicKey)))
+    .digest('hex')
+    .slice(0, 16);
+}
+/** Import and derive before a transaction lock; never await while holding the lock. */
+export async function validatePublicKey(publicKey: string): Promise<string> {
+  const raw = publicKeyBytes(publicKey);
+  if (isSmallOrderPublicKey(new Uint8Array(raw)))
+    throw new DOMException('Ed25519 small-order public key refused', 'DataError');
+  await importPublicKey(raw);
+  return derivedFingerprint(publicKey);
+}
+/** Sensitive JSON parser tokens and arbitrary exception messages never enter logs or wire. */
+function safeAuthReadError(error: unknown): string {
+  if (error instanceof SyntaxError) return 'invalid JSON';
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return typeof code === 'string' && /^E[A-Z]+$/.test(code)
+    ? `filesystem error ${code}`
+    : 'invalid or unreadable auth data';
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function validDate(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
 
 export class IdentityStore {
   private readonly dir: string;
   readonly identityPath: string;
   private readonly authorizedKeysPath: string;
-
+  private readonly pendingKeysPath: string;
   constructor(dir?: string) {
-    this.dir = dir ?? REMI_DIR;
-    this.identityPath = path.join(this.dir, IDENTITY_FILE);
-    this.authorizedKeysPath = path.join(this.dir, AUTHORIZED_KEYS_FILE);
+    this.dir = dir ?? remiHome();
+    this.identityPath = path.join(this.dir, 'identity.json');
+    this.authorizedKeysPath = path.join(this.dir, 'authorized_keys.json');
+    this.pendingKeysPath = path.join(this.dir, 'pending_keys.json');
   }
-
   private ensureDir(): void {
-    if (!fs.existsSync(this.dir)) {
-      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(this.dir, 0o700);
+  }
+  private transaction<T>(operation: () => T): T {
+    this.ensureDir();
+    // BOTH files use one lock, so approval, touch, revoke and queue writes serialize.
+    return withInterprocessFileLock(this.authorizedKeysPath, operation);
+  }
+  private atomicWrite(filePath: string, raw: string): void {
+    const temporary = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      const fd = fs.openSync(temporary, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, raw);
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(temporary, filePath);
+      const directory = fs.openSync(this.dir, 'r');
+      try {
+        fs.fsyncSync(directory);
+      } finally {
+        fs.closeSync(directory);
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
     }
   }
-
-  // -- Identity --
-
-  /** Check if an identity file exists. */
   exists(): boolean {
     return fs.existsSync(this.identityPath);
   }
-
-  /** Load the stored identity. Returns null if file does not exist. Throws on corrupt file. */
   load(): RemiIdentity | null {
-    if (!fs.existsSync(this.identityPath)) return null;
+    if (!this.exists()) return null;
     try {
-      const raw = fs.readFileSync(this.identityPath, 'utf-8');
-      return deserializeIdentity(raw);
+      return deserializeIdentity(fs.readFileSync(this.identityPath, 'utf-8'));
     } catch (err) {
       throw new Error(
-        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${errorToString(err)}`,
+        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${safeAuthReadError(err)}`,
       );
     }
   }
-
-  /** Save an identity to disk with restricted permissions. */
   save(identity: RemiIdentity): void {
-    this.ensureDir();
-    fs.writeFileSync(this.identityPath, serializeIdentity(identity), {
-      encoding: 'utf-8',
-      mode: 0o600,
+    this.transaction(() => {
+      this.load();
+      this.atomicWrite(this.identityPath, serializeIdentity(identity));
     });
   }
-
-  /** Generate a new identity and save it. Without a passphrase, the key is stored unencrypted. */
-  async generate(passphrase?: string): Promise<RemiIdentity> {
+  async generate(passphrase?: string, replace = true): Promise<RemiIdentity> {
     const identity = await createIdentity(passphrase);
-    this.save(identity);
-    return identity;
+    // A second startup must not replace the first startup's identity.
+    return this.transaction(() => {
+      const existing = this.load();
+      if (existing && !replace) return existing;
+      this.atomicWrite(this.identityPath, serializeIdentity(identity));
+      return identity;
+    });
   }
-
-  /** Unlock the stored identity. Encrypted identities require a passphrase. */
   async unlock(passphrase?: string): Promise<UnlockedIdentity> {
     const identity = this.load();
-    if (!identity) {
-      throw new Error('No identity found. Run `remi keygen` first.');
-    }
+    if (!identity) throw new Error('No identity found. Run `remi keygen` first.');
     return unlockIdentity(identity, passphrase);
   }
-
-  /** Check if the stored identity has an encrypted private key. */
   isEncrypted(): boolean {
     const identity = this.load();
-    if (!identity) return false;
-    return isEncrypted(identity);
+    return identity ? isEncrypted(identity) : false;
   }
-
-  // -- Authorized Keys --
-
-  /** Load authorized keys. Returns empty file if not found. Throws on corrupt file. */
-  loadAuthorizedKeys(): AuthorizedKeysFile {
-    if (!fs.existsSync(this.authorizedKeysPath)) return createAuthorizedKeysFile();
-    const raw = fs.readFileSync(this.authorizedKeysPath, 'utf-8');
-    let parsed: Record<string, unknown>;
+  private readJson(filePath: string): unknown {
     try {
-      parsed = JSON.parse(raw) as Record<string, unknown>;
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw new Error(
-        `Authorized keys file is corrupt (${this.authorizedKeysPath}): ${errorToString(err)}`,
+        `Auth store is corrupt or unreadable (${filePath}): ${safeAuthReadError(err)}`,
       );
     }
-    if (parsed['version'] !== 1 || !Array.isArray(parsed['keys'])) {
-      throw new Error(
-        `Authorized keys file has unsupported format (version: ${parsed['version']})`,
-      );
+  }
+  loadAuthorizedKeys(): AuthorizedKeysFile {
+    const parsed = this.readJson(this.authorizedKeysPath);
+    if (parsed === undefined) return createAuthorizedKeysFile();
+    if (!isRecord(parsed) || parsed['version'] !== 1 || !Array.isArray(parsed['keys']))
+      throw new Error('Authorized keys file has unsupported format');
+    const seen = new Set<string>();
+    for (const key of parsed['keys']) {
+      if (
+        !isRecord(key) ||
+        typeof key['publicKey'] !== 'string' ||
+        key['fingerprint'] !== derivedFingerprint(key['publicKey']) ||
+        typeof key['label'] !== 'string' ||
+        !validDate(key['addedAt']) ||
+        (key['lastUsedAt'] !== null && !validDate(key['lastUsedAt'])) ||
+        seen.has(key['fingerprint'] as string)
+      )
+        throw new Error('Authorized keys file has invalid records');
+      seen.add(key['fingerprint'] as string);
     }
     return parsed as unknown as AuthorizedKeysFile;
   }
-
-  /** Save authorized keys to disk. */
-  saveAuthorizedKeys(file: AuthorizedKeysFile): void {
-    this.ensureDir();
-    fs.writeFileSync(this.authorizedKeysPath, JSON.stringify(file, null, 2), {
-      encoding: 'utf-8',
-      mode: 0o600,
+  private writeAuthorizedKeys(file: AuthorizedKeysFile): void {
+    this.atomicWrite(this.authorizedKeysPath, JSON.stringify(file, null, 2));
+  }
+  private readPendingKeys(): PendingKey[] {
+    const parsed = this.readJson(this.pendingKeysPath);
+    if (parsed === undefined) return [];
+    if (
+      !isRecord(parsed) ||
+      parsed['version'] !== 1 ||
+      !Array.isArray(parsed['keys']) ||
+      parsed['keys'].length > MAX_PENDING_KEYS
+    )
+      throw new Error('Pending keys file has unsupported format');
+    const seen = new Set<string>();
+    for (const key of parsed['keys']) {
+      if (
+        !isRecord(key) ||
+        Object.keys(key).sort().join(',') !== 'expiresAt,fingerprint,firstSeenAt,publicKey' ||
+        typeof key['publicKey'] !== 'string' ||
+        key['fingerprint'] !== derivedFingerprint(key['publicKey']) ||
+        !validDate(key['firstSeenAt']) ||
+        !validDate(key['expiresAt']) ||
+        Date.parse(key['expiresAt']) - Date.parse(key['firstSeenAt']) !== PENDING_TTL_MS ||
+        seen.has(key['fingerprint'] as string)
+      )
+        throw new Error('Pending keys file has invalid records');
+      seen.add(key['fingerprint'] as string);
+    }
+    return parsed['keys'] as PendingKey[];
+  }
+  private pendingInsideTransaction(): PendingKey[] {
+    const authorized = this.loadAuthorizedKeys().keys;
+    const all = this.readPendingKeys();
+    const live = all.filter(
+      (key) =>
+        Date.parse(key.expiresAt) > Date.now() &&
+        !authorized.some((trusted) => trusted.publicKey === key.publicKey),
+    );
+    if (all.length !== live.length) this.writePendingKeys(live);
+    return live;
+  }
+  private writePendingKeys(keys: readonly PendingKey[]): void {
+    this.atomicWrite(this.pendingKeysPath, JSON.stringify({ version: 1, keys }, null, 2));
+  }
+  async registerPendingKey(publicKey: string): Promise<PendingKey> {
+    const fingerprint = await validatePublicKey(publicKey);
+    return this.transaction(() => {
+      const keys = this.pendingInsideTransaction();
+      const existing = keys.find((key) => key.publicKey === publicKey);
+      if (existing) return existing;
+      if (this.isAuthorized(publicKey, fingerprint)) throw new DuplicateKeyError(fingerprint);
+      if (keys.length >= MAX_PENDING_KEYS) throw new PendingQueueFullError();
+      const now = Date.now();
+      const key = {
+        publicKey,
+        fingerprint,
+        firstSeenAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + PENDING_TTL_MS).toISOString(),
+      };
+      this.writePendingKeys([...keys, key]);
+      return key;
     });
   }
-
-  /** Add a client public key to authorized keys. */
-  async addAuthorizedKey(publicKeyBase64: string, label: string): Promise<AuthorizedKey> {
-    const file = this.loadAuthorizedKeys();
-    const key = await createAuthorizedKey(publicKeyBase64, label);
-
-    // Check for duplicate
-    const existing = file.keys.find((k) => k.fingerprint === key.fingerprint);
-    if (existing) {
-      throw new DuplicateKeyError(key.fingerprint);
-    }
-
-    file.keys.push(key);
-    this.saveAuthorizedKeys(file);
-    return key;
+  listPendingKeys(): readonly PendingKey[] {
+    return this.transaction(() => this.pendingInsideTransaction());
   }
-
-  /** Remove an authorized key by fingerprint. */
+  async authorizePendingKey(fingerprint: string, label: string): Promise<AuthorizedKey> {
+    // Validate crypto before locking, then resolve this exact key again inside the lock.
+    const snapshot = this.listPendingKeys().find(
+      (key) => key.fingerprint === fingerprint && Date.parse(key.expiresAt) > Date.now(),
+    );
+    if (!snapshot)
+      throw new Error(`No unexpired pending key with exact fingerprint ${fingerprint}`);
+    await validatePublicKey(snapshot.publicKey);
+    const grant = await createAuthorizedKey(snapshot.publicKey, label);
+    return this.transaction(() => {
+      const keys = this.pendingInsideTransaction();
+      if (!keys.some((key) => key.fingerprint === fingerprint && key.publicKey === grant.publicKey))
+        throw new Error(`No unexpired pending key with exact fingerprint ${fingerprint}`);
+      const file = this.loadAuthorizedKeys();
+      if (file.keys.some((key) => key.fingerprint === fingerprint))
+        throw new DuplicateKeyError(fingerprint);
+      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, grant] });
+      // Grant is durable FIRST. A crash leaves only an ignored stale candidate.
+      this.writePendingKeys(keys.filter((key) => key.fingerprint !== fingerprint));
+      return grant;
+    });
+  }
+  async addAuthorizedKey(publicKey: string, label: string): Promise<AuthorizedKey> {
+    await validatePublicKey(publicKey);
+    const key = await createAuthorizedKey(publicKey, label);
+    return this.transaction(() => {
+      const file = this.loadAuthorizedKeys();
+      if (file.keys.some((existing) => existing.fingerprint === key.fingerprint))
+        throw new DuplicateKeyError(key.fingerprint);
+      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, key] });
+      return key;
+    });
+  }
   removeAuthorizedKey(fp: Fingerprint): boolean {
-    const file = this.loadAuthorizedKeys();
-    const before = file.keys.length;
-    const filtered = file.keys.filter((k) => k.fingerprint !== fp);
-
-    if (filtered.length === before) return false;
-
-    this.saveAuthorizedKeys({ ...file, keys: filtered });
-    return true;
+    return this.transaction(() => {
+      const file = this.loadAuthorizedKeys();
+      const keys = file.keys.filter((key) => key.fingerprint !== fp);
+      if (keys.length === file.keys.length) return false;
+      // Purge stale candidates while this key is still authorized, so revoke cannot resurrect one.
+      this.pendingInsideTransaction();
+      this.writeAuthorizedKeys({ ...file, keys });
+      return true;
+    });
   }
-
-  /** Check if a public key is authorized. */
-  isAuthorized(publicKeyBase64: string, fp: Fingerprint): boolean {
-    const file = this.loadAuthorizedKeys();
-    return file.keys.some((k) => k.fingerprint === fp && k.publicKey === publicKeyBase64);
+  isAuthorized(publicKey: string, fp: Fingerprint): boolean {
+    return this.loadAuthorizedKeys().keys.some(
+      (key) => key.fingerprint === fp && key.publicKey === publicKey,
+    );
   }
-
-  /** Update lastUsedAt for an authorized key. Non-critical; errors are logged but not thrown. */
   touchAuthorizedKey(fp: Fingerprint): void {
     try {
-      const file = this.loadAuthorizedKeys();
-      const updated = {
-        ...file,
-        keys: file.keys.map((k) =>
-          k.fingerprint === fp ? { ...k, lastUsedAt: new Date().toISOString() } : k,
-        ),
-      };
-      this.saveAuthorizedKeys(updated);
+      this.transaction(() => {
+        const file = this.loadAuthorizedKeys();
+        this.writeAuthorizedKeys({
+          ...file,
+          keys: file.keys.map((key) =>
+            key.fingerprint === fp ? { ...key, lastUsedAt: new Date().toISOString() } : key,
+          ),
+        });
+      });
     } catch (err) {
-      console.warn(
-        `Failed to update lastUsedAt for key ${fp}: ${err instanceof Error ? err.message : err}`,
-      );
+      console.warn(`Failed to update lastUsedAt for key ${fp}: ${errorToString(err)}`);
     }
   }
-
-  /** List all authorized keys. */
   listAuthorizedKeys(): readonly AuthorizedKey[] {
     return this.loadAuthorizedKeys().keys;
   }

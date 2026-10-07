@@ -5,8 +5,13 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
-import { createResumeSessionHandlers } from '../../../src/cli/handlers/resume-session-events.ts';
+import {
+  HUB_RESUME_UNSUPPORTED_CODE,
+  createResumeSessionHandlers,
+  hubResumeUnsupportedMessage,
+} from '../../../src/cli/handlers/resume-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -72,12 +77,17 @@ describe('createResumeSessionHandlers', () => {
     ) => Promise<unknown> = async () => {
       throw new Error('createNewSession should not be called in this test');
     },
+    hubMode = false,
   ) {
     return createResumeSessionHandlers({
+      hubMode,
+      harnessId: 'claude',
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       createNewSession,
       send,
     });
@@ -158,10 +168,14 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
+      hubMode: false,
+      harnessId: 'claude',
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore: failingStore,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       createNewSession: async () => undefined,
       send,
     });
@@ -188,10 +202,14 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
+      hubMode: false,
+      harnessId: 'claude',
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore,
       bindingStore: ambiguousBindingStore,
       transcriptDiscovery: noFallbackDiscovery,
+      harness: new ClaudeHarness(noFallbackDiscovery),
       createNewSession: async () => undefined,
       send,
     });
@@ -296,5 +314,175 @@ describe('createResumeSessionHandlers', () => {
     // Critical: the partially-created session must be cleaned up so a
     // retry can succeed.
     expect(sessionRegistry.activeSession).toBeNull();
+  });
+
+  // #1124: the hub (`remi serve`) is session-less and must never run Claude.
+  // These drive the real handler with the same `hubMode` wiring cli.ts passes
+  // (`hubMode: serveMode`). A stored, resumable session is seeded so that, with
+  // no guard, the handler WOULD reach createNewSession. The end-to-end version
+  // against a real hub process is tests/integration/hub-resume-guard.test.ts.
+  describe('hub mode (#1124)', () => {
+    function seedResumable(): { remiSessionId: UUID; claudeSessionId: string } {
+      const projectDir = path.join(tmpDir, 'hub-resume-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const remiSessionId = 'efefefef-efef-efef-efef-efefefefefef' as UUID;
+      const claudeSessionId = '66666666-6666-4666-8666-666666666666';
+      sessionStore.save({
+        remiSessionId,
+        claudeSessionId,
+        projectPath: projectDir,
+        port: 0,
+        pid: null,
+        startedAt: new Date().toISOString(),
+        exitedAt: new Date().toISOString(),
+        exitCode: 0,
+      });
+      return { remiSessionId, claudeSessionId };
+    }
+
+    test('refuses with a typed UNSUPPORTED resume response and never calls createNewSession', async () => {
+      const { remiSessionId } = seedResumable();
+      const spawned: string[][] = [];
+      const handlers = makeHandlers(async (_sid, _dir, _send, extraArgs) => {
+        spawned.push([...extraArgs]);
+        return undefined;
+      }, true);
+
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+
+      expect(spawned).toEqual([]);
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        success: boolean;
+        requestId: UUID;
+        sessionId?: UUID;
+        error?: string;
+        errorCode?: string;
+      };
+      expect(sendCalls[0]?.connectionId).toBe(CID);
+      expect(msg.type).toBe('resume_session_response');
+      expect(msg.success).toBe(false);
+      expect(msg.requestId).toBe(REQ);
+      expect(msg.sessionId).toBeUndefined();
+      expect(msg.errorCode).toBe(HUB_RESUME_UNSUPPORTED_CODE);
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+      expect(msg.error).toBe(hubResumeUnsupportedMessage(remiSessionId));
+      // Names the way that works today, and echoes the (UUID-shaped) id back
+      // inside the command so it can be pasted as is.
+      expect(msg.error).toContain(`remi --resume ${remiSessionId}`);
+      // Nothing was registered: no session, and no connection attached.
+      expect(sessionRegistry.activeSession).toBeNull();
+    });
+
+    test('refuses a Claude session id (not just a Remi id) the same way', async () => {
+      const { claudeSessionId } = seedResumable();
+      let called = false;
+      const handlers = makeHandlers(async () => {
+        called = true;
+        return undefined;
+      }, true);
+
+      await handlers.onResumeSessionRequest(CID, claudeSessionId, REQ);
+
+      expect(called).toBe(false);
+      const msg = sendCalls[0]?.message as { success: boolean; errorCode?: string };
+      expect(sendCalls).toHaveLength(1);
+      expect(msg.success).toBe(false);
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+    });
+
+    test('refuses even for an unknown session id, before any store lookup runs', async () => {
+      // Hub mode must not depend on resolving the session: a store that
+      // throws on every read proves the guard comes first.
+      const throwingStore = {
+        findByRemiSessionId: () => {
+          throw new Error('store must not be read in hub mode');
+        },
+      } as unknown as SessionStore;
+      const handlers = createResumeSessionHandlers({
+        hubMode: true,
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
+        sessionRegistry,
+        sessionStore: throwingStore,
+        bindingStore,
+        transcriptDiscovery,
+        harness: new ClaudeHarness(transcriptDiscovery),
+        createNewSession: async () => {
+          throw new Error('createNewSession must not be called in hub mode');
+        },
+        send,
+      });
+
+      await handlers.onResumeSessionRequest(CID, 'no-such-session', REQ);
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        success: boolean;
+        errorCode?: string;
+        error?: string;
+      };
+      expect(msg.success).toBe(false);
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+      // Not UUID-shaped, so it is not echoed: the generic placeholder instead.
+      expect(msg.error).toBe(hubResumeUnsupportedMessage('no-such-session'));
+      expect(msg.error).toContain("'remi --resume <session>'");
+      expect(msg.error).not.toContain('no-such-session');
+    });
+
+    test('never echoes arbitrary client input into the refusal message', async () => {
+      const hostile = [
+        "x'; echo pwned #",
+        '$(touch /tmp/pwned)',
+        '<script>alert(1)</script>',
+        '11111111-2222-4333-8444-555555555555\n; reboot',
+        '11111111-2222-4333-8444-5555555555555',
+        'z1111111-2222-4333-8444-555555555555',
+        '',
+      ];
+      const handlers = makeHandlers(async () => undefined, true);
+      for (const input of hostile) {
+        sendCalls = [];
+        await handlers.onResumeSessionRequest(CID, input, REQ);
+        const msg = sendCalls[0]?.message as { error?: string };
+        expect(msg.error).toBe(hubResumeUnsupportedMessage('<session>'));
+        if (input.length > 0) expect(msg.error).not.toContain(input);
+      }
+    });
+
+    test('echoes a UUID-shaped id in either case and nothing else', () => {
+      const lower = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+      const upper = lower.toUpperCase();
+      expect(hubResumeUnsupportedMessage(lower)).toContain(`remi --resume ${lower}'`);
+      expect(hubResumeUnsupportedMessage(upper)).toContain(`remi --resume ${upper}'`);
+      expect(hubResumeUnsupportedMessage('not-a-uuid')).toContain("'remi --resume <session>'");
+    });
+
+    test('hubMode false behaves exactly like the session daemon: spawns with --resume', async () => {
+      const { remiSessionId, claudeSessionId } = seedResumable();
+      const spawned: string[][] = [];
+      const handlers = makeHandlers(async (sessionId, _dir, _send, extraArgs) => {
+        spawned.push([...extraArgs]);
+        sessionRegistry.registerSession(sessionId, '/resumed/dir', fakePTY(), fakeMessageAPI());
+        return undefined;
+      }, false);
+
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+
+      expect(spawned).toEqual([['--resume', claudeSessionId]]);
+      const response = sendCalls.find((c) => c.message.type === 'resume_session_response')
+        ?.message as { success: boolean; errorCode?: string };
+      expect(response.success).toBe(true);
+      expect('errorCode' in response).toBe(false);
+    });
+
+    test('a failure in a non-hub handler carries no errorCode (wire shape unchanged)', async () => {
+      const handlers = makeHandlers();
+      await handlers.onResumeSessionRequest(CID, 'unknown-session', REQ);
+      const msg = sendCalls[0]?.message as { success: boolean; errorCode?: string };
+      expect(msg.success).toBe(false);
+      expect('errorCode' in msg).toBe(false);
+    });
   });
 });

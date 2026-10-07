@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { HookConfigManager } from '../../src/hooks/hook-config-manager.ts';
+import { DAEMON_HOLD_SECONDS_MAX } from '../../src/config/config.ts';
+import {
+  DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+  HookConfigManager,
+} from '../../src/hooks/hook-config-manager.ts';
 import { HOOK_EVENT_NAMES, REMI_REGISTERED_HOOK_EVENTS } from '../../src/hooks/hook-types.ts';
 
 describe('HookConfigManager', () => {
@@ -55,7 +59,8 @@ describe('HookConfigManager', () => {
     expect(events).not.toContain('WorktreeRemove');
     expect(events).not.toContain('PreCompact');
     // UserPromptSubmit WAS in this skip list before #893; it is now registered
-    // (the auto-approve authority summary's primary source) — see the
+    // (the turn timer's anchor and a binder input; it was also the removed
+    // auto-approve authority summary's source, #1125) — see the
     // REMI_REGISTERED_HOOK_EVENTS containment loop above and the dedicated
     // timeout test below.
     expect(events).toContain('UserPromptSubmit');
@@ -81,8 +86,8 @@ describe('HookConfigManager', () => {
       expect(hooks?.length).toBe(1);
       expect(hooks?.[0]?.type).toBe('http');
       expect(hooks?.[0]?.url).toBe(hookUrl);
-      // PermissionRequest must outlast the synchronous auto-approve eval (#537);
-      // UserPromptSubmit gets an even SHORTER budget than the default (#893) —
+      // PermissionRequest keeps the 600s baseline (#537), above a wrapper
+      // session's hold deadline (#1126); UserPromptSubmit gets an even SHORTER budget than the default (#893) —
       // its listener is a single array push, so it never needs 5s to fail fast;
       // every other hook keeps the plain fail-fast timeout (#203).
       const expectedTimeout =
@@ -105,6 +110,24 @@ describe('HookConfigManager', () => {
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
       ?.hooks.find((h) => h.url === hookUrl);
     expect(stopHook?.timeout).toBe(5);
+  });
+
+  it('#1126: a daemon or hub session registers PermissionRequest for 3600 s, above its hold', async () => {
+    const daemon = new HookConfigManager(tmpDir, hookUrl, {
+      permissionRequestTimeout: DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+    });
+    await daemon.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string; timeout: number }> }>>;
+    };
+    const permHook = settings.hooks['PermissionRequest']
+      ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
+      ?.hooks.find((h) => h.url === hookUrl);
+    expect(permHook?.timeout).toBe(3600);
+    expect(DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT).toBeGreaterThan(DAEMON_HOLD_SECONDS_MAX);
+    expect(daemon.isInstalled()).toBe(true);
+    // A wrapper registration for the same URL is not the daemon's.
+    expect(manager.isInstalled()).toBe(false);
   });
 
   it('#893: UserPromptSubmit gets a short timeout; other non-permission hooks stay at the default', async () => {

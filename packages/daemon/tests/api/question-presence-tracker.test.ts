@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
 import { generateId } from '@remi/shared';
-import type { ParkedRenderVerdict } from '../../src/api/question-presence-tracker.ts';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
+import { extractToolQuestion } from '../../src/hooks/tool-question.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
 
 function makeOption(
   label: string,
@@ -108,14 +109,18 @@ describe('QuestionPresenceTracker', () => {
       pushes.push(q);
       return undefined;
     });
-    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' });
+    const hook = { ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' };
+    tracker.recordPendingHook(hook);
     const ptyQ = makePTYQuestion('Allow Bash?'); // no agentId, but only one candidate
     tracker.onPTYPromptVisible(ptyQ);
     expect(pushes.length).toBe(1);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    // Paired: the hook's identity and agent, the screen's options (#1134).
+    expect(pushes[0]?.id).toBe(hook.id);
+    expect(pushes[0]?.agentId).toBe('subagent-A');
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
   });
 
-  it('hook then PTY — pushes once with the hook rich text + options (#497)', () => {
+  it("hook then PTY — pushes once with the hook rich text and the screen's options (#497, #1134)", () => {
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -137,9 +142,9 @@ describe('QuestionPresenceTracker', () => {
     // once a hook record exists to pair with).
     expect(pushes[0]?.id).toBe(hookMeta.id);
     expect(pushes[0]?.id).not.toBe(ptyQ.id);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
-    expect(pushes[0]?.options[0]?.isYes).toBe(true);
-    expect(pushes[0]?.options[2]?.isNo).toBe(true);
+    // #1134: the card is answered by typing its option value into the PTY, so
+    // it carries the screen's numbering, never the hook's.
+    expect(pushes[0]?.options).toEqual(ptyQ.options);
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
@@ -157,8 +162,8 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('hook only — no push until PTY confirms or status clears', () => {
-    // Auto-approve in progress: hook fired, LLM is evaluating. We have
-    // not yet seen the prompt on screen. No push must fire yet.
+    // The hook fired but the prompt has not rendered on screen yet. No
+    // push must fire yet.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -172,10 +177,10 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('hook then status transitions to executing — pending dropped, no push', () => {
-    // Auto-approve approved silently: inject '1', Claude resumed → status
-    // changes to 'executing'. The prompt the hook described is gone from
-    // screen; the iOS user must not be poked for a prompt that no longer
-    // exists.
+    // The prompt was answered in the terminal (or Claude's own rules
+    // allowed the call) and Claude resumed → status changes to 'executing'.
+    // The prompt the hook described is gone from screen; the iOS user must
+    // not be poked for a prompt that no longer exists.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -247,7 +252,8 @@ describe('QuestionPresenceTracker', () => {
     tracker.onPTYPromptVisible(ptyQ);
 
     expect(pushes.length).toBe(1);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['A', 'B']);
+    expect(pushes[0]?.id).toBe(secondHook.id);
+    expect(pushes[0]?.text).toBe('Allow Edit?');
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
@@ -298,10 +304,10 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('clearPending — drops a pending hook record without pushing', () => {
-    // Used by the auto-approve cancelled branch: Claude advanced past the
-    // prompt without a status transition we can observe (e.g. user typed
-    // a slash command). Without clearPending, the pending hook would
-    // merge stale option labels onto the next unrelated prompt.
+    // Used on a transcript rotation (hook-bridge-setup's `onRotation`):
+    // Claude moved on without a status transition we can observe. Without
+    // clearPending, the pending hook would merge stale option labels onto
+    // the next unrelated prompt.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -317,20 +323,20 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes.length).toBe(0);
   });
 
-  it('clearPending — also resets ptyShowingQuestion so the inject gate cannot leak', () => {
-    // Sequence: PTY confirms a prompt (flag=true) -> auto-approve eval
-    // returns 'cancelled' (Claude advanced past the prompt) -> bridge
-    // calls clearPending. Without resetting ptyShowingQuestion, the very
-    // next subagent PermissionRequest arriving before any onStatusChange
-    // would find the gate open and inject "1"/"3" into a PTY that is no
-    // longer showing a prompt.
+  it('clearPending — also resets the on-screen state so a stale answer cannot be typed', () => {
+    // A rotation (/clear, /resume) calls clearPending. Without resetting the
+    // on-screen state, an answer for the dying session's prompt would still
+    // pass the #920 prompt-currency guard and be typed into the new one.
     const tracker = new QuestionPresenceTracker(() => undefined);
-    tracker.onPTYPromptVisible(makePTYQuestion());
-    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    const ptyQ = makePTYQuestion();
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(tracker.isPromptCurrent(ptyQ.id, ptyQ.text)).toBe(true);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
 
     tracker.clearPending();
 
-    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    expect(tracker.isPromptCurrent(ptyQ.id, ptyQ.text)).toBe(false);
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
   });
 
   it('push sink throws — error is caught, tracker stays in a clean state', () => {
@@ -348,52 +354,61 @@ describe('QuestionPresenceTracker', () => {
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
-  describe('isPromptVisibleOnPTY (subagent auto-approve gate)', () => {
+  describe('isPromptCurrent (#814, #920): is THIS prompt still on screen?', () => {
     it('starts false before any PTY confirmation', () => {
       const tracker = new QuestionPresenceTracker(() => undefined);
-      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+      expect(tracker.isPromptCurrent('nothing-yet')).toBe(false);
     });
 
     it('stays false when only a hook has recorded — PTY has not confirmed yet', () => {
-      // Background subagent fires PermissionRequest; LLM eval is running;
-      // the prompt is NOT on the main PTY. The gate must report false so
-      // hook-bridge-setup drops the inject instead of typing "1" into
-      // the main agent's input.
       const tracker = new QuestionPresenceTracker(() => undefined);
-      tracker.recordPendingHook(makeHookQuestion('Bash'));
-      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+      const hook = makeHookQuestion('Bash');
+      tracker.recordPendingHook(hook);
+      expect(tracker.isPromptCurrent(hook.id, hook.text)).toBe(false);
     });
 
-    it('flips to true once PTY confirms a prompt is on screen', () => {
+    it('flips to true once PTY confirms the prompt is on screen', () => {
       const tracker = new QuestionPresenceTracker(() => undefined);
-      tracker.onPTYPromptVisible(makePTYQuestion());
-      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+      const ptyQ = makePTYQuestion();
+      tracker.onPTYPromptVisible(ptyQ);
+      expect(tracker.isPromptCurrent(ptyQ.id)).toBe(true);
+    });
+
+    it('a redraw under a fresh id still matches by text', () => {
+      const tracker = new QuestionPresenceTracker(() => undefined);
+      const ptyQ = makePTYQuestion('Do you want to proceed?');
+      tracker.onPTYPromptVisible(ptyQ);
+      expect(tracker.isPromptCurrent('some-other-id', 'Do you want to proceed?')).toBe(true);
+      expect(tracker.isPromptCurrent('some-other-id', 'A different prompt')).toBe(false);
     });
 
     it('flips back to false when status leaves waiting (prompt consumed)', () => {
       const tracker = new QuestionPresenceTracker(() => undefined);
-      tracker.onPTYPromptVisible(makePTYQuestion());
-      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+      const ptyQ = makePTYQuestion();
+      tracker.onPTYPromptVisible(ptyQ);
       tracker.onStatusChange('executing');
-      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+      expect(tracker.isPromptCurrent(ptyQ.id)).toBe(false);
     });
 
     it("stays true while status stays 'waiting'", () => {
       const tracker = new QuestionPresenceTracker(() => undefined);
-      tracker.onPTYPromptVisible(makePTYQuestion());
+      const ptyQ = makePTYQuestion();
+      tracker.onPTYPromptVisible(ptyQ);
       tracker.onStatusChange('waiting');
-      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+      expect(tracker.isPromptCurrent(ptyQ.id)).toBe(true);
     });
 
     it('also flips false on transition to thinking or idle', () => {
       const tracker = new QuestionPresenceTracker(() => undefined);
-      tracker.onPTYPromptVisible(makePTYQuestion());
+      const first = makePTYQuestion();
+      tracker.onPTYPromptVisible(first);
       tracker.onStatusChange('thinking');
-      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+      expect(tracker.isPromptCurrent(first.id)).toBe(false);
 
-      tracker.onPTYPromptVisible(makePTYQuestion());
+      const second = makePTYQuestion();
+      tracker.onPTYPromptVisible(second);
       tracker.onStatusChange('idle');
-      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+      expect(tracker.isPromptCurrent(second.id)).toBe(false);
     });
   });
 
@@ -417,10 +432,11 @@ describe('QuestionPresenceTracker', () => {
       // The user sees the command, not "Claude needs your permission to use Bash"
       // and never the bare PTY "Do you want to proceed?".
       expect(pushes[0]?.text).toBe('Allow Bash: git push origin main');
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      // Options are the screen's whichever hook record pairs (#1134).
+      expect(pushes[0]?.options).toEqual(ptyQ.options);
     });
 
-    it('a source-less (StopFailure-shaped) question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
+    it('a source-less question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
@@ -428,25 +444,25 @@ describe('QuestionPresenceTracker', () => {
       });
       tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: git push'));
 
-      // A StopFailure "Retry?" card for the same agent carries no source; it
-      // must NOT silently evict the rich permission request (which would leave
-      // the real permission prompt without a push).
-      const stopFailureCard: Question = {
+      // A source-less question for the same agent must NOT silently evict the
+      // rich permission request (which would leave the real permission prompt
+      // without a push).
+      const sourcelessCard: Question = {
         id: generateId(),
-        text: 'Session stop failed (timeout). Retry?',
+        text: 'Continue with the other approach?',
         options: [
           makeOption('Yes', 'y', { isYes: true, isRecommended: true }),
           makeOption('No', 'n', { isNo: true }),
         ],
         allowsFreeText: false,
         isAnswered: false,
-        // source intentionally undefined (StopFailure does not set it)
+        // source intentionally undefined
       };
-      tracker.recordPendingHook(stopFailureCard);
+      tracker.recordPendingHook(sourcelessCard);
 
       tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
       expect(pushes.length).toBe(1);
-      // The permission request survived the StopFailure arrival.
+      // The permission request survived the source-less arrival.
       expect(pushes[0]?.text).toBe('Allow Bash: git push');
 
       // A genuinely new permission cycle (another permission_request) DOES replace it.
@@ -507,7 +523,7 @@ describe('QuestionPresenceTracker', () => {
 
       tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      expect(pushes[0]?.text).toBe('Claude needs your permission to use Bash');
     });
 
     it("different agents: a notification for agent B does not touch agent A's request", () => {
@@ -525,7 +541,7 @@ describe('QuestionPresenceTracker', () => {
     });
   });
 
-  describe('fallback options do not overwrite PTY truth (#718)', () => {
+  describe("merged options are the screen's (#1134, replacing #718's fallback-only rule)", () => {
     it('a fallback hook record loses its options to a concrete PTY option set (hook text still wins)', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
@@ -567,81 +583,178 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('overrides a stale optionsAreFallback the PTY question itself happened to carry', () => {
+    it('does not leak a stale optionsAreFallback the PTY question itself happened to carry', () => {
       // The PTY base is spread first (`...ptyQuestion`), so its OWN
-      // optionsAreFallback must not leak through when the hook's options win
-      // (#718 review) — the merged flag must reflect the hook record, not
-      // whatever the PTY parser separately decided about ITS OWN options.
+      // optionsAreFallback must not leak through (#718 review): the merged
+      // flag describes the options that won, and the screen's are concrete.
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
         return undefined;
       });
-      const structuredHook: Question = {
-        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
-        options: [
-          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
-          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
-            isYes: true,
-            suggestionIndex: 0,
-          }),
-          makeOption('No', '3', { isNo: true }),
-        ],
-        // Real derived set: no optionsAreFallback flag.
-      };
-      tracker.recordPendingHook(structuredHook);
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'));
 
       const ptyQ: Question = {
         ...makePTYQuestion('Do you want to proceed?'),
-        optionsAreFallback: false,
+        optionsAreFallback: true,
       };
       tracker.onPTYPromptVisible(ptyQ);
 
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, always allow: rm -rf /tmp/foo',
-        'No',
-      ]);
-      // The hook's options won and the hook record has no fallback flag, so
-      // the merged question must not carry `false` (or any stale value)
-      // leaked from the PTY base.
-      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
+      expect(pushes[0]?.options).toEqual(ptyQ.options);
+      expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('a suggestion-derived (non-fallback) hook record still wins over the PTY options', () => {
+    it('a suggestion-derived hook record gives way to the screen: the live 4-over-3 mismatch', () => {
+      // The live failure (#1134): `addDirectories` + `setMode` suggestions
+      // built a 4-option card, Claude's dialog showed 3, and the pre-#1134
+      // merge kept the hook's set because it was not the fallback. The
+      // phone's "No" was value 4, which the dialog does not have.
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
         return undefined;
       });
       const structuredHook: Question = {
-        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
+        ...makePermissionRequestHook('Allow Bash: touch e5-marker.txt'),
         options: [
           makeOption('Yes', '1', { isYes: true, isRecommended: true }),
-          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
-            isYes: true,
-            suggestionIndex: 0,
-          }),
-          makeOption('No', '3', { isNo: true }),
+          makeOption('Yes, allow directory /work', '2', { isYes: true, suggestionIndex: 0 }),
+          makeOption('Yes, switch to acceptEdits mode', '3', { isYes: true, suggestionIndex: 1 }),
+          makeOption('No', '4', { isNo: true }),
         ],
         // optionsAreFallback intentionally absent: this is a real derived set.
       };
       tracker.recordPendingHook(structuredHook);
 
-      const ptyQ = makePTYQuestion('Do you want to proceed?');
+      const ptyQ: Question = {
+        ...makePTYQuestion('Do you want to proceed?'),
+        options: [
+          makeOption('Yes', '1', { isRecommended: true }),
+          makeOption('Yes, and always allow access to /work from this project', '2'),
+          makeOption('No', '3'),
+        ],
+      };
       tracker.onPTYPromptVisible(ptyQ);
 
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, always allow: rm -rf /tmp/foo',
-        'No',
+      expect(pushes[0]?.id).toBe(structuredHook.id);
+      expect(pushes[0]?.text).toBe('Allow Bash: touch e5-marker.txt');
+      // The screen's labels and values; yes/no flags derived from the labels.
+      expect(pushes[0]?.options.map((o) => [o.value, o.label])).toEqual(
+        ptyQ.options.map((o) => [o.value, o.label]),
+      );
+      expect(pushes[0]?.options.map((o) => [o.isYes, o.isNo])).toEqual([
+        [true, false],
+        [true, false],
+        [false, true],
       ]);
-      expect(pushes[0]?.options[1]?.suggestionIndex).toBe(0);
-      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
+      // No hook-only artifacts survive: nothing to echo, no value 4.
+      expect(pushes[0]?.options.some((o) => o.suggestionIndex !== undefined)).toBe(false);
+      expect(pushes[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+      expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('a fallback hook record keeps its own options when the PTY question has none', () => {
+    it('derives yes/no flags from the screen labels, conservatively', () => {
+      // The parser reads a numbered menu as bare picks (no flags); the merge
+      // restores the meaning from the label, counting only a label that
+      // starts with the exact word "Yes" or "No".
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => {
+        pushes.push(q);
+        return undefined;
+      });
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+      const labels = [
+        'Yes',
+        "Yes, and don't ask again for this command",
+        'Yes,andalwaysallowaccessto/w',
+        'No, and tell Claude what to do differently (esc)',
+        "Yesterday's build",
+        'None of these',
+        'yes',
+        'Nope',
+      ];
+      tracker.onPTYPromptVisible({
+        ...makePTYQuestion('Do you want to proceed?'),
+        options: labels.map((l, i) => makeOption(l, String(i + 1))),
+      });
+
+      expect(pushes[0]?.options.map((o) => [o.label, o.isYes, o.isNo])).toEqual([
+        ['Yes', true, false],
+        ["Yes, and don't ask again for this command", true, false],
+        ['Yes,andalwaysallowaccessto/w', true, false],
+        ['No, and tell Claude what to do differently (esc)', false, true],
+        ["Yesterday's build", false, false],
+        ['None of these', false, false],
+        ['yes', false, false],
+        ['Nope', false, false],
+      ]);
+    });
+
+    it('an AskUserQuestion record pairs with its parsed menu: structure from the hook, numbering from the screen', () => {
+      // A parked subagent AskUserQuestion merges on its render. The runner
+      // answers from the hook's `questions`; a plain pick is typed by the
+      // screen's numbering, which includes the "Type something." row.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => {
+        pushes.push(q);
+        return undefined;
+      });
+      const tool = extractToolQuestion('AskUserQuestion', {
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'DB',
+            multiSelect: false,
+            options: [
+              { label: 'Postgres', description: 'Relational' },
+              { label: 'SQLite', description: 'Embedded' },
+            ],
+          },
+        ],
+      });
+      if (!tool) throw new Error('not an AskUserQuestion shape');
+      const hook: Question = {
+        id: generateId(),
+        text: tool.text,
+        options: tool.options,
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'permission_request',
+        agentId: 'sub-auq',
+        ...(tool.kind ? { kind: tool.kind } : {}),
+        ...(tool.questions ? { questions: tool.questions } : {}),
+      };
+      tracker.recordPendingHook(hook);
+      const screen = parseQuestion(
+        [
+          ' Which database?',
+          ' ❯ 1. Postgres',
+          '      Relational',
+          '   2. SQLite',
+          '      Embedded',
+          '   3. Type something.',
+          ' Enter to select · ↑/↓ to navigate · Esc to cancel',
+        ].join('\n'),
+      ).question;
+      if (!screen) throw new Error('the menu did not parse');
+
+      tracker.onPTYPromptVisible(screen);
+
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0]?.id).toBe(hook.id);
+      expect(pushes[0]?.agentId).toBe('sub-auq');
+      expect(pushes[0]?.kind).toBe('multi_question');
+      expect(pushes[0]?.questions).toEqual(tool.questions);
+      expect(pushes[0]?.options.map((o) => [o.value, o.label])).toEqual([
+        ['1', 'Postgres Relational'],
+        ['2', 'SQLite Embedded'],
+        ['3', 'Type something.'],
+      ]);
+      expect(pushes[0]?.allowsFreeText).toBe(false);
+    });
+
+    it('a hook record keeps its own options only when the PTY question has none', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
@@ -660,228 +773,21 @@ describe('QuestionPresenceTracker', () => {
       const ptyQ: Question = { ...makePTYQuestion('Do you want to proceed?'), options: [] };
       tracker.onPTYPromptVisible(ptyQ);
 
-      // No PTY options to prefer: the hook's fallback is still better than nothing.
+      // No PTY options to take: the hook's are kept. The answer path still
+      // refuses to type any of them, because the screen shows no such value.
       expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
-      // The hook's own options won (no PTY options to prefer), so the merged
-      // flag mirrors the hook record's fallback flag.
+      // The hook's own options were kept, so the merged flag mirrors the hook
+      // record's fallback flag.
       expect(pushes[0]?.optionsAreFallback).toBe(true);
     });
   });
 
-  describe('auto-approve buffer (#484)', () => {
-    it('PTY prompt during an eval is BUFFERED, not pushed', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(0); // held until the verdict
-    });
-
-    it('escalate verdict releases the buffered prompt once, merged with the hook', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(0);
-      // escalate() stashes the hook record first, THEN onEscalate releases.
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate();
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
-    });
-
-    it('auto-approved (no escalate): status-leaves-waiting discards the buffer, never pushes', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
-      tracker.onStatusChange('idle'); // injected silently -> agent advanced
-      expect(pushes.length).toBe(0);
-      // A later prompt (new cycle, eval window closed) pushes normally.
-      tracker.onPTYPromptVisible(makePTYQuestion('Different prompt?'));
-      expect(pushes.length).toBe(1);
-    });
-
-    it('escalate before any PTY prompt -> the next PTY prompt pushes normally', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate(); // nothing buffered yet
-      expect(pushes.length).toBe(0);
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(1);
-    });
-
-    it('onAutoApproveHandled discards the buffer and closes the window (#484)', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
-      tracker.onAutoApproveHandled(); // auto-approved -> discard, no push
-      expect(pushes.length).toBe(0);
-      // Window is closed (not stuck): a later prompt pushes normally.
-      tracker.onPTYPromptVisible(makePTYQuestion('Next?'));
-      expect(pushes.length).toBe(1);
-    });
-  });
-
-  describe('buffer window is main-eval-scoped (#767)', () => {
-    const DEBOUNCE_MS = 20;
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    it('a subagent eval does not open the buffer window — renders flow during it', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart(true); // subagent WebFetch eval in flight
-      tracker.onPTYPromptVisible(makePTYQuestion('Teammate permission prompt'));
-      expect(pushes.length).toBe(1); // NOT buffered
-    });
-
-    it('orphan render routes during a continuous subagent eval stream (2026-07-09 soak)', async () => {
-      // The live failure: back-to-back subagent evals kept the old boolean
-      // window open, every hook-less teammate prompt was buffered, and each
-      // unrelated approve discarded it — questions never routed at all.
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker(
-        (q) => {
-          pushes.push(q);
-          return undefined;
-        },
-        {
-          hasLiveQuestions: () => false,
-          orphanDebounceMs: DEBOUNCE_MS,
-        },
-      );
-      tracker.onAutoApproveStart(true);
-      tracker.onOrphanPTYPrompt(makePTYQuestion('Agent-team permission prompt'));
-      tracker.onAutoApproveHandled(true); // unrelated approve lands
-      tracker.onAutoApproveStart(true); // next eval begins immediately
-      await wait(DEBOUNCE_MS + 10);
-      expect(pushes.length).toBe(1);
-    });
-
-    it('a subagent approve does not discard a MAIN-buffered prompt', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart(); // main eval opens the window
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(0);
-      tracker.onAutoApproveHandled(true); // unrelated subagent approve — no-op
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate(); // the main verdict still owns the release
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
-    });
-
-    it('a subagent escalate (park path) does not release a MAIN-buffered prompt early', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate(true); // a teammate's park fires the cue
-      expect(pushes.length).toBe(0); // still buffered: the main eval owns it
-      tracker.onAutoApproveHandled(); // main verdict: auto-handled -> discard
-      expect(pushes.length).toBe(0);
-    });
-
-    it('a parked render pushes immediately while an unrelated subagent eval is in flight', () => {
-      // The #751 push trigger must survive the eval storm: park -> render ->
-      // push, regardless of whichever other agent is being evaluated.
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker(
-        (q) => {
-          pushes.push(q);
-          return undefined;
-        },
-        {
-          hasLiveQuestions: () => false,
-        },
-      );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('researcher · WebFetch: example.com'),
-        agentId: 'subagent-A',
-      });
-      tracker.onAutoApproveStart(true); // another agent's eval running
-      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-      expect(pushes.length).toBe(1); // immediate, merged, not buffered
-      expect(pushes[0]?.text).toBe('researcher · WebFetch: example.com');
-    });
-
-    it('a parked render wins over the main-eval buffer (parked check runs first)', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker(
-        (q) => {
-          pushes.push(q);
-          return undefined;
-        },
-        {
-          hasLiveQuestions: () => false,
-        },
-      );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('researcher · Edit: notes.md'),
-        agentId: 'subagent-A',
-      });
-      tracker.onAutoApproveStart(); // a MAIN eval is in flight
-      tracker.onOrphanPTYPrompt({
-        ...makePTYQuestion('Do you want to make this edit?'),
-        agentId: 'subagent-A',
-      });
-      expect(pushes.length).toBe(1); // pushed, not captured by the buffer
-      // The buffer stays empty: the main verdict has nothing to discard.
-      tracker.onAutoApproveHandled();
-      expect(pushes.length).toBe(1);
-    });
-
-    it('concurrent main evals: the first verdict does not close the window the second owns', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker((q) => {
-        pushes.push(q);
-        return undefined;
-      });
-      tracker.onAutoApproveStart();
-      tracker.onAutoApproveStart();
-      tracker.onAutoApproveHandled(); // first settles; window must stay open
-      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(0); // still buffered under the second eval
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate();
-      expect(pushes.length).toBe(1);
-    });
-  });
-
   describe('orphan PTY prompt fallback (#712)', () => {
-    // Short real timer (no fake-timer precedent in this suite) — see
-    // auto-approve-gate.test.ts's `holdMs: 30` pattern.
+    // Short real timer (no fake-timer precedent in this suite).
     const DEBOUNCE_MS = 20;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    it('genuine orphan (no live questions, no pending hooks, no eval) pushes after the debounce', async () => {
+    it('genuine orphan (no live questions, no pending hooks) pushes after the debounce', async () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker(
         (q) => {
@@ -1058,32 +964,6 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(0);
     });
 
-    it('autoApproveInFlight still buffers the orphan prompt; escalate releases it (#484 semantics unchanged)', () => {
-      const pushes: Question[] = [];
-      const tracker = new QuestionPresenceTracker(
-        (q) => {
-          pushes.push(q);
-          return undefined;
-        },
-        {
-          hasLiveQuestions: () => false,
-          orphanDebounceMs: DEBOUNCE_MS,
-        },
-      );
-
-      tracker.onAutoApproveStart();
-      tracker.onOrphanPTYPrompt(makePTYQuestion('Allow Bash?'));
-      expect(pushes.length).toBe(0);
-      // Buffered like onPTYPromptVisible, not routed through the debounce.
-      expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
-
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.onAutoApproveEscalate();
-
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
-    });
-
     it('a second orphan before the timer fires replaces the first — only the latest pushes, once', async () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker(
@@ -1157,8 +1037,17 @@ describe('QuestionPresenceTracker', () => {
   describe('awaiting-PTY parking (#751)', () => {
     const DEBOUNCE_MS = 20;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // What a parked render hands over (#1126): its notice, never a card
+    // (the card push without `onRender` was deleted in #1127).
+    let rendered: Question[] = [];
+    const onRender = (q: Question): void => {
+      rendered.push(q);
+    };
+    beforeEach(() => {
+      rendered = [];
+    });
 
-    it('a parked record + rendered prompt pushes IMMEDIATELY, merged, no debounce', () => {
+    it('a parked record + rendered prompt is handed over IMMEDIATELY, merged, no debounce; no card', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker(
         (q) => {
@@ -1170,14 +1059,15 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'), { onRender });
       expect(tracker.awaitingPTYCountForTest()).toBe(1);
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
 
       // Hook + render is positive double-confirmation: no orphan debounce.
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('reviewer · Bash: git push'); // merged rich label
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('reviewer · Bash: git push'); // merged rich label
+      expect(pushes.length).toBe(0); // its notice, never a card (#1127)
       expect(tracker.hasPendingForTest()).toBe(false); // record consumed
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
     });
@@ -1194,16 +1084,20 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Edit: config.toml'),
-        agentId: 'agent-1',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Edit: config.toml'),
+          agentId: 'agent-1',
+        },
+        { onRender },
+      );
 
       // The PTY prompt does not name the agent: sole-candidate pairing applies.
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to make this edit?'));
 
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('agent · Edit: config.toml');
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('agent · Edit: config.toml');
+      expect(pushes.length).toBe(0);
     });
 
     it("#763: a fresh parked record SURVIVES another agent's status churn and still merges on render", () => {
@@ -1218,10 +1112,13 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Bash: ls'),
-        agentId: 'agent-A',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
 
       // Main / teammate hook activity flips status constantly in team runs;
       // that must NOT wipe A's still-live parked record.
@@ -1230,8 +1127,8 @@ describe('QuestionPresenceTracker', () => {
       expect(tracker.awaitingPTYCountForTest()).toBe(1);
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('agent · Bash: ls'); // merged, not bare
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('agent · Bash: ls'); // merged, not bare
     });
 
     it("#763: noteAgentAdvanced expires exactly that agent's parked record (allowlist absorbed)", async () => {
@@ -1246,14 +1143,20 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('A · Bash: ls'),
-        agentId: 'agent-A',
-      });
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('B · Edit: x.md'),
-        agentId: 'agent-B',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('A · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('B · Edit: x.md'),
+          agentId: 'agent-B',
+        },
+        { onRender },
+      );
 
       tracker.noteAgentAdvanced('agent-A'); // A's PreToolUse: permission resolved silently
       tracker.noteAgentAdvanced(undefined); // main-tagged: no-op
@@ -1261,14 +1164,14 @@ describe('QuestionPresenceTracker', () => {
 
       // B's prompt renders and still pairs by exact key.
       tracker.onOrphanPTYPrompt({ ...makePTYQuestion('proceed?'), agentId: 'agent-B' });
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('B · Edit: x.md');
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('B · Edit: x.md');
       // A later unnamed prompt is a plain orphan again (A's record is gone).
       tracker.onOrphanPTYPrompt(makePTYQuestion('unrelated later prompt'));
-      expect(pushes.length).toBe(1);
+      expect(pushes.length).toBe(0);
       await wait(DEBOUNCE_MS * 2);
-      expect(pushes.length).toBe(2);
-      expect(pushes[1]?.text).toBe('unrelated later prompt');
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('unrelated later prompt');
     });
 
     it('#763: a parked record past the TTL is dropped by the next status change', () => {
@@ -1285,7 +1188,7 @@ describe('QuestionPresenceTracker', () => {
           nowMs: () => now,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
 
       now += 119_000;
       tracker.onStatusChange('executing');
@@ -1303,10 +1206,13 @@ describe('QuestionPresenceTracker', () => {
         orphanDebounceMs: DEBOUNCE_MS,
       });
       tracker.recordPendingHook(makeHookQuestion('Allow Bash?')); // not parked
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Bash: ls'),
-        agentId: 'agent-A',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
 
       tracker.onStatusChange('executing');
 
@@ -1319,7 +1225,7 @@ describe('QuestionPresenceTracker', () => {
         hasLiveQuestions: () => false,
         orphanDebounceMs: DEBOUNCE_MS,
       });
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
       tracker.clearPending();
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
       expect(tracker.hasPendingForTest()).toBe(false);
@@ -1341,15 +1247,19 @@ describe('QuestionPresenceTracker', () => {
       // exists for a different agent. The unnamed PTY prompt matches main's
       // normal record -> gate-owned -> suppressed (not stolen by the parked one).
       tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Write: notes.md'),
-        agentId: 'agent-1',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Write: notes.md'),
+          agentId: 'agent-1',
+        },
+        { onRender },
+      );
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
       await wait(DEBOUNCE_MS * 2);
 
       expect(pushes.length).toBe(0);
+      expect(rendered.length).toBe(0);
     });
 
     it('a normal recordPendingHook for the same agent clears the parked flag', async () => {
@@ -1364,7 +1274,7 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
       // A real gate escalation for the same agent takes over the prompt cycle.
       tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
@@ -1373,19 +1283,23 @@ describe('QuestionPresenceTracker', () => {
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
       await wait(DEBOUNCE_MS * 2);
       expect(pushes.length).toBe(0);
+      expect(rendered.length).toBe(0);
     });
   });
 });
 
-describe('parked-render arbitration (#814)', () => {
+// #1125: the parked-render arbiter (#814) was deleted with the auto-approve
+// evaluator; #1127 deleted the parked render's card push (unused since #1126):
+// a parked render only hands its merged question to `onRender`.
+describe('parked render hand-over', () => {
   const DEBOUNCE_MS = 20;
-  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const flush = () => wait(0);
 
-  function trackerWith(
-    pushes: Question[],
-    arbiter: Parameters<QuestionPresenceTracker['setParkedRenderArbiter']>[0],
-  ): QuestionPresenceTracker {
+  it('a parked subagent render is handed over SYNCHRONOUSLY, merged with its hook record, and pushes nothing', () => {
+    const pushes: Question[] = [];
+    const rendered: Question[] = [];
+    const onRender = (q: Question): void => {
+      rendered.push(q);
+    };
     const tracker = new QuestionPresenceTracker(
       (q) => {
         pushes.push(q);
@@ -1396,260 +1310,214 @@ describe('parked-render arbitration (#814)', () => {
         orphanDebounceMs: DEBOUNCE_MS,
       },
     );
-    tracker.setParkedRenderArbiter(arbiter);
-    return tracker;
+    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'), { onRender });
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]?.text).toBe('reviewer · Bash: git push');
+    expect(pushes).toHaveLength(0);
+  });
+});
+
+// #1126: hook-backed prompts are never rebuilt from the screen into a card
+// the phone would answer by typing.
+describe('hook-backed renders (#1126)', () => {
+  const DEBOUNCE = 5;
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function tracker() {
+    const pushes: Question[] = [];
+    const t = new QuestionPresenceTracker(
+      (q) => {
+        pushes.push(q);
+        return { status: 'registered' as const };
+      },
+      { hasLiveQuestions: () => false, orphanDebounceMs: DEBOUNCE },
+    );
+    return { t, pushes };
   }
 
-  it('an "answered" verdict pushes NOTHING: the gate typed the answer for the user', async () => {
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, async () => ({ outcome: 'answered' }));
-    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-    expect(pushes).toHaveLength(0); // not pushed synchronously either
-    await flush();
-
+  it('while the probe reports an open hook-backed prompt, a render is not an orphan', async () => {
+    const { t, pushes } = tracker();
+    let open = true;
+    t.setHookPromptProbe(() => open);
+    t.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    await wait(DEBOUNCE * 4);
     expect(pushes).toHaveLength(0);
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
-  });
+    // Still observed, so the answer guards know a prompt is on screen.
+    expect(t.isPromptObservedOnPTY()).toBe(true);
 
-  it('a "push" verdict pushes the merged card, with the model summary attached', async () => {
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, async () => ({
-      outcome: 'push',
-      summary: 'Force-push to main?',
-    }));
-    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-    await flush();
-
+    // Nothing hook-backed open: a hook-less prompt takes the orphan path.
+    open = false;
+    t.onOrphanPTYPrompt(makePTYQuestion('Allow network access?'));
+    await wait(DEBOUNCE * 4);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]?.text).toBe('reviewer · Bash: git push'); // merged, as before
-    expect(pushes[0]?.summary).toBe('Force-push to main?');
   });
 
-  it('the arbiter receives the parked question id and the ON-SCREEN prompt', async () => {
-    const seen: Array<{ parkedQuestionId: string; ptyOptionValues: string[] }> = [];
-    const pushes: Question[] = [];
-    const parked = makePermissionRequestHook('reviewer · Bash: git push');
-    const tracker = trackerWith(pushes, async (ctx) => {
-      seen.push({
-        parkedQuestionId: ctx.parkedQuestionId,
-        ptyOptionValues: ctx.ptyPrompt.options.map((o) => o.value),
-      });
-      return { outcome: 'answered' };
-    });
-    tracker.parkAwaitingPTY(parked);
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-    await flush();
-
-    expect(seen).toEqual([{ parkedQuestionId: parked.id, ptyOptionValues: ['1', '2', '3'] }]);
-  });
-
-  it('a rejected arbiter fails OPEN to a push (never swallows a real prompt)', async () => {
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, async () => {
-      throw new Error('test: arbiter exploded');
-    });
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion());
-    await flush();
-
+  it('with no probe installed (no hook server) nothing changes', async () => {
+    const { t, pushes } = tracker();
+    t.onOrphanPTYPrompt(makePTYQuestion('Allow network access?'));
+    await wait(DEBOUNCE * 4);
     expect(pushes).toHaveLength(1);
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
   });
 
-  it('a SYNCHRONOUSLY throwing arbiter fails open too', async () => {
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, (() => {
-      throw new Error('test: arbiter exploded synchronously');
-    }) as never);
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion());
-
-    expect(pushes).toHaveLength(1);
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
-  });
-
-  it('a push verdict that lands AFTER the prompt left the screen is dropped (no phantom card)', async () => {
-    const pushes: Question[] = [];
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tracker = trackerWith(pushes, async () => {
-      await gate;
-      return { outcome: 'push' };
-    });
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-    tracker.onOrphanPTYPrompt(makePTYQuestion());
-
-    // The user answered in the terminal while the eval was running.
-    tracker.onStatusChange('executing');
-    release?.();
-    await flush();
-
+  it("a parked render with onRender hands over the merged question under the hook's id, and pushes no card", () => {
+    const { t, pushes } = tracker();
+    const noticed: Question[] = [];
+    const hook = makePermissionRequestHook('reviewer · Bash: git push');
+    t.parkAwaitingPTY(hook, { onRender: (q) => noticed.push(q) });
+    t.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
     expect(pushes).toHaveLength(0);
+    expect(noticed.map((q) => [q.id, q.text])).toEqual([[hook.id, 'reviewer · Bash: git push']]);
+    expect(t.awaitingPTYCountForTest()).toBe(0);
+    expect(t.observedRenderOwnedQuestionForTest()).toBeNull();
   });
 
-  it('suppresses a competing PTY render while an arbitration is in flight, then recovers', async () => {
-    const pushes: Question[] = [];
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+  it('a throwing onRender is absorbed', () => {
+    const { t } = tracker();
+    t.parkAwaitingPTY(makePermissionRequestHook(), {
+      onRender: () => {
+        throw new Error('test: notice failed');
+      },
     });
-    const tracker = trackerWith(pushes, async () => {
-      await gate;
-      return { outcome: 'push' };
-    });
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-    expect(tracker.parkedArbitrationsForTest()).toBe(1);
-
-    // A re-render of the same prompt cycle must not push a second card.
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-    await wait(DEBOUNCE_MS * 2);
-    expect(pushes).toHaveLength(0);
-    expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
-
-    release?.();
-    await flush();
-    expect(pushes).toHaveLength(1); // the arbitrated prompt itself
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
-
-    // Suppression is over: a later genuine orphan pushes normally.
-    tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
-    await wait(DEBOUNCE_MS * 2);
-    expect(pushes).toHaveLength(2);
+    expect(() => t.onOrphanPTYPrompt(makePTYQuestion())).not.toThrow();
   });
+});
 
-  it('a DIFFERENT prompt arriving mid-arbitration is NOT swallowed', async () => {
-    // A suppressed render never re-emits (#486), so anything dropped here is a
-    // question the user never hears about. Only same-text echoes are dropped.
-    const pushes: Question[] = [];
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const tracker = trackerWith(pushes, async () => {
-      await gate;
-      return { outcome: 'push' };
-    });
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-
-    tracker.onOrphanPTYPrompt(makePTYQuestion('An entirely different question'));
-    await wait(DEBOUNCE_MS * 2);
-
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0]?.text).toBe('An entirely different question');
-
-    // And the superseded arbitration's own verdict is dropped, not carded.
-    release?.();
-    await flush();
-    expect(pushes).toHaveLength(1);
-  });
-
-  it('a hung arbitration cannot suppress prompts past its own prompt cycle', async () => {
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, () => new Promise(() => {}));
-    tracker.parkAwaitingPTY(makePermissionRequestHook());
-    tracker.onOrphanPTYPrompt(makePTYQuestion());
-    expect(tracker.parkedArbitrationsForTest()).toBe(1);
-
-    tracker.onStatusChange('executing'); // the cycle ended
-
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
-    tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
-    await wait(DEBOUNCE_MS * 2);
-    expect(pushes).toHaveLength(1);
-  });
-
-  it("two agents' parked renders arbitrate concurrently and independently", async () => {
-    const pushes: Question[] = [];
-    const releases = new Map<string, () => void>();
-    const verdicts = new Map<string, ParkedRenderVerdict>();
-    const tracker = trackerWith(
-      pushes,
-      (ctx) =>
-        new Promise((resolve) => {
-          releases.set(ctx.ptyPrompt.text, () =>
-            resolve(verdicts.get(ctx.ptyPrompt.text) ?? { outcome: 'push' }),
-          );
-        }),
-    );
-    tracker.parkAwaitingPTY({
-      ...makePermissionRequestHook('A · Bash: ls'),
-      agentId: 'agent-A',
-    });
-    tracker.parkAwaitingPTY({
-      ...makePermissionRequestHook('B · Bash: rm -rf build'),
-      agentId: 'agent-B',
-    });
-
-    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('A prompt'), agentId: 'agent-A' });
-    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('B prompt'), agentId: 'agent-B' });
-    expect(tracker.parkedArbitrationsForTest()).toBe(2);
-
-    // B (the prompt now on screen) escalates; A was auto-answered.
-    verdicts.set('B prompt', { outcome: 'push' });
-    verdicts.set('A prompt', { outcome: 'answered' });
-    releases.get('B prompt')?.();
-    releases.get('A prompt')?.();
-    await flush();
-
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0]?.text).toBe('B · Bash: rm -rf build');
-    expect(tracker.parkedArbitrationsForTest()).toBe(0);
-  });
-
-  it('a re-parked permission for the same agent arbitrates under the SECOND id, not the stale one', async () => {
-    // recordPendingHook replaces a same-agent permission_request record, so
-    // the id handed to the arbiter must be the surviving record's — a stale
-    // id would look up no parked input and silently escalate unevaluated.
-    const seen: string[] = [];
-    const pushes: Question[] = [];
-    const tracker = trackerWith(pushes, async (ctx) => {
-      seen.push(ctx.parkedQuestionId);
-      return { outcome: 'answered' };
-    });
-    const first = { ...makePermissionRequestHook('agent · Bash: ls'), agentId: 'agent-A' };
-    const second = {
-      ...makePermissionRequestHook('agent · Bash: rm -rf build'),
-      agentId: 'agent-A',
+describe('observed prompt options (#1134)', () => {
+  function screenWith(values: string[], text = 'Do you want to proceed?'): Question {
+    return {
+      ...makePTYQuestion(text),
+      options: values.map((v) => makeOption(`Option ${v}`, v)),
     };
-    tracker.parkAwaitingPTY(first);
-    tracker.parkAwaitingPTY(second);
-    expect(tracker.awaitingPTYCountForTest()).toBe(1);
-    expect(tracker.pendingCountForTest()).toBe(1);
+  }
 
-    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('proceed?'), agentId: 'agent-A' });
-    await flush();
-
-    expect(seen).toEqual([second.id]);
+  it('is null before anything renders', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    expect(t.observedPromptOptions()).toBeNull();
   });
 
-  it('without an arbiter a parked render still pushes SYNCHRONOUSLY (pre-#814 behavior)', () => {
-    const pushes: Question[] = [];
-    const tracker = new QuestionPresenceTracker(
-      (q) => {
-        pushes.push(q);
-        return undefined;
-      },
-      {
-        hasLiveQuestions: () => false,
-        orphanDebounceMs: DEBOUNCE_MS,
-      },
-    );
-    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+  it('retains the options of a render seen by onPTYPromptVisible', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    const screen = screenWith(['1', '2', '3']);
+    t.onPTYPromptVisible(screen);
+    expect(t.observedPromptOptions()).toEqual(screen.options);
+  });
 
-    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+  it("retains the screen's options for a gate-owned echo, not the hook's", () => {
+    // The render is suppressed as an echo of the stashed hook record, but the
+    // observation is recorded before that decision, and it is the screen's.
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+    const screen = screenWith(['1', '2']);
+    t.onOrphanPTYPrompt(screen);
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+  });
 
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0]?.text).toBe('reviewer · Bash: git push');
+  it('a later render replaces the observed options', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2', '3', '4']));
+    t.onPTYPromptVisible(screenWith(['1', '2', '3']));
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+  });
+
+  it('a free-text prompt is observed with no options (empty, not null)', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith([], 'Enter your response:'));
+    expect(t.observedPromptOptions()).toEqual([]);
+  });
+
+  it("survives a status update that stays 'waiting'", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2']));
+    t.onStatusChange('waiting');
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+  });
+
+  it("is cleared when status leaves 'waiting', with the rest of the observation", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2']));
+    t.onStatusChange('executing');
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  it('is cleared by clearPending, with the rest of the observation', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onOrphanPTYPrompt(screenWith(['1', '2']));
+    t.clearPending();
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+  });
+});
+
+/**
+ * #1140: a status change that carries an `agentId` is a background subagent's
+ * or teammate's activity (the hook event's own `agent_id`), and says nothing
+ * about the MAIN dialog on screen. The status pipeline maps every
+ * PreToolUse/PostToolUse/SubagentStart to a status, so such a change used to
+ * wipe the observation the chat guard reads while the dialog was still up. A
+ * status with no agent (a main-agent hook event, or a PTY-parsed status) clears
+ * exactly as before.
+ */
+describe('observation across agent-originated status changes (#1140)', () => {
+  const dialog = () => {
+    const parsed = parseQuestion('Do you want to proceed?\n❯ 1. Yes\n  2. No');
+    if (!parsed.question) throw new Error('the dialog did not parse as a prompt');
+    return parsed.question;
+  };
+
+  it.each(['executing', 'thinking', 'idle'] as const)(
+    'a subagent %s status leaves the whole observation alone',
+    (status) => {
+      const t = new QuestionPresenceTracker(() => undefined);
+      const screen = dialog();
+      t.onPTYPromptVisible(screen);
+
+      t.onStatusChange(status, { agentId: 'sub-1' });
+
+      expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+      expect(t.isPromptObservedOnPTY()).toBe(true);
+      // The identity and text half of the observation survive too.
+      expect(t.isPromptCurrent(screen.id, screen.text)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['a main-agent hook event (no agent_id)', { agentId: undefined }],
+    ['a PTY-parsed status (no origin at all)', undefined],
+    ['an empty origin', {}],
+  ] as const)('%s clears it as before', (_name, origin) => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    const screen = dialog();
+    t.onPTYPromptVisible(screen);
+
+    t.onStatusChange('executing', origin);
+
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+    expect(t.isPromptCurrent(screen.id, screen.text)).toBe(false);
+  });
+
+  it("a subagent's status still clears pending hook records (the pending-record rules are unchanged)", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+    expect(t.hasPendingForTest()).toBe(true);
+
+    t.onStatusChange('executing', { agentId: 'sub-1' });
+
+    expect(t.hasPendingForTest()).toBe(false);
+  });
+
+  it('a main-agent status after the subagent one then clears the observation', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(dialog());
+    t.onStatusChange('executing', { agentId: 'sub-1' });
+    expect(t.observedPromptOptions()).not.toBeNull();
+
+    t.onStatusChange('executing');
+
+    expect(t.observedPromptOptions()).toBeNull();
   });
 });

@@ -46,7 +46,7 @@ import { startTranscriptFallback } from '../cli/transcript-fallback.ts';
 import { startTranscriptWatcher } from '../cli/transcript-watcher-setup.ts';
 import { classifySessionEvent } from '../hooks/session-lock-classifier.ts';
 import type { SessionEventClass } from '../hooks/session-lock-classifier.ts';
-import { claudeChildLooksAlive } from '../session/index.ts';
+import { claudeChildLooksAlive, couldBeClaudeEntry } from '../session/index.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -836,6 +836,8 @@ export class TranscriptBinder {
         normalizeProjectPath(e.projectPath) === ourDir &&
         e.sessionId !== this.sessionId &&
         e.wsPort !== this.deps.currentPort() &&
+        // A daemon that hosts Codex is not a Claude sibling (#1179).
+        couldBeClaudeEntry(e) &&
         // A zombie (daemon alive, Claude dead) must not count as a sibling
         // (#451). Legacy entries with no recorded child pid stay fail-safe live.
         claudeChildLooksAlive(e),
@@ -901,7 +903,13 @@ export class TranscriptBinder {
   private portClaimedByLiveSibling(port: number): boolean {
     return this.deps.liveSessionsRegistry
       .listLive()
-      .some((e) => e.sessionId !== this.sessionId && e.wsPort === port && claudeChildLooksAlive(e));
+      .some(
+        (e) =>
+          e.sessionId !== this.sessionId &&
+          e.wsPort === port &&
+          couldBeClaudeEntry(e) &&
+          claudeChildLooksAlive(e),
+      );
   }
 
   /**

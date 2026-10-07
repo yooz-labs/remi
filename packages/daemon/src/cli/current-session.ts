@@ -8,9 +8,9 @@
  * TranscriptBinder keeps current — so it follows /clear rotations.
  */
 
-import type { UUID } from '@remi/shared';
-import type { SessionStore } from '../session/session-store.ts';
-import type { TranscriptDiscovery } from '../transcript/index.ts';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
+import type { Harness } from '../harness/types.ts';
+import { type SessionStore, identityOfRecord } from '../session/session-store.ts';
 
 /** The daemon's current owned session, resolved on demand. */
 export interface CurrentOwnedSession {
@@ -18,27 +18,38 @@ export interface CurrentOwnedSession {
   readonly sessionId: UUID;
   /** The current Claude session id (rotates on /clear); null if unbound. */
   readonly claudeSessionId: UUID | null;
-  /** The current transcript file path; null if the Claude id/project is unknown. */
+  /**
+   * The current transcript file path; null when the Claude id or project is
+   * unknown, or the harness has no transcript file to name.
+   */
   readonly transcriptPath: string | null;
+  /**
+   * Who the session is for every harness (#1179): Claude's id is
+   * `claudeSessionId`, another harness's is its own, null until learned.
+   */
+  readonly identity: SessionIdentity;
 }
 
 export interface CurrentSessionResolverDeps {
   /** Reads the primary Remi session id (the per-process global). */
   getPrimarySessionId: () => UUID | null;
   sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
-  transcriptDiscovery: Pick<TranscriptDiscovery, 'getProjectTranscriptDir'>;
+  /** Derives the transcript path from the stored project path and harness session id. */
+  harness: Pick<Harness, 'transcriptPath'>;
+  /** The harness this daemon hosts: the identity of a session whose record is missing or names none this build knows. */
+  harnessId: HarnessId;
 }
 
 /**
  * Build the resolver. Returns null when the daemon has no primary session.
- * Mirrors the transcript-path derivation used by the connection promote path
- * (`<projectTranscriptDir>/<claudeSessionId>.jsonl`) so all hello_ack bindings
- * agree on one path scheme.
+ * The transcript path comes from `harness.transcriptPath` (Claude:
+ * `<projectTranscriptDir>/<claudeSessionId>.jsonl`), the one derivation every
+ * transcript-path site shares, so all hello_ack bindings agree on one scheme.
  */
 export function makeCurrentSessionResolver(
   deps: CurrentSessionResolverDeps,
 ): () => CurrentOwnedSession | null {
-  const { getPrimarySessionId, sessionStore, transcriptDiscovery } = deps;
+  const { getPrimarySessionId, sessionStore, harness, harnessId } = deps;
   return () => {
     // Must never throw: this runs in the void transcript-load handler's
     // NOT_FOUND path, which is not wrapped — a disk hiccup on the store read
@@ -49,11 +60,17 @@ export function makeCurrentSessionResolver(
       const stored = sessionStore.findByRemiSessionId(sessionId);
       const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;
       const projectPath = stored?.projectPath ?? null;
+      // `harness.transcriptPath` may itself be null (a harness with no file),
+      // which reads as "no file", the same as an unknown id or project.
       const transcriptPath =
         claudeSessionId && projectPath
-          ? `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`
+          ? harness.transcriptPath(projectPath, claudeSessionId)
           : null;
-      return { sessionId, claudeSessionId, transcriptPath };
+      const identity = (stored ? identityOfRecord(stored) : null) ?? {
+        harness: harnessId,
+        harnessSessionId: null,
+      };
+      return { sessionId, claudeSessionId, transcriptPath, identity };
     } catch {
       return null;
     }

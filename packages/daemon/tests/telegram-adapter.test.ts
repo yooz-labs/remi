@@ -26,7 +26,7 @@ import type {
   TranscriptLoadCompleteMessage,
   UUID,
 } from '@remi/shared';
-import { generateId, now } from '@remi/shared';
+import { createError, generateId, now } from '@remi/shared';
 import type { AdapterEvents } from '../src/adapters/connection-adapter.ts';
 import { TelegramAdapter } from '../src/adapters/telegram-adapter.ts';
 
@@ -538,5 +538,266 @@ describe('hasConnection', () => {
   test('returns false for unknown connectionId', () => {
     const adapter = createAdapter();
     expect(adapter.hasConnection(unknownConnectionId)).toBe(false);
+  });
+});
+
+/**
+ * #1140: `/interrupt` sends its Escape raw and reports the daemon's verdict.
+ * The daemon here is a controllable double (an `onUserInput` that stays pending
+ * until released), because the cases are about CONCURRENT requests on one
+ * topic; the real handlers' behavior is covered in
+ * `cli/handlers/chat-into-menu.test.ts`. The adapter, its `error` rendering and
+ * the request bookkeeping are the real ones.
+ */
+describe('TelegramAdapter /interrupt outcome (#1140)', () => {
+  interface Request {
+    readonly content: string;
+    readonly raw: boolean | undefined;
+    readonly messageId: UUID | undefined;
+    release: () => void;
+  }
+
+  function interruptRig() {
+    const requests: Request[] = [];
+    const events: Partial<AdapterEvents> = {
+      onUserInput: (_connectionId, _sessionId, content, raw, _claudeSessionId, messageId) =>
+        new Promise<void>((resolve) => {
+          requests.push({ content, raw, messageId, release: resolve });
+        }),
+    };
+    const { adapter, connectionId, sendMessage } = withBoundSession(events);
+    const replies: string[] = [];
+    const interrupt = () =>
+      (adapter as unknown as { handleInterrupt: (ctx: unknown) => Promise<void> }).handleInterrupt({
+        chat: { id: 100 },
+        message: { message_thread_id: 200 },
+        reply: async (text: string) => {
+          replies.push(text);
+        },
+      });
+    const chat = () => sendMessage.mock.calls.map((c) => c[1] as string);
+    return { adapter, connectionId, requests, replies, interrupt, chat };
+  }
+
+  test('sends the Escape raw, with a distinct message id per request', async () => {
+    const { requests, interrupt } = interruptRig();
+
+    const first = interrupt();
+    const second = interrupt();
+
+    expect(requests.map((r) => [r.content, r.raw])).toEqual([
+      ['\x1b', true],
+      ['\x1b', true],
+    ]);
+    expect(typeof requests[0]?.messageId).toBe('string');
+    expect(requests[0]?.messageId).not.toBe(requests[1]?.messageId);
+    for (const r of requests) r.release();
+    await Promise.all([first, second]);
+  });
+
+  test('a clean outcome replies "Interrupt sent"', async () => {
+    const { requests, replies, interrupt } = interruptRig();
+
+    const pending = interrupt();
+    requests[0]?.release();
+    await pending;
+
+    expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+  });
+
+  test("an error naming the first request refuses only it, even when the second finishes first (neither clobbers the other's entry)", async () => {
+    const { adapter, connectionId, requests, replies, interrupt, chat } = interruptRig();
+    const first = interrupt();
+    const second = interrupt();
+    const [a, b] = requests;
+    if (!a || !b) throw new Error('both requests should be pending');
+
+    // The daemon refuses the first request and names it.
+    adapter.sendRaw(
+      connectionId,
+      createError('SESSION_NOT_FOUND', 'boom', { messageId: a.messageId }),
+    );
+    // The second finishes (and removes its own entry) before the first settles.
+    b.release();
+    await second;
+    a.release();
+    await first;
+
+    expect(chat()).toEqual(['Error: boom']);
+    // Only the second claims success.
+    expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+  });
+
+  test("the first request is still refused by an error that arrives after the second settled (the second's cleanup does not remove it)", async () => {
+    const { adapter, connectionId, requests, replies, interrupt, chat } = interruptRig();
+    const first = interrupt();
+    const second = interrupt();
+    const [a, b] = requests;
+    if (!a || !b) throw new Error('both requests should be pending');
+
+    b.release();
+    await second;
+    adapter.sendRaw(
+      connectionId,
+      createError('SESSION_NOT_FOUND', 'late', { messageId: a.messageId }),
+    );
+    a.release();
+    await first;
+
+    expect(chat()).toEqual(['Error: late']);
+    expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+  });
+
+  test('an error naming the second request does not refuse the first', async () => {
+    const { adapter, connectionId, requests, replies, interrupt } = interruptRig();
+    const first = interrupt();
+    const second = interrupt();
+    const [a, b] = requests;
+    if (!a || !b) throw new Error('both requests should be pending');
+
+    adapter.sendRaw(
+      connectionId,
+      createError('SESSION_NOT_FOUND', 'boom', { messageId: b.messageId }),
+    );
+    a.release();
+    b.release();
+    await Promise.all([first, second]);
+
+    expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+  });
+
+  test('an error that names no message refuses every request in flight on the connection', async () => {
+    const { adapter, connectionId, requests, replies, interrupt } = interruptRig();
+    const first = interrupt();
+    const second = interrupt();
+
+    adapter.sendRaw(connectionId, createError('STALE_BINDING', 'rotated'));
+    for (const r of requests) r.release();
+    await Promise.all([first, second]);
+
+    expect(replies).toEqual([]);
+  });
+
+  test('an error for another connection does not refuse', async () => {
+    const { adapter, requests, replies, interrupt } = interruptRig();
+    const pending = interrupt();
+
+    adapter.sendRaw(generateId(), createError('SESSION_NOT_FOUND', 'elsewhere'));
+    requests[0]?.release();
+    await pending;
+
+    expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+  });
+
+  test('the request is forgotten once it settles: a later error refuses nothing', async () => {
+    const { adapter, connectionId, requests, replies, interrupt } = interruptRig();
+    const pending = interrupt();
+    requests[0]?.release();
+    await pending;
+
+    adapter.sendRaw(connectionId, createError('STALE_BINDING', 'late'));
+    const next = interrupt();
+    requests[1]?.release();
+    await next;
+
+    expect(replies).toEqual([
+      '⏹️ Interrupt sent to Claude (Escape key)',
+      '⏹️ Interrupt sent to Claude (Escape key)',
+    ]);
+  });
+});
+
+/**
+ * #1127 review S2: an answer button reports the daemon's verdict. The daemon
+ * is a controllable double (an `onAnswer` that stays pending until released,
+ * optionally sending an `error` first, as the real handler does for a refusal);
+ * the real handlers are covered in `cli/session-phases/structured-answers-e2e`.
+ * The adapter, its `error` rendering and the tap bookkeeping are the real ones.
+ */
+describe('TelegramAdapter answer button outcome (#1127)', () => {
+  function answerRig() {
+    const taps: Array<{ questionId: UUID; answer: string; release: () => void }> = [];
+    const events: Partial<AdapterEvents> = {
+      onAnswer: (_connectionId, _sessionId, questionId, answer) =>
+        new Promise<void>((resolve) => {
+          taps.push({ questionId, answer, release: resolve });
+        }),
+    };
+    const { adapter, connectionId, sendMessage } = withBoundSession(events);
+    const acks: string[] = [];
+    const markupEdits: number[] = [];
+    const tap = (questionId: string, value: string) =>
+      (
+        adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+      ).handleAnswerCallback({
+        match: ['', questionId, value],
+        chat: { id: 100 },
+        callbackQuery: { message: { message_thread_id: 200 } },
+        answerCallbackQuery: async (text: string) => {
+          acks.push(text);
+        },
+        editMessageReplyMarkup: async () => {
+          markupEdits.push(1);
+        },
+      });
+    const chat = () => sendMessage.mock.calls.map((c) => c[1] as string);
+    return { adapter, connectionId, taps, acks, markupEdits, tap, chat };
+  }
+
+  test('an applied answer replies "Sent!" and removes the buttons', async () => {
+    const { taps, acks, markupEdits, tap } = answerRig();
+    const pending = tap('q-1', '2');
+    expect(taps.map((t) => [t.questionId, t.answer])).toEqual([['q-1', '2']]);
+    taps[0]?.release();
+    await pending;
+    expect(acks).toEqual(['Sent!']);
+    expect(markupEdits).toHaveLength(1);
+  });
+
+  test('a refused answer does not claim success and keeps the buttons', async () => {
+    const { adapter, connectionId, taps, acks, markupEdits, tap, chat } = answerRig();
+    const pending = tap('q-1', '1');
+    // The daemon refuses it (a held card's refusal names no question).
+    adapter.sendRaw(
+      connectionId,
+      createError('STALE_ANSWER', 'This prompt takes one of its own options', {}),
+    );
+    taps[0]?.release();
+    await pending;
+    expect(chat()).toEqual(['Error: This prompt takes one of its own options']);
+    expect(acks).toEqual(['Not applied (see the message)']);
+    expect(markupEdits).toHaveLength(0);
+  });
+
+  test('an answer handler that throws is reported in the chat, never as "Sent!"', async () => {
+    const events: Partial<AdapterEvents> = {
+      onAnswer: async () => {
+        throw new Error('pty closed');
+      },
+    };
+    const { adapter, sendMessage } = withBoundSession(events);
+    const acks: string[] = [];
+    await (
+      adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+    ).handleAnswerCallback({
+      match: ['', 'q-1', '1'],
+      chat: { id: 100 },
+      callbackQuery: { message: { message_thread_id: 200 } },
+      answerCallbackQuery: async (text: string) => {
+        acks.push(text);
+      },
+      editMessageReplyMarkup: async () => {},
+    });
+    expect(sendMessage.mock.calls.map((c) => c[1])).toEqual(['Error: pty closed']);
+    expect(acks).toEqual(['Not applied (see the message)']);
+  });
+
+  test('an error naming another question does not refuse this tap', async () => {
+    const { adapter, connectionId, taps, acks, tap } = answerRig();
+    const pending = tap('q-1', '1');
+    adapter.sendRaw(connectionId, createError('STALE_ANSWER', 'gone', { questionId: 'q-2' }));
+    taps[0]?.release();
+    await pending;
+    expect(acks).toEqual(['Sent!']);
   });
 });

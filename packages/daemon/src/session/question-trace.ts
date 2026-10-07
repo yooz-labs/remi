@@ -11,8 +11,9 @@
  * `~/.remi/question-trace.jsonl`.
  *
  * Mirrors the existing `REMI_HOOK_DEBUG` diagnostic dump (see
- * `hooks/hook-server.ts`): synchronous `fs.appendFileSync`, wrapped so a
- * write failure can never escape into the caller, warn-once (not every call)
+ * `hooks/hook-server.ts`): a synchronous append, bounded at 10MB like the
+ * other logs (`appendBounded`, #729), wrapped so a write failure can never
+ * escape into the caller, warn-once (not every call)
  * so a broken sink is still visible without spamming the log. Disabled (the
  * default) short-circuits before touching the filesystem at all, so this can
  * never affect the decision path it observes.
@@ -27,9 +28,10 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { QuestionSource } from '@remi/shared';
+import { appendBounded } from '../cli/log-rotation.ts';
+import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
 /** One question-lifecycle event. */
@@ -46,10 +48,14 @@ export interface QuestionTraceRecord {
    *   - 'snapshot_broadcast' — the daemon broadcast a `question_snapshot`
    *     (the authoritative live-id set for a session); this is the signal
    *     that SHOULD drive client-side reconciliation (#798 parts 2/3).
+   *   - 'input_refused' — free-form `user_input` was refused instead of typed
+   *     (#1140: a numbered menu is on screen, `detail.reason` 'chat-into-menu').
+   *     Session-scoped: no question is involved and nothing is removed.
    */
-  action: 'add' | 'remove' | 'stale_answer' | 'snapshot_broadcast';
+  action: 'add' | 'remove' | 'stale_answer' | 'snapshot_broadcast' | 'input_refused';
   sessionId: string;
-  /** Absent only for a 'snapshot_broadcast' (session-scoped, not per-question). */
+  /** Absent for a 'snapshot_broadcast' and an 'input_refused' (session-scoped,
+   *  not per-question). */
   questionId?: string | undefined;
   /**
    * Claude Code's `prompt_id` (#887): the turn-scoped correlation key the
@@ -102,7 +108,7 @@ export interface QuestionTraceRecord {
   /**
    * The internal function that emitted THIS record (#887), e.g.
    * `'SessionRegistry.addQuestion'`, `'SessionRegistry.removeQuestion'`,
-   * `'AutoApproveGate.resolveHeld'`. Distinct from `signal`, which names the
+   * `'AutoApproveGate.resolveSupersededQuestion'`. Distinct from `signal`, which names the
    * EXTERNAL reason (a Claude Code hook event name, an internal reason
    * string) — several different internal call sites can legitimately share
    * one `signal` (e.g. both the main and subagent PostToolUse listeners in
@@ -117,7 +123,7 @@ export interface QuestionTraceRecord {
    * reading `'SessionRegistry.removeQuestion'` do NOT prove "one path fired
    * twice" — they may be two different upstream callers that have not been
    * threaded yet. Only a value naming a specific upstream (e.g.
-   * `'AutoApproveGate.resolveHeld'`) is evidence about which path ran. When
+   * `'AutoApproveGate.resolveSupersededQuestion'`) is evidence about which path ran. When
    * chasing the #888 double-removal, treat an unthreaded default as UNKNOWN,
    * not as a match.
    */
@@ -178,9 +184,10 @@ export function traceQuestionEvent(record: QuestionTraceRecord): void {
       provenance: debugProvenance(),
       ...record,
     });
-    const remiDir = path.join(os.homedir(), '.remi');
+    const remiDir = remiHome();
     fs.mkdirSync(remiDir, { recursive: true });
-    fs.appendFileSync(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
+    // Bounded like the other logs (#729): rotated at 10MB, two backups kept.
+    appendBounded(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
   } catch (err) {
     if (!warned) {
       warned = true;

@@ -9,6 +9,14 @@
  * real once the sender honors it, so the device sends it up on
  * `register_device_token` and the daemon filters its per-token fan-out here.
  *
+ * Four preferences, one per mutable kind: `questions` (`question`),
+ * `turnComplete` (`turn_complete`), `harnessDenied` (`harness_denied`,
+ * #1126 / ADR 0031: auto mode blocked a call; informational) and
+ * `turnFailed` (`turn_failed`, #1153: a turn ended on an API error;
+ * informational). `turnFailed` is deliberately independent of
+ * `turnComplete` and of the machine-wide `notifications.on_turn_complete`:
+ * a failure is the one turn end a user must not miss by default.
+ *
  * Two deliberate non-preferences:
  *   - `dismiss` pushes are never filtered. They are quiet `content-available`
  *     updates that CLEAR an already-delivered card; suppressing one strands
@@ -16,16 +24,11 @@
  *     noise. `wantsPush` returns true for them unconditionally.
  *   - `subagent_alert` is not filtered either. It already has a user-facing
  *     control — it fires only on the patterns the user put in
- *     `auto_approve.subagent_alert` — so a second mute would be redundant.
- *   - `auto_denied` (#1015) is not filtered either, for a stronger reason than
- *     either of those: it is the ONLY signal that an operation was refused. A
- *     deny creates no `Question`, so there is no card to find later and no
- *     history entry to scroll back to — muting it restores exactly the
- *     invisibility the notification exists to end. It is also rare by
- *     construction (a model deny that `matchesCatastrophicPattern` agreed
- *     with, or the user's own `deny_groups`), so there is little noise to mute.
+ *     `[notifications] subagent_alert` — so a second mute would be redundant.
+ * (A third, `auto_denied` (#1015), was removed with the auto-approve
+ * evaluator in #1125: nothing denies on the user's behalf any more.)
  *
- * All three are enumerated explicitly rather than defaulted, so adding a new
+ * Both are enumerated explicitly rather than defaulted, so adding a new
  * `PushKind` is a type error here instead of a silent "unfiltered".
  */
 
@@ -38,6 +41,8 @@ import type { PushKind } from './push-client.ts';
 export interface ResolvedPushPreferences {
   readonly questions: boolean;
   readonly turnComplete: boolean;
+  readonly harnessDenied: boolean;
+  readonly turnFailed: boolean;
 }
 
 /**
@@ -51,6 +56,8 @@ export interface ResolvedPushPreferences {
 export const DEFAULT_PUSH_PREFERENCES: ResolvedPushPreferences = {
   questions: true,
   turnComplete: true,
+  harnessDenied: true,
+  turnFailed: true,
 };
 
 /**
@@ -75,6 +82,14 @@ export function sanitizePushPreferences(
       typeof input.turnComplete === 'boolean'
         ? input.turnComplete
         : DEFAULT_PUSH_PREFERENCES.turnComplete,
+    harnessDenied:
+      typeof input.harnessDenied === 'boolean'
+        ? input.harnessDenied
+        : DEFAULT_PUSH_PREFERENCES.harnessDenied,
+    turnFailed:
+      typeof input.turnFailed === 'boolean'
+        ? input.turnFailed
+        : DEFAULT_PUSH_PREFERENCES.turnFailed,
   };
 }
 
@@ -91,12 +106,17 @@ export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
       return prefs.questions;
     case 'turn_complete':
       return prefs.turnComplete;
+    // An entry stored before #1126 has no `harnessDenied`; the store
+    // resolves it through `sanitizePushPreferences` on load, so it wants it.
+    case 'harness_denied':
+      return prefs.harnessDenied;
+    // Same for `turnFailed` (#1153): an entry stored before it resolves ON.
+    case 'turn_failed':
+      return prefs.turnFailed;
     // Never filtered — see the module doc for why each is exempt.
     case 'subagent_alert':
       return true;
     case 'dismiss':
-      return true;
-    case 'auto_denied':
       return true;
   }
 }

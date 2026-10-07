@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { resolveShellPath } from '../../src/cli/shell-path.ts';
 
 describe('resolveShellPath', () => {
@@ -68,6 +71,35 @@ describe('resolveShellPath', () => {
     // The fallback branch must log "Shell resolution failed, merged well-known directories"
     // — anchor this specific log line so the branch stays covered after future refactors.
     expect(logCalls.some((msg) => msg.includes('Shell resolution failed'))).toBe(true);
+  });
+
+  test('checks for the harness command it is given, and says which one is missing (#1177)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-shell-path-'));
+    try {
+      // A login shell that reports its PATH unchanged, and a PATH of system directories only,
+      // so neither a real `claude` nor a real `codex` can be found.
+      const shell = path.join(dir, 'sh-path');
+      fs.writeFileSync(shell, '#!/bin/sh\necho "$PATH"\n');
+      fs.chmodSync(shell, 0o755);
+      process.env['SHELL'] = shell;
+      process.env['PATH'] = `${dir}:/usr/bin:/bin`;
+
+      resolveShellPath(logger, 'codex');
+      expect(errorCalls.join('\n')).toContain('"codex" not found');
+      expect(errorCalls.join('\n')).not.toContain('claude');
+
+      errorCalls.length = 0;
+      fs.writeFileSync(path.join(dir, 'codex'), '#!/bin/sh\n');
+      fs.chmodSync(path.join(dir, 'codex'), 0o755);
+      resolveShellPath(logger, 'codex');
+      expect(errorCalls).toEqual([]);
+
+      // The default is still Claude's.
+      resolveShellPath(logger);
+      expect(errorCalls.join('\n')).toContain('"claude" not found');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('never throws', () => {

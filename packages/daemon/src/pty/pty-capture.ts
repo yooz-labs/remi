@@ -10,12 +10,17 @@
  *   OUT 1719500000001 live "[2K❯ 1. Yes ..."
  *
  * Off unless the env var is set (a single boolean check on the hot path when
- * disabled). Its purpose is to capture the `AskUserQuestion` keystroke model from
- * a real session so the answer driver is built from observed bytes — and can be
- * re-verified when Claude Code's renderer drifts (cf. ExitPlanMode order, #598).
+ * disabled). It was built to capture the `AskUserQuestion` keystroke model from
+ * a real session for the keystroke answer driver (#627), which #1127 deleted
+ * (AskUserQuestion is answered through its held hook); it remains a general
+ * capture of terminal-UI bytes, for example for the screen parser.
  *
  * Capture is best-effort: a write error disables it and logs ONCE, so a full disk
- * or a bad path can never disturb the live PTY.
+ * or a bad path can never disturb the live PTY. The file is bounded (#729):
+ * at 10MB it is copied to `<path>.1` (the previous `.1` becomes `<path>.2`,
+ * and an older `.2` is deleted) and emptied, using `<path>.lock` while it
+ * rotates. So point the variable at a file of its own: files with those
+ * names next to it are replaced.
  *
  * TEST CONTAMINATION (#934): unlike `REMI_HOOK_DEBUG`/`REMI_QUESTION_TRACE`,
  * this sink's destination is the env var's OWN value, not a fixed `~/.remi/*`
@@ -32,7 +37,7 @@
  * instead.
  */
 
-import { appendFileSync } from 'node:fs';
+import { appendBounded } from '../cli/log-rotation.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
 // Env is read lazily per call (not cached at import) so a process that sets
@@ -49,7 +54,8 @@ function record(dir: 'IN' | 'OUT', data: string | Uint8Array): void {
   if (!path || disabled) return;
   try {
     const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-    appendFileSync(path, `${dir} ${Date.now()} ${debugProvenance()} ${JSON.stringify(text)}\n`);
+    // Bounded like the other logs (#729): rotated at 10MB, two backups kept.
+    appendBounded(path, `${dir} ${Date.now()} ${debugProvenance()} ${JSON.stringify(text)}\n`);
   } catch (err) {
     disabled = true;
     // Loud-once: never silent, never recurring, never fatal to the PTY.

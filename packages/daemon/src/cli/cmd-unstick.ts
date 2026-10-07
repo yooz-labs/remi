@@ -1,10 +1,9 @@
 /**
  * Handler for `remi unstick [port]` — sends SIGUSR2 to live daemon(s), the "just
- * get me out" lever (#617). On receipt each daemon releases every held
- * PermissionRequest hook to passthrough (Claude renders its native prompt),
- * aborts the in-flight auto-approve eval, and drains its eval queue so a stuck
- * LLM eval + question unblocks immediately. The phone has no device visibility, so
- * this is the operator's manual escape hatch when an eval is wedged.
+ * get me out" lever (#617). On receipt each daemon resolves and dismisses every
+ * open permission card it tracks, so stale cards clear on every device. (Before
+ * #1125 it also released held hooks and aborted the auto-approve eval; neither
+ * exists any more.)
  *
  * With no port, every live daemon is unstuck; with a port, only the daemon bound
  * to that WebSocket port. Exits 0 if at least one daemon was signaled, 1 otherwise
@@ -79,9 +78,7 @@ export function runUnstickCommand(
   }
 
   if (unstuck > 0) {
-    io.out(
-      `Unstuck ${unstuck} daemon(s): released holds, cancelled in-flight evals, drained queues.`,
-    );
+    io.out(`Unstuck ${unstuck} daemon(s): resolved and dismissed open permission cards.`);
     return 0;
   }
   io.err('Failed to unstick any daemons (all matching session entries appear stale).');

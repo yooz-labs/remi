@@ -175,31 +175,166 @@ describe('help formatting', () => {
     expect(options).toContain('--force'); // after the internal blank line
   });
 
-  test('the model commands sit in the Auto-Approve section, not Configuration', () => {
-    // 0.7.0 shipped `remi model` with per-command help but no entry in the
-    // global list (#843). The fix put one line at the BOTTOM of Configuration,
-    // where a user read the whole output and still did not find it (#850) --
-    // so asserting mere presence is not enough to call it discoverable.
+  test('no auto-approve section, flags or model commands remain (#1125)', () => {
     const text = formatHelp('0.0.0-test');
-    expect(sectionOf(text, 'Auto-Approve (LLM):')).toContain('remi model');
-    expect(sectionOf(text, 'Configuration:')).not.toContain('remi model');
+    expect(text).not.toContain('Auto-Approve');
+    expect(text).not.toContain('--auto-approve');
+    expect(text).not.toContain('remi model');
   });
 
-  test('the model commands come before the auto-approve flags', () => {
-    // `remi model` is a ten-verb subsystem, not a setting; listing it after the
-    // flags would read as an afterthought of them.
-    const section = sectionOf(formatHelp('0.0.0-test'), 'Auto-Approve (LLM):');
-    expect(section.indexOf('remi model')).toBeLessThan(section.indexOf('--auto-approve'));
+  test('remi model help says it was removed', () => {
+    expect(formatCommandHelp('model')).toContain('Removed in #1125');
   });
 
   test('a term wider than the column still has a space before its description', () => {
     // `padEnd` is a no-op once the term is already at the column width, so a
-    // long flag ran straight into its text:
-    //   --auto-approve-multichoice-model MAlt-model for multi-choice
-    const text = formatHelp('0.0.0-test');
-    const line = text.split('\n').find((l) => l.includes('--auto-approve-multichoice-model'));
+    // long term ran straight into its text. The original case was a removed
+    // auto-approve flag (#1125); this is the widest term left.
+    const plain = formatCommandHelp('authorize').replace(/\x1b\[[0-9]+m/g, '');
+    const line = plain.split('\n').find((l) => l.includes('remi authorize <key> --label "name"'));
     expect(line).toBeDefined();
-    expect(line).not.toContain('MAlt-model');
-    expect(line).toContain('M Alt-model');
+    expect(line).toMatch(/--label "name" \S/);
+  });
+});
+
+describe('the codex help (#1177)', () => {
+  const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
+
+  test('the global help lists remi codex and its resume', () => {
+    const output = plain(formatHelp('0.0.0'));
+    expect(output).toContain('remi codex ');
+    expect(output).toContain('remi codex resume <id>');
+  });
+
+  test('the global help line for remi codex says what it was checked against (L3, Q3)', () => {
+    // The top-level quick start is the first place a person reads about remi codex; the
+    // approvals claim there must say which Codex it was checked against, as the command help and
+    // README do (the live run of 2026-10-04 against Codex 0.160.0 replaced "not yet checked").
+    const line = plain(formatHelp('0.0.0'))
+      .split('\n')
+      .find((l) => l.trim().startsWith('remi codex ') && !l.includes('resume') && !l.includes('"'));
+    expect(line).toBeDefined();
+    expect(line).toContain('command approvals reach the phone');
+    expect(line).toContain('checked live against Codex 0.160.0');
+    expect(line).not.toContain('not yet checked against a real Codex');
+  });
+
+  test('remi codex --help says what ships: status and command approvals, and what is refused', () => {
+    const output = plain(formatCommandHelp('codex'));
+    expect(output).toContain('remi codex resume <thread id>');
+    // What ships (#1178) and what is not checked: approvals reach the phone, the first answer wins,
+    // nothing else is answerable from it, and which Codex it was checked against.
+    expect(output).toContain(
+      'checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet',
+    );
+    expect(output).not.toContain('not yet checked against a real Codex');
+    expect(output).toContain('Approve for me');
+    expect(output).toContain('a command Codex asks to run');
+    expect(output).toContain('the first answer wins');
+    expect(output).toContain('show up as a notice to answer in the terminal');
+    // Turns are pushed and the history is shown read-only (#1180), both not yet run against a real Codex.
+    expect(output).not.toContain('Turn notifications do not reach the phone yet');
+    // ... and says WHEN: a finished turn is gated (length, a final answer, the machine switch, a
+    // device that wants it), a failed one only by the device's failure-notice preference.
+    expect(output).not.toContain('A finished turn and a failed one are pushed');
+    expect(output).toContain(
+      'A finished turn is pushed when it ran at least `turn_complete_min_seconds` (60 by default),',
+    );
+    expect(output).toContain('ended with a final answer, `notifications.on_turn_complete` is on');
+    expect(output).toContain('and a device wants it;');
+    expect(output).toContain(
+      'a failed turn is pushed to a device with failure notices on. The session history is shown',
+    );
+    expect(output).toContain(
+      'read-only (turn pushes and history: not run against a real Codex yet)',
+    );
+    expect(output).not.toContain('status only');
+    // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
+    expect(output).toContain('A message typed from the phone is refused: type in the terminal');
+    expect(output).toContain('some clients, the web client today, do not show it');
+    expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);
+    expect(output).toContain('-i/--image cannot be combined with resume');
+    expect(output).toContain('never starts or stops the shared Codex app-server');
+    // The `--` rule as shipped: the words after it are a prompt, never flags.
+    expect(output).toContain('Everything after `--` is the first prompt, as text, never a flag');
+    expect(output).toContain('-h, --help, -v, --version, --dir, --port, --resume');
+    expect(output).toContain('run codex directly');
+  });
+
+  test('remi codex --help lists what a remote request may carry, and no -a (LV-4)', () => {
+    // Codex 0.160.0 rejects `-a untrusted`, the one value the help used to advertise, and no
+    // other value can be shown to tighten the host: a remote request carries no -a at all.
+    const words = (command: string): string =>
+      plain(formatCommandHelp(command)).replace(/\s+/g, ' ');
+    const codex = words('codex');
+    expect(codex).toContain(
+      'accepts only -m/--model <name>, -s read-only and `resume <thread id>`',
+    );
+    expect(codex).toContain('carries no -a at all');
+    expect(codex).not.toContain('-a untrusted');
+    expect(codex).not.toContain('resume is unverified');
+    // The local launch passes -a through; Codex rejects any other value, and the help says which it takes.
+    expect(codex).toContain('-a takes only on-request or never');
+    // LV-4 ran Claude's --resume through a hub, so `remi new --help` no longer calls it unverified.
+    expect(words('new')).not.toContain('unverified');
+  });
+
+  test('every subcommand still has a help entry', () => {
+    for (const command of ['codex', 'new', 'ls', 'serve']) {
+      expect(formatCommandHelp(command)).not.toContain('No help available');
+    }
+  });
+});
+
+// #1193: the help said the relay was something to "disable" and that the
+// connection code is for the web and mobile app. The relay is off unless
+// enabled, and no shipped client connects through it.
+describe('relay wording', () => {
+  const originalNoColor = process.env['NO_COLOR'];
+
+  afterEach(() => {
+    if (originalNoColor === undefined) {
+      Reflect.deleteProperty(process.env, 'NO_COLOR');
+    } else {
+      process.env['NO_COLOR'] = originalNoColor;
+    }
+  });
+
+  test('--no-relay says the relay is off unless enabled, in every place it appears', () => {
+    process.env['NO_COLOR'] = '1';
+    for (const text of [
+      formatHelp('0.0.0'),
+      formatCommandHelp('start'),
+      formatCommandHelp('serve'),
+    ]) {
+      expect(text).toContain('--no-relay');
+      expect(text).toContain('off unless network.relay = true');
+    }
+  });
+
+  test('--permanent-code says it needs auth, turns the relay on, and beats relay = false', () => {
+    process.env['NO_COLOR'] = '1';
+    const help = formatHelp('0.0.0');
+    expect(help).toContain('needs auth on; turns the relay on');
+    expect(help).toContain('even if network.relay = false');
+  });
+
+  test('`remi code` is described as the permanent relay code, in the help and in its own help', () => {
+    process.env['NO_COLOR'] = '1';
+    const main = formatHelp('0.0.0');
+    expect(main).toContain('Show the permanent relay code');
+    expect(main).toContain('Generate a new permanent relay code');
+    const code = formatCommandHelp('code');
+    expect(code).toContain('Show or refresh the permanent relay code');
+    expect(code).not.toContain('remote access connection code');
+    expect(code).not.toContain('Show current connection code');
+  });
+
+  test('`remi code` no longer claims the web or mobile app uses the code', () => {
+    process.env['NO_COLOR'] = '1';
+    expect(formatHelp('0.0.0')).not.toContain('phone/browser');
+    const code = formatCommandHelp('code');
+    expect(code).not.toContain('web/mobile app');
+    expect(code).toContain('No shipped client connects through the relay yet');
   });
 });

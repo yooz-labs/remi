@@ -12,8 +12,8 @@
  *     (e.g. ["Yes","Always","No"] for Edit) OR, since ~Claude Code 2.0.54, a
  *     STRUCTURED array of typed entries (`addRules`, `addDirectories`,
  *     `setMode`, ...) — see `optionsFromSuggestions` for how each shape maps
- *     to a variable-count option set (never a fixed 3). With NO usable
- *     suggestions of either shape, the honest Yes/No 2-set substitutes. This
+ *     to options (by meaning since #1126: Yes, the offerable standing grants,
+ *     No). With nothing offerable, the honest Yes/No 2-set substitutes. This
  *     is the ONLY event that forwards a Question to `onQuestion` for a
  *     permission prompt (see `handlePermissionRequest`).
  *   - Notification(permission_prompt) fires shortly after with a plain-text
@@ -26,13 +26,19 @@
  *     sessions / one day — found 68/68 pairs, 0 unpaired; see
  *     `handleNotification` for the full argument and the residual-failure-
  *     mode analysis). It still flips status to `'waiting'`.
+ *
+ * A turn that ends on an API error (`StopFailure`, #1153) is NOT a question:
+ * Claude ignores the hook's answer, so a card with Yes/No could never be
+ * answered. For a main-agent failure the bridge sets the status to `'idle'`
+ * (the turn is over; an `agent_id`-tagged one leaves it alone) and raises
+ * `onTurnFailed`, which the session wiring turns into a `turn_failed` push
+ * (`notifications/turn-failed.ts`).
  */
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
-import { precedentMayAuthorize, signatureForOperation } from '../auto-approve/precedent.ts';
-import type { WorkflowGrantOffer } from '../auto-approve/session-workflow-grant.ts';
+import { isMultiChoicePermission } from '../auto-approve/multichoice.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   ElicitationHookInput,
@@ -52,7 +58,14 @@ import { extractToolQuestion } from './tool-question.ts';
 import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
-  onStatusChange: (status: AgentStatus, context?: string) => void;
+  /**
+   * `agentId` is the hook event's own `agent_id` (#1140): set when the event
+   * came from a background subagent or teammate, absent for the main agent.
+   * The status pipeline maps every PreToolUse/PostToolUse/SubagentStart to a
+   * status, so without it a subagent's tool call looked like the main agent
+   * moving on, and the tracker cleared the menu the main dialog still shows.
+   */
+  onStatusChange: (status: AgentStatus, context?: string, agentId?: string) => void;
   /**
    * Returns the `QuestionRegistrationOutcome` (#888 criterion iii) when the
    * implementation routed `question` through `MessageAPI.handleQuestion` --
@@ -66,10 +79,20 @@ export interface HookBridgeEvents {
    * instead of re-querying `SessionRegistry` after the fact (#925 gate).
    * `| undefined` (not `| void` -- this codebase's lint config forbids `void`
    * inside a union) covers every implementation that does not care about the
-   * outcome (`handlePermissionRequest`, `handleStopFailure`, and every test
-   * double that only collects emitted questions).
+   * outcome (`handlePermissionRequest` and every test double that only
+   * collects emitted questions).
    */
   onQuestion: (question: Question) => QuestionRegistrationOutcome | undefined;
+  /**
+   * A turn ended on an API error (`StopFailure`, #1153): a usage or rate
+   * limit, authentication, and similar. Informational, never a question
+   * (nothing in Claude waits for an answer), so it does not go through
+   * `onQuestion`. Raised AFTER the status change to `'idle'`. Optional: a
+   * consumer with no notification surface (a test double that only collects
+   * questions) simply ignores it. The implementation must not throw into the
+   * hook dispatch loop.
+   */
+  onTurnFailed?: (input: StopFailureHookInput) => void;
 }
 
 /** Honest Yes/No fallback options (#718): used when a PermissionRequest
@@ -97,8 +120,8 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
 ];
 
 /** Maximum options a permission card can show (iOS push-category/action
- *  budget: `selectPushCategory` maps 2/3/4 options to REMI_YN/REMI_YNA/
- *  REMI_MULTI; nothing beyond 4 has a category). Yes and No are always
+ *  budget: every category has at most 4 actions, and `selectPushCategory`
+ *  gives nothing beyond 4 a category). Yes and No are always
  *  present, so at most `MAX_PERMISSION_OPTIONS - 2` suggestion-derived
  *  middle options are kept. */
 const MAX_PERMISSION_OPTIONS = 4;
@@ -140,18 +163,44 @@ function disambiguateLabels(labels: readonly string[]): string[] {
 }
 
 /**
- * Build the label for ONE usable structured `permission_suggestions` entry
- * (#718), or null when the entry is not a "yes"-shaped suggestion this card
- * can safely render as a one-tap option: a deny/ask-behavior `addRules`, a
- * `removeRules` / `replaceRules` / `removeDirectories` (these narrow or
- * reset permissions — never a "yes" variant), or a `type` Claude Code has
- * not documented yet (ground truth: code.claude.com/docs/en/hooks).
+ * The standing grant a structured `permission_suggestions` entry offers on a
+ * held card, and the `updatedPermissions` entry a phone answer sends back for
+ * it (#1126). Options are built by MEANING, never by position: Claude's
+ * dialog does not render one option per suggestion (#1134), so a
+ * suggestion's index says nothing about the screen.
+ *
+ * Only two kinds are offered, both verified live (Claude Code 2.1.287, #1126
+ * spike F4), and every echo is forced to `destination: "session"` (lead
+ * decision): a phone tap must never write a settings file.
+ *   - `setMode`: the mode change takes effect for this session (Claude
+ *     suggests it with `destination: "session"` already).
+ *   - `addRules` with `behavior: "allow"`: Claude suggests `localSettings`,
+ *     which would write the rule into the project's settings file; the echo
+ *     grants it for this session, and the label says so.
+ * Never `addDirectories` (its echo did not stop the repeat prompt in F4), a
+ * deny or ask `addRules`, the narrowing types (`removeRules`,
+ * `replaceRules`, `removeDirectories`), or a type Claude Code has not
+ * documented. Returns null for those.
  */
-function labelForStructuredSuggestion(entry: Record<string, unknown>): string | null {
-  const type = entry['type'];
-  if (type === 'addRules') {
-    if (entry['behavior'] !== 'allow') return null;
-    const rules = Array.isArray(entry['rules']) ? entry['rules'] : [];
+export function standingGrantFor(entry: unknown): {
+  readonly label: string;
+  readonly kind: 'addRules' | 'setMode';
+  readonly echo: Record<string, unknown>;
+} | null {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
+  const e = entry as Record<string, unknown>;
+  if (e['type'] === 'setMode') {
+    const mode = e['mode'];
+    if (typeof mode !== 'string' || mode.length === 0) return null;
+    return {
+      label: truncateLabel(`Yes, and switch to ${mode} mode`),
+      kind: 'setMode',
+      echo: { ...e, destination: 'session' },
+    };
+  }
+  if (e['type'] === 'addRules') {
+    if (e['behavior'] !== 'allow') return null;
+    const rules = Array.isArray(e['rules']) ? e['rules'] : [];
     const parts = rules
       .map((rule): string | undefined => {
         if (typeof rule !== 'object' || rule === null) return undefined;
@@ -160,22 +209,21 @@ function labelForStructuredSuggestion(entry: Record<string, unknown>): string | 
         if (typeof ruleContent === 'string' && ruleContent.length > 0) return ruleContent;
         return typeof toolName === 'string' && toolName.length > 0 ? toolName : undefined;
       })
-      .filter((s): s is string => s !== undefined);
+      .filter((p): p is string => p !== undefined);
     if (parts.length === 0) return null;
-    const suffix = entry['destination'] === 'session' ? ' (this session)' : '';
-    return truncateLabel(`Yes, always allow: ${parts.join(', ')}${suffix}`);
-  }
-  if (type === 'addDirectories') {
-    const directories = Array.isArray(entry['directories'])
-      ? entry['directories'].filter((d): d is string => typeof d === 'string' && d.length > 0)
-      : [];
-    if (directories.length === 0) return null;
-    return truncateLabel(`Yes, allow directory ${directories.join(', ')}`);
-  }
-  if (type === 'setMode') {
-    const mode = entry['mode'];
-    if (typeof mode !== 'string' || mode.length === 0) return null;
-    return truncateLabel(`Yes, switch to ${mode} mode`);
+    // Truncate the rule text, never the scope: the label must keep saying
+    // "for this session" however long the command is. Four characters stay
+    // free so `disambiguateLabels` can append " (2)" without cutting it.
+    const suffix = ' for this session';
+    const prefix = 'Yes, allow ';
+    const room = SUGGESTION_LABEL_MAX - prefix.length - suffix.length - 4;
+    const joined = parts.join(', ');
+    const shown = joined.length > room ? `${joined.slice(0, room - 3)}...` : joined;
+    return {
+      label: `${prefix}${shown}${suffix}`,
+      kind: 'addRules',
+      echo: { ...e, destination: 'session' },
+    };
   }
   return null;
 }
@@ -186,32 +234,39 @@ export interface PermissionOptionsResult {
   readonly options: QuestionOption[];
   /** True when `options` is the {@link DEFAULT_PERMISSION_OPTIONS} fallback
    *  (#718): no usable suggestion contributed a middle option. Threaded onto
-   *  the emitted `Question` so the tracker's merge policy never lets this
-   *  bare fallback overwrite a concrete PTY-parsed set of options. */
+   *  the emitted `Question` as `optionsAreFallback` for the dedup and client
+   *  guards that treat it as the bland default. */
   readonly isFallback: boolean;
 }
 
 /**
- * Build options from a PermissionRequest's `permission_suggestions` (#718).
+ * Build a permission card's options from a PermissionRequest's
+ * `permission_suggestions`.
+ *
  * Two shapes:
- *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)
- *     map directly to options, unchanged since #574.
- *   - Structured (Claude Code >= ~2.0.54): each USABLE entry (`addRules`
- *     with `behavior:"allow"`, `addDirectories`, `setMode`) becomes ONE
- *     middle option between a plain [Yes] and [No]; entries this card
- *     cannot safely render as a one-tap "yes" are skipped (see
- *     {@link labelForStructuredSuggestion}). Capped at
- *     {@link MAX_PERMISSION_OPTIONS} total — the first usable suggestions
- *     are kept, the rest dropped with a warning.
- * With NO usable suggestions of either shape, the honest Yes/No fallback
- * substitutes (`isFallback: true`) instead of a fabricated 3-set.
+ *   - A multi-choice string-label set (`isMultiChoicePermission`: more than
+ *     three labels, or labels that are not all yes/no-shaped) maps label by
+ *     label to picks, unchanged since #574. Such a card is pushed by id and
+ *     its answer typed into the PTY behind the #1134 screen guard: its
+ *     labels are a legacy shape no structured hook answer was verified for
+ *     (#1127 kept it typed).
+ *   - Everything else is a binary prompt, answered through the held hook
+ *     (#1126): [Yes] + one standing option per offerable suggestion
+ *     ({@link standingGrantFor}) + [No], built by meaning so each option maps
+ *     to a hook response, not to a digit on Claude's screen. Capped at
+ *     {@link MAX_PERMISSION_OPTIONS}: the first offerable suggestions are
+ *     kept. A legacy all-binary string set (Edit's `["Yes","Always","No"]`)
+ *     lands here too: its "Always" names no suggestion to echo, so it is not
+ *     offered. With no offerable suggestion, the honest Yes/No fallback
+ *     (`isFallback: true`).
  * Exported so the mapping is unit-testable independent of the bridge.
  */
 export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsResult {
-  const stringSuggestions = Array.isArray(suggestions)
-    ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
-    : [];
-  if (stringSuggestions.length >= 2) {
+  const entries = Array.isArray(suggestions) ? suggestions : [];
+  const stringSuggestions = entries.filter(
+    (s): s is string => typeof s === 'string' && s.length > 0,
+  );
+  if (stringSuggestions.length >= 2 && isMultiChoicePermission('', entries)) {
     const options = stringSuggestions.map((suggestion, idx) => {
       const lower = suggestion.toLowerCase();
       const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
@@ -221,92 +276,61 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
     return { options, isFallback: false };
   }
 
-  const entries = Array.isArray(suggestions) ? suggestions : [];
-  const middleLabels: string[] = [];
-  const suggestionIndices: number[] = [];
+  const standing: { label: string; suggestionIndex: number; kind: 'addRules' | 'setMode' }[] = [];
   entries.forEach((entry, idx) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return;
-    const label = labelForStructuredSuggestion(entry as Record<string, unknown>);
-    if (label === null) {
+    if (typeof entry !== 'object' || entry === null) return;
+    const grant = standingGrantFor(entry);
+    if (grant === null) {
       console.debug(
-        `[HookEventBridge] Skipping unusable permission_suggestions[${idx}] (type=${String((entry as Record<string, unknown>)['type'])})`,
+        `[HookEventBridge] Not offering permission_suggestions[${idx}] (type=${String((entry as Record<string, unknown>)['type'])})`,
       );
       return;
     }
-    middleLabels.push(label);
-    suggestionIndices.push(idx);
+    standing.push({ label: grant.label, suggestionIndex: idx, kind: grant.kind });
   });
 
-  if (middleLabels.length === 0) {
+  if (standing.length === 0) {
     return { options: [...DEFAULT_PERMISSION_OPTIONS], isFallback: true };
   }
 
   const maxMiddle = MAX_PERMISSION_OPTIONS - 2; // Yes + No are always present
-  if (middleLabels.length > maxMiddle) {
+  if (standing.length > maxMiddle) {
     console.warn(
-      `[HookEventBridge] ${middleLabels.length} usable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}, dropping ${middleLabels.length - maxMiddle}`,
+      `[HookEventBridge] ${standing.length} offerable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}`,
     );
   }
-  // Disambiguate AFTER slicing to the cap (only the displayed labels need to
-  // be distinct) and BEFORE the labels are assigned to options / suggestionIndex.
-  const keptLabels = disambiguateLabels(middleLabels.slice(0, maxMiddle));
-  const keptIndices = suggestionIndices.slice(0, maxMiddle);
+  const kept = standing.slice(0, maxMiddle);
+  // Two suggestions can truncate to the same label; the answer path matches
+  // an incoming answer by label, so labels must stay distinct (#718 review).
+  const keptLabels = disambiguateLabels(kept.map((k) => k.label));
 
   let value = 1;
   const options: QuestionOption[] = [
     { label: 'Yes', value: String(value++), isRecommended: true, isYes: true, isNo: false },
-    ...keptLabels.map((label, i) => ({
-      label,
+    ...kept.map((k, i) => ({
+      label: keptLabels[i] as string,
       value: String(value++),
       isRecommended: false,
       isYes: true,
       isNo: false,
-      suggestionIndex: keptIndices[i],
+      suggestionIndex: k.suggestionIndex,
+      standingGrant: k.kind,
     })),
     { label: 'No', value: String(value++), isRecommended: false, isYes: false, isNo: true },
   ];
   return { options, isFallback: false };
 }
 
-const SESSION_GRANT_OPTION: QuestionOption = {
-  label: 'Allow planning actions for this session',
-  value: '__remi_grant_github_issue_planning',
-  isRecommended: false,
-  isYes: false,
-  isNo: false,
-  sessionGrant: 'github-issue-planning',
-};
-
-/** Add the public action marker while preserving the card's Yes/No choices. */
-function appendWorkflowGrantOption(
-  options: readonly QuestionOption[],
-  offer: WorkflowGrantOffer | undefined,
-): QuestionOption[] {
-  if (offer?.family !== 'github-issue-planning') return [...options];
-  if (options.some((option) => option.sessionGrant === offer.family)) return [...options];
-  if (options.filter((option) => option.isNo).length !== 1) return [...options];
-  const no = options.find((option) => option.isNo);
-  if (no === undefined) return [...options];
-  // The iOS action-category budget is four. Keep the leading Yes and the
-  // earliest suggestion-derived actions, then insert the explicit grant before
-  // No. The private scope remains in the gate's pending-offer map.
-  const ordinary = options.filter((option) => option !== no).slice(0, MAX_PERMISSION_OPTIONS - 2);
-  return [...ordinary, SESSION_GRANT_OPTION, no];
-}
-
 export class HookEventBridge {
-  private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
-  /** Canonical private scope for this session's precedent. */
-  private readonly workingDirectory: string | undefined;
   /** Tracks active Task tool_use_ids — secondary safety net for subagent
    *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
 
-  constructor(sessionId: UUID, events: HookBridgeEvents, workingDirectory?: string) {
-    this.sessionId = sessionId;
+  /** `_sessionId` is unused since #1139 removed the precedent scope; the
+   *  parameter is kept so the callers' signature does not change. */
+  constructor(_sessionId: UUID, events: HookBridgeEvents) {
     this.events = events;
-    this.workingDirectory = workingDirectory;
   }
 
   /** True when the main agent is inside a *synchronous* Task tool call
@@ -370,12 +394,12 @@ export class HookEventBridge {
 
   handlePreToolUse(input: PreToolUseHookInput): void {
     this.subagentContext.onPreToolUse(input.tool_name, input.tool_use_id);
-    this.events.onStatusChange('executing', input.tool_name);
+    this.events.onStatusChange('executing', input.tool_name, input.agent_id);
   }
 
   handlePostToolUse(input: PostToolUseHookInput): void {
     this.subagentContext.onPostToolUse(input.tool_name, input.tool_use_id);
-    this.events.onStatusChange('thinking');
+    this.events.onStatusChange('thinking', undefined, input.agent_id);
   }
 
   handleNotification(input: NotificationHookInput): void {
@@ -420,9 +444,9 @@ export class HookEventBridge {
       // already set 'waiting' moments earlier, per this file's own module
       // doc), and it remains the only wait-signal at all for the theoretical
       // unpaired case above.
-      this.events.onStatusChange('waiting');
+      this.events.onStatusChange('waiting', undefined, input.agent_id);
     } else if (input.notification_type === 'idle_prompt') {
-      this.events.onStatusChange('idle');
+      this.events.onStatusChange('idle', undefined, input.agent_id);
     } else {
       // Intentionally unhandled notification types:
       // - 'auth_success': informational only, no status change needed
@@ -442,7 +466,7 @@ export class HookEventBridge {
     // When stop_hook_active is true, the stop hook is intercepting and the
     // session is NOT actually stopping; it remains active.
     if (!input.stop_hook_active) {
-      this.events.onStatusChange('idle');
+      this.events.onStatusChange('idle', undefined, input.agent_id);
       // Agent turn is done; clear any orphaned subagent tracking so a dropped
       // PostToolUse(Task) can't permanently block the user's permission prompts.
       this.subagentContext.reset();
@@ -451,24 +475,19 @@ export class HookEventBridge {
 
   /**
    * Build + emit the escalation Question for a PermissionRequest and return its
-   * id (#573). The id lets the auto-approve gate HOLD the binary hook keyed by
-   * this question, so the user's answer resolves the hook via the response
-   * (Model B) instead of a PTY inject. Always returns an id today.
+   * id (#573). The id lets the permission gate push the question and track
+   * its signature for external resolution. Always returns an id today.
    */
-  handlePermissionRequest(
-    input: PermissionRequestHookInput,
-    summary?: string,
-    workflowOffer?: WorkflowGrantOffer,
-  ): UUID {
+  handlePermissionRequest(input: PermissionRequestHookInput): UUID {
     // Phase 4 (#419): the subagentContext drop previously sat here.
     // After phase 3 wired in the QuestionPresenceTracker, push semantics
     // are presence-gated regardless of subagent context — a subagent
     // prompt that does not render on the user's PTY does not push, and
     // one that does is genuinely answerable. The tracker handles both
     // cases; this method now only builds the question payload.
-    const question = this.buildPermissionQuestion(input, summary, workflowOffer);
+    const question = this.buildPermissionQuestion(input);
     this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    this.events.onStatusChange('waiting', undefined, input.agent_id);
     return question.id;
   }
 
@@ -479,20 +498,19 @@ export class HookEventBridge {
    * (`QuestionPresenceTracker.parkAwaitingPTY`), where the question must only
    * surface if Claude's native prompt actually renders on the PTY.
    */
-  buildPermissionQuestion(
-    input: PermissionRequestHookInput,
-    summary?: string,
-    workflowOffer?: WorkflowGrantOffer,
-  ): Question {
+  buildPermissionQuestion(input: PermissionRequestHookInput): Question {
     const toolName = input.tool_name || 'unknown tool';
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
-    // question + option labels in tool_input; surface those instead of the
-    // generic "Allow <tool>" + whatever optionsFromSuggestions derives (or the
-    // honest Yes/No 2-set, #718; #597). The options are picks (1-based value,
-    // never isYes/isNo) so a user answer releases the held hook and submits
-    // the matching digit to Claude's native numbered prompt.
-    const toolQuestion = extractToolQuestion(toolName, input.tool_input);
+    // question in tool_input; surface it instead of the generic
+    // "Allow <tool>" + whatever optionsFromSuggestions derives (or the honest
+    // Yes/No 2-set, #718; #597). Since #1127 both are held and answered
+    // through the hook (`structured-answers.ts`): AskUserQuestion's picks are
+    // numbered by the index an answer names, ExitPlanMode's options are
+    // built by meaning, and nothing is typed.
+    const toolQuestion = extractToolQuestion(toolName, input.tool_input, {
+      subagent: typeof input.agent_id === 'string' && input.agent_id.length > 0,
+    });
 
     let promptText: string;
     let options: QuestionOption[];
@@ -512,7 +530,7 @@ export class HookEventBridge {
       // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
       promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
       const built = optionsFromSuggestions(input.permission_suggestions);
-      options = appendWorkflowGrantOption(built.options, workflowOffer);
+      options = built.options;
       optionsAreFallback = built.isFallback;
     }
 
@@ -528,8 +546,10 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
-      // #718: lets the tracker's merge policy keep a PTY-parsed question's own
-      // options instead of overwriting them with this bare fallback set.
+      // #718: marks the bare fallback set for the dedup and client guards
+      // (`question-dedup.ts`, the web `question-merge.ts`). The tracker's
+      // merge no longer needs it: since #1134 a PTY parse's options always
+      // replace this question's, fallback or not.
       ...(optionsAreFallback ? { optionsAreFallback: true } : {}),
       // #626: surface the full AskUserQuestion structure (all sub-questions with
       // headers, descriptions, multiSelect) so the client can render it properly.
@@ -541,63 +561,62 @@ export class HookEventBridge {
             ...(toolQuestion.submitLabel ? { submitLabel: toolQuestion.submitLabel } : {}),
           }
         : {}),
-      // #628: the auto-approve LLM's lock-screen one-liner for a generic escalation
-      // (e.g. "Force-push to main?"). AskUserQuestion carries authored content, so a
-      // summary is only threaded for non-AUQ permission escalations.
-      ...(summary ? { summary } : {}),
-      // #990: the untruncated, exact-match precedent signature -- see
-      // `precedentSignature`'s own doc on `Question` and `signatureForOperation`
-      // in `precedent.ts`. Set ONLY when `precedentMayAuthorize` would actually
-      // consult a signature for this (toolName, tool_input) -- today, `Bash`
-      // with a `command` field -- so the field's mere presence signals
-      // eligibility rather than leaving every reader to re-run the predicate.
-      // Harmless either way (a signature for an ineligible tool would simply
-      // never be consulted), but mirroring eligibility here keeps "does this
-      // question carry a usable precedent signature" a one-field check. Never
-      // set for a `toolQuestion` (AskUserQuestion/ExitPlanMode): those tool
-      // names are never in the eligible set, so this is always `{}` for them
-      // regardless -- computed unconditionally below rather than duplicated
-      // into both branches above, since the two are mutually exclusive by
-      // construction (`toolQuestion` only matches question-bearing tools,
-      // never `Bash`).
-      ...(precedentMayAuthorize(toolName, input.tool_input, this.workingDirectory ?? input.cwd)
-        ? { precedentSignature: signatureForOperation(toolName, input.tool_input) }
+      // #1127 review S7: an AskUserQuestion no phone answer can be applied to.
+      ...(toolQuestion?.terminalOnly === true ? { terminalOnly: true } : {}),
+      // #1127: an ExitPlanMode card carries the plan itself for the app.
+      ...(toolQuestion?.kind === 'plan_approval'
+        ? {
+            kind: 'plan_approval' as const,
+            ...(toolQuestion.detail !== undefined ? { detail: toolQuestion.detail } : {}),
+          }
         : {}),
     };
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {
-    this.events.onStatusChange('executing', `${input.tool_name} failed: ${input.error}`);
+    this.events.onStatusChange(
+      'executing',
+      `${input.tool_name} failed: ${input.error}`,
+      input.agent_id,
+    );
   }
 
   handleSubagentStart(input: SubagentStartHookInput): void {
-    this.events.onStatusChange('executing', `subagent:${input.agent_type}`);
+    this.events.onStatusChange('executing', `subagent:${input.agent_type}`, input.agent_id);
   }
 
-  handleSubagentStop(_input: SubagentStopHookInput): void {
-    this.events.onStatusChange('thinking');
+  handleSubagentStop(input: SubagentStopHookInput): void {
+    this.events.onStatusChange('thinking', undefined, input.agent_id);
   }
 
+  /**
+   * `StopFailure` (#1153): the turn ended on an API error. Not a question and
+   * not `'waiting'`: nothing in Claude waits for anything (the hook's answer
+   * is ignored), so a Yes/No card could never be answered, and the agent is
+   * stopped, not waiting. A main-agent failure sets the status to `'idle'`
+   * like any other turn end, and `onTurnFailed` carries it to the
+   * notification path.
+   *
+   * An `agent_id`-tagged failure is a subagent's own turn ending: MAIN is
+   * still running, so it must neither flip the main status to idle (the
+   * tracker would drop main's pending records and the menu its dialog still
+   * shows, #1140) nor reset the subagent tracker (the other subagents are
+   * live). It still raises `onTurnFailed`: the user wants to hear that an
+   * agent hit a limit.
+   *
+   * Until #1153 this emitted "Session stop failed (<error_type>). Retry?",
+   * and `error_type` is a field Claude never sends (#905), so every card read
+   * "(undefined)".
+   */
   handleStopFailure(input: StopFailureHookInput): void {
-    // Stop failed: agent may be in an unknown state. Reset subagent tracking
-    // so orphaned Task IDs don't permanently block user permissions.
-    this.subagentContext.reset();
-    // Emit a question so the user is notified of the stop failure
-    const question: Question = {
-      id: generateId(),
-      text: `Session stop failed (${input.error_type}). Retry?`,
-      options: [
-        { label: 'Yes', value: 'y', isRecommended: true, isYes: true, isNo: false },
-        { label: 'No', value: 'n', isRecommended: false, isYes: false, isNo: true },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-      agentId: input.agent_id,
-      // #887: same-turn correlation key, see `Question.promptId`.
-      promptId: input.prompt_id,
-    };
-    this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    const fromSubagent = typeof input.agent_id === 'string' && input.agent_id.length > 0;
+    if (!fromSubagent) {
+      // The main turn is over: reset subagent tracking so orphaned Task IDs
+      // don't permanently block user permissions (same as `handleStop`).
+      this.subagentContext.reset();
+      this.events.onStatusChange('idle', undefined, input.agent_id);
+    }
+    this.events.onTurnFailed?.(input);
   }
 
   /**
@@ -652,16 +671,16 @@ export class HookEventBridge {
       // #889: NOT 'permission_request'/'notification' -- the onQuestion
       // callback in hook-bridge-setup.ts only stashes those two sources via
       // the PTY-arbiter tracker; every other source (this one included)
-      // direct-emits, same as a source-less StopFailure card.
+      // direct-emits.
       source: 'elicitation',
     };
     const outcome = this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    this.events.onStatusChange('waiting', undefined, input.agent_id);
     return { questionId: question.id, outcome };
   }
 
-  handleSessionEnd(_input: SessionEndHookInput): void {
+  handleSessionEnd(input: SessionEndHookInput): void {
     this.subagentContext.reset();
-    this.events.onStatusChange('idle');
+    this.events.onStatusChange('idle', undefined, input.agent_id);
   }
 }

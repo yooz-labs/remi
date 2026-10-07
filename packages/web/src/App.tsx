@@ -14,7 +14,7 @@ import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
-import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
+import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
   EMPTY_PENDING_SENDS,
@@ -29,6 +29,8 @@ import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resyn
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
+import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
+import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
@@ -42,6 +44,7 @@ import {
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
+  restoreRefusedAnswer,
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
@@ -254,6 +257,11 @@ function App() {
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [modalConnectionId, setModalConnectionId] = useState<ConnectionId | null>(null);
+  const openConnectModal = useCallback(() => {
+    setModalConnectionId(null);
+    setShowConnectModal(true);
+  }, []);
   // New-session sheet (#638): recent project directories from the daemon.
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
@@ -268,6 +276,9 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
+  /** The card this client most recently answered, per session (#1126): a
+   *  `STALE_ANSWER` naming no question restores only this one. */
+  const lastAnsweredIdRef = useRef<Map<string, string>>(new Map());
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   // Stable handle so handleMessage (empty deps) can re-fetch a transcript when
   // it follows the daemon to its current session (reconnect adopt + stale
@@ -558,6 +569,7 @@ function App() {
                     connectionId,
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                    ...(message.harness !== undefined && { harness: message.harness }),
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -582,6 +594,7 @@ function App() {
               preview: 'Connected',
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+              ...(message.harness !== undefined && { harness: message.harness }),
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -1005,6 +1018,7 @@ function App() {
               canResume: showResume,
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
+              ...(ds.harness !== undefined && { harness: ds.harness }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.
@@ -1333,10 +1347,12 @@ function App() {
         // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
         // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
-        // #627: the daemon could not auto-answer a structured AskUserQuestion
-        // (review mismatch / timeout / unexpected variant). Flip the card to the
-        // "needs you" state so the user can Cancel or answer in the terminal —
-        // the prompt is intentionally left up (never a wrong auto-submit).
+        // #627: a daemon older than #1127 could not auto-answer a structured
+        // AskUserQuestion (review mismatch / timeout / unexpected variant).
+        // Flip the card to the "needs you" state so the user can Cancel or
+        // answer in the terminal — the prompt is intentionally left up (never
+        // a wrong auto-submit). A current daemon answers through the held
+        // hook and never sends this.
         if (errorCode === 'AUQ_AUTOANSWER_FAILED') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const failedQid = asNonEmptyString(details?.['questionId']);
@@ -1505,6 +1521,24 @@ function App() {
             break;
           }
         }
+        // PROMPT_WAITING (#1140): Claude is showing a numbered menu, so the
+        // daemon typed nothing (text typed into it would confirm the
+        // highlighted option). The daemon acked the input before deciding, so
+        // flip that one bubble to 'failed' like SESSION_NOT_FOUND above, then
+        // fall through so the daemon's message ("Claude is waiting on a
+        // prompt. Answer it from its card ...") shows in the chat.
+        const promptWaitingRefusedId = promptWaitingRefusedMessageId(
+          message as { code?: string; details?: Record<string, unknown> },
+        );
+        if (promptWaitingRefusedId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, promptWaitingRefusedId);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === promptWaitingRefusedId ? { ...m, state: 'failed' as const } : m,
+            ),
+          );
+          console.warn('[App] PROMPT_WAITING: input not typed, a prompt menu is on screen');
+        }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const refusedSessionId = asNonEmptyString(details?.['sessionId']) as UUID | undefined;
@@ -1569,6 +1603,21 @@ function App() {
           if (staleSessionId && staleQuestionId) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
+              staleSessionId,
+            );
+          }
+          // #1126: no questionId means the card stayed live (a held card
+          // refused an answer it does not offer): un-answer the card this
+          // client last answered in that session, so the hold keeps a card
+          // instead of the post-answer timer removing it.
+          if (staleSessionId && !staleQuestionId && pendingQuestionIds) {
+            commitQuestionsIfChanged(
+              restoreRefusedAnswer(
+                questionsRef.current,
+                staleSessionId,
+                lastAnsweredIdRef.current.get(staleSessionId),
+                pendingQuestionIds,
+              ),
               staleSessionId,
             );
           }
@@ -1789,12 +1838,11 @@ function App() {
     return session?.connectionId;
   }, [sessions, activeSessionId]);
 
-  // Close modal on successful connect
+  const modalConnection = connections.find((c) => c.connectionId === modalConnectionId);
+  // A healthy sibling must not close another host's connect attempt (#873).
   useEffect(() => {
-    if (hasAnyConnected) {
-      setShowConnectModal(false);
-    }
-  }, [hasAnyConnected]);
+    if (modalConnection?.status === 'connected') setShowConnectModal(false);
+  }, [modalConnection?.status]);
 
   // Update session connectionStatus when connections change
   useEffect(() => {
@@ -2099,10 +2147,7 @@ function App() {
   // effects below read the CURRENT value without taking `settings` as a
   // dependency — that would re-run them (and re-register on every daemon) on an
   // unrelated theme or font-size change.
-  const pushPrefsRef = useRef<PushPreferences>({
-    questions: settings.notifyQuestions,
-    turnComplete: settings.notifyTurnComplete,
-  });
+  const pushPrefsRef = useRef<PushPreferences>(pushPreferencesFromSettings(settings));
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
   // 'ack' case in handleMessage for the resolving side.
@@ -2151,12 +2196,10 @@ function App() {
       // sent up is a toggle that does nothing. Re-registering the SAME token is
       // the update: `register_device_token` is idempotent and keyed by token, so
       // there is no separate update message and no way for the two to drift.
-      const next: PushPreferences = {
-        questions: newSettings.notifyQuestions,
-        turnComplete: newSettings.notifyTurnComplete,
-      };
-      const prev = pushPrefsRef.current;
-      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      const next = pushPreferencesFromSettings(newSettings);
+      if (pushPreferencesEqual(pushPrefsRef.current, next)) {
+        return;
+      }
       pushPrefsRef.current = next;
 
       const token = deviceTokenRef.current;
@@ -2268,6 +2311,8 @@ function App() {
       }
       const key = questionKey(sid, question.agentId);
       const answeredId = question.id;
+      // The card a refusal naming no question can be about (#1126).
+      lastAnsweredIdRef.current.set(sid, answeredId);
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
@@ -2308,12 +2353,16 @@ function App() {
     [getActiveConnectionId, sendAnswer],
   );
 
-  // #627: submit a structured AskUserQuestion answer. The daemon drives the TUI
-  // and verifies before submitting, so the card flips to "Answering…" and clears
-  // on question_resolved (or flips to failed on AUQ_AUTOANSWER_FAILED) — it is NOT
-  // removed optimistically here.
+  // #627: submit a structured AskUserQuestion answer. The daemon answers it
+  // through the held hook (#1127; an older daemon drove the TUI), so the card
+  // flips to "Answering…" and clears on question_resolved (or flips to failed
+  // on an older daemon's AUQ_AUTOANSWER_FAILED) — it is NOT removed
+  // optimistically here.
   const handleAuqAnswer = useCallback(
-    (question: UIQuestion, selections: { questionIndex: number; optionIndices: number[] }[]) => {
+    (
+      question: UIQuestion,
+      selections: { questionIndex: number; optionIndices: number[]; text?: string }[],
+    ) => {
       const sid = question.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
@@ -2321,6 +2370,9 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      // The card a refusal naming no question can be about (#1126): a held
+      // AskUserQuestion keeps its hold on an answer it refuses (#1127).
+      lastAnsweredIdRef.current.set(sid, question.id);
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
@@ -2333,8 +2385,9 @@ function App() {
     [getActiveConnectionId, sendAuqAnswer],
   );
 
-  // #627: cancel/escape a pending question — the universal unstick. The daemon
-  // sends Esc to the prompt; the card clears on the resulting question_resolved.
+  // #627: cancel a pending question — the universal unstick. The daemon
+  // cancels a held card through its hook (#1127) or sends Esc to the prompt;
+  // the card clears on the resulting question_resolved.
   const handleCancelQuestion = useCallback(
     (question: UIQuestion) => {
       const sid = question.sessionId;
@@ -2583,7 +2636,11 @@ function App() {
   const handlePassphraseSubmit = useCallback(
     async (passphrase: string) => {
       try {
+        const revision = getIdentityRevision();
         const identity = await unlockStoredIdentity(passphrase);
+        if (getIdentityRevision() !== revision || loadIdentity()?.publicKey !== identity.publicKeyRaw) {
+          throw new Error('Identity changed during unlock. Try again with the current identity.');
+        }
         setUnlockedIdentity(identity);
         // Seed the connection manager's identity ref synchronously, even if
         // there is no pending connection yet (preflight path, #257). This
@@ -2601,7 +2658,7 @@ function App() {
 
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
-      connectDirect(url, directory);
+      setModalConnectionId(connectDirect(url, directory));
       // Persist connected URLs. Dedupe by normalized connectionId (#682) so
       // reconnecting to the same daemon through a different host alias
       // (e.g. '127.0.0.1' after a previously-stored 'localhost' URL) replaces
@@ -2955,14 +3012,9 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
-  // Derive error from the most recently errored connection (if any). Used
-  // for the ConnectModal's own connect-attempt feedback, which is
-  // deliberately global -- it's about the connection the user just tried,
-  // not about any particular chat session.
-  const errorConnection = connections.find((c) => c.status === 'error');
-  const error: string | null = errorConnection
-    ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
-    : null;
+  // Connect feedback belongs only to this sheet's submitted attempt (#873).
+  const error = modalConnection?.error ?? null;
+  const approvalConnection = modalConnection?.approval ? modalConnection : undefined;
 
   // Chat-view banner (#682): scoped to the connection serving the ACTIVE
   // session, so an unrelated errored/duplicate connection can't pin a
@@ -2971,15 +3023,7 @@ function App() {
   // screen is healthy and attached.
   const chatError = deriveConnectionBannerError(connections, activeSession?.connectionId ?? null);
 
-  // Compute effective status for ConnectModal: show the latest connection's status
-  const effectiveStatus = (() => {
-    if (hasAnyConnected) return 'connected' as const;
-    if (isAnyConnecting) return 'connecting' as const;
-    if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
-    if (connections.some((c) => c.status === 'unreachable')) return 'unreachable' as const;
-    if (connections.some((c) => c.status === 'error')) return 'error' as const;
-    return 'disconnected' as const;
-  })();
+  const effectiveStatus = modalConnection?.status ?? 'disconnected';
 
   // Sidebar content
   const sidebar = (
@@ -2990,8 +3034,8 @@ function App() {
       onSelectSession={handleSelectSession}
       onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
-      onConnect={() => setShowConnectModal(true)}
-      onAddConnection={() => setShowConnectModal(true)}
+      onConnect={openConnectModal}
+      onAddConnection={openConnectModal}
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
@@ -3057,11 +3101,13 @@ function App() {
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         connectionStatus={effectiveStatus}
+        approvalConnection={approvalConnection}
+        onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
-        needsPassphrase={needsPassphrase}
+        needsPassphrase={showConnectModal ? Boolean(modalConnection?.needsPassphrase) : needsPassphrase}
         hasIdentity={hasIdentity()}
         hasUnlockedIdentity={unlockedIdentity != null}
-        serverFingerprint={passphraseServerFingerprint}
+        serverFingerprint={showConnectModal ? modalConnection?.serverFingerprint : passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
       />
 

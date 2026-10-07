@@ -12,6 +12,7 @@ import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
 
 export const CLI_TS = path.resolve(import.meta.dir, '../../src/cli.ts');
 
@@ -70,6 +71,10 @@ export function isolatedEnv(
   delete env['REMI_PORT'];
   // biome-ignore lint/performance/noDelete: must truly remove env var from child process
   delete env['REMI_SPAWNED_CHILD'];
+  // An inherited REMI_HOME would move the child's state out of the sandbox
+  // HOME this helper exists to provide (config/remi-home.ts).
+  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+  delete env['REMI_HOME'];
   return { ...env, ...overrides };
 }
 
@@ -79,11 +84,12 @@ export function spawnServeRaw(
   work: string,
   port: number,
   envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
 ): Bun.Subprocess<'ignore', 'pipe', 'pipe'> {
   return Bun.spawn(
     [
       'bun',
-      CLI_TS,
+      cliPath,
       'serve',
       '--port',
       String(port),
@@ -96,29 +102,106 @@ export function spawnServeRaw(
   );
 }
 
-/** Spawn a hub in a fresh isolated $HOME and wait for its status file. */
-export async function spawnHub(dirs?: { home: string; work: string }): Promise<HubHandle> {
+/**
+ * Spawn a session daemon (`cli.ts --daemon`, not a hub) without waiting for
+ * readiness, and report the port it was given. A daemon starts Claude itself
+ * (`createNewSession`), so tests that need to observe the launch put a fake
+ * `claude` first on PATH through `envOverrides` (the launch characterization
+ * test, #1164).
+ *
+ * The port comes from `reserveRange` (random, 45000-49999), not
+ * `findTestPort`, which hands the lowest free port from 19200 to every caller
+ * and so gives concurrent test processes the same one. The child's
+ * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` defaults to empty, which remi treats
+ * as unset, so a developer shell that exports `=0` cannot change what the
+ * daemon passes to Claude. It runs under `process.execPath`, so an override of
+ * PATH that omits `bun` still starts it.
+ *
+ * `extraArgs` go after the fixed flags (the Codex launch test passes
+ * `--harness codex`, #1177).
+ */
+export async function spawnDaemon(
+  home: string,
+  work: string,
+  envOverrides: Record<string, string> = {},
+  extraArgs: readonly string[] = [],
+): Promise<{ proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>; port: number }> {
+  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      CLI_TS,
+      '--daemon',
+      '--port',
+      String(port),
+      '--no-relay',
+      '--no-telegram',
+      '--no-mdns',
+      '--no-auth',
+      ...extraArgs,
+    ],
+    {
+      cwd: work,
+      env: isolatedEnv(home, { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '', ...envOverrides }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  return { proc, port };
+}
+
+/**
+ * Spawn a hub in a fresh isolated $HOME and wait for its status file.
+ * `envOverrides` is forwarded to the subprocess (e.g. a PATH that puts a fake
+ * `claude` first, for tests that must observe whether the hub ever runs it).
+ */
+export async function spawnHub(
+  dirs?: { home: string; work: string },
+  envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
+  chosenPort?: number,
+  readyTimeoutMs = 15000,
+): Promise<HubHandle> {
   const { home, work } = dirs ?? makeIsolatedDirs();
-  const port = await findTestPort();
-  const proc = spawnServeRaw(home, work, port);
+  // `findTestPort` hands the lowest free port from 19200 to every caller, so two test processes on
+  // one machine can get the same one; a caller that runs beside others picks a random probed port
+  // instead (`reserveRange`, as `spawnDaemon` does) and passes it here (#1204 round 2, P11).
+  const port = chosenPort ?? (await findTestPort());
+  const proc = spawnServeRaw(home, work, port, envOverrides, cliPath);
   const hub: HubHandle = { proc, home, work, port };
 
   const statusFile = path.join(home, '.remi', 'daemon-status.json');
-  await pollUntil(
-    () => {
-      if (proc.exitCode !== null) {
-        throw new Error(`Hub exited early with code ${proc.exitCode}`);
-      }
-      try {
-        const status = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
-        return status.wsPort === port;
-      } catch {
-        return false;
-      }
-    },
-    15000,
-    'hub status file',
-  );
+  try {
+    await pollUntil(
+      () => {
+        if (proc.exitCode !== null) {
+          throw new Error(`Hub exited early with code ${proc.exitCode}`);
+        }
+        try {
+          const status = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
+          return status.wsPort === port;
+        } catch {
+          return false;
+        }
+      },
+      readyTimeoutMs,
+      'hub status file',
+    );
+  } catch (error) {
+    // A hub that is still running when the wait ends has no handle the caller could clean up, so it
+    // is killed here and waited for (Q2). An exit says nothing about why; what the hub printed does
+    // (a port in use, a bad flag).
+    const exitedByItself = proc.exitCode !== null;
+    if (!exitedByItself) {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+    if (exitedByItself) {
+      const said = `${await new Response(proc.stderr).text()}${await new Response(proc.stdout).text()}`;
+      throw new Error(`${(error as Error).message}\n${said.trim().slice(-1500)}`);
+    }
+    throw error;
+  }
   return hub;
 }
 

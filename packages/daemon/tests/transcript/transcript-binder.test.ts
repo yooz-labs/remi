@@ -1364,7 +1364,8 @@ describe('TranscriptBinder', () => {
   // #593: a subagent PermissionRequest that shares our bound transcript must be
   // admitted even when its session_id differs from our lock (parallel/team
   // subagents, empty 00000000 id) and even when the transcript marker is not yet
-  // readable — otherwise it is dropped to passthrough and never auto-approved.
+  // readable — otherwise it is dropped as foreign and never parked or pushed
+  // (at the time, never auto-approved; the evaluator was removed in #1125).
   // Covered here without a costly interactive repro: drive `admits` directly.
   // -------------------------------------------------------------------------
   describe('#593 subagent admits — connection-independent ownership', () => {
@@ -1743,6 +1744,95 @@ describe('TranscriptBinder', () => {
         hook_event_name: 'PermissionRequest',
       });
       expect(admitted).toBe(true);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // The live-sessions readers are harness-aware (#1179): a daemon that hosts
+  // Codex is not a Claude sibling, and does not hold a Claude port.
+  // -------------------------------------------------------------------------
+
+  describe('live-sessions entries of another harness (#1179)', () => {
+    function registerEntry(sessionId: string, wsPort: number, harness: string | undefined): void {
+      liveSessionsRegistry.register({
+        sessionId,
+        pid: process.pid,
+        wsPort,
+        hookPort: wsPort + 1000,
+        projectPath: tmpDir,
+        name: sessionId,
+        startedAt: new Date().toISOString(),
+        ...(harness !== undefined && { harness }),
+      });
+    }
+
+    /** A first event with no ownership marker: it defers when a Claude sibling shares the directory. */
+    function firstEventDecision(): string {
+      registerSession();
+      const binder = makeBinder();
+      return binder.decide({
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+      }).classification;
+    }
+
+    test('hasSiblingInDir: a sibling that hosts Codex in the same directory does not defer a first adopt', () => {
+      registerEntry('codex-sibling', 18999, 'codex');
+      expect(firstEventDecision()).not.toBe('defer');
+    });
+
+    test.each([
+      ['no harness (every entry written before harnesses)', undefined],
+      ['claude', 'claude'],
+      ['a harness this build does not know, the fail-safe', 'future-harness'],
+    ])('hasSiblingInDir: a sibling with %s still defers a first adopt', (_name, harness) => {
+      registerEntry('claude-sibling', 18999, harness);
+      expect(firstEventDecision()).toBe('defer');
+    });
+
+    describe('the port-claim check of the stored-port reclaim', () => {
+      function recordStoredPort(port: number): void {
+        bindingStore.preAssign({
+          remiSessionId: SID,
+          claudeSessionId: null,
+          projectPath: tmpDir,
+          port,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+      }
+
+      /** Bound to claude-OLD, with a fresh transcript marked with our old, drifted port 18775. */
+      function reclaimAdmitted(): boolean {
+        recordStoredPort(18775);
+        registerSession();
+        const binder = makeBinder();
+        binder.onHookEvent({
+          session_id: 'claude-OLD',
+          transcript_path: path.join(tmpDir, 'old.jsonl'),
+          hook_event_name: 'SessionStart',
+        });
+        return binder.admits({
+          session_id: 'claude-NEW',
+          transcript_path: writeMarkedTranscript('fresh.jsonl', 18775),
+          hook_event_name: 'PermissionRequest',
+        });
+      }
+
+      test('a daemon that hosts Codex on the recycled port is not the live Claude that blocks the reclaim', () => {
+        registerEntry('codex-holder', 18775, 'codex');
+        expect(reclaimAdmitted()).toBe(true);
+      });
+
+      test.each([
+        ['no harness', undefined],
+        ['claude', 'claude'],
+        ['a harness this build does not know', 'future-harness'],
+      ])('a live sibling with %s on the recycled port still blocks it', (_name, harness) => {
+        registerEntry('holder', 18775, harness);
+        expect(reclaimAdmitted()).toBe(false);
+      });
     });
   });
 });

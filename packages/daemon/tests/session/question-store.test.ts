@@ -146,4 +146,104 @@ describe('QuestionStore (#888)', () => {
     expect(counts).toHaveLength(9);
     expect(counts[8]).toBe(8);
   });
+
+  describe('pinned questions (#1126: a held card is never evicted)', () => {
+    test('the cap evicts the oldest UNPINNED question, skipping pinned ones', () => {
+      const pinned = new Set<string>();
+      const store = new QuestionStore(
+        generateId() as UUID,
+        {},
+        { isPinned: (id) => pinned.has(id) },
+      );
+      const ids: string[] = [];
+      for (let i = 0; i < 8; i++) {
+        const id = generateId();
+        ids.push(id);
+        store.add(mkQuestion(id));
+      }
+      pinned.add(ids[0] as string);
+      pinned.add(ids[1] as string);
+      const ninth = generateId();
+      store.add(mkQuestion(ninth));
+      expect(store.questions.size).toBe(8);
+      expect(store.get(ids[0] as UUID)).not.toBeNull();
+      expect(store.get(ids[1] as UUID)).not.toBeNull();
+      expect(store.get(ids[2] as UUID)).toBeNull(); // oldest unpinned
+      expect(store.get(ninth as UUID)).not.toBeNull();
+    });
+
+    test('with every older question pinned the cap is exceeded, and the new one is kept too', () => {
+      const store = new QuestionStore(generateId() as UUID, {}, { isPinned: () => true });
+      const ids: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const id = generateId();
+        ids.push(id);
+        store.add(mkQuestion(id));
+      }
+      expect(store.questions.size).toBe(10);
+      for (const id of ids) expect(store.get(id as UUID)).not.toBeNull();
+    });
+
+    test('the question being added is never the one evicted, even unpinned', () => {
+      const pinned = new Set<string>();
+      const store = new QuestionStore(
+        generateId() as UUID,
+        {},
+        { isPinned: (id) => pinned.has(id) },
+      );
+      for (let i = 0; i < 8; i++) {
+        const id = generateId();
+        pinned.add(id);
+        store.add(mkQuestion(id));
+      }
+      const hookless = generateId();
+      store.add(mkQuestion(hookless));
+      expect(store.questions.size).toBe(9);
+      expect(store.get(hookless as UUID)).not.toBeNull();
+    });
+
+    test('the eviction warning names the text, and the length only when the store is told to redact it (#1178)', () => {
+      const lines: string[] = [];
+      const original = console.warn;
+      console.warn = (line: string) => lines.push(line);
+      try {
+        for (const redactText of [false, true]) {
+          const store = new QuestionStore(generateId() as UUID, {}, { redactText });
+          const ids: string[] = [];
+          for (let i = 0; i < 9; i++) {
+            const id = generateId();
+            ids.push(id);
+            store.add({ ...mkQuestion(id), text: `Allow Codex to run: sk-command-${i}` });
+          }
+        }
+      } finally {
+        console.warn = original;
+      }
+      const [plain, redacted] = lines;
+      expect(plain).toContain('text="Allow Codex to run: sk-command-0"');
+      expect(redacted).toContain('chars=');
+      expect(redacted).not.toContain('sk-command');
+      expect(redacted).not.toContain('Allow Codex');
+    });
+
+    test('a throwing guard counts as not pinned (the plain cap applies)', () => {
+      const store = new QuestionStore(
+        generateId() as UUID,
+        {},
+        {
+          isPinned: () => {
+            throw new Error('test: guard failed');
+          },
+        },
+      );
+      const ids: string[] = [];
+      for (let i = 0; i < 9; i++) {
+        const id = generateId();
+        ids.push(id);
+        store.add(mkQuestion(id));
+      }
+      expect(store.questions.size).toBe(8);
+      expect(store.get(ids[0] as UUID)).toBeNull();
+    });
+  });
 });

@@ -21,11 +21,11 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import { logError } from '../cli/logger.ts';
+import { remiHome } from '../config/remi-home.ts';
 import { withInterprocessFileLock } from './session-store.ts';
 
 export interface TranscriptIndexEntry {
@@ -41,7 +41,7 @@ interface TranscriptIndexFile {
   entries: TranscriptIndexEntry[];
 }
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const INDEX_FILE = path.join(REMI_DIR, 'transcript-index.json');
 /** Far longer than SessionStore's 7d so old transcripts stay loadable (#577). */
 const INDEX_STALE_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days

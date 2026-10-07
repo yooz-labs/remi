@@ -5,4 +5,5 @@
 # bunfig.toml, so without this file that invocation path would silently
 # never set the marker. See tests/debug/test-harness-marker.ts for the full
 # rationale (#934 follow-up).
-preload = ["./tests/debug/test-harness-marker.ts"]
+# The second preload removes an exported REMI_HOME (#1155), as at the root.
+preload = ["./tests/debug/test-harness-marker.ts", "./tests/unset-remi-home.ts"]

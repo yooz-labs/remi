@@ -16,11 +16,14 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { UUID } from '@remi/shared';
+import { OutputProcessor } from '../src/parser/output-processor.ts';
 import {
   hasQuestionIndicator,
   parseNumberedOptions,
   parseQuestion,
 } from '../src/parser/question-parser.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from './parser/fixtures/claude-dialogs.ts';
 
 const fixture = (name: string): string =>
   readFileSync(join(import.meta.dir, 'parser', 'fixtures', name), 'utf8');
@@ -64,6 +67,271 @@ describe('parseQuestion() - selection-box chrome (Claude prompts)', () => {
     expect(result.question?.options.length).toBe(2);
     expect(result.question?.options[0]?.label).toBe('Allow');
     expect(result.question?.options[1]?.label).toBe('Deny');
+  });
+});
+
+/**
+ * #1134: a phone card's numbering now comes from this parse, so an option the
+ * parse drops is an option the phone cannot pick, and a 2-option card is sent
+ * with the static Yes/No push category whatever its second option says.
+ * Claude wraps a label that is wider than the terminal onto the next row(s);
+ * that row used to end the option block, losing every later option.
+ */
+describe('parseQuestion() - wrapped option labels (#1134)', () => {
+  test('the live wrapped dialog parses all three options, "No" included', () => {
+    const result = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
+    expect(result.detected).toBe(true);
+    const options = result.question?.options ?? [];
+    expect(options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(options[0]?.label).toBe('Yes');
+    // Both rows of the wrapped label belong to option 2, joined with ONE
+    // space. The path was wrapped mid-token, so the space lands inside it
+    // ("-86 66-00"): the documented cost of the join heuristic. The missing
+    // spaces between words are the cursor-column spacing loss, #1137.
+    expect(options[1]?.label).toBe(
+      'Yes,andalwaysallowaccessto/private/tmp/remi-e5/-Users-dev-Documents-git-example-workspace/0f1e2d3c-4b5a-6978-86 66-00a1b2c3d4e5/scratchpad/spike/work/e5-classic-detached-nofromthisproject',
+    );
+    // The footer after the last option is not absorbed into it.
+    expect(options[2]?.label).toBe('No');
+  });
+
+  test('a spaced wrap joins the rows with a space', () => {
+    const result = parseQuestion(
+      [
+        'Do you want to proceed?',
+        '❯ 1. Yes',
+        '  2. Yes, and always allow access to /a/very/long/path',
+        '     /continued/here from this project',
+        '  3. No',
+        ' Esc to cancel',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual([
+      'Yes',
+      'Yes, and always allow access to /a/very/long/path /continued/here from this project',
+      'No',
+    ]);
+  });
+
+  test('a non-option line still ends the block when the sequence does not resume', () => {
+    // A prose line, then a separate list starting at 1: not a continuation.
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. No', 'Some prose Claude printed', '1. an unrelated list'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+  });
+
+  test('never joins across the footer: "3.5k tokens used" is not option 3', () => {
+    const labels = (s: string) => parseQuestion(s).question?.options.map((o) => o.label);
+    expect(
+      labels(
+        [
+          'Do you want to proceed?',
+          '❯1. Yes',
+          '  2. No',
+          'Esc to cancel · Tab to amend',
+          '3.5k tokens used',
+        ].join('\n'),
+      ),
+    ).toEqual(['Yes', 'No']);
+    // The same with the spacing ANSI stripping collapses.
+    expect(labels(['❯1.Yes', '2.No', 'Esctocancel·Tabtoamend', '3.5ktokens'].join('\n'))).toEqual([
+      'Yes',
+      'No',
+    ]);
+  });
+
+  test('a footer then prose then "3. ..." adds no option', () => {
+    const result = parseQuestion(
+      [
+        'Do you want to proceed?',
+        '❯ 1. Yes',
+        '  2. No',
+        'Esc to cancel',
+        'Next steps:',
+        '3. run the tests',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+  });
+
+  test('divider rows are dropped, not glued into a label', () => {
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. Yes, and always allow', ' ──────────', '  3. No'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual([
+      'Yes',
+      'Yes, and always allow',
+      'No',
+    ]);
+  });
+
+  test('more than five rows before the next number end the block', () => {
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. a', '  u', '  v', '  w', '  x', '  y', '  z', '  3. No'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'a']);
+  });
+
+  test('a label wrapping onto three more rows keeps the "No" after it', () => {
+    const result = parseQuestion(
+      [
+        'Allow?',
+        '❯ 1. Yes',
+        '  2. Yes, and always allow access to aaaaaaaaaaaaaaaaaaaaaaaaa',
+        '     bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        '     cccccccccccccccccccccccccccc',
+        '     ddddddddddddddddddddd from this project',
+        '  3. No',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(result.question?.options[2]?.label).toBe('No');
+  });
+
+  test('an AskUserQuestion description with one "·" is not a footer', () => {
+    const result = parseQuestion(
+      [
+        'Which store?',
+        '❯ 1. Redis',
+        '     Fast · in-memory',
+        '  2. Postgres',
+        '     Durable · SQL',
+        '  3. Type something.',
+        'Enter to select · ↑/↓ to navigate · Esc to cancel',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual([
+      'Redis Fast · in-memory',
+      'Postgres Durable · SQL',
+      'Type something.',
+    ]);
+  });
+
+  test('a row of three "·" phrases is a footer wherever it starts', () => {
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. No', 'Saved · 3 files · 12s', '3. run the tests'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+  });
+});
+
+/**
+ * #1134 review: AskUserQuestion menus parse since the wrapped-label join
+ * (their description rows used to end the block). Pinned from the committed
+ * live captures, replayed chunk by chunk through the real OutputProcessor
+ * exactly as the daemon feeds it, so a parser change that shifts the
+ * numbering shows up here. Labels carry the description row and the
+ * capture's own render artifacts (partial frames, #1137 spacing loss).
+ */
+describe('AskUserQuestion captures parse with their own numbering (#1134)', () => {
+  function emittedOptions(name: string): string[][] {
+    const lines = readFileSync(join(import.meta.dir, 'fixtures', 'auq', name), 'utf8').split('\n');
+    const questions: string[][] = [];
+    const processor = new OutputProcessor(
+      { sessionId: 'auq-fixture' as UUID, streamStatusOnly: true },
+      {
+        onMessage: () => {},
+        onQuestion: (q) => questions.push(q.options.map((o) => `${o.value}:${o.label}`)),
+      },
+    );
+    for (const line of lines) {
+      const m = /^OUT \d+ (?:[a-z]+ )?(".*")$/.exec(line);
+      if (m) processor.process(JSON.parse(m[1] as string) as string);
+    }
+    processor.flush();
+    return questions;
+  }
+
+  test('one question, single select', () => {
+    expect(emittedOptions('one-question-single-select.txt')).toEqual([
+      ['1:Red A warm color.', '2:Green Acoolcolor.', '3:Blue Acoolcolor.', '4:Typesomething.'],
+    ]);
+  });
+
+  test('one question, multi select', () => {
+    expect(emittedOptions('one-question-multi-select.txt')).toEqual([
+      [
+        '1:[ ] Apple Crisp andclassic',
+        '2:[ ] Banana Sweetandsoft',
+        '3:[]Cherry Smallandtart-sweet',
+        '4:[]Date Richandcaramel-like',
+        '5:[]Typesomething',
+      ],
+    ]);
+  });
+
+  test('two questions, single and multi', () => {
+    expect(emittedOptions('two-questions-single-and-multi.txt')).toEqual([
+      [
+        '1:Red The color red.',
+        '2:Green Thecolorgreen.',
+        '3:Blue Thecolorblue.',
+        '4:Typesomething.',
+      ],
+    ]);
+  });
+
+  test('three questions, multi select in the middle', () => {
+    expect(emittedOptions('three-questions-multi-middle.txt')).toEqual([
+      ['1:Red Thcolorred', '2:Green Thecolorgreen', '3:Typesomething.'],
+      ['1:Submit answers', '2:Cancel'],
+    ]);
+  });
+
+  test('three questions, single select', () => {
+    expect(emittedOptions('three-questions-single-select.txt')).toEqual([
+      ['1:1 Option 1 for A', '2:2 Option2forA', '3:3 Option3forA', '4:Typesomething.'],
+      ['1:Submit answers', '2:Cancel'],
+    ]);
+  });
+});
+
+/**
+ * #1140: a Claude selection box takes a pick, not text. Typed letters are
+ * ignored at the menu and the Enter that follows confirms the highlighted
+ * option, usually "1. Yes", so the parse must not offer free text for it. The
+ * flag is read by `handleAnswer` (free-text-into-menu), by the Telegram card
+ * ("reply with custom text") and by `QuestionDedup`'s upgrade rule.
+ */
+describe('parseQuestion() - a selection box takes a pick, not text (#1140)', () => {
+  test('the real captured permission dialog', () => {
+    const question = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    expect(question?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(question?.allowsFreeText).toBe(false);
+  });
+
+  test('the real captured trust dialog (collapsed spacing)', () => {
+    const question = parseQuestion(fixture('prompt-selection-box.clean.txt')).question;
+    expect(question?.options.length).toBeGreaterThanOrEqual(2);
+    expect(question?.allowsFreeText).toBe(false);
+  });
+
+  test('a synthetic permission box and an N) box', () => {
+    expect(
+      parseQuestion("Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No")
+        .question?.allowsFreeText,
+    ).toBe(false);
+    expect(parseQuestion('Pick:\n❯ 1) Alpha\n  2) Beta').question?.allowsFreeText).toBe(false);
+  });
+
+  test('it is read off the screen, so never the synthetic Yes/No fallback', () => {
+    // `looksLikeDefaultPermissionQuestion` used to learn this from the free-text
+    // flag; the parse now says it outright (see PushDedup's test for why).
+    const question = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    expect(question?.optionsAreFallback).toBe(false);
+  });
+
+  test('a genuine free-text prompt still takes text', () => {
+    const question = parseQuestion('Please enter your response:').question;
+    expect(question?.options).toHaveLength(0);
+    expect(question?.allowsFreeText).toBe(true);
+  });
+
+  test('a subprocess (y/n) prompt is unchanged: options, no free text', () => {
+    const question = parseQuestion('Continue? (y/n)').question;
+    expect(question?.options.map((o) => o.value)).toEqual(['y', 'n']);
+    expect(question?.allowsFreeText).toBe(false);
   });
 });
 

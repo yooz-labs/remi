@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ProtocolMessage, UUID } from '@remi/shared';
-import { generateId, now } from '@remi/shared';
+import { generateId, identityFromClaudeId, now } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
@@ -79,6 +79,9 @@ describe('createConnectionHandlers', () => {
     return createConnectionHandlers({
       sessionRegistry,
       currentOwnedSession,
+      hubMode: false,
+      harnessId: 'claude',
+      harnesses: () => ['claude'],
       trackConnection: (id, type) => {
         trackedConnections.push({ id, type });
       },
@@ -171,6 +174,7 @@ describe('createConnectionHandlers', () => {
         sessionId,
         claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
         transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+        identity: identityFromClaudeId('22222222-2222-2222-2222-222222222222'),
       };
 
       await makeHandlers(() => current).onConnect(CID, {
@@ -530,6 +534,29 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(false);
     });
 
+    test('reports the closed connection, so the device behind it is marked seen (#1254)', async () => {
+      const closed: string[] = [];
+      const handlers = createConnectionHandlers({
+        sessionRegistry,
+        currentOwnedSession: () => null,
+        hubMode: false,
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
+        trackConnection: () => {},
+        untrackConnection: () => {},
+        onConnectionAdded: () => {},
+        onConnectionRemoved: () => {},
+        cancelOrphanTimeout: () => {},
+        send,
+        remiVersion: '0.0.0-test',
+        onConnectionClosed: (connectionId) => closed.push(connectionId),
+      });
+
+      await handlers.onDisconnect(CID, 'client closed');
+
+      expect(closed).toEqual([CID]);
+    });
+
     test('detaching one of two attached connections leaves the other attached (#795)', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
@@ -601,6 +628,9 @@ describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
       const handlers = createConnectionHandlers({
         sessionRegistry,
         currentOwnedSession: () => null,
+        hubMode: true,
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
         trackConnection: () => {},
         untrackConnection: () => {},
         onConnectionAdded: () => {},

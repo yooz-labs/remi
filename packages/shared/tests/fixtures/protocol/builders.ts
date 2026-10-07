@@ -16,6 +16,7 @@
  *   checked-in JSON fixtures from these same builders)
  */
 
+import { identityFromClaudeId } from '../../../src/harness.ts';
 import {
   createAck,
   createAgentOutput,
@@ -155,6 +156,8 @@ const FIXED_DISCOVERABLE_SESSION: DiscoverableSession = {
   canAttach: true,
   canResume: false,
   claudeSessionId: CLAUDE_SESSION_ID,
+  harness: 'claude',
+  harnessSessionId: CLAUDE_SESSION_ID,
   transcriptPath: '/Users/fixture/transcript.jsonl',
   wsPort: 19924,
   daemonHost: 'fixture-host',
@@ -169,12 +172,7 @@ const FIXED_REMI_STATUS: RemiStatus = {
   sessionId: SESSION_ID,
   repo: 'remi',
   branch: 'develop',
-  autoApprove: {
-    inFlight: 0,
-    sinceS: 0,
-    lastVerdict: 'none',
-    lastVerdictAtS: 0,
-  },
+  // #1125: no `autoApprove` -- a current daemon no longer emits it.
   attached: true,
   queuedCount: 0,
   mode: 'session',
@@ -222,18 +220,20 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
     createHelloAck('1.0.0', SESSION_ID, {
       resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
       binding: {
-        claudeSessionId: CLAUDE_SESSION_ID,
+        identity: identityFromClaudeId(CLAUDE_SESSION_ID),
         transcriptPath: '/Users/fixture/transcript.jsonl',
       },
       attachState: 'attached',
       daemonVersion: '0.7.4-dev.1',
+      harnesses: ['claude', 'codex'],
     }),
   agent_output: () => createAgentOutput(FIXED_MESSAGE),
   structured_agent_output: () => createStructuredAgentOutput(FIXED_STRUCTURED_MESSAGE, false, [1]),
   user_input: () => createUserInput(SESSION_ID, 'echo hi', false, CLAUDE_SESSION_ID),
   ack: () => createAck(FIXED_ACK),
   edit: () => createEdit(MESSAGE_ID, 'Updated content', true, 'Edit'),
-  question: () => createQuestion(FIXED_QUESTION, SESSION_ID, CLAUDE_SESSION_ID),
+  question: () =>
+    createQuestion(FIXED_QUESTION, SESSION_ID, identityFromClaudeId(CLAUDE_SESSION_ID)),
   answer: () => createAnswer(SESSION_ID, QUESTION_ID, 'yes', CLAUDE_SESSION_ID),
   session_update: () => createSessionUpdate(SESSION_ID, 'thinking'),
   ping: () => createPing(),
@@ -264,9 +264,20 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
     ),
   transcript_load_request: () => createTranscriptLoadRequest(SESSION_ID),
   transcript_load_complete: () => createTranscriptLoadComplete(SESSION_ID, 5, REQUEST_ID),
-  create_session_request: () => createCreateSessionRequest('/Users/fixture/project'),
+  create_session_request: () =>
+    createCreateSessionRequest('/Users/fixture/project', {
+      harness: 'codex',
+      args: ['-m', 'fixture-model'],
+    }),
   create_session_response: () =>
-    createCreateSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, 19924),
+    createCreateSessionResponse(
+      true,
+      REQUEST_ID,
+      SESSION_ID,
+      undefined,
+      19924,
+      'Fixture notice: the session was started without a terminal.',
+    ),
   terminal_resize: () => createTerminalResize(120, 40),
   auth_challenge: () =>
     createAuthChallenge(
@@ -321,6 +332,23 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   question_resolved: () => createQuestionResolved(SESSION_ID, QUESTION_ID, 'answered'),
   remi_status: () => createRemiStatus(SESSION_ID, FIXED_REMI_STATUS),
   question_snapshot: () => createQuestionSnapshot(SESSION_ID, [QUESTION_ID]),
+};
+
+/**
+ * A second golden for a message type whose wire shape grew: the shape an older peer still sends
+ * (#1179 review, G16). `FIXTURE_BUILDERS` holds one current shape per registry type; a variant is
+ * named `<type>_<variant>` and written to `<name>.json` beside it, so both shapes are pinned.
+ */
+export const FIXTURE_VARIANTS: Record<
+  string,
+  { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
+> = {
+  // Before Phase 5 the request named a directory and nothing else; the registry golden now names
+  // a harness and arguments too, and an older client still sends this.
+  create_session_request_plain: {
+    type: 'create_session_request',
+    build: () => createCreateSessionRequest('/Users/fixture/project'),
+  },
 };
 
 /**

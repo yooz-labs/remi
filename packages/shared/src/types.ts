@@ -8,6 +8,8 @@
  * - All timestamps are ISO 8601 strings for serialization
  */
 
+import type { HarnessId } from './harness.ts';
+
 /** Unique identifier for messages, sessions, etc. */
 export type UUID = string;
 
@@ -21,23 +23,29 @@ export type MessageState = 'sending' | 'sent' | 'delivered' | 'read';
 export type MessageSender = 'agent' | 'user' | 'system';
 
 /**
+ * Statuses only the removed auto-approve evaluator produced (#576):
+ * `evaluating` (deciding a permission) and `approved` (just allowed one).
+ * Kept in `AgentStatus` so a client still parses an older daemon.
+ *
+ * @deprecated #1125: no longer emitted.
+ */
+export type DeprecatedAgentStatus = 'evaluating' | 'approved';
+
+/**
  * Agent status while working.
  *
- * Hook- and auto-approve-sourced lifecycle states (#576):
+ * Hook-sourced lifecycle states (#576):
  *   - `waiting`     — blocked on the user (a permission/question is open).
- *   - `evaluating`  — auto-approve is deciding a permission right now.
- *   - `approved`    — auto-approve just allowed a permission (transient; the
- *                     next hook moves the session back to executing/thinking).
  *   - `starting`    — the session is spinning up before its first hook fires,
  *                     so clients have a defined pill state from hello_ack.
+ *   - `evaluating` / `approved` — see {@link DeprecatedAgentStatus}.
  */
 export type AgentStatus =
   | 'idle'
   | 'thinking'
   | 'executing'
   | 'waiting'
-  | 'evaluating'
-  | 'approved'
+  | DeprecatedAgentStatus
   | 'starting';
 
 /**
@@ -211,9 +219,38 @@ export interface Question {
    * single prompt described by `text` + `options`. `'multi_question'` is a
    * structured `AskUserQuestion` tool call: the full set of sub-questions is in
    * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
-   * (lock-screen summary + the first-question answer path).
+   * (the lock-screen summary). `'plan_approval'` (#1127) is an `ExitPlanMode`
+   * call: the plan is in `detail`, and `options` are the approval choices.
+   * A client that does not know a kind renders `text` + `options`.
    */
-  readonly kind?: 'permission' | 'multi_question' | undefined;
+  readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
+
+  /**
+   * True when no phone answer can be applied to this card (#1127 review S7):
+   * an AskUserQuestion whose input does not parse exactly, so its option
+   * numbers cannot be trusted to name the input's options. Every answer to
+   * it is refused; it is answered in the terminal, or cancelled from the
+   * phone. Clients show no answer controls but Cancel, and the push gets no
+   * actionable category.
+   */
+  readonly terminalOnly?: boolean | undefined;
+
+  /**
+   * On a `terminalOnly` card: Cancel only clears the card from the apps (#1178). The agent's own
+   * prompt stays open where it is waiting, and nothing is answered, so the card must not say the
+   * call is declined. Set by Codex, whose app-server request stays pending after a phone Cancel;
+   * absent on Claude's terminal-only cards, whose Cancel denies the call. Clients read it for
+   * the Cancel label.
+   */
+  readonly cancelDismissesOnly?: boolean | undefined;
+
+  /**
+   * Long-form text the prompt is about (#1127): the plan of a
+   * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
+   * the push shows its start; a text-only surface may shorten it. `text`
+   * stays a short ask.
+   */
+  readonly detail?: string | undefined;
 
   /**
    * The sub-questions for `kind === 'multi_question'` (#626): each carries its
@@ -229,10 +266,10 @@ export interface Question {
   /**
    * A one-sentence, lock-screen-friendly restatement of what the user is approving
    * (#628), e.g. "Force-push to main?" instead of "Allow Bash: git push --force …".
-   * Produced by the deciding auto-approve LLM on an escalate verdict (or a cheap
-   * engine call for a rule-escalate). The notification prefers this over the raw
-   * tool text; absent for AskUserQuestion (which carries authored content) and for
-   * escalations with no model summary.
+   * Produced by the auto-approve LLM on an escalate verdict; the daemon no longer
+   * reads or writes it.
+   *
+   * @deprecated #1125: no longer emitted (the LLM that wrote it was removed).
    */
   readonly summary?: string | undefined;
 
@@ -241,56 +278,43 @@ export interface Question {
    * Code sent no USABLE `permission_suggestions` (none at all, or every entry
    * was filtered out — deny/ask-behavior, an unsupported type), so the daemon
    * substituted the plain binary set instead of a real suggestion-derived
-   * card. Consumed by `QuestionPresenceTracker.onPTYPromptVisible`'s merge
-   * policy: a fallback set must NOT overwrite a PTY-parsed question's own
-   * (possibly richer) options, unlike a real hook-derived set which always
-   * wins. Absent/false for every other question, including the legacy
+   * card. Consumed by the daemon's question dedup and the web client's
+   * richer-wins guard, which treat a fallback set as the bland default. The
+   * daemon's PTY merge no longer reads it: since #1134 a PTY parse's options
+   * replace a hook record's whether or not they are the fallback.
+   * Absent/false for every other question, including the legacy
    * plain-string suggestion path.
    */
   readonly optionsAreFallback?: boolean | undefined;
 
   /**
-   * #753: true when the auto-approve gate is HOLDING this question's
-   * PermissionRequest hook (Model B) — Claude is blocked inside the hook call
-   * and never renders the prompt, so no PTY bytes for it exist. The terminal
-   * attach client banners exactly these (they are otherwise invisible in a
-   * terminal); non-held questions render natively and need no banner.
-   * Stamped once at question emission (message-api-setup) from the push
-   * options, so live messages, registry entries, and attach-time re-sends all
-   * carry it.
+   * #753: true when the question was pushed by id through the load-bearing
+   * `held` path (`QuestionPresenceTracker.pushHeldHook`): a binary permission
+   * prompt whose hook is held for the phone's answer (#1126; Claude's dialog
+   * renders during the hold), or a card pushed before its render
+   * (AskUserQuestion, ExitPlanMode, a multi-choice permission). The daemon's
+   * answer path refuses free text on such a card (#1134), and the terminal
+   * attach client banners it. Stamped once at question emission
+   * (message-api-setup), so live messages, registry entries, and attach-time
+   * re-sends all carry it.
    */
   readonly held?: boolean | undefined;
 
   /**
-   * The exact-match precedent signature for this operation (#990), UNTRUNCATED
-   * — distinct from `text`, which is the human-facing DISPLAY string and may
-   * be truncated to a bounded length for a lock-screen card or terminal
-   * prompt. NOT for display: this field exists solely so `handleAnswer`
-   * (`daemon/cli/handlers/input-events.ts`) can record a provenance-safe
-   * human answer into session precedent (`daemon/auto-approve/precedent.ts`,
-   * ADR 0015) without reconstructing it by parsing the (possibly truncated)
-   * `text` — the previous approach, and the source of the #990 collision: two
-   * different >120-character Bash commands sharing their first 117 characters
-   * truncated to the identical `text`, so approving one silently authorized
-   * the other.
+   * A fixed label for the places that keep only a flat label of a pending question: the
+   * live-sessions registry file (`pendingQuestions`), the hub census and the macOS menu-bar
+   * notifications (#1178). Set by a harness whose card text must not leave memory: a Codex card's
+   * text is the command Codex asks to run, and it would otherwise be written to disk as the
+   * label. When set, `buildPendingQuestionLabel` returns it as it is. Daemon-side; clients ignore it.
+   */
+  readonly pendingLabel?: string | undefined;
+
+  /**
+   * The untruncated signature a human answer was recorded under as session
+   * precedent (#990, ADR 0015). Historical: precedent and the code that read
+   * this field were removed with the auto-approve judgment.
    *
-   * Built by `HookEventBridge.buildPermissionQuestion` from
-   * `signatureForOperation(toolName, tool_input)` — the SAME function the
-   * consult side calls at decision time — so the recorded and consulted
-   * signatures are byte-identical by construction, not by care.
-   *
-   * Present only for a precedent-eligible operation (today: `Bash` with a
-   * `command` field and a valid private session working directory — see
-   * `precedentMayAuthorize`);
-   * `undefined` for every
-   * other question, including a question-bearing-tool prompt (AskUserQuestion
-   * / ExitPlanMode) and any question predating this field. `handleAnswer`
-   * treats an absent value as FAIL CLOSED: it records nothing rather than
-   * falling back to parsing `text`.
-   *
-   * The session directory that bounds a recorded precedent is intentionally
-   * NOT included in this wire-visible field. The daemon stores and compares
-   * that private context separately.
+   * @deprecated #1125: no longer emitted (session precedent was removed).
    */
   readonly precedentSignature?: string | undefined;
 }
@@ -322,9 +346,9 @@ export interface QuestionStep {
  * `QuestionPresenceTracker.recordPendingHook` (the `hook-bridge-setup.ts`
  * `onQuestion` callback only stashes `'permission_request'` there — the ONLY
  * source it stashes since #890/Q5 deleted the `'notification'` synthesis) —
- * like a source-less `StopFailure` "Retry?" card, it emits directly, since it
- * is not part of the permission-escalation PTY-arbiter funnel (ADR 0004
- * scopes that to permission hooks specifically).
+ * like any other source-less question, it emits directly, since it is not
+ * part of the permission-escalation PTY-arbiter funnel (ADR 0004 scopes that
+ * to permission hooks specifically).
  */
 export type QuestionSource = 'permission_request' | 'notification' | 'pty' | 'elicitation';
 
@@ -364,18 +388,38 @@ export interface QuestionOption {
    * derived from (#718). Present only for a structured-suggestion-derived
    * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
    * plain Yes/No options and for the legacy plain-string suggestion path.
-   * The daemon threads this back through the answer path so picking the
-   * option can resolve a held PermissionRequest hook with
-   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}` —
-   * the real "Yes, always" the Claude Code hooks docs describe, instead of a
-   * bare `allow` that persists nothing.
+   * Since #1126 a phone answer naming such an option resolves the held hook
+   * with `{behavior:"allow", updatedPermissions:[<that suggestion>]}`: a
+   * `setMode` or an allow `addRules`, both echoed with
+   * `destination: "session"`; both kinds verified live on Claude Code
+   * 2.1.287.
    */
   readonly suggestionIndex?: number | undefined;
+
+  /**
+   * What a standing option grants (#1126), set with `suggestionIndex`:
+   * `'addRules'` allows a rule for this session, `'setMode'` switches the
+   * session's permission mode. The lock screen's static "Yes, always" button
+   * (REMI_YNA) is offered only for `'addRules'`, where its title is true; a
+   * card whose standing option is a `'setMode'` gets no actionable category
+   * and is answered in the app. Ignored on the wire otherwise.
+   *
+   * `'session'` (#1178) is Codex's `acceptForSession`: remi writes no rule or
+   * settings file, and sends the decision the request itself listed. Whether
+   * Codex accepts it and remembers the command for the session is unknown:
+   * none of 7 real command approvals on Codex 0.160.0 listed
+   * `acceptForSession` (live step LV-3 (f)). It carries
+   * no `suggestionIndex` (there is no suggestion to echo), and like `'setMode'`
+   * it gets no lock-screen category.
+   */
+  readonly standingGrant?: 'addRules' | 'setMode' | 'session' | undefined;
 
   /**
    * Public marker for an explicit, scoped session action. The grant's
    * repository, working directory, expiry, and lineage remain daemon-private;
    * this marker only tells the client which deliberate action it is selecting.
+   *
+   * @deprecated #1125: no longer emitted (session workflow grants were removed).
    */
   readonly sessionGrant?: 'github-issue-planning' | undefined;
 }
@@ -509,6 +553,21 @@ export interface DiscoverableSession {
    */
   readonly transcriptPath?: string | undefined;
 
+  /**
+   * The harness this session runs under (#1179, ADR 0032), sent for the
+   * daemon's own session. The Claude transcripts a daemon finds on disk
+   * (`source: 'transcript'`) carry none. A reader treats absence (an older
+   * daemon, or a transcript entry) as the default harness (`claude`).
+   */
+  readonly harness?: HarnessId | undefined;
+
+  /**
+   * The harness's own id for this session (#1179). For a Claude entry it equals
+   * {@link claudeSessionId}, and for another harness `claudeSessionId` is omitted.
+   * Omitted while the id is not known.
+   */
+  readonly harnessSessionId?: string | undefined;
+
   /** WebSocket port of the daemon hosting this session (for auto-connect) */
   readonly wsPort?: number;
 
@@ -523,9 +582,8 @@ export interface DiscoverableSession {
  * Times are epoch SECONDS so the statusline shell script can compute elapsed
  * with `date +%s`.
  *
- * Lives in shared (#754) because the daemon broadcasts the full status
- * snapshot to clients (`remi_status`), and the terminal attach client renders
- * the same reserved-row bar the wrapper does.
+ * @deprecated #1125: no longer emitted (`RemiStatus.autoApprove` is absent
+ * from a current daemon's status). Kept so a client still parses an older one.
  */
 export interface AutoApproveState {
   /** Evals in flight on this daemon. 0 = idle. */
@@ -555,7 +613,8 @@ export interface RemiStatus {
   sessionId: UUID | null;
   repo: string;
   branch: string;
-  autoApprove: AutoApproveState;
+  /** @deprecated #1125: no longer emitted. Present only from an older daemon. */
+  autoApprove?: AutoApproveState;
   /**
    * #755: true when at least one connection is attached to the session
    * (#795: any number can be, not just one) — the status label reads

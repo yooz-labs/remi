@@ -46,6 +46,22 @@ export {
 // Daemon loopback port range — single source of truth for daemon + client (#435)
 export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 
+// Harness identity and the cross-harness decision vocabulary (#1162, ADR 0032)
+export type {
+  HarnessId,
+  SessionIdentity,
+  AnswerPath,
+  LocalRender,
+  ResolvedBy,
+  Decision,
+} from './harness.ts';
+export {
+  HARNESS_IDS,
+  DEFAULT_HARNESS,
+  isHarnessId,
+  identityFromClaudeId,
+} from './harness.ts';
+
 // Protocol
 export type {
   ProtocolMessage,
@@ -68,6 +84,8 @@ export type {
   PongMessage,
   ErrorMessage,
   StaleSessionErrorDetails,
+  PromptWaitingErrorDetails,
+  InputNotDeliveredErrorDetails,
   ReplayBatchMessage,
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
@@ -127,6 +145,14 @@ export {
   createPing,
   createPong,
   createError,
+  createPromptWaitingError,
+  PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_MESSAGE,
+  PROMPT_WAITING_TERMINAL_MESSAGE,
+  createInputNotDeliveredError,
+  INPUT_NOT_DELIVERED_ERROR_CODE,
+  INPUT_NOT_DELIVERED_MESSAGE,
   createQuestion,
   createAnswer,
   createAuqAnswer,
@@ -225,3 +251,9 @@ export { errorToString } from './error-utils.ts';
 
 // Async helpers
 export { sleep } from './async-utils.ts';
+
+// Text a peer controls, made safe to show (#1178)
+export { escapeUnsafeText } from './display-text.ts';
+
+// Ed25519 admission defense shared by direct auth and relay (#873).
+export { isSmallOrderPublicKey } from './ed25519-public-key.ts';

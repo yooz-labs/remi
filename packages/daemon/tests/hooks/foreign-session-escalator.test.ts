@@ -185,6 +185,81 @@ describe('ForeignSessionEscalator (#672)', () => {
       expect(pushCalls).toHaveLength(0);
     });
 
+    // #1179: a daemon that hosts Codex owns no Claude transcript and holds no Claude session id,
+    // so its live-sessions entry is no sibling claim, whichever of the two signals names it.
+    describe('an entry of another harness is no sibling claim (#1179)', () => {
+      const liveEntry = (harness: string | undefined) =>
+        liveSessionsRegistry.register({
+          sessionId: 'sibling-remi-session',
+          pid: process.pid,
+          wsPort: 9999,
+          hookPort: 10099,
+          projectPath: tmpDir,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+          ...(harness !== undefined && { harness }),
+        });
+
+      test('the port marker names a daemon that hosts Codex: the foreign session is escalated', async () => {
+        registerToken();
+        liveEntry('codex');
+        const escalator = new ForeignSessionEscalator(deps());
+        escalator.handleUnadmitted(
+          permissionInput({
+            session_id: 'unrelated-claude-id',
+            transcript_path: writeMarkedTranscript('codex-port.jsonl', 9999),
+          }),
+          OUR_SESSION_ID,
+        );
+        await flush();
+        expect(pushCalls).toHaveLength(1);
+      });
+
+      test('the store record is a Claude session whose live entry names Codex: escalated, not claimed', async () => {
+        registerToken();
+        bindingStore.preAssign({
+          remiSessionId: 'sibling-remi-session' as UUID,
+          claudeSessionId: 'foreign-claude-id',
+          projectPath: tmpDir,
+          port: 9999,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+        liveEntry('codex');
+        const escalator = new ForeignSessionEscalator(deps());
+        escalator.handleUnadmitted(
+          permissionInput({ session_id: 'foreign-claude-id' }),
+          OUR_SESSION_ID,
+        );
+        await flush();
+        expect(pushCalls).toHaveLength(1);
+      });
+
+      test.each([
+        ['no harness', undefined],
+        ['claude', 'claude'],
+        ['a harness this build does not know', 'future-harness'],
+      ])(
+        'an entry with %s on the marker port still claims it, silently',
+        async (_name, harness) => {
+          registerToken();
+          liveEntry(harness);
+          const escalator = new ForeignSessionEscalator(deps());
+          escalator.handleUnadmitted(
+            permissionInput({
+              session_id: 'unrelated-claude-id',
+              transcript_path: writeMarkedTranscript('claude-port.jsonl', 9999),
+            }),
+            OUR_SESSION_ID,
+          );
+          await flush();
+          expect(pushCalls).toHaveLength(0);
+        },
+      );
+    });
+
     test('a binding-store record for a DEAD remi session is NOT treated as a live sibling claim', async () => {
       registerToken();
       bindingStore.preAssign({
@@ -216,6 +291,25 @@ describe('ForeignSessionEscalator (#672)', () => {
   // -------------------------------------------------------------------------
 
   describe('unclaimed -> rate-limited informational push', () => {
+    test('refreshes the device tokens before deciding who to push (#1259 review)', async () => {
+      registerToken();
+      let refreshes = 0;
+      const escalator = new ForeignSessionEscalator(
+        deps({
+          refreshDeviceTokens: () => {
+            refreshes += 1;
+          },
+        }),
+      );
+      escalator.handleUnadmitted(
+        permissionInput({ session_id: 'foreign-claude-id', tool_name: 'Bash', cwd: '/w' }),
+        OUR_SESSION_ID,
+      );
+      await flush();
+
+      expect(refreshes).toBe(1);
+    });
+
     test('pushes a title/body with tool name + short session hash + cwd hint, no category/options/questionId', async () => {
       registerToken();
       const escalator = new ForeignSessionEscalator(deps());
@@ -253,8 +347,18 @@ describe('ForeignSessionEscalator (#672)', () => {
       // question alerts must not get it.
       registerToken('muted');
       registerToken('wants');
-      deviceTokens.get('muted')!.pushPrefs = { questions: false, turnComplete: true };
-      deviceTokens.get('wants')!.pushPrefs = { questions: true, turnComplete: false };
+      deviceTokens.get('muted')!.pushPrefs = {
+        questions: false,
+        turnComplete: true,
+        harnessDenied: true,
+        turnFailed: true,
+      };
+      deviceTokens.get('wants')!.pushPrefs = {
+        questions: true,
+        turnComplete: false,
+        harnessDenied: true,
+        turnFailed: true,
+      };
 
       const escalator = new ForeignSessionEscalator(deps());
       escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
@@ -266,7 +370,12 @@ describe('ForeignSessionEscalator (#672)', () => {
 
     test('#968: every device muted -> no push attempted, no throw', async () => {
       registerToken('a');
-      deviceTokens.get('a')!.pushPrefs = { questions: false, turnComplete: true };
+      deviceTokens.get('a')!.pushPrefs = {
+        questions: false,
+        turnComplete: true,
+        harnessDenied: true,
+        turnFailed: true,
+      };
 
       const escalator = new ForeignSessionEscalator(deps());
       expect(() => escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID)).not.toThrow();

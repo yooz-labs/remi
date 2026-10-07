@@ -7,9 +7,24 @@
  *      the resize handler) so Claude lays out within rows `1..N-1`.
  *   2. **scroll region** — set DECSTBM to `1..N-1` (in every bar paint) so the
  *      terminal can only scroll the rows above the bar. The winsize trick alone
- *      is insufficient because Claude renders inline (no alternate screen): on
- *      output the terminal would scroll the whole screen and the bar would
- *      bleed up into Claude's content. The region pins row `N` fixed.
+ *      is insufficient because Claude renders inline (no alternate screen;
+ *      remi forces that, see below): on output the terminal would scroll the
+ *      whole screen and the bar would bleed up into Claude's content. The
+ *      region pins row `N` fixed.
+ *
+ * remi FORCES Claude's inline renderer. Claude Code's docs
+ * (code.claude.com/docs/en/fullscreen) say fullscreen (alternate screen) is the
+ * default for users who first used it on or after 2026-05-06; 2.1.287 gates it
+ * on first-start version and server flags unless `tui` is `default`. This bar
+ * (and remi's PTY prompt parsing) was built against the inline renderer, so
+ * remi sets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in the child's environment
+ * (`buildClaudeChildEnv` in `session-phases/pty-session-setup.ts`). That
+ * overrides Claude's `tui` setting and `CLAUDE_CODE_NO_FLICKER`, including a
+ * user's own fullscreen opt-in. It is skipped only when the user already set
+ * the variable to a non-empty value, so `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0`
+ * is the opt-out (the bar is then unverified against fullscreen). An in-session
+ * `/tui` switch can still move Claude to the alternate screen; tracked in
+ * #1135. See also #1124.
  *
  * remi then owns row `N` exclusively and draws a persistent status bar there —
  * visible even while Claude shows a permission/question prompt, which is exactly
@@ -39,9 +54,10 @@
  *      as long as `hasLiveQuestions()` reported a pending question, painting
  *      once on the transition in. It had no upper bound -- a prompt a human
  *      sits on for ten minutes froze row N for ten minutes -- and since the
- *      escalate that raises a prompt is also what sets the state to
+ *      escalate that raises a prompt is also what set the state to
  *      "needs you", the frozen frame was almost always a cue contractually
- *      bounded by `ESCALATE_FRESH_S`, pinned on screen indefinitely
+ *      bounded to 60s (the auto-approve cue, removed in #1125), pinned on
+ *      screen indefinitely
  *      (reproduced verbatim from a user report: `remi:18766 website:main |
  *      no clients | needs you`, unchanged across 20 simulated minutes and a
  *      phone attaching). It was also redundant: #942's boundary + quiescence
@@ -95,18 +111,12 @@
 
 import * as fs from 'node:fs';
 import { errorToString } from '@remi/shared';
-import { ESCALATE_FRESH_S, type RemiStatus } from './status-writer.ts';
+import type { RemiStatus } from './status-writer.ts';
 
 /** Rows reserved for the status bar. */
 export const RESERVED_ROWS = 1;
 /** A bar needs at least one row for Claude plus one for itself. */
 export const MIN_ROWS_FOR_BAR = 2;
-/** Leak-safety cap: a stuck `inFlight` stops reading as "evaluating" after this
- *  many seconds (mirrors the 600s in statusline-installer.ts). */
-export const EVALUATING_CAP_S = 600;
-/** An 'approved' verdict fades from the bar after this many seconds (mirrors the
- *  5s in statusline-installer.ts). */
-export const APPROVED_FRESH_S = 5;
 /** Consecutive render failures tolerated before the bar backs off for good. A
  *  single transient write error (e.g. an interrupted syscall) must not silence
  *  the bar for the whole session; a genuinely dead fd trips this within seconds. */
@@ -152,27 +162,16 @@ export function childRows(realRows: number, reserve: boolean): number {
 /**
  * Build the human-readable status string (no styling, no truncation). Mirrors
  * the render logic in `statusline-installer.ts` so the reserved-row bar and the
- * native statusLine agree on what the auto-approve state reads as.
+ * native statusLine agree.
  *
  *   remi:<port> <repo>:<branch> | <N> client(s) | <state>
  *
- * `state` is the live auto-approve cue when a permission is being decided
- * (`evaluating Ns` / `needs you` / `approved`), otherwise Claude's agent status.
+ * `state` is Claude's agent status. The auto-approve cue that used to replace
+ * it (`evaluating Ns` / `needs you` / `approved`, #560) was removed with the
+ * evaluator (#1125). `nowMs` is kept for the signature the bar's tick uses.
  */
-export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): string {
-  const nowS = Math.floor(nowMs / 1000);
-  const aa = status.autoApprove;
-  const elapsed = nowS - aa.sinceS;
-  const age = nowS - aa.lastVerdictAtS;
-
-  let state: string = status.sessionStatus;
-  if (aa.inFlight > 0 && elapsed >= 0 && elapsed < EVALUATING_CAP_S) {
-    state = `evaluating ${elapsed}s`;
-  } else if (aa.lastVerdict === 'escalated' && age >= 0 && age < ESCALATE_FRESH_S) {
-    state = 'needs you';
-  } else if (aa.lastVerdict === 'approved' && age >= 0 && age < APPROVED_FRESH_S) {
-    state = 'approved';
-  }
+export function formatStatusBar(status: Readonly<RemiStatus>, _nowMs: number): string {
+  const state: string = status.sessionStatus;
 
   // #755: label from the REAL attach state (the session's attached-connections
   // set, #795), not the raw connection counter — `connections` also counts
@@ -306,9 +305,9 @@ export interface StatusBarDeps {
   /** Logger for render-failure notes. Required so a draw failure is never
    *  silently swallowed by an accidental no-op default. */
   readonly log: (msg: string) => void;
-  /** Refresh cadence in ms. Default 250 so the `evaluating Ns` counter and AA
-   *  state changes feel smooth (#576). The repaint reads in-memory status only —
-   *  no disk I/O — so a faster cadence costs just one small fd write per tick. */
+  /** Refresh cadence in ms. Default 250 (#576, set when the bar carried a live
+   *  `evaluating Ns` counter). The repaint reads in-memory status only — no
+   *  disk I/O — so the cadence costs just one small fd write per tick. */
   readonly intervalMs?: number;
 }
 

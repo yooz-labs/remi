@@ -28,6 +28,14 @@ export interface DeviceTokenEntry {
    * every local daemon, exactly like the token itself.
    */
   pushPrefs?: ResolvedPushPreferences;
+  /**
+   * When this device was last seen (#1254): set by every registration (the app
+   * re-registers on each connection), when its connection closes, and while it
+   * stays connected. Past the push lease without a sighting, the device gets no
+   * push. Absent on entries written before #1254, which count from
+   * `registeredAt`.
+   */
+  lastSeenAt?: number;
 }
 
 export type SendToConnection = (connectionId: UUID, message: ProtocolMessage) => boolean;
@@ -73,7 +81,7 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
       // nothing downstream has to re-decide what a missing field means.
       const resolved = sanitizePushPreferences(pushPrefs);
       log(
-        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete})`,
+        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete}, harnessDenied=${resolved.harnessDenied}, turnFailed=${resolved.turnFailed})`,
       );
       registerDeviceToken(token, platform, connectionId, resolved);
     },

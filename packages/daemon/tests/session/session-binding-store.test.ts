@@ -162,4 +162,123 @@ describe('SessionBindingStore', () => {
     expect(store.findByRemiSessionId(session.remiSessionId)?.projectPath).toBe(expected);
     expect(index.get(session.remiSessionId)?.projectPath).toBe(expected);
   });
+
+  describe('getIdentity (#1162)', () => {
+    function writeRow(overrides: Record<string, unknown>): UUID {
+      const row = { ...makeSession(), ...overrides };
+      const raw = fs.existsSync(filePath)
+        ? (JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { sessions: unknown[] })
+        : { sessions: [] };
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ version: 1, sessions: [...raw.sessions, row] }, null, 2),
+      );
+      return row.remiSessionId;
+    }
+
+    test('an absent record is null', () => {
+      expect(binding.getIdentity(crypto.randomUUID() as UUID)).toBeNull();
+    });
+
+    test('a legacy record (no harness key) is a claude identity derived from claudeSessionId', () => {
+      const session = makeSession({ claudeSessionId: 'claude-A' });
+      binding.preAssign(session);
+      // The record on disk carries no harness key; the identity is derived.
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        sessions: Record<string, unknown>[];
+      };
+      expect(Object.keys(onDisk.sessions[0] ?? {})).not.toContain('harness');
+
+      expect(binding.getIdentity(session.remiSessionId)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-A',
+      });
+    });
+
+    test('a legacy record with no Claude id yet reports a null harnessSessionId', () => {
+      const session = makeSession({ claudeSessionId: null });
+      binding.preAssign(session);
+      expect(binding.getIdentity(session.remiSessionId)).toEqual({
+        harness: 'claude',
+        harnessSessionId: null,
+      });
+    });
+
+    test('follows a rotation with no extra write: it reads the claudeSessionId column fresh', () => {
+      const session = makeSession({ claudeSessionId: 'claude-1' });
+      binding.preAssign(session);
+      expect(binding.getIdentity(session.remiSessionId)?.harnessSessionId).toBe('claude-1');
+
+      binding.update(session.remiSessionId, 'claude-2');
+      expect(binding.getIdentity(session.remiSessionId)?.harnessSessionId).toBe('claude-2');
+
+      // A sibling handle rotating the same file is seen at once (no cache, #321/#430).
+      new SessionStore(filePath).updateClaudeSessionId(session.remiSessionId, 'claude-3');
+      expect(binding.getIdentity(session.remiSessionId)?.harnessSessionId).toBe('claude-3');
+    });
+
+    test('a record that names claude derives from claudeSessionId and ignores a stored harnessSessionId', () => {
+      const id = writeRow({
+        claudeSessionId: 'claude-real',
+        harness: 'claude',
+        harnessSessionId: 'stale-copy',
+      });
+      expect(binding.getIdentity(id)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-real',
+      });
+    });
+
+    test('a record with no harness key ignores a stray harnessSessionId and derives from claudeSessionId', () => {
+      // No `harness` key means Claude, and for Claude the claudeSessionId column
+      // is the only source: a stored harnessSessionId must never win over it.
+      const id = writeRow({ claudeSessionId: 'claude-real', harnessSessionId: 'stale' });
+      expect(binding.getIdentity(id)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-real',
+      });
+    });
+
+    test('a claude record with no Claude id yet is null-id and does not fall back to harnessSessionId', () => {
+      const id = writeRow({ claudeSessionId: null, harness: 'claude', harnessSessionId: 'stale' });
+      expect(binding.getIdentity(id)).toEqual({ harness: 'claude', harnessSessionId: null });
+    });
+
+    test('a record naming another known harness reports its own harnessSessionId', () => {
+      const id = writeRow({ harness: 'codex', harnessSessionId: 'thread-9' });
+      expect(binding.getIdentity(id)).toEqual({ harness: 'codex', harnessSessionId: 'thread-9' });
+    });
+
+    test('a known non-Claude harness with no id yet is null-id, not null', () => {
+      const missing = writeRow({ harness: 'opencode' });
+      expect(binding.getIdentity(missing)).toEqual({ harness: 'opencode', harnessSessionId: null });
+
+      const explicitNull = writeRow({ harness: 'codex', harnessSessionId: null });
+      expect(binding.getIdentity(explicitNull)).toEqual({
+        harness: 'codex',
+        harnessSessionId: null,
+      });
+    });
+
+    test('an unknown harness string is null, never guessed as claude', () => {
+      const id = writeRow({
+        claudeSessionId: 'claude-looks-valid',
+        harness: 'a-harness-from-a-newer-daemon',
+        harnessSessionId: 'x-1',
+      });
+      expect(binding.getIdentity(id)).toBeNull();
+      // The record itself is still readable; only the identity is withheld.
+      expect(store.findByRemiSessionId(id)?.harness).toBe('a-harness-from-a-newer-daemon');
+    });
+
+    test('get() is not widened: it still returns exactly { claudeSessionId }', () => {
+      const id = writeRow({
+        claudeSessionId: 'claude-narrow',
+        harness: 'codex',
+        harnessSessionId: 'thread-9',
+      });
+      expect(binding.get(id)).toEqual({ claudeSessionId: 'claude-narrow' });
+      expect(Object.keys(binding.get(id) ?? {})).toEqual(['claudeSessionId']);
+    });
+  });
 });

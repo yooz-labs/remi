@@ -1,7 +1,7 @@
 /**
  * `remi authorize` - Manage authorized client keys.
  *
- * remi authorize <file-or-json>   Add a client's public key
+ * remi authorize <fingerprint-or-file-or-json>   Add a client's public key
  * remi authorize --remove <fp>    Remove a key by fingerprint
  * remi keys                       List authorized keys
  */
@@ -34,9 +34,22 @@ export async function runAuthorize(options: AuthorizeOptions): Promise<void> {
 
   // Add mode
   if (!options.input) {
-    console.error('Usage: remi authorize <public-key-file-or-json> [--label name]');
+    console.error(
+      'Usage: remi authorize <exact-pending-fingerprint-or-public-key-file-or-json> [--label name]',
+    );
     console.error('       remi authorize --remove <fingerprint>');
     process.exit(1);
+  }
+
+  if (/^[0-9a-f]{16}$/.test(options.input)) {
+    try {
+      const key = await store.authorizePendingKey(options.input, options.label ?? 'unnamed');
+      console.log(`Authorized pending key: ${key.fingerprint} [${key.label}]`);
+    } catch (err) {
+      console.error(errorToString(err));
+      process.exit(1);
+    }
+    return;
   }
 
   let json: string;
@@ -80,7 +93,6 @@ export function runListKeys(dir?: string): void {
   if (keys.length === 0) {
     console.log('No authorized keys.');
     console.log('Add one with: remi authorize <public-key-file>');
-    return;
   }
 
   console.log(`${keys.length} authorized key(s):\n`);
@@ -93,5 +105,16 @@ export function runListKeys(dir?: string): void {
     const fp = key.fingerprint.padEnd(18);
     const label = key.label.slice(0, 16).padEnd(17);
     console.log(`${fp}${label}${added.padEnd(14)}${lastUsed}`);
+    console.log(`  Public key: ${key.publicKey}`);
   }
+  const pending = store.listPendingKeys();
+  console.log(`\n${pending.length} pending key(s) awaiting local approval:`);
+  for (const key of pending) {
+    console.log(`  Fingerprint: ${key.fingerprint}  Expires: ${key.expiresAt}`);
+    console.log(`  Public key:  ${key.publicKey}`);
+    console.log(`  Approve:     remi authorize ${key.fingerprint} --label device-name`);
+  }
+  console.log(
+    'Compare the fingerprint on the client before approving. For explicit imports use remi export-key --public-only.',
+  );
 }

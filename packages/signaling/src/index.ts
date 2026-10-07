@@ -64,8 +64,9 @@ interface PushRequestBody {
   dismiss?: boolean;
   /**
    * Which class of push this is (#968): 'question' | 'turn_complete' |
-   * 'subagent_alert' | 'dismiss'. Passed through verbatim into APNS custom data
-   * as `kind` so the client can label and route by class instead of inferring
+   * 'subagent_alert' | 'harness_denied' (#1126) | 'turn_failed' (#1153) |
+   * 'dismiss'. Passed through verbatim into APNS custom data as `kind` so the
+   * client can label and route by class instead of inferring
    * it from the ABSENCE of `questionId`/`category` — an inference that could
    * never tell a turn-complete push from a subagent alert, since those two are
    * identical on the wire.

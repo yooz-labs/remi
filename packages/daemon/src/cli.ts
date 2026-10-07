@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.15'; // REMI_COMPILED_VERSION
+      return '0.7.16-dev.24'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,14 +28,14 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.15'; // REMI_COMPILED_VERSION
+    return '0.7.16-dev.24'; // REMI_COMPILED_VERSION
   }
 })();
 
 // ---------------------------------------------------------------------------
 // Paths and utilities for log file and status file (used in wrapper mode)
 // ---------------------------------------------------------------------------
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 // Status file is per-port so multiple wrapper sessions don't overwrite each other.
@@ -62,7 +62,7 @@ function ensureRemiDir(): void {
 // Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
 // ---------------------------------------------------------------------------
 import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
-import { IDLE_AUTO_APPROVE, type RemiStatus, StatusWriter } from './cli/status-writer.ts';
+import { type RemiStatus, StatusWriter } from './cli/status-writer.ts';
 
 const gitInfo = detectGitInfo();
 
@@ -82,7 +82,6 @@ const statusWriter = new StatusWriter(
     sessionId: null,
     repo: gitInfo.repo,
     branch: gitInfo.branch,
-    autoApprove: { ...IDLE_AUTO_APPROVE },
     version: REMI_VERSION,
   },
   {
@@ -116,32 +115,29 @@ import {
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
-import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
-  AutoApproveService,
-  EngineHost,
+  type SubagentAlert,
   SubagentAlerter,
   alertBody,
   alertTitle,
-  llamaServerMissingHint,
-  resolveLlamaServer,
-  resolveProviderUrl,
 } from './auto-approve/index.ts';
-import type { PrecedentStore } from './auto-approve/precedent.ts';
-import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
-import type { DenySource } from './auto-approve/types.ts';
+import {
+  MODEL_COMMAND_REMOVED_MESSAGE,
+  bootNoticeLines,
+  legacyEnginePaths,
+  removedAutoApproveEnvVars,
+} from './cli/auto-approve-removal.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
-import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
-import { runModelCommand } from './cli/cmd-model.ts';
+import { runMigratePermissionsCommand } from './cli/cmd-migrate-permissions.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -154,7 +150,13 @@ import {
   type CreateSessionHandlers,
   createCreateSessionHandlers,
 } from './cli/handlers/create-session-events.ts';
-import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import {
+  type InputHandlers,
+  createInputHandlers,
+  gateAnswerDeps,
+  trackerScreenDeps,
+} from './cli/handlers/input-events.ts';
+import { promptUpDeps } from './cli/handlers/prompt-up.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
@@ -165,6 +167,7 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { permissionHoldPolicy } from './cli/hold-policy.ts';
 import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
@@ -175,56 +178,85 @@ import {
   startLogFileSession,
   writeToLog,
 } from './cli/log-file.ts';
-import { handleAutoDenied } from './cli/on-auto-denied.ts';
-import { createSessionPrecedentRecorder } from './cli/precedent-recording.ts';
+import {
+  LOG_GUARD_INTERVAL_MS,
+  LOG_KEEP,
+  LOG_MAX_BYTES,
+  guardLogFiles,
+  planStdioLogGuard,
+} from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
-import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
-import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
-import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import {
+  CONFIG_PATH,
   DEFAULT_CONFIG,
   applyEnvOverrides,
-  detectLocalLLMPlatform,
-  llamaServerCommand,
-  loadConfig,
+  loadConfigWithNotices,
+  relayRequested,
 } from './config/index.ts';
-import type { RemiConfig } from './config/index.ts';
+import type { LoadedConfig, RemiConfig } from './config/index.ts';
+import {
+  configPathForDisplay,
+  isRemiHomeOverridden,
+  remiHome,
+  serviceCommandRefusal,
+} from './config/remi-home.ts';
+import { validateClaudeRemoteArgs } from './harness/claude-args.ts';
+import { attachCommand } from './harness/codex/attach-hint.ts';
+import { validateCodexArgs, validateCodexRemoteArgs } from './harness/codex/codex-args.ts';
+import {
+  codexLaunchRefusal,
+  codexResumeCommand,
+  findHeldThread,
+  legacyWriterRefusal,
+  olderRemiNotice,
+} from './harness/codex/codex-session.ts';
+import { CodexHarness } from './harness/codex/codex.ts';
+import { shortThreadId } from './harness/codex/thread-id.ts';
+import { ClaudeHarness } from './harness/index.ts';
+import type { Harness, HarnessSession } from './harness/index.ts';
+import { HarnessRegistry } from './harness/registry.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+import type { PermissionDeniedHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
 import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
+import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
-import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
-import { sendPushTrigger } from './notifications/push-client.ts';
-import { tokensWanting } from './notifications/push-preferences.ts';
+import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import {
-  TurnTimer,
-  buildTurnCompleteText,
-  shouldNotifyTurnComplete,
-} from './notifications/turn-timer.ts';
-import { OutputProcessor } from './parser/output-processor.ts';
+  type NotificationDispatcher,
+  drainPushDeliveries,
+} from './notifications/notification-dispatcher.ts';
+import { sendPushTrigger } from './notifications/push-client.ts';
+import { createTurnEventSink } from './notifications/turn-events.ts';
+import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
+import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
+import { RELAY_NOT_STARTED_NOTICE } from './remote/relay-notices.ts';
 import {
   AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
   PendingQuestionCreatedAtTracker,
   SessionBindingStore,
+  SessionHarnessMismatchError,
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
   type StoredSession,
   TranscriptIndex,
+  isClaudeRecord,
   resolveStoredSession,
+  storedHarness,
 } from './session/index.ts';
+import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
@@ -255,7 +287,7 @@ import { resolveDirectory } from './cli/path-resolver.ts';
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-import { parseArgs, parseHostPath } from './cli/arg-parser.ts';
+import { looseArgs, parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
@@ -283,16 +315,51 @@ if (parsedArgs.showHelp) {
   process.exit(0);
 }
 
+// 'migrate-permissions' (#1125) reads the RAW config.toml itself, so it runs
+// before the config loader (which no longer knows [auto_approve]) and works
+// even when another section of the file would fail validation.
+if (parsedArgs.subcommand === 'migrate-permissions') {
+  process.exit(runMigratePermissionsCommand(parsedArgs.subcommandArg));
+}
+
 // ---------------------------------------------------------------------------
 // Load config file (before consuming parsed args, so config provides defaults)
 // ---------------------------------------------------------------------------
 let remiConfig: RemiConfig;
+let loadedConfig: LoadedConfig;
 try {
-  remiConfig = applyEnvOverrides(loadConfig());
+  loadedConfig = loadConfigWithNotices();
+  remiConfig = applyEnvOverrides(loadedConfig.config);
 } catch (err) {
   console.error(errorToString(err));
   process.exit(1);
 }
+
+// #1125 (ADR 0030): settings and flags for the removed auto-approve judgment
+// are accepted and ignored, never fatal. Say so ONCE per boot (see
+// `bootNoticeLines` for which commands print what), not on every client
+// subcommand (`remi ls`, ...). process.stderr, not console.warn: Bun colors
+// console output even when piped, and the LaunchAgent captures this stream
+// into remi-stderr.log.
+for (const line of bootNoticeLines(
+  parsedArgs.subcommand,
+  {
+    configPath: CONFIG_PATH,
+    removedConfigKeys: loadedConfig.removedAutoApproveKeys,
+    subagentAlertFromLegacy: loadedConfig.subagentAlertFromLegacy,
+    removedFlags: parsedArgs.removedFlags,
+    removedEnvVars: removedAutoApproveEnvVars(process.env),
+    ...legacyEnginePaths(),
+  },
+  process.env,
+)) {
+  process.stderr.write(`${line}\n`);
+}
+
+if (loadedConfig.removedRequireLocalAuth)
+  console.error(
+    'daemon.require_local_auth is retired and ignored (#873). Loopback clients must prove identity or present the local capability token when authentication is enabled.',
+  );
 
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
@@ -304,11 +371,14 @@ if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
 }
 
-// Handle 'model' subcommand (#819): the ollama-style CLI for the local LLM
-// the auto-approve evaluator runs on (catalogue / pull / residency / default).
-// Async, unlike its siblings: every verb talks to the engine over HTTP.
+// 'model' subcommand (#819) was removed with the local LLM evaluator (#1125,
+// ADR 0030). Still recognized, so `remi model pull x` never reaches Claude as
+// arguments; it explains the removal and exits 2.
 if (parsedArgs.subcommand === 'model') {
-  process.exit(await runModelCommand(parsedArgs.subcommandArgs, remiConfig));
+  // process.stderr, not console.error: Bun colors console.error even when
+  // piped, and a script checking this line should see plain text.
+  process.stderr.write(`${MODEL_COMMAND_REMOVED_MESSAGE}\n`);
+  process.exit(2);
 }
 
 // Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
@@ -343,7 +413,8 @@ const cliStopAll = parsedArgs.stopAll;
 const cliUsePassphrase = parsedArgs.usePassphrase;
 const cliDecrypt = parsedArgs.decrypt;
 const cliEncrypt = parsedArgs.encrypt;
-const cliNoTofu = parsedArgs.noTofu;
+if (parsedArgs.noTofu)
+  console.error('--no-tofu is retired (#873): unknown client keys always require local approval.');
 const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
 const cliPublicOnly = parsedArgs.publicOnly;
@@ -365,6 +436,36 @@ const cliRecent = parsedArgs.recent;
 const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
+
+// Which harness this process hosts (#1177): `remi codex`, or the `--harness <id>` a hub
+// gives a child daemon. This build has adapters for Claude and Codex only.
+const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
+{
+  // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
+  // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
+  // up in the LOCAL store (Session not found, or a silently fresh remote session when a local one
+  // held the id), the silent-drop class of G2 (#1204 round 2, P5).
+  const resumeWithHost =
+    cliHost !== undefined &&
+    cliResume !== undefined &&
+    (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex');
+  const refusal =
+    resumeWithHost && harnessId === 'codex'
+      ? 'remi: --resume is not sent to a remote host; for Codex put the resume after --: remi codex --host <host> -- resume <thread id>'
+      : resumeWithHost
+        ? 'remi: --resume is not sent to a remote host; put it after --: -- --resume <uuid>'
+        : harnessId !== 'claude' && harnessId !== 'codex'
+          ? `This build has no ${harnessId} adapter.`
+          : harnessId !== 'claude' && serveMode
+            ? 'The hub hosts no session of its own, so it takes no --harness.'
+            : harnessId === 'codex' && cliResume !== undefined
+              ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+              : null;
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(2);
+  }
+}
 
 if (cliDaemonMode) {
   setWrapperMode(false);
@@ -401,6 +502,11 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
 
 // Handle --install / --uninstall
 if (cliInstall || cliUninstall) {
+  const refusal = serviceCommandRefusal(cliInstall ? '--install' : '--uninstall');
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(1);
+  }
   const platform = process.platform;
   const home = os.homedir();
   // Prefer the PATH-resolved `remi` (a symlink like /opt/homebrew/bin/remi
@@ -418,6 +524,9 @@ if (cliInstall || cliUninstall) {
     if (cliInstall) {
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
+      // The plist's log paths are `~/.remi` (service-templates.ts) and the
+      // service does not inherit this shell's REMI_HOME, so this stays the
+      // default directory rather than `remiHome()`.
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       const uid = process.getuid?.() ?? 501;
       // Idempotent reinstall: bootstrap fails if the label is already
@@ -658,10 +767,27 @@ if (cliShowSessions) {
   } else {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
-      const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
+      // The harness's own id, labeled with its harness: `claude:<first 8>` for a
+      // Claude record, `codex:<last 8>` for a Codex one (#1176; a Codex thread id
+      // is a UUIDv7, whose first eight characters are a timestamp). A Claude record
+      // with no id yet prints no label, as it always did; a record of another
+      // harness with none prints `<harness>:-`, so it never reads as an
+      // id-less Claude one.
+      const claude = isClaudeRecord(s);
+      const recordedId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
+      const idLabel = recordedId
+        ? ` ${storedHarness(s)}:${claude ? recordedId.slice(0, 8) : shortThreadId(recordedId)}`
+        : claude
+          ? ''
+          : ` ${storedHarness(s)}:-`;
       console.log(
-        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
+        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );
+      // `remi codex resume` takes the whole thread id, which the label above cuts, and runs in
+      // the current directory, so the line changes into the session's own.
+      if (s.harness === 'codex' && s.exitedAt !== null && recordedId) {
+        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId)}`);
+      }
     }
     if (filter === 'running') {
       const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
@@ -680,19 +806,20 @@ if (cliResume !== undefined) {
 
   try {
     if (cliResume === true) {
-      session = store.getMostRecent();
+      session = store.getMostRecent('claude');
       if (!session) {
         console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
         process.exit(1);
       }
     } else {
       // Resolve exact Remi, unique Remi prefix, then Claude identity without
-      // ever selecting the first row when the store is ambiguous.
-      session = resolveStoredSession(store.list(), cliResume as string);
+      // ever selecting the first row when the store is ambiguous. A session
+      // that ran under another harness is refused, not resumed as Claude.
+      session = resolveStoredSession(store.list(), cliResume as string, { harness: 'claude' });
     }
   } catch (err) {
     const reason =
-      err instanceof AmbiguousSessionIdentityError
+      err instanceof AmbiguousSessionIdentityError || err instanceof SessionHarnessMismatchError
         ? err.message
         : `Could not read stored sessions: ${errorToString(err)}`;
     console.error(reason);
@@ -712,7 +839,10 @@ if (cliResume !== undefined) {
     process.exit(1);
   }
 
-  // Inject --resume into Claude args
+  // Inject --resume into Claude args. This is the same flag as
+  // `ClaudeHarness.resumeArgs` (harness/claude.ts); this block runs at module
+  // top level, before `harness` is constructed below, so it cannot call it.
+  // Change Claude's resume flag in both places.
   claudeArgs.unshift('--resume', session.claudeSessionId);
   log(
     `Resuming session ${session.remiSessionId.slice(0, 8)} (claude: ${session.claudeSessionId.slice(0, 8)}) in ${session.projectPath}`,
@@ -730,8 +860,22 @@ if (cliResume !== undefined) {
 // Handle 'new' subcommand enhancements: --host, --dir, --recent
 // ---------------------------------------------------------------------------
 
-// remi new --host: create session on remote daemon, then auto-attach
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+// remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliHost
+) {
+  // Only the words after `--` go to the remote session. A loose one used to be dropped without a
+  // word, so the host started its own defaults (a fresh session where a resume was typed, its own
+  // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
+  const loose = looseArgs(parsedArgs);
+  if (loose.length > 0) {
+    console.error(
+      `remi: arguments for the remote session go after \`--\` (for example \`remi codex --host <host> -- -m <model>\`); not sent: ${loose.join(' ')}`,
+    );
+    process.exit(2);
+  }
+
   // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
   const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
 
@@ -770,6 +914,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
       host: effectiveHost,
       port: resolvedPort,
       directory,
+      // Named only when the person named one (`remi codex`, `--harness`): a request that names none
+      // is the plain request an older daemon already understands. What follows `--` is the
+      // harness's arguments; the remote daemon checks them against its own allowlist.
+      harness: parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : undefined),
+      args: parsedArgs.explicitArgs,
     });
     process.exit(result.exitCode);
   } catch (err) {
@@ -779,7 +928,19 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
 }
 
 // remi new --recent (local): pick directory from recent, chdir, then fall through to wrapper
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliRecent && !cliHost) {
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliRecent &&
+  !cliHost
+) {
+  // A refused Codex argument is refused before the interactive picker, not after it.
+  if (harnessId === 'codex') {
+    const args = validateCodexArgs(parsedArgs.passthroughArgs);
+    if (!args.ok) {
+      console.error(args.error);
+      process.exit(2);
+    }
+  }
   const store = new SessionStore();
   const directories = getRecentDirectories(store, 20);
   if (directories.length === 0) {
@@ -800,7 +961,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliRecent && !cl
 }
 
 // remi new --dir (local): chdir to specified directory, then fall through to wrapper
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHost) {
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliDir &&
+  !cliHost
+) {
   const dirResult = resolveDirectory(cliDir);
   if ('error' in dirResult) {
     console.error(dirResult.error);
@@ -869,185 +1034,6 @@ const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
-// Auto-approve service (optional, LLM-based permission evaluation)
-// ---------------------------------------------------------------------------
-let autoApproveService: AutoApproveService | null = null;
-{
-  const aaCfg = remiConfig.auto_approve;
-  const aaEnabled = parsedArgs.autoApprove ?? aaCfg.enabled;
-  if (aaEnabled) {
-    const provider = parsedArgs.autoApproveProvider ?? aaCfg.provider;
-    const model = parsedArgs.autoApproveModel ?? aaCfg.model;
-    const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
-    const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
-    // CLI allow/deny flags append to config lists; instructions override config.
-    const allow = [...aaCfg.allow, ...parsedArgs.autoApproveAllow];
-    const deny = [...aaCfg.deny, ...parsedArgs.autoApproveDeny];
-    const instructions = parsedArgs.autoApproveInstructions ?? aaCfg.instructions;
-    if (parsedArgs.autoApproveInstructions && aaCfg.instructions) {
-      writeToLog(
-        `[AutoApprove] CLI --auto-approve-instructions overrides TOML instructions (${aaCfg.instructions.length} chars discarded)`,
-      );
-    }
-
-    const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
-    const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
-
-    // #822: say it plainly when this machine cannot run ANY local backend
-    // (notably an Intel Mac — "macOS" is not the boundary, Apple Silicon is).
-    // Without this the user gets a 30s startup timeout and then every question
-    // escalated, which is indistinguishable from a bug. Only a local provider
-    // is affected: a remote one (OpenRouter, a custom URL) works anywhere.
-    const localProvider = provider === 'yooz' || provider === 'llamacpp';
-    const detectedBackend = detectLocalLLMPlatform();
-    if (localProvider && detectedBackend === 'unsupported') {
-      logError(
-        `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
-      );
-    } else if (provider === 'llamacpp' && resolveLlamaServer() === undefined) {
-      // remi SUPERVISES llama-server since #822 (spawn, health-probe, stop) but
-      // deliberately never INSTALLS it -- see llamacpp-backend.ts for where that
-      // line is drawn. So the only remaining boot-time gap is a missing binary,
-      // and it is worth saying here rather than at the first permission: left
-      // unsaid, a Linux user enabling auto-approve gets silence and then every
-      // permission escalated, which is precisely the unexplained degradation
-      // #818 was filed to remove, reintroduced on another platform.
-      //
-      // Nothing is printed when the binary IS present: remi starts it on
-      // demand, so there is no action for the user to take and a warning would
-      // describe a problem that does not exist.
-      logError(
-        `[AutoApprove] provider = "llamacpp": ${llamaServerMissingHint()}
-  Until something answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.
-  Once installed, remi runs it for you as: ${llamaServerCommand(model)}`,
-      );
-    }
-
-    // llama-server ignores the request's `model` field in single-model mode
-    // (verified against its README), so a configured escalate_model is
-    // answered by whatever GGUF was loaded at process start -- a "second
-    // opinion" from the same weights, reported as if a heavier model had
-    // agreed. Silent, and it makes escalate_model actively misleading rather
-    // than merely absent. #822's own scope calls this out as an open design
-    // question ("one model per process"); until it is decided, say so.
-    //
-    // Deliberately OUTSIDE the branch above. It used to be nested inside the
-    // llamacpp warning, which was harmless only because that warning fired for
-    // every llamacpp boot. Now that it fires just for a MISSING binary, nesting
-    // would silence this for exactly the users whose setup works -- i.e.
-    // everyone who would actually get the misleading second opinion.
-    if (provider === 'llamacpp' && aaCfg.escalate_model && aaCfg.escalate_model !== model) {
-      logError(
-        `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
-      );
-    }
-
-    // #818: who starts the engine. Only meaningful for the engine transport —
-    // an OpenRouter or llama.cpp base URL is not something remi supervises, and
-    // handing those an EngineHost would mean spawning a Yooz helper for a
-    // provider that never talks to one.
-    // #822: llamacpp is supervised too now. Both are local sidecars remi owns
-    // on its reserved port; what differs is the launch and the readiness probe,
-    // which `EngineHost` takes as configuration. A remote provider (OpenRouter,
-    // a custom URL) is still never supervised -- handing those a host would
-    // mean spawning a local backend for something that never talks to one.
-    const engineHost = localProvider
-      ? EngineHost.real(
-          {
-            baseUrl,
-            backend: provider === 'llamacpp' ? 'llamacpp' : 'yooz',
-            // llama.cpp needs the id at launch (one GGUF per process); the
-            // engine ignores it and selects per request.
-            model,
-            ownership: aaCfg.engine,
-            helperPath: aaCfg.engine_path,
-            modelCache: aaCfg.model_cache,
-          },
-          writeToLog,
-        )
-      : undefined;
-
-    autoApproveService = new AutoApproveService(
-      {
-        ...aaCfg,
-        provider,
-        model,
-        api_key: apiKey,
-        base_url: baseUrl,
-        enabled: true,
-        allow,
-        deny,
-        instructions,
-        multichoice,
-        multichoice_model: multichoiceModel,
-      },
-      writeToLog,
-      engineHost,
-    );
-
-    // Start (or attach to) the engine at boot, but do NOT block the daemon on
-    // it: a cold helper can take tens of seconds to bind, and remi must be
-    // answering its own port long before then. Evaluation escalates while the
-    // engine is coming up, which is the safe direction, and `ensureEngine`
-    // reports the outcome either way so "no engine" is never silent.
-    //
-    // On a hub machine the hub reaches here first and wins the pidfile race by
-    // construction; a standalone `remi --daemon` on a machine with no hub still
-    // gets one, because requiring a hub would recreate exactly the silent
-    // escalate-everything failure #818 exists to remove.
-    void autoApproveService
-      .ensureEngine()
-      .then(async (up) => {
-        // Only once an engine answers: a pull is an engine operation. Chained
-        // rather than fired alongside, so a cold start does not race the
-        // helper's own startup with a download request it cannot serve.
-        //
-        // Owner decision 2026-07-26: fetch the model if it is not local, do
-        // nothing if it is. Without this the weights still arrive, but
-        // implicitly, on the first permission -- so a fresh install's first
-        // question blocks on a silent multi-GB download instead of a visible
-        // one that happened at boot.
-        if (up) await autoApproveService?.ensureModelPresent();
-      })
-      .catch((err) => {
-        writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
-      });
-    const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
-    const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
-    const escalateSummary = aaCfg.escalate_model
-      ? `escalate_model=${aaCfg.escalate_model}${aaCfg.escalate_timeout > 0 ? ` (timeout=${aaCfg.escalate_timeout}s)` : ''}`
-      : 'escalate_model=none';
-    const queueSummary = `queue_timeout=${aaCfg.queue_timeout > 0 ? `${aaCfg.queue_timeout}s` : 'none'}`;
-    writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
-    );
-    // NOT warmed here (#818 advisory). `escalate_model` is typically a large
-    // model -- a 35B is ~20 GB resident -- and warming at daemon boot means
-    // merely CREATING a session pulls those weights in, even for a session
-    // that never sees a permission, only for keep_alive to evict them 30
-    // minutes later. Pure heat, multiplied by every session in a fleet. The
-    // service now warms on its FIRST evaluation instead, which still lands
-    // long before a typical escalation.
-  }
-}
-
-// The auto-approve eval cue (#560) is surfaced in Claude's native status line via
-// the StatusWriter (see the gate cue wiring in setupHookBridge); it replaced the
-// shared title-bar TerminalIndicator, which raced under concurrent evals.
-
-/**
- * Seconds to pass HookConfigManager as the PermissionRequest hold budget (#573):
- * the configured `hold_timeout` when auto-approve is actually enabled (so the
- * registered hook timeout outlasts a long human-paced hold), else 0 (the
- * baseline 600s ceiling, since a non-AA daemon never holds — it passes through
- * near-instantly). Keeps the hook timeout from being needlessly inflated when
- * holding can't happen.
- */
-function permissionHookHoldTimeoutSec(): number {
-  return autoApproveService ? remiConfig.auto_approve.hold_timeout : 0;
-}
-
-// ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
 //
 // Wrapper mode (`remi <args>`): the wrapper installs `cli/suspend-handler.ts`
@@ -1082,80 +1068,46 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
-// Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
-// shared transcriptWatchers/transcriptFallbackTimers cleanup below stops the
-// binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
-// interval (it lives inside the binder); close() reaches all three.
-const binderClosers: Map<UUID, () => void> = new Map();
-// Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
-// by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
-// (multi-session daemons). Populated in createNewSession after setupHookBridge;
-// removed on session close. Empty when no hookServer is configured.
-const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
-// Per-session QuestionPresenceTracker (#920): the answer handler needs
-// `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose
-// on-screen prompt is already gone (input-events.ts's prompt-currency
-// guard). Unlike `sessionGateHandles`, a tracker is constructed for EVERY
-// session in `createNewSession` regardless of whether a hook server is
-// active, so this map is populated unconditionally there; removed on
-// session close, same lifecycle as the other per-session maps below.
-const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
-// Per-session precedent stores (#976 prerequisite, `auto-approve/precedent.ts`):
-// keyed by sessionId, same shape as `sessionGateHandles`, so `handleAnswer`
-// (input-events.ts) can record a human-classified answer into the RIGHT
-// session's store via the `recordPrecedent` dependency below. Populated from
-// `hookBridgeHandle.precedentStore` after `setupHookBridge`; empty when no
-// hookServer is configured (a `permission_request`-sourced Question, the only
-// kind precedent ever records, cannot exist without one).
-const sessionPrecedentStores: Map<UUID, PrecedentStore> = new Map();
-// Per-session workflow grants (#1095). The store is also owned by the gate;
-// this map mirrors the precedent lifecycle so teardown cannot retain a grant
-// lineage after its session is gone.
-const sessionWorkflowGrantStores: Map<UUID, SessionWorkflowGrantStore> = new Map();
-/**
- * Per-session "does this binder claim the event?" filters (#914).
- *
- * Listeners registered INSIDE `setupHookBridge` all consult `binder.admits()`.
- * `onTurnStop` is registered out here, so it needs the same filter: two daemons
- * in the SAME project directory each append their own matcher to the shared
- * `.claude/settings.local.json` hooks array, and Claude Code POSTs every event
- * to both. Unfiltered, this daemon would push "turn complete" for a sibling's
- * turn, labelled with THIS session's name and carrying the sibling's output --
- * a false "done" for a session that may still be working.
- */
-const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map();
+// Per-session harness sessions, keyed by sessionId (#1164): the answer, chat
+// and Stop handlers reach the RIGHT session's decisions (gate handle and
+// screen reads, #573, #920) through it, `remi unstick` force-releases each
+// one, and session close disposes it (which tears down the Claude
+// TranscriptBinder's rotation dir-poll that the shared transcriptWatchers and
+// transcriptFallbackTimers cleanup below cannot reach, #453). It replaced the
+// `sessionGateHandles`, `sessionTrackers` and `binderClosers` maps, which the
+// launch filled in separately; every session has an entry, a session with no
+// hook server just has nothing held.
+const harnessSessions: Map<UUID, HarnessSession> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
- * get me out" lever when an LLM eval + a question are stuck and the phone has no
- * device visibility. Each gate releases its held hooks to passthrough (native prompt),
- * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
- * zero sessions.
+ * get me out" lever when cards are stuck. Each gate resolves and dismisses every
+ * open escalation it tracks, except that a live hold is released to the terminal
+ * with a notice (#1126; its dialog is on screen). Idempotent and safe with zero
+ * sessions. Every harness session counts in the logged total, including one
+ * with no hook server (nothing to release there).
  */
 function forceReleaseAllSessions(): void {
-  let holds = 0;
-  let cancelled = 0;
-  let drained = 0;
+  let resolved = 0;
   // Per-session try/catch: a throw in one gate's release must not abort the loop
   // and leave the remaining sessions stuck (the whole point is "get me out").
-  for (const [sessionId, handle] of sessionGateHandles.entries()) {
+  for (const [sessionId, session] of harnessSessions.entries()) {
     try {
-      const r = handle.forceRelease('force-release (remi unstick)');
-      holds += r.holds;
-      cancelled += r.cancelled ? 1 : 0;
-      drained += r.drained;
+      resolved += session.decisions.forceRelease('force-release (remi unstick)').resolved;
     } catch (err) {
       logError(`[unstick] Failed to force-release session ${sessionId.slice(0, 8)}:`, err);
     }
   }
-  log(
-    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${holds} hold(s) -> passthrough, ${cancelled} eval(s) cancelled, ${drained} queued drained`,
-  );
+  log(`[unstick] Force-released ${harnessSessions.size} session(s): ${resolved} card(s) resolved`);
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
-// device-token fan-out that pushed the card. Populated in createNewSession;
-// removed on session close.
+// device-token fan-out that pushed the card. Populated by createNewSession,
+// before it asks the harness to build the session (#1165 E); removed on session
+// close.
 const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
+// `StopFailure` -> the session's `turn_failed` push, and its later dismissal
+// (#1153); no config involved, see `createTurnFailedRoutes`.
+const turnFailedRoutes = createTurnFailedRoutes(sessionNotifiers);
 const sessionStore = new SessionStore();
 // Tracks the subagent chats the primary session spawns, so the client can
 // switch the displayed view to a subagent (epic #499 phase 3). Shared by the
@@ -1179,6 +1131,9 @@ const orphanTimeoutMs =
 // registry below is constructed before `sessionHandlers` exists, so onSessionClosed
 // reaches the resolver through this holder, assigned once the handlers are wired.
 let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
+// The cards resolved while a session's close is being handled (#1223), so the
+// close's own dismissal of the cards it held skips those already dismissed.
+let closingResolved: Set<UUID> | null = null;
 // Mirrors the session's pending questions into the live-sessions registry
 // file (#786/#787), keyed by question id so `createdAt` stays stable across
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
@@ -1187,12 +1142,14 @@ const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
+    // A Codex card's text is a command (#1178): the registry's log lines leave it out.
+    redactQuestionLogs: harnessId === 'codex',
   },
   {
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
-    onSessionClosed: (sessionId, reason) => {
+    onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1200,25 +1157,31 @@ const sessionRegistry = new SessionRegistry(
       // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
       // session close, not just at process cleanup — else the poll interval leaks
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
-      binderClosers.get(sessionId)?.();
-      binderClosers.delete(sessionId);
-      // Drop the per-session gate handle (#573); any held hook was already
-      // released by the gate's closeBinder/cancelStale on teardown.
-      sessionGateHandles.delete(sessionId);
-      // Drop the per-session QuestionPresenceTracker (#920): a stale entry
-      // here would make `isPromptCurrent` resolve against a dead session's
-      // last-observed PTY state instead of falling back to "no tracker".
-      sessionTrackers.delete(sessionId);
-      // Drop the per-session precedent store (#976 prerequisite): the store
-      // itself is already cleared on /clear-style rotation inside
-      // setupHookBridge; this is the separate full-session-teardown case
-      // (the ManagedSession itself is gone), so the Map entry must go too or
-      // it lingers for the rest of the daemon's process life.
-      sessionPrecedentStores.delete(sessionId);
-      sessionWorkflowGrantStores.delete(sessionId);
-      // #914: drop the admits filter with the session, so a closed session's
-      // binder can never keep admitting turns on its behalf.
-      sessionAdmitsHandles.delete(sessionId);
+      // The session's dispose() also drops its #914 admits filter, so a closed
+      // session's binder can never keep admitting turns on its behalf.
+      closingResolved = new Set<UUID>();
+      try {
+        harnessSessions.get(sessionId)?.dispose();
+        // #1223: the cards the session still held are dismissed on every
+        // client and lock screen. `closeSession` cleared the registry before
+        // this ran, so the harness's own teardown could not look them up; a
+        // card that teardown already dismissed (Codex's) is not sent twice.
+        // Before `sessionNotifiers.delete` below: the dismissal needs the
+        // session's dispatcher.
+        for (const questionId of pendingQuestionIds) {
+          if (!closingResolved.has(questionId)) {
+            onQuestionResolved(sessionId, questionId, 'cancelled');
+          }
+        }
+      } finally {
+        closingResolved = null;
+      }
+      // Drop the session with its gate handle (#573; its open escalations were
+      // already resolved by the gate's cancelStale on teardown) and its
+      // QuestionPresenceTracker (#920): a stale entry would make
+      // `isPromptCurrent` resolve against a dead session's last-observed PTY
+      // state instead of falling back to "no tracker".
+      harnessSessions.delete(sessionId);
       // Drop the per-session APNS dispatcher (#585, P7).
       sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
@@ -1307,18 +1270,46 @@ import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications. INTENTIONALLY persisted across
-// WebSocket disconnect — push notifications are the suspended-app path, so
-// dropping on disconnect breaks the only case they exist for. Cleanup happens
-// at process exit only. Issue #286.
+// Device tokens for push notifications. Kept across a WebSocket disconnect
+// (#286): push notifications are the suspended-app path, so dropping a token on
+// disconnect breaks the only case they exist for. They end on the explicit
+// removal (`unregister_device_token`), on an APNS rejection, or when the push
+// lease runs out (#1254).
 // Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
 // daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
 // can push immediately, and a dead token pruned on APNS rejection stays pruned.
 // `deviceTokens` is the store's live in-memory map (stable reference), so all the
-// existing Map consumers are unchanged.
-const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+// existing Map consumers are unchanged. Every push path re-reads the file first
+// (`refreshFromDisk`), so a sibling's removal, mute (#1258) or expiry applies.
+//
+// #1254: `connectionTokens` holds the token each live connection registered.
+// While the phone stays connected its push lease is renewed and it never
+// expires here (`isLive`), and when the connection closes the lease counts
+// from that moment. The app re-registers on every new connection.
+const connectionTokens = new Map<UUID, string>();
+const pushLeaseMs = remiConfig.notifications.push_lease_hours * 3_600_000;
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'), {
+  leaseMs: pushLeaseMs,
+  isLive: (token) => {
+    for (const held of connectionTokens.values()) if (held === token) return true;
+    return false;
+  },
+});
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
+const pushLeaseTouchTimer = setInterval(
+  () => {
+    if (connectionTokens.size > 0) deviceTokenStore.touch(connectionTokens.values());
+  },
+  pushLeaseMs > 0 ? Math.min(15 * 60_000, Math.max(1000, pushLeaseMs / 3)) : 15 * 60_000,
+);
+pushLeaseTouchTimer.unref?.();
+const forgetConnectionToken = (connectionId: UUID): void => {
+  const token = connectionTokens.get(connectionId);
+  if (token === undefined) return;
+  connectionTokens.delete(connectionId);
+  deviceTokenStore.touch([token]);
+};
 
 // Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
 // (#672): shared by every session's hook bridge so its escalation rate-limit
@@ -1328,6 +1319,7 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   liveSessionsRegistry,
   bindingStore,
   deviceTokens,
+  refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
   pushConfig: () => ({
     signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
     ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1335,32 +1327,26 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   currentPort: () => PORT,
 });
 
-// Daemon-wide destructive-command alerter for background agents (#807). Shared
-// across every session's hook bridge for the same reason as the escalator
-// above: the rate-limit window must be daemon-wide, or a fleet of agents spread
-// over several sessions each gets its own quota and the throttle stops
-// throttling. See `subagent-alert.ts` for why this alerts rather than gates.
-const subagentAlerter = new SubagentAlerter(remiConfig.auto_approve.subagent_alert);
+// Daemon-wide destructive-command alerter for subagents, foreground or
+// background (#807). Shared across every session's hook bridge for the same
+// reason as the escalator above: the rate-limit window must be daemon-wide,
+// or a fleet of agents spread over several sessions each gets its own quota
+// and the throttle stops throttling. See `subagent-alert.ts` for why this alerts rather than gates.
+const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_alert);
 
-/** Report a subagent permission that passed through unevaluated: always an
- *  audit log line (#756 direction d), plus a dismiss-only push when the command
- *  matches an alert pattern. Fire-and-forget — the gate has already answered
- *  the hook and this must never delay or throw into it. */
-function onSubagentPassthrough(input: PermissionRequestHookInput): void {
-  const alert = subagentAlerter.check(
-    input.tool_name,
-    input.tool_input,
-    input.agent_id,
-    input.agent_type,
-  );
-  if (alert === null) return;
-
+/** Deliver a subagent alert (#807): a log line plus a dismiss-only push. The
+ *  hook bridge calls it when a subagent's call that matched an alert
+ *  pattern finished without ever prompting (#1155, see `subagent-alert.ts`).
+ *  Fire-and-forget: it must never delay or throw into hook handling. */
+function deliverSubagentAlert(alert: SubagentAlert): void {
   const title = alertTitle(alert);
   const body = alertBody(alert);
   // Log unconditionally: the push can fail or be throttled downstream, and the
   // local record is what makes a silent background decision auditable.
   log(`[SubagentAlert] ${title} - ${body}`);
 
+  // A device removed or expired by a sibling daemon gets nothing (#1259 review).
+  deviceTokenStore.refreshFromDisk();
   if (deviceTokens.size === 0) return;
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   for (const dt of deviceTokens.values()) {
@@ -1377,67 +1363,31 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
   }
 }
 
-/**
- * Report an auto-approve `deny` (#1015).
- *
- * A deny is the only verdict with no user-facing surface of its own: it builds
- * no `Question`, so nothing is pushed, nothing is broadcast, and nothing lands
- * in history to scroll back to. Claude gets `buildDenyMessage` and the human
- * gets nothing at all.
- *
- * Two channels, deliberately asymmetric:
- *
- * - **Log, always, all three sources.** Unconditional and NOT gated on
- *   `log_decisions` — that flag governs the routine per-decision trace, and a
- *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
- *   the push can fail or be throttled downstream, so the local record is what
- *   makes the decision auditable at all.
- * - **Push, `model-floor` only** (the `!== 'model-floor'` early return below
- *   covers both other kinds). A `config` deny is the user's own standing rule
- *   in `config.toml` firing exactly as written; notifying them about it is
- *   telling them what they already decided. A `model-floor` deny is the
- *   opposite — the model refused and `matchesCatastrophicPattern` happened to
- *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
- *   is the one nobody chose. A `residual` deny (#1045 phase 6) is what
- *   `escalateMain` converts an escalation into under `residual_action =
- *   "deny"` — the user opted INTO fewer pings via that setting, so, unlike
- *   `model-floor`, telling them about each one would defeat the point; the
- *   log line is still the audit trail.
- *
- * Fire-and-forget: the gate has already answered the hook, so this must never
- * delay or throw into it.
- */
-function onAutoDenied(
-  input: PermissionRequestHookInput,
-  source: DenySource,
-  reasoning: string,
-): void {
-  // Logic (log-always, push-only-for-model-floor) lives in the tested
-  // `handleAutoDenied`; this wrapper only supplies the daemon's real sink.
-  handleAutoDenied(
+/** Push a `harness_denied` notice (#1126): Claude Code's auto-mode
+ *  classifier blocked a tool call. Informational, per-device mutable
+ *  (`pushPrefs.harnessDenied`), fire-and-forget like the alert above. */
+function onHarnessDenied(input: PermissionDeniedHookInput): void {
+  const primarySessionId = getPrimarySessionId();
+  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
+  log(`[HarnessDenied] auto mode blocked ${input.tool_name}: ${input.reason ?? '(no reason)'}`);
+  // Pick up a device removed or muted by a sibling daemon since our last
+  // read (#690), as the question push does.
+  try {
+    deviceTokenStore.refreshFromDisk();
+  } catch (err) {
+    logError('[HarnessDenied] device token refresh failed:', err);
+  }
+  pushHarnessDenied(
     {
-      log,
-      pushToDevices: (title, body) => {
-        if (deviceTokens.size === 0) return;
-        const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-        for (const dt of deviceTokens.values()) {
-          // Deliberately no `category` / `options` / `questionId`: the operation
-          // is already refused and there is nothing for the user to answer. Same
-          // dismiss-only convention as the subagent alert above.
-          void sendPushTrigger(signalingUrl, dt.token, {
-            title,
-            body,
-            ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-            kind: 'auto_denied',
-          }).catch((err) => {
-            logError('[AutoDenied] push failed:', err);
-          });
-        }
-      },
+      deviceTokens: deviceTokens.values(),
+      sessionId: primarySessionId ?? 'unbound',
+      signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+      pushSecret: cliPushSecret,
+      sessionName: session?.name || 'Agent',
+      send: sendPushTrigger,
+      onError: (err) => logError('[HarnessDenied] push failed:', err),
     },
     input,
-    source,
-    reasoning,
   );
 }
 
@@ -1446,8 +1396,9 @@ function onAutoDenied(
 // on `prompt_id` -- present on every hook payload's common fields. Originally
 // cost no DEDICATED hook registration (it rode whatever events were already
 // registered for other reasons); since #893 registered `UserPromptSubmit`
-// (for the auto-approve authority summary, unrelated to this tracker), that
-// event is now ALSO the earliest one `onAnyEvent` sees per turn, so
+// (originally for the auto-approve authority summary, deleted in #1125; the
+// registration now stays for this tracker), that event is the earliest one
+// `onAnyEvent` sees per turn, so
 // `elapsedMs` measures from actual prompt submission instead of
 // approximating from the first tool-use/permission event -- see turn-timer.ts
 // for the accuracy/notification-threshold consequence. See turn-timer.ts for
@@ -1455,95 +1406,43 @@ function onAutoDenied(
 const turnTimer = new TurnTimer();
 
 /**
- * Push a "turn complete" notification when `Stop` reports a genuinely long,
- * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
- * silence on any unknown signal -- see `shouldNotifyTurnComplete`. Fire-and-
- * forget, mirroring `onSubagentPassthrough` immediately above: a notification
- * bug must never delay or break the hook response Claude is blocking on.
- *
- * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
- * transcript-binding validity gate its own Stop listener uses) -- that state
- * lives inside that file's closure, and this listener is a second, additive
- * `hookServer.on('Stop', ...)` registration that intentionally never touches
- * it (#914 scope: Q2 owns hook-bridge-setup.ts). remi is one session per
- * daemon, so every Stop this process's own hookServer sees is this session's;
- * the narrow gap that leaves is a resumed/rotated session mid-race, which
- * `shouldNotifyTurnComplete`'s own gates (unknown elapsed, empty message)
- * catch most instances of anyway.
+ * The turn-event sink (#1180): the one place a finished turn becomes a push, for any harness.
+ * Everything it reads is read when a turn ends (the config, the devices, the endpoint), so a
+ * change while the daemon runs is seen. `onTurnStop` below is Claude's way in; the Codex harness
+ * is handed the same sink and calls it from its `turn/completed` frames.
  */
-function onTurnStop(input: StopHookInput): void {
-  // Session filter FIRST (#914). Claude Code broadcasts every event to every
-  // daemon registered for the directory, so an unfiltered Stop here is very
-  // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
-  // sibling events too, so `elapsedMs` comes back populated and plausible.
-  // Fail closed -- no admitting session means we do not claim this turn.
-  let admitted = false;
-  for (const admits of sessionAdmitsHandles.values()) {
-    try {
-      if (admits(input)) {
-        admitted = true;
-        break;
-      }
-    } catch {
-      // A binder that throws must not break the hook path; treat as not ours.
-    }
-  }
-  if (!admitted) return;
+const turnEvents = createTurnEventSink({
+  config: () => ({
+    onTurnComplete: remiConfig.notifications.on_turn_complete,
+    turnCompleteMinSeconds: remiConfig.notifications.turn_complete_min_seconds,
+  }),
+  // Read fresh, so a sibling's mute (#1258) or an expired lease (#1254) applies.
+  deviceTokens: () => {
+    deviceTokenStore.refreshFromDisk();
+    return deviceTokens.values();
+  },
+  sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,
+  notifiers: sessionNotifiers,
+  signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,
+  pushSecret: () => cliPushSecret,
+  send: sendPushTrigger,
+  log,
+  onError: (err) => logError('[TurnComplete] push failed:', err),
+});
 
-  const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
-  // A stop-hook re-entry means the turn is still going, not finished -- do
-  // NOT clear the mark for it: the eventual real Stop still needs the turn's
-  // original first-seen time to measure the full duration.
-  // `shouldNotifyTurnComplete` below is the single source of truth for
-  // never notifying on a re-entry; this only gates the clear's timing.
-  if (!input.stop_hook_active) {
-    turnTimer.clear(input.prompt_id);
-  }
-
-  // Devices that want turn-complete pushes (#968). Resolved BEFORE the gate so
-  // `hasDeviceTokens` means "someone will actually receive this", not merely
-  // "a token exists": a machine whose every device muted turn-complete stops at
-  // the gate instead of building text and fanning out to nobody. The
-  // machine-wide `notifications.on_turn_complete` above still wins over any
-  // per-device preference — it is checked first, inside the gate.
-  const wanting = tokensWanting(deviceTokens.values(), 'turn_complete');
-
-  if (
-    !shouldNotifyTurnComplete({
-      onTurnComplete: remiConfig.notifications.on_turn_complete,
-      stopHookActive: input.stop_hook_active,
-      elapsedMs,
-      minSeconds: remiConfig.notifications.turn_complete_min_seconds,
-      lastAssistantMessage: input.last_assistant_message,
-      hasDeviceTokens: wanting.length > 0,
-    })
-  ) {
-    return;
-  }
-
-  const primarySessionId = getPrimarySessionId();
-  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
-  const sessionName = session?.name || 'Agent';
-  // Non-null: shouldNotifyTurnComplete already required a non-empty message.
-  const { title, body } = buildTurnCompleteText(sessionName, input.last_assistant_message ?? '');
-  log(`[TurnComplete] ${title}`);
-
-  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of wanting) {
-    // Dismiss-only, same convention as onSubagentPassthrough above: no
-    // `category` / `questionId`, it answers nothing. `kind` is what makes it
-    // distinguishable from a subagent alert, which is otherwise identical on
-    // the wire (#968).
-    void sendPushTrigger(signalingUrl, dt.token, {
-      title,
-      body,
-      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-      kind: 'turn_complete',
-    }).catch((err) => {
-      logError('[TurnComplete] push failed:', err);
-    });
-  }
-}
+/**
+ * Claude's `Stop` listener (#914): the #914 session filter, then the turn's duration from the
+ * timer above, handed to the sink (`notifications/claude-turn-stop.ts`; #1180 moved the filter
+ * order, the timer reads and the hand-off out of `cli.ts` so a test reaches them, and the gate,
+ * the text and the fan-out into the sink). `claudeHarness` is built further down; the filter
+ * asks it when a Stop arrives, never before.
+ */
+const onTurnStop = createClaudeTurnStop({
+  admits: (input) => claudeHarness.admitsAnySession(input),
+  timer: turnTimer,
+  primarySessionId: getPrimarySessionId,
+  sink: turnEvents,
+});
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1643,7 +1542,7 @@ let statusBar: StatusBar | null = null;
 
 // #932 durable fix: the quiescence + clean-boundary gate for the wrapper's
 // own local terminal fd -- the same fd `statusBar` draws into. Module-level
-// (like `statusBar`) so `createNewSession`'s `observeLocalPtyOutput` wiring
+// (like `statusBar`) so the harness's `observeLocalPtyOutput` wiring
 // (constructed once, before the bar itself exists) and the bar's own
 // `isBoundaryClean`/`isQuiescent` deps (wired after, in the wrapper block
 // below) share one instance regardless of call order. Harmless to construct
@@ -1717,256 +1616,46 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
-      // Lazy disk-backed read so the binding seen on each question emission is
-      // the current value — survives /resume rotation via the hook bridge's
-      // bindingStore.update write. Wrapped in try/catch so a transient
-      // sessions.json I/O hiccup cannot kill question emission (the dep
-      // contract is non-throwing).
-      getClaudeSessionId: () => {
+      // A Codex card's text is a command (#1178): the log line for it leaves the text out.
+      redactQuestionLogs: harnessId === 'codex',
+      // Lazy disk-backed read so the identity seen on each question emission is
+      // the current value: it survives /resume rotation via the hook bridge's
+      // bindingStore.update write, and a Codex session's thread id once learned.
+      // Wrapped in try/catch so a transient sessions.json I/O hiccup cannot kill
+      // question emission (the dep contract is non-throwing).
+      getIdentity: () => {
         try {
-          return (bindingStore.get(sessionId)?.claudeSessionId ?? null) as UUID | null;
+          return bindingStore.getIdentity(sessionId);
         } catch (err) {
-          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          logError(`[Binding] getIdentity lookup failed: ${errorToString(err)}`);
           return null;
         }
       },
     },
     sessionId,
   );
-  // Register this session's APNS dispatcher so the question-resolved path can
-  // dismiss a pushed card through the same device-token fan-out (#585, P7).
+  // Register this session's APNS dispatcher before the harness builds
+  // anything that can fire a decision: the question-resolved path and the
+  // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
+  // dismiss or push through the same device-token fan-out (#585, P7, #1165 E).
+  // It is neutral work (a per-session dispatcher, nothing Claude's), so the
+  // shell does it once for every harness.
   sessionNotifiers.set(sessionId, notifications);
-
-  // PTY output parser: streamStatusOnly suppresses regular agent content (comes
-  // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
-  // guard so terminal-only failures still reach remote clients.
-
-  // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
-  // screen presence: hooks record (no push), PTY confirms (push). Status
-  // transitions out of 'waiting' drop pending records so auto-approve
-  // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
-  // fallback: it is how the tracker tells a PTY echo of a gate-pushed
-  // escalation (already registered here) apart from a genuine orphan.
-  //
-  // The push callback forwards `messageApi.handleQuestion`'s
-  // `QuestionRegistrationOutcome` return straight through (#888 criterion
-  // iii): the tracker's own confirmed-delivery gate (`pairAndPush`) now
-  // consumes that value directly instead of a separate `isQuestionLive`
-  // dep that re-queried `sessionRegistry.getQuestion` after the fact -- the
-  // deleted dep used to live here.
-  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
-    hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
-    // #888/#920 hard requirement: a hook-less pending question (no
-    // PermissionRequest/Notification ever fired for it) has no tool
-    // signature for AutoApproveGate to resolve it by, so its PTY render
-    // disappearing is its ONLY resolution evidence -- see the tracker's own
-    // module doc. Remove it from the single pendingness owner (which
-    // broadcasts question_snapshot via onQuestionsChanged, #798) and fire the
-    // SAME question_resolved + APNS-dismiss path every other cancellation
-    // route uses (`onQuestionResolved`, defined below in this file) so a
-    // client sees the card clear immediately, not only on the next snapshot.
-    onHooklessQuestionGone: (questionId, reason) => {
-      sessionRegistry.removeQuestion(
-        sessionId,
-        questionId as UUID,
-        reason,
-        undefined,
-        'QuestionPresenceTracker.onHooklessQuestionGone',
-      );
-      onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
-      // #1005 Change B: since this trigger now also fires for HOOK-BORN cards,
-      // removing the card is no longer the whole job -- the gate still holds
-      // bookkeeping for it (`openQuestionSignatures`, and possibly a held
-      // hook keeping Claude blocked). Route it through the gate's own funnel so
-      // the entry is retired rather than left stale, and so a hold, if any, is
-      // released instead of stalling to `hold_timeout`. A no-op when the gate
-      // has nothing for this id.
-      try {
-        sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough?.(questionId as UUID);
-      } catch (err) {
-        logError(
-          `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
-        );
-      }
-      // The prompt left the screen, which for a permission answered directly in
-      // the terminal is the ONLY evidence remi gets. Until this call the card
-      // cleared but the EVAL did not: a queued waiter kept its place in the
-      // serial lane and ran (or burned the full `queue_timeout`) to decide a
-      // question a human had already answered — then pushed a card for it.
-      //
-      // Measured on a live 0.7.6 session: evals cost 7-10s each and run one at
-      // a time, so every already-answered survivor delayed every real one
-      // behind it, and WebFetch/WebSearch escalated at exactly 240001ms having
-      // never reached the model.
-      //
-      // Separately guarded from the release above, deliberately: these are two
-      // independent cleanups and a throw in either must not skip the other —
-      // the zombie-card pattern #661 fixed in input-events.ts's answer paths.
-      // `cancelEvalForQuestion` is a no-op when no eval is tracked, so this is
-      // safe to call on every disappearance.
-      try {
-        sessionGateHandles.get(sessionId)?.cancelEvalForQuestion?.(questionId as UUID, reason);
-      } catch (err) {
-        logError(
-          `[QuestionPresenceTracker] eval cancel for gone ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
-        );
-      }
-    },
+  // Everything Claude-specific (the question tracker, the PTY output parser,
+  // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
+  // built behind the harness seam, in `harness/claude-session.ts`.
+  const session = harness.createSession({
+    sessionId,
+    workingDirectory,
+    extraArgs,
+    passThrough,
+    reservedRows,
+    messageApi,
+    sendAndRecord,
+    sendMessage,
   });
-  // #920: register this session's tracker so the answer handler's
-  // prompt-currency guard (input-events.ts) can reach it by sessionId.
-  sessionTrackers.set(sessionId, tracker);
-
-  const outputProcessor = new OutputProcessor(
-    { sessionId, streamStatusOnly: true },
-    {
-      onMessage: (message) => {
-        // Only fires for tool-output errors that bypass streamStatusOnly.
-        messageApi.handleMessage(message);
-      },
-      onQuestion: (question) => {
-        // #625 single gate: when a hook server is active the auto-approve gate is
-        // the primary authority for permission questions and pushes escalations
-        // itself (binary via onHeldEscalate, passthrough via escalatePassthrough).
-        // The PTY parser echoes EVERY on-screen prompt — including ones the gate
-        // already auto-approved — so routing those through unconditionally was the
-        // phantom-notification source (>1,100 confirmed pushes fired right after a
-        // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
-        // the PTY (Claude's native Agent-Teams permissions, a passthrough
-        // re-render after a held hook's card was already dismissed; MCP
-        // elicitation dialogs were a third until #889 registered the
-        // `Elicitation` hook) — those were silently swallowed by the old
-        // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
-        // structurally (pending hook record / live registered question means the
-        // gate owns this cycle) and debounces the genuine orphans before pushing.
-        if (hookServer) {
-          tracker.onOrphanPTYPrompt(question);
-          return;
-        }
-        tracker.onPTYPromptVisible(question);
-      },
-      onStatusChange: (status, context) => {
-        if (!hookServer) {
-          messageApi.handleStatusChange(status, context);
-        }
-        tracker.onStatusChange(status);
-      },
-    },
-  );
-
-  // Deterministic PTY -> transcript binding (#427). Resolve the
-  // claudeSessionId Claude will write under BEFORE spawning, so sibling
-  // daemons in the same cwd cannot race-claim each other's transcripts
-  // through mtime-based discovery.
-  const binding = resolveClaudeBinding(extraArgs, {
-    displayName: `remi:${remiStatus.wsPort}`,
-  });
-  log(
-    `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
-  );
-
-  // Persist the binding before spawn so siblings observing the store
-  // during the race window see our claim immediately.
-  bindingStore.preAssign({
-    remiSessionId: sessionId,
-    claudeSessionId: binding.claudeSessionId,
-    projectPath: workingDirectory,
-    port: PORT,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
-
-  if (hookServer) {
-    const hookBridgeHandle = setupHookBridge(
-      {
-        sessionRegistry,
-        bindingStore,
-        liveSessionsRegistry,
-        transcriptWatchers,
-        transcriptFallbackTimers,
-        autoApproveService,
-        currentPort: () => PORT,
-        transcriptDiscovery,
-        subagentViews,
-        statusWriter,
-        foreignSessionEscalator,
-        onSubagentPassthrough,
-        onAutoDenied,
-        // #573: classify holdable escalations + the hold / slow-eval-push budgets
-        // (seconds; the gate converts to ms and treats <=0 as disabled).
-        alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
-        // Guard on AA being enabled (mirrors permissionHookHoldTimeoutSec): with
-        // no auto-approve service the gate must NOT hold a binary escalation —
-        // that would block Claude until the hook timeout instead of rendering the
-        // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
-        holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
-        pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
-        // #1045 phase 6: NOT guarded on autoApproveService, unlike the two
-        // lines above -- the no-service edge is itself one of escalateMain's
-        // three call sites, so residual_action must apply there too.
-        residualAction: remiConfig.auto_approve.residual_action,
-        // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
-        // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
-        // gate can hold. The dispatcher records the per-question delivery outcome.
-        awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
-        // #733: when a held escalation times out unanswered, tell the phone the
-        // prompt moved to the terminal instead of silently dismissing the card.
-        onHoldTimeout: (questionId) => notifications.pushHoldTimeoutHandoff(sessionId, questionId),
-        deliveryConfirmSec: autoApproveService
-          ? remiConfig.auto_approve.delivery_confirm_timeout
-          : 0,
-        holdUnconfirmedSec: autoApproveService
-          ? remiConfig.auto_approve.hold_unconfirmed_timeout
-          : 0,
-        // #585: a held question the gate resolves without a user answer dismisses
-        // its pushed card on every client.
-        broadcastQuestionResolved: onQuestionResolved,
-      },
-      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
-    );
-    // The binder owns the fallback poll + #452 dir-watch (armed by its start()
-    // inside setupHookBridge); record its teardown so cleanup() reaches the
-    // rotation dir-poll interval the shared maps below cannot.
-    binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
-    // Register the per-session gate handle (#573) so the WebSocket answer path
-    // can resolve a held permission / cancel the eval for this exact session.
-    sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
-    // #976 prerequisite: same registration for this session's precedent store.
-    sessionPrecedentStores.set(sessionId, hookBridgeHandle.precedentStore);
-    sessionWorkflowGrantStores.set(sessionId, hookBridgeHandle.workflowGrantStore);
-    // #914: lets the out-of-bridge turn-complete listener apply the same
-    // session filter every in-bridge listener already uses.
-    sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
-  }
-
-  const ptySession = createPtySessionForSession(
-    {
-      sessionRegistry,
-      sessionStore,
-      liveSessionsRegistry,
-      outputProcessor,
-      wsPort: remiStatus.wsPort,
-      sendMessage,
-      cleanup,
-      // #538/#661: an AUQ answered directly in the terminal (after the runner
-      // escalated) is detected in onData; wire the same cross-client dismissal +
-      // eval-cancel the phone-answered path uses (createInputHandlers below).
-      onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
-      cancelAutoApproveForQuestion: (sid, questionId, reason) =>
-        sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
-      // #932 durable fix: feed the wrapper's quiescence + clean-boundary
-      // gate with every chunk actually forwarded to the local terminal, and
-      // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
-      // reset) -- ask the bar to repaint immediately instead of leaving row
-      // N unprotected until the next tick or the heartbeat.
-      observeLocalPtyOutput: (data) => {
-        if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
-      },
-    },
-    { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
-  );
+  harnessSessions.set(sessionId, session);
+  const ptySession = session.pty;
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
   // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
@@ -2001,7 +1690,7 @@ async function createNewSession(
   // pid-aliveness self-heal in SessionStore only fires after our
   // daemon process itself exits.
   try {
-    await ptySession.start();
+    await session.start();
   } catch (err) {
     try {
       sessionStore.markExited(sessionId, null);
@@ -2073,9 +1762,10 @@ remiAttachState = () => {
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
  * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
- * reason 'answered'), or (b) resolved by the auto-approve gate without a user
- * answer (Part-B late verdict / hold timeout / cancelStale, reason
- * 'auto_approved'/'auto_denied'/'cancelled'). It does TWO throw-safe things:
+ * reason 'answered'), or (b) resolved without a user answer (an external
+ * resolution, a Stop / SubagentStop / SessionEnd sweep, a superseded render,
+ * `remi unstick`; reason 'cancelled'). Since #1125 the daemon never sends the
+ * protocol's 'auto_approved' / 'auto_denied' reasons. It does TWO throw-safe things:
  *   1. Broadcast `question_resolved` to every connected client so each dismisses
  *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
  *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
@@ -2087,8 +1777,9 @@ remiAttachState = () => {
 const onQuestionResolved = (
   sessionId: UUID,
   questionId: UUID,
-  reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled',
+  reason: 'answered' | 'cancelled',
 ): void => {
+  closingResolved?.add(questionId);
   try {
     registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
   } catch (err) {
@@ -2120,76 +1811,268 @@ const ptyMessageFanout = createPtyMessageFanout({
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
-  registerDeviceToken: (token, platform, connectionId) =>
-    deviceTokenStore.register(token, platform, connectionId),
+  // The phone's preferences are stored with the token (#1258: they were dropped
+  // here, so a muted push class kept arriving).
+  registerDeviceToken: (token, platform, connectionId, pushPrefs) => {
+    deviceTokenStore.register(token, platform, connectionId, pushPrefs);
+    connectionTokens.set(connectionId, token);
+  },
   // #690: explicit user removal of this server from the phone app. Never
   // fires on a mere disconnect/app suspension — those must keep pushing.
-  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
+  unregisterDeviceToken: (token) => {
+    deviceTokenStore.unregister(token);
+    for (const [connectionId, held] of connectionTokens) {
+      if (held === token) connectionTokens.delete(connectionId);
+    }
+  },
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
 });
 
+// #1155: the one "a prompt is up" signal (a held main prompt, a hook-backed
+// prompt waiting in the terminal, or a numbered menu on screen), built once
+// and spread into both handler factories below, so the chat guard and Stop
+// cannot disagree. Backed by the RIGHT session's gate and tracker.
+const promptUpWiring = promptUpDeps(
+  (sessionId) => harnessSessions.get(sessionId)?.decisions,
+  (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,
+);
+
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573: route a held-permission answer / release-to-passthrough / eval-cancel
-  // to the RIGHT session's gate (the map is populated per session in
-  // createNewSession).
-  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex, sessionGrant) =>
-    sessionGateHandles
-      .get(sessionId)
-      ?.resolveHeld(questionId, decision, suggestionIndex, sessionGrant) ?? false,
-  releaseHeldAsPassthrough: (sessionId, questionId) =>
-    sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
-  // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,
-  // without failing the session's other holds open (which cancelStale would do).
-  // (cancelStale itself is wired for Stop/SessionEnd teardown in hook-bridge-setup.)
-  cancelAutoApproveForQuestion: (sessionId, questionId, reason) =>
-    sessionGateHandles.get(sessionId)?.cancelEvalForQuestion(questionId, reason),
+  // #573/#1126: the RIGHT session's decisions (`harnessSessions`, filled per
+  // session by createNewSession from `harness.createSession`) retire an
+  // answered question and answer a held
+  // prompt through its hook. One helper, shared with the tests, like
+  // trackerScreenDeps below.
+  ...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),
+  // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
+  ...promptUpWiring,
+  // #1177: a Codex session takes no typed chat (its TUI cannot be read), whatever
+  // client sends it; raw keystrokes still reach it.
+  acceptsTypedChat: (sessionId) => harnessSessions.get(sessionId)?.acceptsTypedChat,
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
     onQuestionResolved(sessionId, questionId, 'answered'),
-  // #920: prompt-currency guard for a `source: 'pty'` card-answer, backed by
-  // the RIGHT session's tracker (populated per session in createNewSession,
-  // same map-per-sessionId shape as sessionGateHandles above). No tracker for
-  // this sessionId (session already closed, or never wired one) => "not
-  // current" — fail toward refusing the injection.
-  isPromptCurrent: (sessionId, questionId, ptyText) =>
-    sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
-  // #1002: the weaker "is ANY prompt on screen" backstop, for the hook-paired
-  // cards `isPromptCurrent` structurally cannot serve. Same map, same
-  // no-tracker-means-refuse default.
-  isPromptObservedOnPTY: (sessionId) =>
-    sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
-  // #976 prerequisite: route a classified answer to the RIGHT session's
-  // precedent store (populated per session in createNewSession, same
-  // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No
-  // store for this sessionId (no hookServer, or the session already closed)
-  // is a silent no-op -- recording is additive and must never affect the
-  // answer itself.
-  // `handleAnswer` sources `signature` from `active.precedentSignature` (set
-  // via `signatureForOperation`, untruncated by construction), then this
-  // callback's recorder helper delegates to `recordHumanAnswer`, whose
-  // implementation records with `whole=true`. A genuine >=120-char DENY
-  // ending in `...` therefore persists as a stop rule instead of being
-  // dropped by the truncation heuristic. See that function's doc for why
-  // `whole=true` is sound here.
-  recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
+  // The screen reads the answer guards need (#920 prompt currency, #1002 any
+  // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
+  // tracker (each session's `decisions.screen`, from the same per-sessionId
+  // map as the gate above). One helper, shared with the tests, so
+  // the wiring they exercise is this wiring. No tracker for this sessionId
+  // (session already closed, or never wired one) => nothing observed, which
+  // fails toward refusing the injection.
+  ...trackerScreenDeps((sessionId) => harnessSessions.get(sessionId)?.decisions.screen),
 });
+
+// One daemon hosts one session, so the harness is a per-daemon singleton, built
+// once here and handed to the handler factories (epic #1161, phase 2). It is
+// built this late because launching a session (`createNewSession` ->
+// `harness.createSession`, phase 3) reads daemon-wide services declared above.
+// `hookServer`, `PORT`, the websocket port and `[prompts]` are read when a
+// session launches, not when the harness is built, so they are passed as
+// getters.
+const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
+  sessionRegistry,
+  sessionStore,
+  bindingStore,
+  liveSessionsRegistry,
+  transcriptDiscovery,
+  transcriptWatchers,
+  transcriptFallbackTimers,
+  subagentViews,
+  foreignSessionEscalator,
+  subagentAlerts: { alerter: subagentAlerter, deliver: deliverSubagentAlert },
+  onQuestionResolved,
+  onHarnessDenied,
+  pushTurnFailed: turnFailedRoutes.push,
+  dismissTurnFailed: turnFailedRoutes.dismiss,
+  prompts: () => remiConfig.prompts,
+  hookServer: () => hookServer,
+  currentPort: () => PORT,
+  wsPort: () => remiStatus.wsPort,
+  cleanup,
+  // #932: the wrapper's quiescence gate and status bar (see the PTY wiring in
+  // harness/claude-session.ts for what each forwarded chunk does).
+  observeLocalPtyOutput: (data) => {
+    if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
+  },
+  sessionNotifiers,
+});
+
+/**
+ * The `harness` of this daemon's live-sessions entry (#1179): absent for Claude, so a Claude
+ * entry stays byte-identical to what an older remi wrote and reads (ADR 0032), named for any other.
+ */
+function liveEntryHarness(): { harness?: HarnessId } {
+  return harnessId === 'claude' ? {} : { harness: harnessId };
+}
+
+// The older-daemon gate (#1165 D): the live remi processes that would erase a Codex identity.
+// The Codex launch reads it before it writes a record, and the hub before it spawns a Codex child.
+// A record of exactly this build's version is the same build and has the same shim, so it is not
+// an older remi even when the version does not parse (a PR-stamped build's sessions, wrappers and
+// hub would otherwise each count as one, #1204 round 2).
+const legacyWriters = () =>
+  findLegacyWriters({
+    liveSessions: liveSessionsRegistry,
+    statusFiles: () => readStatusFiles(REMI_DIR),
+    selfPid: process.pid,
+    ownVersion: REMI_VERSION,
+  });
+
+// `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a
+// session starts, and the older-daemon gate reads the live-sessions entries and status files of
+// other remi processes then. `onQuestionResolved` is how an approval card that Codex resolved
+// (the TUI answered first) is cleared on every client (#1178).
+const codexHarness =
+  harnessId === 'codex'
+    ? new CodexHarness({
+        sessionRegistry,
+        sessionStore,
+        bindingStore,
+        liveSessionsRegistry,
+        currentPort: () => PORT,
+        wsPort: () => remiStatus.wsPort,
+        cleanup,
+        env: () => process.env,
+        onQuestionResolved,
+        legacyWriters,
+        remiVersion: REMI_VERSION,
+        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
+        turnEvents,
+        log,
+      })
+    : undefined;
+const harness: Harness = codexHarness ?? claudeHarness;
+
+/** What a remote requester is told when the older-daemon gate refuses a Codex session (G8): no pid, no file. */
+const LEGACY_WRITER_CLIENT_TEXT =
+  "An older remi is running on the host and would erase the Codex session id from its sessions file, so a Codex session was not started. Update or stop that remi on the host, then try again; the host's remi log names it.";
+
+/** What a remote requester is told when a resume names a session or thread a live session holds (P4, P10): no id, no port. */
+const HELD_THREAD_CLIENT_TEXT =
+  'That Codex thread is already open in a live remi session on the host.';
+const HELD_CLAUDE_CLIENT_TEXT =
+  'That Claude session is already open in a live remi session on the host.';
+const AMBIGUOUS_THREAD_CLIENT_TEXT =
+  "That Codex thread cannot be resumed from here: the host's records of it are ambiguous.";
+
+// The harnesses a `create_session_request` may name (#1179), and what each allows: advertised on
+// every hello_ack (`harnesses`) and checked before anything is spawned. Built here because the
+// validators sit behind the import boundary that keeps Claude and Codex apart.
+const harnessRegistry = new HarnessRegistry({
+  claude: {
+    command: 'claude',
+    validateRemoteArgs: validateClaudeRemoteArgs,
+    // A resume of a Claude session a live remi session already holds would make two active records
+    // of it (a wrapper and a child both claiming the id), so it is refused here, before a child is
+    // spawned, whether or not the request names the harness. The requester is told that the session
+    // is open and nothing about the holder; the holder goes to the log (#1204 round 2, P10).
+    launchRefusal: ({ resumeThreadId }) => {
+      if (resumeThreadId === null) return null;
+      const holder = sessionStore
+        .list()
+        .find(
+          (s) => isClaudeRecord(s) && s.claudeSessionId === resumeThreadId && s.exitedAt === null,
+        );
+      if (holder === undefined) return null;
+      return {
+        client: HELD_CLAUDE_CLIENT_TEXT,
+        detail: `a resume of the Claude session ${resumeThreadId.slice(0, 8)} was refused: it is open in remi session ${holder.remiSessionId.slice(0, 8)} (port ${holder.port})`,
+      };
+    },
+  },
+  codex: {
+    command: 'codex',
+    validateRemoteArgs: validateCodexRemoteArgs,
+    // A session the hub starts has no terminal, and Codex may stop at an Update or Trust prompt
+    // that remi never answers (it types nothing into Codex); the hub cannot see that it did, or that
+    // it has already exited (the hub answers once the child has registered, before it launches
+    // Codex). Line one is the condition, line two the way out, naming this session: a bare
+    // `remi attach` takes the newest one. Nothing host-local (no path, no pid).
+    headlessNotice: ({ sessionId, port }) =>
+      [
+        'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt: it may be waiting at an Update or Trust prompt, or may already have exited.',
+        `If it does not respond, \`${attachCommand(port, sessionId)}\` shows it, from a machine that can reach that port (<host> is the address you reached this daemon at); that this lets you answer such a prompt has not been checked against a real Codex.`,
+      ].join('\n'),
+    // The requester gets a short text; the host's log gets the whole reason (pids, files). Then a
+    // resume of a thread a live session holds is refused here, before a child is spawned: the
+    // requester is told the thread is open and nothing about the session that holds it, and the
+    // log names the holder and its port (#1204 round 2, P4). The person at the machine, running
+    // `remi codex resume` locally, still reads the full text (`heldThreadRefusal`).
+    launchRefusal: ({ resumeThreadId }) => {
+      const writers = legacyWriters();
+      if (writers.length > 0) {
+        return { client: LEGACY_WRITER_CLIENT_TEXT, detail: legacyWriterRefusal(writers) };
+      }
+      if (resumeThreadId === null) return null;
+      const held = findHeldThread(sessionStore, resumeThreadId);
+      if (held === null) return null;
+      const ending = shortThreadId(resumeThreadId);
+      if (held.kind === 'ambiguous') {
+        return {
+          client: AMBIGUOUS_THREAD_CLIENT_TEXT,
+          detail: `a resume of the Codex thread ending ${ending} was refused: the session store holds more than one active record of it`,
+        };
+      }
+      return {
+        client: HELD_THREAD_CLIENT_TEXT,
+        detail: `a resume of the Codex thread ending ${ending} was refused: it is open in remi session ${held.remiSessionId.slice(0, 8)} (port ${held.port})`,
+      };
+    },
+  },
+});
+
+// A Codex launch that will be refused is refused HERE, before a daemon boots or a wrapper takes
+// over the terminal (where console output goes to the log): a refused argument exits 2, an older
+// live remi exits 1, and nothing has been written yet. A daemon's arguments are what follows
+// `--` (`explicitArgs`: a hub puts the ones it validated there, last). What the launch cannot
+// protect against is said once.
+let codexLaunchArgs: string[] = [];
+if (codexHarness) {
+  // A daemon reads its arguments from what follows `--` and nothing else (a hub appends them
+  // there, last); a wrapper hands everything the user typed to the validator. A loose word on a
+  // Codex daemon is an error, as every argument was before Phase 5: ignoring it would start Codex
+  // without what was asked (#1179 review, G3). A Claude daemon still ignores loose words, so an
+  // existing LaunchAgent plist starts as before.
+  const loose = cliDaemonMode ? looseArgs(parsedArgs) : [];
+  if (loose.length > 0) {
+    console.error(
+      `remi codex --daemon takes its Codex arguments after \`--\`; not recognized: ${loose.join(' ')}`,
+    );
+    process.exit(2);
+  }
+  const preflight = codexHarness.preflight(
+    cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
+    process.cwd(),
+  );
+  if (!preflight.ok) {
+    console.error(preflight.message);
+    process.exit(preflight.exitCode);
+  }
+  codexLaunchArgs = preflight.args;
+  console.error(olderRemiNotice());
+}
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
   sessionRegistry,
   bindingStore,
   transcriptDiscovery,
+  harness,
   liveSessionsRegistry,
   currentPort: () => PORT,
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionRemoved: () =>
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
+  // #1140, #1155: a Stop does not type "/exit" + Enter while a prompt is up
+  // (the Enter would confirm the highlighted option); it reads the same
+  // signal the chat guard does.
+  ...promptUpWiring,
 });
 // Wire the deferred-Stop resolver now that the handlers exist (#641); the
 // registry's onSessionClosed reaches it through this holder.
@@ -2200,29 +2083,40 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 const currentOwnedSession = makeCurrentSessionResolver({
   getPrimarySessionId,
   sessionStore,
-  transcriptDiscovery,
+  harness,
+  harnessId,
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
+  harness,
   transcriptWatchers,
   bindingStore,
   transcriptIndex,
   currentOwnedSession,
   subagentViews,
+  // A harness that reads its own history (Codex's app-server, #1180) answers a transcript load
+  // itself; Claude's sessions have no chat and take the transcript-file path.
+  chatFor: (sessionId) => harnessSessions.get(sessionId)?.chat,
   send: sendToConnection,
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  // `remi serve` is session-less and must never run Claude (#1124).
+  hubMode: serveMode,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
   sessionRegistry,
   sessionStore,
   bindingStore,
   transcriptDiscovery,
+  harness,
   createNewSession,
   send: sendToConnection,
 });
 
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
+  harnesses: harnessRegistry,
   liveSessionsRegistry,
   spawningPorts,
   basePort: remiConfig.daemon.base_port,
@@ -2266,8 +2160,11 @@ const hubClientTracker: HubClientTracker | null = serveMode
   : null;
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  hubMode: serveMode,
   sessionRegistry,
   currentOwnedSession,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),
@@ -2282,6 +2179,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onPeerDisconnect: hubClientTracker
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
+  onConnectionClosed: forgetConnectionToken,
 });
 
 const sharedEvents = {
@@ -2307,8 +2205,8 @@ const sharedEvents = {
 // auto-selection probes with it long before this point (#880).
 
 // Local capability token (#869). Created on first run with mode 0600 so the
-// CLI can prove it is a local client without a TOFU round trip. Generated
-// unconditionally, even while `require_local_auth` is false, so that turning
+// CLI can prove it is a local client without an identity handshake (#873). Generated
+// unconditionally, so that turning
 // the flag on later never has to also create a secret mid-flight.
 //
 // NOT fatal if it cannot be written. An unwritable `~/.remi` is a broken
@@ -2328,9 +2226,9 @@ try {
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Priority: CLI flag > config file > default (off)
+// #873: CLI flag > config file > default (on for every bind).
 const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
+const authEnabled = cliAuth ?? configAuth !== false;
 
 let authenticator: Authenticator | undefined;
 /** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
@@ -2343,7 +2241,7 @@ if (authEnabled) {
   if (!identityStore.exists()) {
     console.log('No identity found. Generating new Ed25519 keypair...');
     try {
-      const newIdentity = await identityStore.generate();
+      const newIdentity = await identityStore.generate(undefined, false);
       console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
       const detail = errorToString(err);
@@ -2393,8 +2291,7 @@ if (authEnabled) {
     }
   }
 
-  const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
-  authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+  authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
   // Published in every auth challenge so phones can pin it and seal
   // lock-screen answers to this daemon (#875). Non-fatal: without it the
   // daemon simply cannot open sealed answers and says so when one arrives,
@@ -2407,7 +2304,9 @@ if (authEnabled) {
     logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
   }
   serverFingerprint = storedIdentity.fingerprint;
-  console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
+  console.log(
+    `Authentication enabled (fingerprint: ${serverFingerprint}, unknown keys require local approval)`,
+  );
 } else {
   if (!isLocalhostBind) {
     // #880. This is the ONLY signal an install that pre-dates the loopback
@@ -2439,10 +2338,12 @@ if (authEnabled) {
       `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
     );
     console.error(
-      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ${configPathForDisplay()} (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
-    console.log('Authentication disabled (localhost binding)');
+    console.error(
+      'WARNING: authentication disabled. Any local process able to reach this port can approve permission prompts and type into your session. Use --auth to require proof of identity.',
+    );
   }
 }
 
@@ -2456,7 +2357,6 @@ const wsAdapter = new WebSocketAdapter(
     authenticator,
     allowedOrigins: remiConfig.daemon.allowed_origins,
     capabilityToken: localCapabilityToken,
-    requireLocalAuth: remiConfig.daemon.require_local_auth,
   },
   sharedEvents,
 );
@@ -2479,36 +2379,33 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (!cliNoRelay && remiConfig.network.relay) {
+// Off unless enabled (#1193); `--permanent-code` is itself the opt-in. Without
+// it nothing can authenticate a relay peer, so no adapter is created at all and
+// the daemon holds no connection to the Worker.
+const relayWanted = relayRequested(remiConfig.network.relay, {
+  noRelay: cliNoRelay,
+  permanentCode: cliPermanentCode,
+});
+if (relayWanted && !cliPermanentCode) {
+  console.error(RELAY_NOT_STARTED_NOTICE);
+} else if (relayWanted) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
 
-  let relayAdapter: InstanceType<typeof RelayAdapter>;
-
-  if (cliPermanentCode) {
-    // Permanent code mode: persist code to disk, require Ed25519 auth over relay
-    if (!authenticator) {
-      console.error(
-        'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
-      );
-      process.exit(1);
-    }
-    const { CodeStore } = await import('./remote/code-store.ts');
-    const codeStore = new CodeStore();
-    const code = codeStore.load() ?? codeStore.refresh();
-    relayAdapter = new RelayAdapter(
-      { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
-      sharedEvents,
+  // Permanent code mode: persist code to disk, require Ed25519 auth over relay
+  if (!authenticator) {
+    console.error(
+      'Permanent connection codes require authentication. Remove --no-auth/auth.enabled = false or pass --auth (#873).',
     );
-  } else {
-    // Rotating code mode (default): ephemeral code, no Ed25519 auth
-    const code = generateConnectionCode();
-    relayAdapter = new RelayAdapter(
-      { enabled: true, signalingUrl, code, rotateCode: true as const },
-      sharedEvents,
-    );
+    process.exit(1);
   }
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  const code = codeStore.load() ?? codeStore.refresh();
+  const relayAdapter = new RelayAdapter(
+    { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
+    sharedEvents,
+  );
 
   if (daemonAnswerKey) relayAdapter.setAnswerKey(daemonAnswerKey);
   registry.register(relayAdapter);
@@ -2557,6 +2454,7 @@ async function cleanup(): Promise<void> {
     updateWatcher.stop();
     updateWatcher = null;
   }
+  clearInterval(pushLeaseTouchTimer);
 
   if (mdnsPublisher) {
     try {
@@ -2569,11 +2467,15 @@ async function cleanup(): Promise<void> {
   }
 
   // Binders own a rotation dir-poll interval the shared maps below do not
-  // reach; close() tears down its watcher + fallback timer + dir-poll.
-  for (const closeBinder of binderClosers.values()) {
-    closeBinder();
+  // reach; dispose() tears down its watcher + fallback timer + dir-poll, and
+  // drops the session's turn filter (the hook server was stopped above, so no
+  // Stop can arrive to read it). The sessions stay in the map; onSessionClosed
+  // disposes them again when the PTY exits, which dispose()'s guard makes a
+  // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
+  // and turn-filter maps.
+  for (const session of harnessSessions.values()) {
+    session.dispose();
   }
-  binderClosers.clear();
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
@@ -2610,7 +2512,15 @@ async function cleanup(): Promise<void> {
       }
     }
   }
+
+  // #1223: a session's last pushes (its cards' dismissals at close, a final
+  // notice) are usually still in flight when the PTY exit lands here, and the
+  // process exits right after this returns. Wait for them, bounded.
+  await drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
 }
+
+/** How long a shutting-down daemon waits for its pushes in flight (#1223). */
+const PUSH_DRAIN_TIMEOUT_MS = 2000;
 
 // Guard against unhandled rejections / uncaught exceptions killing the whole
 // daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived
@@ -2625,10 +2535,30 @@ installProcessGuards({ logError, onFatal: cleanup });
 // In wrapper mode the terminal provides the PATH, but resolveShellPath
 // merges (never drops existing entries) so it's safe to call, and ensures
 // remote session creation works even after the terminal is detached (SIGHUP).
-resolveShellPath({ log, error: logError });
+resolveShellPath({ log, error: logError }, harnessId === 'codex' ? 'codex' : 'claude');
 
 if (cliDaemonMode) {
   console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
+
+  // A daemon or hub holds its stdout and stderr for its whole life, so it keeps
+  // the log files behind them bounded itself (#729): launchd's
+  // remi-stdout.log / remi-stderr.log, or the daemon.log `remi start` and the
+  // hub's children write to. Only one it writes to in append mode (#1262).
+  const stdioLogs = planStdioLogGuard(
+    [1, 2],
+    [
+      path.join(REMI_DIR, 'daemon.log'),
+      path.join(REMI_DIR, 'remi-stdout.log'),
+      path.join(REMI_DIR, 'remi-stderr.log'),
+    ],
+  );
+  guardLogFiles(stdioLogs.guarded);
+  if (stdioLogs.guarded.length > 0) {
+    log(
+      `[logs] Keeping ${stdioLogs.guarded.map((f) => path.basename(f)).join(' and ')} under ${LOG_MAX_BYTES / (1024 * 1024)} MB (checked every ${LOG_GUARD_INTERVAL_MS / 60_000} minutes, ${LOG_KEEP} backups kept)`,
+    );
+  }
+  for (const notice of stdioLogs.notices) log(`[logs] ${notice}`);
 
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
@@ -2664,7 +2594,6 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
-          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );
@@ -2709,8 +2638,8 @@ if (cliDaemonMode) {
   // session-less hub never runs Claude, so it has no business touching it
   // (the first session child installs it anyway). Session daemons keep the
   // existing behavior.
-  if (!serveMode) {
-    installStatusLine(REMI_DIR);
+  if (!serveMode && harnessId === 'claude') {
+    installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   }
 
   if (serveMode) {
@@ -2806,41 +2735,46 @@ if (cliDaemonMode) {
 
     updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting', mode: 'session' });
 
-    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-    try {
-      hookServer = new HookServer(
-        { port: 0 },
-        {
-          onError: (err) => console.error(`[HookServer] ${err.message}`),
-          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
-        },
-      );
-      hookServer.start();
-      // Additive second Stop listener (#914) -- see onTurnStop's module doc
-      // for why this is deliberately separate from hook-bridge-setup.ts's own.
-      hookServer.on('Stop', onTurnStop);
-      HOOK_PORT = hookServer.port;
-      console.log(`  Hook server listening on port ${HOOK_PORT}`);
-    } catch (err) {
-      const msg = errorToString(err);
-      console.error(
-        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-      );
-      hookServer = null;
-    }
-
-    if (hookServer) {
+    // Hooks are Claude Code's; a Codex session has none (and writes nothing to the
+    // working directory's .claude).
+    if (harnessId === 'claude') {
+      // Start hook server for Claude Code event detection (port 0 = OS-assigned)
       try {
-        hookConfigManager = new HookConfigManager(
-          workingDirectory,
-          hookServer.url,
-          permissionHookHoldTimeoutSec(),
+        hookServer = new HookServer(
+          { port: 0 },
+          {
+            onError: (err) => console.error(`[HookServer] ${err.message}`),
+            onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
+          },
         );
-        await hookConfigManager.install();
+        hookServer.start();
+        // Additive second Stop listener (#914) -- see onTurnStop's module doc
+        // for why this is deliberately separate from hook-bridge-setup.ts's own.
+        hookServer.on('Stop', onTurnStop);
+        HOOK_PORT = hookServer.port;
+        console.log(`  Hook server listening on port ${HOOK_PORT}`);
       } catch (err) {
         const msg = errorToString(err);
-        console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
-        hookConfigManager = null;
+        console.error(
+          `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+        );
+        hookServer = null;
+      }
+
+      if (hookServer) {
+        try {
+          // #1126: a daemon or hub session holds prompts for up to
+          // daemon_hold_seconds, so its hook registration outlasts that.
+          hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+            permissionRequestTimeout: permissionHoldPolicy(false, remiConfig.prompts)
+              .permissionRequestTimeoutSec,
+          });
+          await hookConfigManager.install();
+        } catch (err) {
+          const msg = errorToString(err);
+          console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+          hookConfigManager = null;
+        }
       }
     }
 
@@ -2854,17 +2788,26 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
-    // Create the PTY session
+    // Create the PTY session. A hub's child gets its harness's arguments from after `--`
+    // (`explicitArgs`, #1179); a loose word elsewhere on the command line is still ignored.
     try {
-      await createNewSession(sessionId, workingDirectory, ptyMessageFanout);
+      await createNewSession(
+        sessionId,
+        workingDirectory,
+        ptyMessageFanout,
+        harnessId === 'codex' ? codexLaunchArgs : [...parsedArgs.explicitArgs],
+      );
     } catch (err) {
       const msg = errorToString(err);
       console.error(`Failed to create session: ${msg}`);
       liveSessionsRegistry.unregister(sessionId);
       await registry.stopAll();
-      process.exit(1);
+      // A Codex launch the harness refuses after the preflight passed (an older remi that started
+      // in between, a race for a thread) keeps its own exit code.
+      process.exit(codexLaunchRefusal(err)?.exitCode ?? 1);
     }
 
     const managedSession = sessionRegistry.getSession(sessionId);
@@ -2907,7 +2850,7 @@ if (cliDaemonMode) {
   process.on('SIGUSR1', () => {
     console.log('[reload] Re-reading configuration...');
     try {
-      applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfigWithNotices().config);
       console.log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       console.error(`[reload] Failed to load config: ${errorToString(err)}`);
@@ -2923,7 +2866,9 @@ if (cliDaemonMode) {
   setPtyStdoutFd(1); // stdout file descriptor
 
   ensureRemiDir();
-  startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  const logSession = startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  // A wrapper session can run for days without reopening remi.log (#729).
+  if (logSession.path === LOG_FILE) guardLogFiles([LOG_FILE]);
 
   // Layer 1: Override console methods (catches Bun's native console path)
   const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));
@@ -2948,8 +2893,9 @@ if (cliDaemonMode) {
   // Close log fd as the very last thing on process exit
   process.on('exit', endLogFileSession);
 
-  // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
-  installStatusLine(REMI_DIR);
+  // Install status line script (<state dir>/statusline.sh) and auto-configure
+  // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
+  if (harnessId === 'claude') installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
@@ -2986,7 +2932,6 @@ if (cliDaemonMode) {
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
           capabilityToken: localCapabilityToken,
-          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );
@@ -3023,37 +2968,41 @@ if (cliDaemonMode) {
     updateRemiStatus({ wsPort: PORT });
   }
 
-  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-  try {
-    hookServer = new HookServer(
-      { port: 0 },
-      {
-        onError: (err) => logError(`[HookServer] ${err.message}`),
-        onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
-      },
-    );
-    hookServer.start();
-    // Additive second Stop listener (#914) -- see onTurnStop's module doc for
-    // why this is deliberately separate from hook-bridge-setup.ts's own.
-    hookServer.on('Stop', onTurnStop);
-    HOOK_PORT = hookServer.port;
-    log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
+  // Hooks are Claude Code's; a Codex session has none (and writes nothing to the
+  // working directory's .claude).
+  if (harnessId === 'claude') {
+    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+    try {
+      hookServer = new HookServer(
+        { port: 0 },
+        {
+          onError: (err) => logError(`[HookServer] ${err.message}`),
+          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
+        },
+      );
+      hookServer.start();
+      // Additive second Stop listener (#914) -- see onTurnStop's module doc for
+      // why this is deliberately separate from hook-bridge-setup.ts's own.
+      hookServer.on('Stop', onTurnStop);
+      HOOK_PORT = hookServer.port;
+      log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
-    // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(
-      workingDirectory,
-      hookServer.url,
-      permissionHookHoldTimeoutSec(),
-    );
-    await hookConfigManager.install();
-    log('[Hooks] Claude Code hooks configured');
-  } catch (err) {
-    const msg = errorToString(err);
-    logError(
-      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-    );
-    hookServer = null;
-    hookConfigManager = null;
+      // Configure Claude Code hooks to POST to our server; a wrapper session
+      // has a local terminal (#1126, hold-policy.ts).
+      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+        permissionRequestTimeout: permissionHoldPolicy(true, remiConfig.prompts)
+          .permissionRequestTimeoutSec,
+      });
+      await hookConfigManager.install();
+      log('[Hooks] Claude Code hooks configured');
+    } catch (err) {
+      const msg = errorToString(err);
+      logError(
+        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+      );
+      hookServer = null;
+      hookConfigManager = null;
+    }
   }
 
   // Register in live-sessions AFTER hook server starts so hookPort has real value
@@ -3067,6 +3016,7 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
     // Notify attached clients when a new dist/remi build replaces this binary
@@ -3088,18 +3038,37 @@ if (cliDaemonMode) {
   // off-able via config. When active, Claude is reported `rows - 1` so it never
   // touches the bottom row, which remi draws into. A non-TTY stdout (piped) has
   // no row to reserve, so it fails safe to off.
-  const statusBarActive = remiConfig.terminal.status_bar && Boolean(process.stdout.isTTY);
+  const statusBarActive =
+    harnessId === 'claude' && remiConfig.terminal.status_bar && Boolean(process.stdout.isTTY);
   const reservedRows = statusBarActive ? 1 : 0;
 
   // Create and start the primary PTY session
-  const ptySession = await createNewSession(
-    sessionId,
-    workingDirectory,
-    ptyMessageFanout,
-    claudeArgs,
-    true, // pass-through mode
-    reservedRows,
-  );
+  let ptySession: PTYSession;
+  try {
+    ptySession = await createNewSession(
+      sessionId,
+      workingDirectory,
+      ptyMessageFanout,
+      harnessId === 'codex' ? codexLaunchArgs : claudeArgs,
+      true, // pass-through mode
+      reservedRows,
+    );
+  } catch (err) {
+    if (harnessId !== 'codex') throw err;
+    // A Codex launch that fails after boot (a refusal the preflight could not see, a race for
+    // a thread, a `codex` that is not installed) used to die as an unhandled rejection with its
+    // text in the log: a wrapper's console is redirected there. Say it on the real stderr, with
+    // the refusal's own exit code.
+    const refusal = codexLaunchRefusal(err);
+    const message = refusal ? refusal.message : `Failed to create session: ${errorToString(err)}`;
+    try {
+      fs.writeSync(2, `${message}\n`);
+    } catch {
+      // stderr may already be gone
+    }
+    await cleanup().catch(() => {});
+    process.exit(refusal?.exitCode ?? 1);
+  }
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
   // StatusWriter state and repaints on a 250ms timer (the cadence of the
@@ -3307,7 +3276,7 @@ if (cliDaemonMode) {
   process.on('SIGUSR1', () => {
     log('[reload] Re-reading configuration...');
     try {
-      applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfigWithNotices().config);
       log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       logError(`[reload] Failed to load config: ${errorToString(err)}`);

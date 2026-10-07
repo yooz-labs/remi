@@ -10,6 +10,7 @@
  * - Messages are ordered within a session
  */
 
+import type { HarnessId, SessionIdentity } from './harness.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -300,6 +301,29 @@ export interface HelloAckMessage {
    */
   readonly claudeSessionId?: UUID | null;
   /**
+   * The harness this daemon's session runs under (#1179, ADR 0032). Sent with
+   * the binding, on the acks that carry `claudeSessionId` today; absent on an
+   * ack with no session (a hub's) and from an older daemon, which a client
+   * reads as the default harness (`claude`).
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * The harness's own id for this daemon's session (#1179). For Claude it is
+   * {@link claudeSessionId}, null included. For another harness
+   * `claudeSessionId` is omitted and this is null until the harness has
+   * reported its id (a Codex thread id), so a client must not depend on it
+   * being set on the first ack: answers are addressed by `questionId`.
+   */
+  readonly harnessSessionId?: string | null | undefined;
+  /**
+   * The harnesses this daemon can start for a `create_session_request` (#1179):
+   * those it has an adapter for whose command resolves on its PATH. Sent on
+   * every ack, a hub's session-less one included. An OLDER daemon omits it and
+   * ignores `create_session_request.harness`, starting a Claude session, so a
+   * client must see its harness here before it asks for one.
+   */
+  readonly harnesses?: readonly HarnessId[] | undefined;
+  /**
    * Absolute path to the .jsonl transcript file Claude writes to.
    * Pre-assigned alongside claudeSessionId; the file may not yet exist on
    * disk when this ack is sent. Null when claudeSessionId is null.
@@ -411,22 +435,43 @@ export interface QuestionMessage {
    * tap). Populated when the daemon has a binding; omitted otherwise.
    */
   readonly claudeSessionId?: UUID | undefined;
+  /**
+   * The harness the question came from (#1179, ADR 0032). Sent by a daemon
+   * that knows its harness; absence (an older daemon) reads as the default
+   * harness (`claude`).
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * The harness's own session id for the question (#1179). For a Claude
+   * question it equals {@link claudeSessionId}; for another harness
+   * `claudeSessionId` is omitted. Omitted while the id is not known.
+   */
+  readonly harnessSessionId?: string | undefined;
 }
 
-/** One sub-question's chosen option indices in a structured AskUserQuestion
- *  answer (#627). `optionIndices` are 0-based into that sub-question's options
- *  (one entry for single-select, 1+ for multi-select). */
+/**
+ * One sub-question's answer in a structured AskUserQuestion answer (#627,
+ * #1127). `optionIndices` are 0-based into that sub-question's options.
+ * A single-select question takes exactly one: one option index, or `text`
+ * (free text the user typed instead) with no index. A multi-select question
+ * takes one or more option indices and no text. The daemon refuses any other
+ * shape and keeps the prompt waiting.
+ */
 export interface AnswerSelection {
   readonly questionIndex: number;
   readonly optionIndices: readonly number[];
+  /** Free text instead of an option, for a single-select question (#1127). */
+  readonly text?: string | undefined;
 }
 
 /** The non-string parts of an {@link AnswerMessage} (#627), threaded through the
- *  answer event chain so the daemon can drive a structured AskUserQuestion answer
- *  (`selections`) or cancel/escape the prompt (`cancel`). */
+ *  answer event chain so the daemon can answer a structured AskUserQuestion
+ *  (`selections`) or cancel the prompt (`cancel`). */
 export interface AnswerExtras {
   readonly selections?: readonly AnswerSelection[] | undefined;
   readonly cancel?: boolean | undefined;
+  /** See {@link AnswerMessage.message}. */
+  readonly message?: string | undefined;
 }
 
 /** Answer to a question */
@@ -445,18 +490,28 @@ export interface AnswerMessage {
   readonly claudeSessionId?: UUID | undefined;
   /**
    * Structured AskUserQuestion answer (#627): per-sub-question selected option
-   * indices. Present INSTEAD of a meaningful `answer` for a multi-question prompt
-   * (`answer` is then ''). The daemon drives the interactive TUI from these and
-   * verifies the review screen before submitting.
+   * indices, or free text for a single-select question. Present INSTEAD of a
+   * meaningful `answer` for a multi-question prompt (`answer` is then ''). Since
+   * #1127 the daemon validates them against the tool input (every question
+   * answered) and answers the held hook with them; an incomplete answer is
+   * refused and the prompt keeps waiting. Nothing is typed.
    */
   readonly selections?: readonly AnswerSelection[] | undefined;
   /**
-   * Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI,
-   * cancelling the AskUserQuestion so Claude unblocks. The universal unstick —
-   * honored regardless of whether the prompt could be auto-answered. `answer` is
-   * '' when this is set.
+   * Cancel the active prompt (#627), the universal unstick. A held prompt is
+   * cancelled through its hook (#1126, #1127): a "No" for a permission, a
+   * dismissal for an AskUserQuestion, "keep planning" for a plan. Any other
+   * prompt gets `Esc`. `answer` is '' when this is set.
    */
   readonly cancel?: boolean | undefined;
+  /**
+   * Optional text sent with a "No" to a held permission prompt (#1126), or
+   * with "Keep planning" on a plan (#1127). The daemon passes it to Claude as
+   * the denial reason, which Claude receives as the denied tool's result, so
+   * the user can say why or what to do instead. Ignored for every other
+   * answer.
+   */
+  readonly message?: string | undefined;
 }
 
 /**
@@ -480,8 +535,17 @@ export interface QuestionResolvedMessage {
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
-  readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+  readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
 }
+
+/**
+ * Resolution reasons only the removed auto-approve evaluator produced: a
+ * late verdict that approved or denied a pushed card.
+ *
+ * @deprecated #1125: no longer emitted. Kept so a client still parses an
+ * older daemon.
+ */
+export type DeprecatedQuestionResolvedReason = 'auto_approved' | 'auto_denied';
 
 /**
  * Daemon -> client broadcast: the authoritative set of question ids currently
@@ -579,6 +643,79 @@ export interface StaleSessionErrorDetails {
   readonly currentClaudeSessionId: UUID | null;
   /** The current transcript file path. */
   readonly currentTranscriptPath: string | null;
+}
+
+/**
+ * Wire `code` of the `error` the daemon sends when it refuses a structured
+ * `user_input` (web chat, Telegram text) because Claude is showing a numbered
+ * selection menu (#1140). Typed into that menu, the text is ignored and the
+ * Enter that follows confirms the highlighted option, usually "1. Yes", so
+ * the daemon types nothing and sends this instead. Raw terminal keystrokes
+ * (`raw: true`) are never refused: they are how a person answers the menu.
+ *
+ * Both ends read this constant: the daemon builds the error with
+ * `createPromptWaitingError`, and the web client matches on it to mark the
+ * refused bubble failed. The Telegram adapter needs nothing special; it
+ * renders every `error` as "Error: <message>".
+ */
+export const PROMPT_WAITING_ERROR_CODE = 'PROMPT_WAITING';
+
+/** The `message` of a `PROMPT_WAITING` error: what the user is told. */
+export const PROMPT_WAITING_MESSAGE =
+  'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).';
+
+/**
+ * The `message` of a `PROMPT_WAITING` error sent while a main-agent prompt's
+ * hook is held (#1126). It must not claim a dialog is on screen: a Yes
+ * answered in the terminal ends the hold only when its tool finishes, so the
+ * approved command may already be running (#1144).
+ */
+export const PROMPT_WAITING_HELD_MESSAGE =
+  'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.';
+
+/**
+ * The `message` of a `PROMPT_WAITING` error sent while a hook-backed prompt's
+ * answer belongs to the terminal (#1155): a hold released at its deadline or
+ * handed back early, or a subagent's dialog in a terminal session. Its card
+ * is gone, and a No answered at the terminal fires no hook, so the daemon
+ * cannot see that dialog close; the message names every way out (lead
+ * decision): answering it there, an Esc sent from the app (the web Esc
+ * button, Telegram's `/interrupt`), which clears a main-agent prompt at
+ * once, and `remi unstick`.
+ */
+export const PROMPT_WAITING_TERMINAL_MESSAGE =
+  'Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.';
+
+/**
+ * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
+ * input's own message id (when the client sent one), so the client can flip
+ * that one bubble to failed; the daemon acks `user_input` before it decides
+ * whether to type it, exactly as for `SESSION_NOT_FOUND` (#681).
+ */
+export interface PromptWaitingErrorDetails {
+  readonly sessionId: UUID;
+  readonly messageId?: UUID | undefined;
+}
+
+/**
+ * Wire `code` of the `error` the daemon sends when it could not write a raw
+ * `user_input` to the terminal (the PTY is not running, or the write failed).
+ * Raw input is a person's keystrokes (an attach client, the web client's Escape
+ * button, Telegram's `/interrupt`), which the daemon used to drop with a log
+ * line only, so the sender could not tell that its Escape never arrived and a
+ * client that reports success (Telegram's "Interrupt sent") reported it falsely.
+ */
+export const INPUT_NOT_DELIVERED_ERROR_CODE = 'INPUT_NOT_DELIVERED';
+
+/** The `message` of an `INPUT_NOT_DELIVERED` error: what the user is told. */
+export const INPUT_NOT_DELIVERED_MESSAGE =
+  'Input was not delivered: the terminal is not accepting input.';
+
+/** Details attached to an `INPUT_NOT_DELIVERED` error; `messageId` is the
+ *  failed input's own message id, when the client sent one. */
+export interface InputNotDeliveredErrorDetails {
+  readonly sessionId: UUID;
+  readonly messageId?: UUID | undefined;
 }
 
 /** Batch of messages to replay on session resume */
@@ -775,13 +912,26 @@ export interface TerminalResizeMessage {
   readonly rows: number;
 }
 
-/** Request to create a new Claude Code session */
+/** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
   readonly type: 'create_session_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
   /** Working directory for the new session */
   readonly directory?: string;
+  /**
+   * The harness to start (#1179). Absent means Claude. A daemon older than
+   * this field ignores it and starts Claude, so a client checks
+   * `HelloAckMessage.harnesses` first. The daemon refuses a harness it does not
+   * offer without spawning anything.
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * Extra arguments for the harness (#1179), validated by the daemon against
+   * that harness's remote allowlist and appended after `--` to the child's
+   * command line, so they can never be read as remi flags.
+   */
+  readonly args?: readonly string[] | undefined;
 }
 
 /** Response after creating a new session */
@@ -799,6 +949,13 @@ export interface CreateSessionResponseMessage {
   readonly requestId: UUID;
   /** Port of the new daemon (when session was spawned on a new daemon) */
   readonly port?: number;
+  /**
+   * What a success does not say (#1179): for a harness started without a terminal that may stop at a
+   * prompt only a terminal can answer (Codex's Update and Trust prompts), the daemon cannot know the
+   * session reached its prompt, so it says so and what to do. `success` means the session daemon was
+   * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
+   */
+  readonly notice?: string | undefined;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -821,6 +978,18 @@ export interface ResumeSessionResponseMessage {
   readonly success: boolean;
   /** Error message if resume failed */
   readonly error?: string;
+  /**
+   * Machine-readable failure code, from the same vocabulary as the `error`
+   * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
+   * a stable code; absent on success and on older daemons, so clients must
+   * keep treating `error` as the human-readable fallback (#1124).
+   *
+   * No client reads this field yet: the web client shows `error` only
+   * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
+   * the same. It exists so a client can start branching on it without a
+   * protocol change.
+   */
+  readonly errorCode?: string;
   /** ID of the original request */
   readonly requestId: UUID;
 }
@@ -964,7 +1133,7 @@ export interface DetachSessionAckMessage {
  *
  * Deliberately does NOT cover two other push classes:
  *   - subagent alerts, which already have a user-facing control (they fire only
- *     on the user's own `auto_approve.subagent_alert` patterns);
+ *     on the user's own `[notifications] subagent_alert` patterns);
  *   - question DISMISSALS, which are quiet `content-available` pushes that clear
  *     an already-delivered card. Muting those would strand a card on the lock
  *     screen of the very device that asked for less noise.
@@ -974,6 +1143,14 @@ export interface PushPreferences {
   readonly questions?: boolean;
   /** Push the last assistant message when a long turn ends (#914). */
   readonly turnComplete?: boolean;
+  /** Push when Claude Code's auto-mode classifier blocks a tool call
+   *  (`PermissionDenied`, #1126). Informational: nothing to answer. */
+  readonly harnessDenied?: boolean;
+  /** Push when a turn ends on an API error (usage or rate limit,
+   *  authentication, and similar: Claude Code's `StopFailure`, #1153).
+   *  Informational: nothing to answer. Defaults ON, and
+   *  `notifications.on_turn_complete = false` does not mute it. */
+  readonly turnFailed?: boolean;
 }
 
 /** Register a device token for push notifications */
@@ -1239,10 +1416,25 @@ export function createHello(
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
-  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null } | undefined;
+  /**
+   * Who the session is and which transcript it writes (#430, #1179). The
+   * identity is dual-emitted from this one value: Claude's id rides on
+   * `claudeSessionId` AND `harnessSessionId` (null included), so the two cannot
+   * differ; another harness's id rides on `harnessSessionId` alone and
+   * `claudeSessionId` is omitted.
+   */
+  binding?: { identity: SessionIdentity; transcriptPath: string | null } | undefined;
   attachState?: 'attached' | 'queued' | undefined;
   /** The daemon's remi binary version (#539). */
   daemonVersion?: string | undefined;
+  /** The harnesses this daemon can start (#1179), on every ack. */
+  harnesses?: readonly HarnessId[] | undefined;
+  /**
+   * The harness this daemon hosts, for an ack with no `binding` (the brief window before its session
+   * exists). Ignored when a binding is given, which names the harness itself. A hub hosts none and
+   * passes nothing.
+   */
+  harness?: HarnessId | undefined;
 }
 
 /**
@@ -1253,7 +1445,7 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion } = options;
+  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness } = options;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -1266,11 +1458,19 @@ export function createHelloAck(
       nextBulletId: resumeInfo.nextBulletId,
     }),
     ...(binding && {
-      claudeSessionId: binding.claudeSessionId,
+      ...(binding.identity.harness === 'claude' && {
+        claudeSessionId: binding.identity.harnessSessionId,
+      }),
+      harness: binding.identity.harness,
+      harnessSessionId: binding.identity.harnessSessionId,
       transcriptPath: binding.transcriptPath,
     }),
+    // No binding, but the daemon knows what it hosts: only the harness is named, so a Codex daemon
+    // does not read as Claude by the absence of a field.
+    ...(binding === undefined && harness !== undefined && { harness }),
     ...(attachState !== undefined && { attachState }),
     ...(daemonVersion !== undefined && { daemonVersion }),
+    ...(harnesses !== undefined && { harnesses }),
   };
 }
 
@@ -1404,12 +1604,46 @@ export function createError(
 }
 
 /**
- * Create a question message.
+ * Create the `PROMPT_WAITING` error (#1140): the refusal of a structured
+ * `user_input` while Claude shows a numbered menu. `messageId` is the refused
+ * input's id, when the client sent one. `message` is what the user is told:
+ * `PROMPT_WAITING_MESSAGE` by default, `PROMPT_WAITING_HELD_MESSAGE` while a
+ * hook is held (#1126).
+ */
+export function createPromptWaitingError(
+  sessionId: UUID,
+  messageId?: UUID,
+  message: string = PROMPT_WAITING_MESSAGE,
+): ErrorMessage {
+  const details: PromptWaitingErrorDetails = {
+    sessionId,
+    ...(messageId !== undefined && { messageId }),
+  };
+  return createError(PROMPT_WAITING_ERROR_CODE, message, { ...details });
+}
+
+/**
+ * Create the `INPUT_NOT_DELIVERED` error: a raw `user_input` that could not be
+ * written to the terminal. `messageId` is the failed input's id, when the
+ * client sent one.
+ */
+export function createInputNotDeliveredError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+  const details: InputNotDeliveredErrorDetails = {
+    sessionId,
+    ...(messageId !== undefined && { messageId }),
+  };
+  return createError(INPUT_NOT_DELIVERED_ERROR_CODE, INPUT_NOT_DELIVERED_MESSAGE, { ...details });
+}
+
+/**
+ * Create a question message. `identity` is the session's harness identity
+ * (#1179): the harness is always sent; the session id only once it is known,
+ * and for Claude it rides on `claudeSessionId` as well, so the two cannot differ.
  */
 export function createQuestion(
   question: Question,
   sessionId: UUID,
-  claudeSessionId?: UUID,
+  identity?: SessionIdentity | null,
 ): QuestionMessage {
   return {
     type: 'question',
@@ -1417,18 +1651,26 @@ export function createQuestion(
     timestamp: now(),
     question,
     sessionId,
-    ...(claudeSessionId !== undefined && { claudeSessionId }),
+    ...(identity && {
+      harness: identity.harness,
+      ...(identity.harnessSessionId !== null && {
+        harnessSessionId: identity.harnessSessionId,
+        ...(identity.harness === 'claude' && { claudeSessionId: identity.harnessSessionId }),
+      }),
+    }),
   };
 }
 
 /**
- * Create an answer message for a question.
+ * Create an answer message for a question. `message` rides along with a "No"
+ * to a held permission prompt (#1126, see `AnswerMessage.message`).
  */
 export function createAnswer(
   sessionId: UUID,
   questionId: UUID,
   answer: string,
   claudeSessionId?: UUID,
+  message?: string,
 ): AnswerMessage {
   return {
     type: 'answer',
@@ -1438,11 +1680,13 @@ export function createAnswer(
     questionId,
     answer,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
+    ...(message !== undefined && { message }),
   };
 }
 
-/** Structured AskUserQuestion answer (#627): the daemon drives the TUI from the
- *  per-sub-question selections and verifies the review before submitting. */
+/** Structured AskUserQuestion answer (#627): the daemon answers the held hook
+ *  with the per-sub-question selections once every question is answered
+ *  (#1127). */
 export function createAuqAnswer(
   sessionId: UUID,
   questionId: UUID,
@@ -1461,8 +1705,9 @@ export function createAuqAnswer(
   };
 }
 
-/** Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI. The
- *  universal unstick when a prompt can't be auto-answered or the user changes mind. */
+/** Cancel the active prompt (#627): through its held hook (#1127), or `Esc`
+ *  where no hook stands behind it. The universal unstick when the user changes
+ *  their mind. */
 export function createCancelQuestion(
   sessionId: UUID,
   questionId: UUID,
@@ -1520,9 +1765,9 @@ export function createQuestionSnapshot(
 
 /**
  * Create a daemon status snapshot broadcast (#754). The status object is
- * copied shallowly (plus autoApprove one level deep) so a later in-place
- * mutation of the daemon's live status cannot retroactively change a message
- * already queued for serialization.
+ * copied shallowly (plus the deprecated `autoApprove`, when present, one level
+ * deep) so a later in-place mutation of the daemon's live status cannot
+ * retroactively change a message already queued for serialization.
  */
 export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatusMessage {
   return {
@@ -1530,7 +1775,10 @@ export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatu
     id: generateId(),
     timestamp: now(),
     sessionId,
-    status: { ...status, autoApprove: { ...status.autoApprove } },
+    status:
+      status.autoApprove === undefined
+        ? { ...status }
+        : { ...status, autoApprove: { ...status.autoApprove } },
   };
 }
 
@@ -1709,14 +1957,21 @@ export function createTranscriptLoadComplete(
 }
 
 /**
- * Create a request to spawn a new Claude Code session.
+ * Create a request to spawn a new session: Claude Code, or the `harness` named
+ * with its `args` (#1179).
  */
-export function createCreateSessionRequest(directory?: string): CreateSessionRequestMessage {
+export function createCreateSessionRequest(
+  directory?: string,
+  options: { harness?: HarnessId | undefined; args?: readonly string[] | undefined } = {},
+): CreateSessionRequestMessage {
+  const { harness, args } = options;
   return {
     type: 'create_session_request',
     id: generateId(),
     timestamp: now(),
     ...(directory !== undefined && { directory }),
+    ...(harness !== undefined && { harness }),
+    ...(args !== undefined && { args }),
   };
 }
 
@@ -1729,6 +1984,7 @@ export function createCreateSessionResponse(
   sessionId?: UUID,
   error?: string,
   port?: number,
+  notice?: string,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -1739,6 +1995,7 @@ export function createCreateSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(port !== undefined && { port }),
+    ...(notice !== undefined && { notice }),
   };
 }
 
@@ -1912,6 +2169,7 @@ export function createResumeSessionResponse(
   requestId: UUID,
   sessionId?: UUID,
   error?: string,
+  errorCode?: string,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -1921,6 +2179,7 @@ export function createResumeSessionResponse(
     requestId,
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
+    ...(errorCode !== undefined && { errorCode }),
   };
 }
 

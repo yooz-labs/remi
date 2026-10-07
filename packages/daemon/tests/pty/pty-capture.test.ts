@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { LOG_MAX_BYTES } from '../../src/cli/log-rotation.ts';
 import { ptyCapture } from '../../src/pty/pty-capture.ts';
 
 describe('ptyCapture (#627 diagnostic)', () => {
@@ -50,6 +51,15 @@ describe('ptyCapture (#627 diagnostic)', () => {
     expect(lines[0]).toMatch(/^IN \d+ test "\\u001b\[B"$/);
     expect(lines[1]).toMatch(/^IN \d+ test "\\r"$/);
     expect(lines[2]).toMatch(/^OUT \d+ test ".*option"$/);
+  });
+
+  test('the capture file is bounded: at 10 MB it is rotated before the next line (#729)', () => {
+    const file = join(dir, 'cap-bounded.log');
+    writeFileSync(file, Buffer.alloc(LOG_MAX_BYTES, 'x'));
+    process.env['REMI_PTY_CAPTURE'] = file;
+    ptyCapture.out(new TextEncoder().encode('after'));
+    expect(statSync(`${file}.1`).size).toBe(LOG_MAX_BYTES);
+    expect(readFileSync(file, 'utf8')).toMatch(/^OUT \d+ test "after"\n$/);
   });
 
   test('decodes Uint8Array output to text', () => {
