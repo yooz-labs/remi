@@ -469,6 +469,26 @@ describe('sendRaw render cases with a bound session', () => {
     expect(text).toContain(resumedId);
   });
 
+  test('resume_session_response from a hub says the session runs in its own daemon on a port (#1129)', () => {
+    const { adapter, connectionId, sendMessage } = withBoundSession();
+    const resumedId = generateId();
+    const msg: ResumeSessionResponseMessage = {
+      type: 'resume_session_response',
+      id: generateId(),
+      timestamp: now(),
+      success: true,
+      sessionId: resumedId,
+      port: 19931,
+      requestId: generateId(),
+    };
+    expect(adapter.sendRaw(connectionId, msg)).toBe(true);
+    expect(sendMessage.mock.calls.length).toBe(1);
+    const text = String(sendMessage.mock.calls[0]?.[1]);
+    expect(text).toContain(resumedId);
+    expect(text).toContain('19931');
+    expect(text).toContain('its own daemon');
+  });
+
   test('session_rotated sends a "Session restarted" line with the new claude id', () => {
     const { adapter, connectionId, sendMessage } = withBoundSession();
     const newClaudeId = generateId();

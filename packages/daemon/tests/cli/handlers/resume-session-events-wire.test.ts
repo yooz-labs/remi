@@ -79,7 +79,7 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
     capabilities?: readonly string[],
   ) {
     return createResumeSessionHandlers({
-      hubMode: false,
+      childSessions: null,
       harnessId,
       harnesses,
       ...(capabilities !== undefined && { capabilities }),
