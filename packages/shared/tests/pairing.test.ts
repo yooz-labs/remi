@@ -18,12 +18,15 @@ import {
 import { buildVectors } from './fixtures/pairing/generate.ts';
 
 const VECTORS_FILE = join(import.meta.dir, 'fixtures', 'pairing', 'vectors.json');
-const vectors = JSON.parse(readFileSync(VECTORS_FILE, 'utf-8')) as ReturnType<typeof buildVectors>;
+const vectors = JSON.parse(readFileSync(VECTORS_FILE, 'utf-8')) as Awaited<
+  ReturnType<typeof buildVectors>
+>;
+const built = await buildVectors();
 const at = { nowSeconds: vectors.now, protocolVersion: vectors.protocolVersion };
 
 describe('pairing link vectors (#1275)', () => {
   test('the checked-in vectors are what the generator makes (regenerate after a deliberate change)', () => {
-    expect(vectors).toEqual(JSON.parse(JSON.stringify(buildVectors())));
+    expect(vectors).toEqual(JSON.parse(JSON.stringify(built)));
   });
 
   test('there are vectors to read', () => {
@@ -31,13 +34,13 @@ describe('pairing link vectors (#1275)', () => {
     expect(vectors.invalid.length).toBeGreaterThanOrEqual(25);
   });
 
-  for (const vector of buildVectors().valid) {
+  for (const vector of built.valid) {
     test(`decodes: ${vector.name}`, () => {
       expect(decodePairingLink(vector.link, at)).toEqual({ ok: true, code: vector.code });
     });
   }
 
-  for (const vector of buildVectors().invalid) {
+  for (const vector of built.invalid) {
     test(`refuses with ${vector.error}: ${vector.name}`, () => {
       const result = decodePairingLink(vector.link, at);
       expect(result.ok).toBe(false);
@@ -45,11 +48,13 @@ describe('pairing link vectors (#1275)', () => {
     });
   }
 
-  test("the key decodes to 32 bytes, and its fingerprint is the machine's", async () => {
-    const code = vectors.valid[0]?.code as PairingCode;
-    const raw = fromBase64(code.key);
-    expect(raw.byteLength).toBe(32);
-    expect(await fingerprint(raw)).toMatch(/^[0-9a-f]{16}$/);
+  test("each valid vector's fingerprint is the SHA-256 prefix of its key, as the app shows it", async () => {
+    for (const vector of vectors.valid) {
+      const raw = fromBase64(vector.code.key);
+      expect(raw.byteLength).toBe(32);
+      expect(vector.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+      expect(await fingerprint(raw)).toBe(vector.fingerprint);
+    }
   });
 });
 

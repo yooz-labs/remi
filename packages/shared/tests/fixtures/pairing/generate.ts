@@ -10,6 +10,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fingerprint, fromBase64 } from '../../../src/crypto.ts';
 import { type PairingCode, encodePairingLink } from '../../../src/pairing.ts';
 
 /** The clock every vector is read at. */
@@ -36,7 +37,7 @@ const raw = (json: string): string =>
 const withFields = (changes: Record<string, unknown>): string =>
   JSON.stringify({ ...BASE, ...changes });
 
-export function buildVectors() {
+export async function buildVectors() {
   const valid = [
     { name: 'IPv4 address', code: BASE },
     { name: 'IPv6 address', code: { ...BASE, host: 'fd7a:115c:a1e0::1' } },
@@ -46,7 +47,19 @@ export function buildVectors() {
       name: 'expired, but within the two-minute clock allowance',
       code: { ...BASE, exp: VECTOR_NOW - 60 },
     },
+    { name: 'name of exactly 64 code points', code: { ...BASE, name: 'm'.repeat(64) } },
+    {
+      name: 'name of 64 astral characters (128 UTF-16 units)',
+      code: { ...BASE, name: '\u{1F600}'.repeat(64) },
+    },
+    { name: 'expiry at the furthest a code may be', code: { ...BASE, exp: VECTOR_NOW + 1020 } },
+    { name: 'IPv6 with an embedded zero run at the end', code: { ...BASE, host: '2001:db8::' } },
+    { name: 'IPv6 fully written out', code: { ...BASE, host: '2001:db8:0:0:0:0:0:1' } },
   ].map((v) => ({ ...v, link: encodePairingLink(v.code) }));
+  // The machine's fingerprint for each valid link: what the app shows next to it.
+  const validWithFingerprints = await Promise.all(
+    valid.map(async (v) => ({ ...v, fingerprint: await fingerprint(fromBase64(v.code.key)) })),
+  );
 
   const { nonce: _n, ...noNonce } = BASE;
   const { name: baseName, v: baseVersion, ...rest } = BASE;
@@ -129,11 +142,119 @@ export function buildVectors() {
     },
     { name: 'protocol version zero', link: raw(withFields({ proto: 0 })), error: 'MALFORMED' },
     { name: 'too long', link: `remi://pair#${'A'.repeat(1100)}`, error: 'MALFORMED' },
+    // Added after the #1281 review.
+    {
+      name: 'base64url with non-zero trailing bits',
+      link: `${encodePairingLink(BASE).slice(0, -1)}${String.fromCharCode(encodePairingLink(BASE).charCodeAt(encodePairingLink(BASE).length - 1) + 1)}`,
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'key in non-canonical base64 (non-zero trailing bits)',
+      link: raw(withFields({ key: `${KEY.slice(0, 42)}B=` })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'a field written with a \\u escape',
+      link: raw(withFields({}).replace('fixture-mac', 'fixture\\u002dmac')),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'a field given twice',
+      link: raw(withFields({}).replace('"v":1,', '"v":1,"v":1,')),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'a number written as 1.0',
+      link: raw(withFields({}).replace('"v":1,', '"v":1.0,')),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'a number written with an exponent',
+      link: raw(withFields({}).replace('"port":18765', '"port":1.8765e4')),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'name of 65 code points',
+      link: raw(withFields({ name: 'm'.repeat(65) })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a zero-width space',
+      link: raw(withFields({ name: 'mac\u200Bbook' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a byte order mark',
+      link: raw(withFields({ name: '\uFEFFmac' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a line separator',
+      link: raw(withFields({ name: 'mac\u2028book' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a soft hyphen',
+      link: raw(withFields({ name: 'mac\u00ADbook' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a tag character',
+      link: raw(withFields({ name: 'mac\u{E0041}' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a quotation mark',
+      link: raw(withFields({ name: 'the "mac"' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a backslash',
+      link: raw(withFields({ name: 'mac\\book' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'name with a lone surrogate',
+      link: raw(withFields({ name: 'mac\ud800' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'expired at exactly the clock allowance',
+      link: raw(withFields({ exp: VECTOR_NOW - 120 })),
+      error: 'EXPIRED',
+    },
+    {
+      name: 'expiry one second past the furthest',
+      link: raw(withFields({ exp: VECTOR_NOW + 1021 })),
+      error: 'MALFORMED',
+    },
+    { name: 'IPv6 of three colons', link: raw(withFields({ host: ':::' })), error: 'MALFORMED' },
+    { name: 'IPv6 of two groups', link: raw(withFields({ host: 'a:b' })), error: 'MALFORMED' },
+    {
+      name: 'IPv6 ending in a single colon',
+      link: raw(withFields({ host: 'abcd:' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'IPv6 of eleven groups',
+      link: raw(withFields({ host: '1:2:3:4:5:6:7:8:9:a:b' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'IPv6 with a group of five digits',
+      link: raw(withFields({ host: '2001:db8::12345' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'a name whose last label is a number',
+      link: raw(withFields({ host: '0x7f.1' })),
+      error: 'MALFORMED',
+    },
   ];
-  return { now: VECTOR_NOW, protocolVersion: 1, valid, invalid };
+  return { now: VECTOR_NOW, protocolVersion: 1, valid: validWithFingerprints, invalid };
 }
 
 if (import.meta.main) {
   const dir = dirname(fileURLToPath(import.meta.url));
-  writeFileSync(join(dir, 'vectors.json'), `${JSON.stringify(buildVectors(), null, 2)}\n`);
+  writeFileSync(join(dir, 'vectors.json'), `${JSON.stringify(await buildVectors(), null, 2)}\n`);
 }
