@@ -220,7 +220,12 @@ describe('create requests with a workspace (#1236)', () => {
     expect(response()).toMatchObject({ success: false });
     expect(response().error).not.toContain(root);
     expect(fs.existsSync(worktreeDir('b'))).toBe(true);
-    expect(logged.some((line) => line.includes(worktreeDir('b')))).toBe(true);
+    // The failure line itself names the worktree it leaves (the spawn line names it too).
+    expect(
+      logged.some(
+        (line) => line.includes('Failed to spawn') && line.includes(`stays at ${worktreeDir('b')}`),
+      ),
+    ).toBe(true);
   });
 
   test('a request with no workspace is unchanged: no workspace in the response', async () => {
