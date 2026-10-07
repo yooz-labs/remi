@@ -15,5 +15,5 @@
   "attachState": "attached",
   "daemonVersion": "0.7.4-dev.1",
   "harnesses": ["claude", "codex"],
-  "capabilities": []
+  "capabilities": ["workspaces"]
 }

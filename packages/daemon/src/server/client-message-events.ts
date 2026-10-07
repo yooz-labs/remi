@@ -51,6 +51,8 @@ import type {
 export interface CreateSessionExtra {
   readonly harness?: unknown;
   readonly args?: unknown;
+  /** The workspace (#1236), as the peer sent it; the create handler parses it. */
+  readonly workspace?: unknown;
 }
 
 /**
@@ -59,11 +61,16 @@ export interface CreateSessionExtra {
  * (`connection.ts`, `relay-adapter.ts`), so they cannot drift on which fields they forward.
  */
 export function createSessionExtra(
-  message: Pick<CreateSessionRequestMessage, 'harness' | 'args'>,
+  message: Pick<CreateSessionRequestMessage, 'harness' | 'args' | 'workspace'>,
 ): CreateSessionExtra | undefined {
-  return message.harness === undefined && message.args === undefined
-    ? undefined
-    : { harness: message.harness, args: message.args };
+  if (message.harness === undefined && message.args === undefined) {
+    return message.workspace === undefined ? undefined : { workspace: message.workspace };
+  }
+  return {
+    harness: message.harness,
+    args: message.args,
+    ...(message.workspace !== undefined && { workspace: message.workspace }),
+  };
 }
 
 /**

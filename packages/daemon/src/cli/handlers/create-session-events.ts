@@ -16,15 +16,20 @@ import {
   escapeUnsafeText,
   isHarnessId,
 } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { SessionWorkspace, UUID } from '@remi/shared';
 
 import type { HarnessRegistry, StartedSession } from '../../harness/registry.ts';
 import type { CreateSessionExtra } from '../../server/client-message-events.ts';
 import type { SessionRegistryFile } from '../../session/index.ts';
 import { findAvailableTcpPort as defaultFindAvailableTcpPort } from '../../session/port-utils.ts';
+import {
+  type ParsedWorkspace,
+  parseWorkspaceRequest,
+  prepareWorkspace,
+} from '../../workspace/worktree.ts';
 import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
 import { log, logError } from '../logger.ts';
-import { resolveRequestedSessionDirectory } from '../path-resolver.ts';
+import { normalizeProjectPath, resolveRequestedSessionDirectory } from '../path-resolver.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SpawnResult {
@@ -37,6 +42,28 @@ export interface SpawnResult {
 const START_FAILED_TEXT =
   "The session could not be started on the host; the host's remi log has the reason.";
 const INVALID_DIRECTORY_TEXT = 'Invalid directory; the request was not started.';
+const DIRECTORY_MISMATCH_TEXT =
+  'The directory and the workspace repository differ; the request was not started.';
+
+/**
+ * The workspace a create request names (#1236, ADR 0036), checked as text before a port is probed:
+ * none, a refusal, or the parsed workspace. A request with a workspace may leave `directory` empty
+ * or set it to the same place; one that names another directory is refused, so it is never
+ * ambiguous where the session runs.
+ */
+function checkWorkspaceRequest(
+  directory: string | undefined,
+  extra: CreateSessionExtra | undefined,
+): { ok: true; workspace?: ParsedWorkspace } | { ok: false; error: string } {
+  if (extra?.workspace === undefined) return { ok: true };
+  const parsed = parseWorkspaceRequest(extra.workspace);
+  if (!parsed.ok) return parsed;
+  const named = directory?.trim() ?? '';
+  if (named !== '' && normalizeProjectPath(named) !== parsed.workspace.repository) {
+    return { ok: false, error: DIRECTORY_MISMATCH_TEXT };
+  }
+  return { ok: true, workspace: parsed.workspace };
+}
 
 /**
  * Why a requested directory is refused, or null (#1179 review, G7). The directory reaches the
@@ -176,6 +203,8 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
     ): Promise<void> => {
       log(`Create session request from ${connectionId}, spawning new daemon`);
 
+      // A worktree made for this request, so a failed spawn can say where it was left.
+      let made: SessionWorkspace | undefined;
       try {
         // The trust boundary (#1179): refuse before a port is chosen or anything is spawned.
         // The client gets a short text; the host's log gets the reason, escaped (the arguments in
@@ -186,6 +215,15 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           send(
             connectionId,
             createCreateSessionResponse(false, requestId, undefined, badDirectory),
+          );
+          return;
+        }
+        const workspaceRequest = checkWorkspaceRequest(directory, extra);
+        if (!workspaceRequest.ok) {
+          log('Create session request refused: the workspace is not acceptable; nothing spawned');
+          send(
+            connectionId,
+            createCreateSessionResponse(false, requestId, undefined, workspaceRequest.error),
           );
           return;
         }
@@ -222,15 +260,32 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           return;
         }
 
-        // #1025: no/empty/whitespace directory means "home", never the
-        // hub's own cwd (an accident of where `remi serve` was started) —
-        // see resolveRequestedSessionDirectory for the full rationale.
-        const resolvedDirectory = resolveRequestedSessionDirectory(directory);
-        log(
-          `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
-        );
         spawningPorts.add(freePort);
         try {
+          // The worktree is made only once a port is held, so a request that cannot start makes
+          // none (#1236). The port stays reserved while git runs.
+          let workspace: SessionWorkspace | undefined;
+          if (workspaceRequest.workspace !== undefined) {
+            const prepared = await prepareWorkspace(workspaceRequest.workspace);
+            if (!prepared.ok) {
+              log(`Create session request refused: ${prepared.detail}; nothing spawned`);
+              send(
+                connectionId,
+                createCreateSessionResponse(false, requestId, undefined, prepared.error),
+              );
+              return;
+            }
+            workspace = prepared.workspace;
+            if (workspace.worktree !== undefined) made = workspace;
+          }
+          // #1025: no/empty/whitespace directory means "home", never the
+          // hub's own cwd (an accident of where `remi serve` was started) —
+          // see resolveRequestedSessionDirectory for the full rationale.
+          const resolvedDirectory =
+            workspace?.directory ?? resolveRequestedSessionDirectory(directory);
+          log(
+            `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
+          );
           const result = await spawnDaemon(freePort, resolvedDirectory, [
             ...inheritedArgs(),
             ...request.spawnArgs,
@@ -244,6 +299,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
               undefined,
               result.port,
               request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
+              workspace,
             ),
           );
           log(
@@ -255,7 +311,13 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       } catch (err) {
         // The failure is the host's business: it can hold a path, a pid or a log file name. The
         // requester is told only that the session did not start (G8).
-        logError(`Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}`);
+        logError(
+          `Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}${
+            made === undefined
+              ? ''
+              : `; the worktree it was made for stays at ${escapeUnsafeText(made.directory)} (nothing deletes a worktree, #1236)`
+          }`,
+        );
         send(
           connectionId,
           createCreateSessionResponse(false, requestId, undefined, START_FAILED_TEXT),

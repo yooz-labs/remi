@@ -20,10 +20,13 @@ export const PROTOCOL_VERSION = 1;
  * daemon that lists it does, phrased to follow "cannot" in a message to the
  * person. A capability names an additive feature a client cannot see in the
  * messages themselves (a request field an older daemon would ignore); it is
- * added by the change that ships the feature. Empty since #1237: everything a
- * daemon did before is the baseline of version 1 (ADR 0035).
+ * added by the change that ships the feature. Nothing a daemon did before #1237
+ * is here: that is the baseline of version 1 (ADR 0035).
  */
-export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {};
+export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
+  /** `create_session_request.workspace` (#1236, ADR 0036): a session in a new worktree. */
+  workspaces: 'start a session in a new git worktree',
+};
 
 /** Whether a machine supports what a client needs, from its `hello_ack`. */
 export type HubSupport =

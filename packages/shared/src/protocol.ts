@@ -931,6 +931,33 @@ export interface TerminalResizeMessage {
   readonly rows: number;
 }
 
+/**
+ * Where a new session should run (#1236, ADR 0036): a repository on the hub's machine and,
+ * optionally, a new worktree the hub creates on a new branch.
+ */
+export interface WorkspaceRequest {
+  /**
+   * A directory in a git repository on the hub's machine: its top level, a directory inside it, or
+   * one of its linked worktrees. Absolute, or under `~` (the hub's home).
+   */
+  readonly repository: string;
+  /**
+   * A new worktree on the new branch `branch`, made from `base` (a branch, tag or commit; default:
+   * the main worktree's `HEAD`). Absent: the session starts in the repository's main worktree.
+   */
+  readonly worktree?: { readonly branch: string; readonly base?: string | undefined } | undefined;
+}
+
+/** The workspace a session was started in (#1236, ADR 0036), as the hub resolved it. */
+export interface SessionWorkspace {
+  /** The repository's main worktree, whichever directory the request named. */
+  readonly repository: string;
+  /** Where the session runs: the main worktree, or the new worktree. */
+  readonly directory: string;
+  /** For a new worktree: its branch, and the commit it was made from. */
+  readonly worktree?: { readonly branch: string; readonly base: string } | undefined;
+}
+
 /** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
   readonly type: 'create_session_request';
@@ -951,6 +978,13 @@ export interface CreateSessionRequestMessage {
    * command line, so they can never be read as remi flags.
    */
   readonly args?: readonly string[] | undefined;
+  /**
+   * Where to start the session (#1236): a repository, and optionally a new worktree the hub makes.
+   * A daemon older than this field ignores it and starts the session in `directory`, so a client
+   * checks for the `workspaces` capability first (`hubSupport`, ADR 0035) and sets `directory` to
+   * `workspace.repository`; the daemon refuses a request whose `directory` names another place.
+   */
+  readonly workspace?: WorkspaceRequest | undefined;
 }
 
 /** Response after creating a new session */
@@ -975,6 +1009,8 @@ export interface CreateSessionResponseMessage {
    * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
    */
   readonly notice?: string | undefined;
+  /** The workspace the session was started in, when the request named one (#1236). */
+  readonly workspace?: SessionWorkspace | undefined;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -1989,9 +2025,13 @@ export function createTranscriptLoadComplete(
  */
 export function createCreateSessionRequest(
   directory?: string,
-  options: { harness?: HarnessId | undefined; args?: readonly string[] | undefined } = {},
+  options: {
+    harness?: HarnessId | undefined;
+    args?: readonly string[] | undefined;
+    workspace?: WorkspaceRequest | undefined;
+  } = {},
 ): CreateSessionRequestMessage {
-  const { harness, args } = options;
+  const { harness, args, workspace } = options;
   return {
     type: 'create_session_request',
     id: generateId(),
@@ -1999,6 +2039,7 @@ export function createCreateSessionRequest(
     ...(directory !== undefined && { directory }),
     ...(harness !== undefined && { harness }),
     ...(args !== undefined && { args }),
+    ...(workspace !== undefined && { workspace }),
   };
 }
 
@@ -2012,6 +2053,7 @@ export function createCreateSessionResponse(
   error?: string,
   port?: number,
   notice?: string,
+  workspace?: SessionWorkspace,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -2023,6 +2065,7 @@ export function createCreateSessionResponse(
     ...(error !== undefined && { error }),
     ...(port !== undefined && { port }),
     ...(notice !== undefined && { notice }),
+    ...(workspace !== undefined && { workspace }),
   };
 }
 
