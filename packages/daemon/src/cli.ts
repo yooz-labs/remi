@@ -1140,7 +1140,7 @@ let closingResolved: Set<UUID> | null = null;
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
 const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 // The workspace each listed session runs in (#1236 phase B), read from git without making the list wait.
-const workspaceCache = new WorkspaceCache();
+const workspaceCache = new WorkspaceCache({ log: (line) => log(`[Workspace] ${line}`) });
 
 const sessionRegistry = new SessionRegistry(
   {

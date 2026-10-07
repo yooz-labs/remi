@@ -29,7 +29,7 @@ import * as path from 'node:path';
 import type { SessionWorkspace } from '@remi/shared';
 import { errorToString, escapeUnsafeText } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
-import { type GitResult, detailOf, findGit, hasControl, runGit } from './git.ts';
+import { type GitResult, detailOf, findGit, hasControl, resolveRepository, runGit } from './git.ts';
 
 /** A workspace request whose values are plain text, with the repository resolved. */
 export interface ParsedWorkspace {
@@ -182,29 +182,23 @@ export async function prepareWorkspace(
   const git = findGit();
   if (git === null) return { ok: false, error: TEXT.noGit, detail: 'no git on the PATH' };
 
-  // The first entry of the worktree list is the main worktree, whichever directory was named.
-  const list = await runGit(
-    git,
-    parsed.repository,
-    ['worktree', 'list', '--porcelain', '-z'],
-    deadlineAt,
-  );
-  if (list.code !== 0) {
+  // The repository's main worktree, whichever directory was named (#1276 review: a submodule or a
+  // separate git directory is its own repository; only a linked worktree reads the worktree list).
+  const lookup = await resolveRepository(git, parsed.repository, deadlineAt);
+  if (lookup.kind === 'unknown') {
     return {
       ok: false,
-      error: refusalForWorktreeList(list),
-      detail: `${shown}: ${detailOf(list)}`,
+      error: refusalForWorktreeList(lookup.result),
+      detail: `${shown}: ${detailOf(lookup.result)}`,
     };
   }
-  const first = list.stdout.split('\0\0')[0]?.split('\0') ?? [];
-  const head = first[0] ?? '';
-  if (!head.startsWith('worktree ')) {
-    return { ok: false, error: TEXT.notGit, detail: `${shown}: no worktree in git's list` };
+  if (lookup.kind === 'none') {
+    return { ok: false, error: TEXT.notGit, detail: `${shown} is in no worktree of a repository` };
   }
-  if (first.includes('bare')) {
-    return { ok: false, error: TEXT.bare, detail: `${shown} is a bare repository` };
+  if (lookup.kind === 'bare' || lookup.mainIsBare) {
+    return { ok: false, error: TEXT.bare, detail: `${shown} belongs to a bare repository` };
   }
-  const main = head.slice('worktree '.length);
+  const main = lookup.repository;
   // The path becomes the child's `--dir` and reaches clients: fail closed, as for a requested one.
   if (hasControl(main)) {
     return {

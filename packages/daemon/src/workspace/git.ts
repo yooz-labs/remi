@@ -108,3 +108,85 @@ export function detailOf(result: GitResult): string {
 export function findGit(): string | null {
   return Bun.which('git', { PATH: process.env['PATH'] ?? '' });
 }
+
+/** git's output as lines: split on newlines, the final empty one dropped, nothing trimmed. */
+export function outputLines(stdout: string): string[] {
+  const lines = stdout.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+/**
+ * Where a directory sits in git (#1236, #1276 review): in a worktree (`top` is that worktree's top
+ * level, `repository` the repository's main worktree), in a bare repository, in no repository (or
+ * inside a `.git` directory), or unknown because git could not answer (a timeout, git older than
+ * 2.36, a repository git does not trust).
+ *
+ * A directory whose git directory is the common directory is its own repository: a main worktree, a
+ * submodule (whose git directory lives under the superproject's `.git/modules`) or a checkout with a
+ * separate git directory. Only a linked worktree reads the worktree list, whose first entry is the
+ * main worktree, or the bare repository it belongs to (`mainIsBare`).
+ */
+export type RepositoryLookup =
+  | {
+      readonly kind: 'repository';
+      readonly top: string;
+      readonly repository: string;
+      readonly mainIsBare: boolean;
+    }
+  | { readonly kind: 'bare'; readonly path: string }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unknown'; readonly result: GitResult };
+
+/** A failed lookup: no repository when git says so, otherwise unknown. */
+function failedLookup(result: GitResult): RepositoryLookup {
+  if (!result.timedOut && result.stderr.includes('not a git repository')) return { kind: 'none' };
+  return { kind: 'unknown', result };
+}
+
+export async function resolveRepository(
+  git: string,
+  dir: string,
+  deadlineAt: number,
+): Promise<RepositoryLookup> {
+  const info = await runGit(
+    git,
+    dir,
+    [
+      'rev-parse',
+      '--path-format=absolute',
+      '--is-bare-repository',
+      '--git-dir',
+      '--git-common-dir',
+    ],
+    deadlineAt,
+  );
+  if (info.code !== 0) return failedLookup(info);
+  const [bare, gitDir, commonDir] = outputLines(info.stdout);
+  if (gitDir === undefined || commonDir === undefined) return { kind: 'unknown', result: info };
+  if (bare === 'true') return { kind: 'bare', path: gitDir };
+
+  const top = await runGit(git, dir, ['rev-parse', '--show-toplevel'], deadlineAt);
+  if (top.code !== 0) {
+    // Inside a `.git` directory: a repository, but no worktree to be in.
+    if (!top.timedOut && top.stderr.includes('must be run in a work tree')) return { kind: 'none' };
+    return failedLookup(top);
+  }
+  const topLevel = outputLines(top.stdout)[0];
+  if (topLevel === undefined) return { kind: 'unknown', result: top };
+  if (gitDir === commonDir) {
+    return { kind: 'repository', top: topLevel, repository: topLevel, mainIsBare: false };
+  }
+
+  const list = await runGit(git, dir, ['worktree', 'list', '--porcelain', '-z'], deadlineAt);
+  if (list.code !== 0) return { kind: 'unknown', result: list };
+  const first = list.stdout.split('\0\0')[0]?.split('\0') ?? [];
+  const head = first[0] ?? '';
+  if (!head.startsWith('worktree ')) return { kind: 'unknown', result: list };
+  return {
+    kind: 'repository',
+    top: topLevel,
+    repository: head.slice('worktree '.length),
+    mainIsBare: first.includes('bare'),
+  };
+}
