@@ -70,13 +70,22 @@ async function hub() {
     '--no-telegram',
   ]);
   const stdout = new Response(proc.stdout).text();
-  // Read stderr as it arrives: the hub logs its Worker control admission there.
-  const log = { tail: '', admitted: false };
+  // Read stderr as it arrives: the hub logs its Worker control admission there, and one fixed-form
+  // line per pipe close (`Relay pipe closed by the hub (1000)`), its own record of the close.
+  const log = { tail: '', admitted: false, pipeCloses: [] as string[] };
   void (async () => {
     const decoder = new TextDecoder();
+    let partial = '';
     for await (const chunk of proc.stderr) {
-      log.tail = (log.tail + decoder.decode(chunk, { stream: true })).slice(-8192);
-      if (log.tail.includes('Relay control admitted')) log.admitted = true;
+      const text = decoder.decode(chunk, { stream: true });
+      log.tail = (log.tail + text).slice(-8192);
+      const lines = (partial + text).split('\n');
+      partial = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.includes('Relay control admitted')) log.admitted = true;
+        const close = /Relay pipe closed by (the hub|the far side) \(\d+(, unclean)?\)/.exec(line);
+        if (close) log.pipeCloses.push(close[0]);
+      }
     }
   })();
   const deadline = Date.now() + 10000;
@@ -95,6 +104,7 @@ async function hub() {
     proc,
     capability: readFileSync(join(dir, 'state/capability.key'), 'utf8').trim(),
     controlAdmitted: () => log.admitted,
+    pipeCloses: () => log.pipeCloses,
   };
 }
 /** Wait for a condition, failing with what was awaited when the deadline passes. */
@@ -268,6 +278,8 @@ async function paired() {
 }
 /** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
 const RESETTING_RUNTIME = '1.3.11';
+/** How long the hub waits after its BYE for the far side to close the pipe (`hub-relay.ts`). */
+const ORDERLY_CLOSE_GRACE_MS = 2000;
 /**
  * How the Worker saw the hub's pipe close: the first close the room recorded, as
  * `close <code> "<reason>"` (the hub's pipe closes before the client, whose close it causes).
@@ -281,15 +293,41 @@ async function pipeClose(running: Awaited<ReturnType<typeof hub>>, rid: Uint8Arr
     await Bun.sleep(10);
   }
 }
+/** The hub's own record of its one pipe's close (`Relay pipe closed by ...`), once logged. */
+async function hubPipeClose(running: Awaited<ReturnType<typeof hub>>) {
+  await until(() => running.pipeCloses().length > 0, "the hub's pipe close log", 5000);
+  expect(running.pipeCloses()).toHaveLength(1);
+  return running.pipeCloses()[0];
+}
 /**
- * #1225: the hub's runtime reset the pipe instead of completing the closing handshake, so the
- * Worker recorded an abnormal close (1006) and closed the client with its own failure close. Only
- * the resetting runtime may take this path; any other runtime must close the pipe as asked.
+ * A pipe the hub closed itself with `code` and `reason`: the hub's log says so, the Worker records
+ * that close, and the client gets it. One exception (#1225): on Bun 1.3.11 the hub's close can
+ * reset the connection, so the Worker records 1006 and closes the client with its own failure
+ * close. That is accepted only with the hub's record that it sent `code` and saw a clean close, so
+ * a hub that resets the pipe itself or sends another code fails here on every runtime.
  */
-function resetByRuntime(pipe: string): boolean {
-  if (!pipe.startsWith('close 1006 ')) return false;
-  expect(Bun.version).toBe(RESETTING_RUNTIME);
-  return true;
+async function expectHubClose(
+  running: Awaited<ReturnType<typeof hub>>,
+  rid: Uint8Array,
+  closed: { code: number; reason: string },
+  code: number,
+  reason: string,
+) {
+  expect(await hubPipeClose(running)).toBe(`Relay pipe closed by the hub (${code})`);
+  const pipe = await pipeClose(running, rid);
+  if (!pipe.startsWith('close 1006 ')) {
+    expect(pipe).toBe(`close ${code} ${JSON.stringify(reason)}`);
+    expect(closed).toEqual({ code, reason });
+    return;
+  }
+  if (Bun.version !== RESETTING_RUNTIME)
+    throw new Error(
+      `the Worker recorded the hub's close as ${pipe}; only Bun ${RESETTING_RUNTIME} resets it, this is Bun ${Bun.version}`,
+    );
+  expect(closed).toEqual({
+    code: relayV2.FAILURE_CLOSE.code,
+    reason: relayV2.FAILURE_CLOSE.reason,
+  });
 }
 test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
   const { socket, channel, drain, running, rid } = await paired();
@@ -304,37 +342,46 @@ test('real source hub grants only after exact local confirmation and persists be
   if (timer) clearTimeout(timer);
   expect(closed).not.toBeNull();
   if (!closed) throw new Error('MISSING_READY_TEXT_REFUSAL');
-  expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
-  const pipe = await pipeClose(running, rid);
-  if (resetByRuntime(pipe)) {
-    // The Worker's own failure close, with its reason.
-    expect(closed.reason).toBe(relayV2.FAILURE_CLOSE.reason);
-  } else {
-    // The hub's failure close, passed on. Bun 1.3.11 drops longer outbound close reasons
-    // (existing Worker E2E probe), so from that hub it arrives without one.
-    const reason = Bun.version === RESETTING_RUNTIME ? '' : relayV2.FAILURE_CLOSE.reason;
-    expect(pipe).toBe(`close ${relayV2.FAILURE_CLOSE.code} ${JSON.stringify(reason)}`);
-    expect(closed.reason).toBe(reason);
-  }
+  // A failure close is immediate (there is no BYE to protect). Bun 1.3.11 drops longer outbound
+  // close reasons (existing Worker E2E probe), so from that hub it arrives without one.
+  const reason = Bun.version === RESETTING_RUNTIME ? '' : relayV2.FAILURE_CLOSE.reason;
+  await expectHubClose(running, rid, closed, relayV2.FAILURE_CLOSE.code, reason);
   await drain();
   expect(await channel.transportClosed()).toBe('unclean');
 }, 20000);
 
-test('authenticated peer BYE receives authenticated host BYE and orderly close', async () => {
+test('authenticated peer BYE receives authenticated host BYE, and the hub leaves the close to the peer', async () => {
+  const { channel, socket, drain, running } = await paired();
+  await channel.bye();
+  await until(() => channel.peerEnded, "the hub's authenticated BYE");
+  // The hub does not close the pipe at once (#1225): on Bun 1.3.11 a close right after the BYE
+  // could reset the connection and lose the BYE with it. A negative check, so a short settle.
+  await Bun.sleep(300);
+  expect(socket.isClosed).toBe(false);
+  // The client closes once it has the peer's BYE, as the web client does.
+  socket.close(1000);
+  await socket.closed;
+  await drain();
+  expect(await channel.transportClosed()).toBe('clean');
+  // The hub saw its pipe closed from the far side, never closed it itself.
+  expect(await hubPipeClose(running)).toMatch(
+    /^Relay pipe closed by the far side \(\d+(, unclean)?\)$/,
+  );
+}, 20000);
+
+test('after the BYE exchange the hub closes the pipe itself, orderly, when the peer does not', async () => {
   const { channel, socket, drain, running, rid } = await paired();
   await channel.bye();
+  await until(() => channel.peerEnded, "the hub's authenticated BYE");
+  const sawBye = Date.now();
   const closed = await socket.closed;
+  // The grace counts from the hub's BYE, a little before the client saw it.
+  const waited = Date.now() - sawBye;
+  expect(waited).toBeGreaterThan(ORDERLY_CLOSE_GRACE_MS / 2);
+  expect(waited).toBeLessThan(ORDERLY_CLOSE_GRACE_MS + 5000);
   await drain();
-  // What the protocol guarantees: the hub's authenticated BYE arrived before the close.
   expect(await channel.transportClosed()).toBe('clean');
-  const pipe = await pipeClose(running, rid);
-  if (resetByRuntime(pipe)) {
-    // The orderly close was lost with the reset; the Worker closed the client with its own.
-    expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
-  } else {
-    expect(pipe).toBe('close 1000 ""');
-    expect(closed.code).toBe(1000);
-  }
+  await expectHubClose(running, rid, closed, 1000, '');
 }, 20000);
 async function nextType(
   inbox: Mailbox<ReturnType<typeof deserialize>>,
