@@ -129,8 +129,9 @@ describe('App.tsx follows a resumed child session (#1129)', () => {
   });
 
   test("the child's hello_ack opens the session through followLanding", () => {
-    const block = caseBlock('hello_ack');
-    expect(block).toContain('followLanding(pendingFollowRef.current, sessionId');
+    // Formatting-proof: the call may be split over lines.
+    const block = caseBlock('hello_ack').replace(/\s+/g, ' ');
+    expect(block).toContain('followLanding( pendingFollowRef.current, sessionId,');
     expect(block).toContain('pendingFollowRef.current = null');
   });
 });

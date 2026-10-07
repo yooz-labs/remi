@@ -496,8 +496,14 @@ export class TelegramAdapter implements ConnectionAdapter {
         const resume = message as ResumeSessionResponseMessage;
         const resumeSession = this.getSession(connectionId);
         if (resumeSession && this.bot) {
+          // A hub starts a child session daemon for the resume (#1129): the session is in another
+          // process, which this chat is not attached to.
           const text = resume.success
-            ? `Resumed session ${resume.sessionId ?? '(unknown id)'}.`
+            ? `Resumed session ${resume.sessionId ?? '(unknown id)'}${
+                resume.port === undefined
+                  ? '.'
+                  : ` on port ${resume.port}. It runs in its own daemon, which this chat is not attached to.`
+              }`
             : `Resume failed: ${resume.error ?? 'unknown error'}`;
           this.bot.api
             .sendMessage(resumeSession.chatId, text, {

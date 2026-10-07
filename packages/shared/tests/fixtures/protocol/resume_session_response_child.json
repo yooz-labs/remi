@@ -4,5 +4,6 @@
   "timestamp": "2026-10-07T23:17:36.588Z",
   "success": true,
   "requestId": "fixture-request-id",
-  "sessionId": "fixture-session-id"
+  "sessionId": "fixture-session-id",
+  "port": 19924
 }

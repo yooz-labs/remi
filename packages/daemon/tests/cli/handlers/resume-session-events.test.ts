@@ -325,7 +325,7 @@ describe('createResumeSessionHandlers', () => {
   describe('hub mode (#1129)', () => {
     const CHILD = '77777777-7777-4777-8777-777777777777' as UUID;
     let projectDir: string;
-    let asked: Array<{ directory: string; extra: unknown }>;
+    let asked: Array<{ directory: string | undefined; extra: unknown }>;
     let outcome: StartSessionOutcome | Error;
     let logged: string[];
 
@@ -536,12 +536,12 @@ describe('createResumeSessionHandlers', () => {
     });
 
     test('the requested id reaches the log written out, never as raw control characters', async () => {
-      await hubHandlers().onResumeSessionRequest(CID, 'x\u001b[2Jy‮z', REQ);
+      await hubHandlers().onResumeSessionRequest(CID, 'x\u001b[2Jy\u202Ez', REQ);
 
       const line = logged.find((l) => l.includes('Resume session request')) ?? '';
       expect(line).not.toContain('\u001b');
-      expect(line).not.toContain('‮');
-      expect(line).toContain('\\u001b');
+      expect(line).not.toContain('\u202E');
+      expect(line).toContain('\\u001B');
     });
   });
 

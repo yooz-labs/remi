@@ -32,6 +32,7 @@ import { setSoundEnabled } from '@/lib/notifications';
 import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
 import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
+import { type PendingFollow, followLanding, resumeOutcome, startFollow } from '@/lib/resume-follow';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
   RESOLVED_TRACE_LINGER_MS,
@@ -273,6 +274,9 @@ function App() {
 
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
+  /** A resume through a hub started a child daemon on another port (#1129): the session to open
+   *  when that connection says hello, if the person has not moved on. */
+  const pendingFollowRef = useRef<PendingFollow | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
@@ -637,6 +641,18 @@ function App() {
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
           }
+        }
+        // The child daemon a resume through a hub started has said hello (#1129): open its
+        // session, unless the person went elsewhere since they asked (#688).
+        const landing = followLanding(
+          pendingFollowRef.current,
+          sessionId,
+          activeSessionIdRef.current,
+          Date.now(),
+        );
+        if (landing !== null) {
+          pendingFollowRef.current = null;
+          setActiveSessionId(landing as UUID);
         }
         break;
       }
@@ -1259,17 +1275,35 @@ function App() {
       case 'resume_session_response': {
         const targetSessionId = resumingSessionRef.current;
         setResumingSession(null);
-        if (message.success && message.sessionId) {
-          setActiveSessionId(message.sessionId);
+        const outcome = resumeOutcome(message);
+        if (outcome.kind === 'open') {
+          setActiveSessionId(outcome.sessionId as UUID);
+        } else if (outcome.kind === 'follow') {
+          // A hub started a child daemon on another port (#1129). The session is not in our list
+          // and no connection owns it yet, so opening its id now would point the chat at nothing:
+          // refresh the list (its `daemonPorts` make us connect to the child, as for a created
+          // session) and open the session when that connection says hello.
+          pendingFollowRef.current = startFollow(
+            outcome.sessionId,
+            activeSessionIdRef.current,
+            Date.now(),
+          );
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
+          }
         } else {
-          console.error(`Failed to resume session: ${message.error}`);
+          console.error(`Failed to resume session: ${outcome.error}`);
           // Use the target session ID so the error appears in the right session's chat
           const errorSessionId = (targetSessionId ?? activeSessionIdRef.current ?? '') as UUID;
           const errorMsg: UIMessage = {
             id: generateId(),
             sessionId: errorSessionId,
             sender: 'system',
-            content: `Failed to resume session: ${message.error ?? 'Unknown error'}`,
+            content: `Failed to resume session: ${outcome.error}`,
             timestamp: new Date().toISOString(),
             state: 'delivered',
             isEditing: false,
