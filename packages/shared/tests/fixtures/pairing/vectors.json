@@ -1,0 +1,223 @@
+{
+  "now": 1760000000,
+  "protocolVersion": 1,
+  "valid": [
+    {
+      "name": "IPv4 address",
+      "code": {
+        "v": 1,
+        "name": "fixture-mac",
+        "host": "192.168.1.23",
+        "port": 18765,
+        "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "nonce": "oKGio6SlpqeoqaqrrK2urw",
+        "exp": 1760000300,
+        "proto": 1
+      },
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0"
+    },
+    {
+      "name": "IPv6 address",
+      "code": {
+        "v": 1,
+        "name": "fixture-mac",
+        "host": "fd7a:115c:a1e0::1",
+        "port": 18765,
+        "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "nonce": "oKGio6SlpqeoqaqrrK2urw",
+        "exp": 1760000300,
+        "proto": 1
+      },
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiZmQ3YToxMTVjOmExZTA6OjEiLCJwb3J0IjoxODc2NSwia2V5IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QT0iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ"
+    },
+    {
+      "name": "DNS name",
+      "code": {
+        "v": 1,
+        "name": "fixture-mac",
+        "host": "studio.tailnet.ts.net",
+        "port": 18765,
+        "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "nonce": "oKGio6SlpqeoqaqrrK2urw",
+        "exp": 1760000300,
+        "proto": 1
+      },
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0Ijoic3R1ZGlvLnRhaWxuZXQudHMubmV0IiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0"
+    },
+    {
+      "name": "name with a typographic apostrophe",
+      "code": {
+        "v": 1,
+        "name": "Sam’s Mac",
+        "host": "192.168.1.23",
+        "port": 18765,
+        "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "nonce": "oKGio6SlpqeoqaqrrK2urw",
+        "exp": 1760000300,
+        "proto": 1
+      },
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiU2Ft4oCZcyBNYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0"
+    },
+    {
+      "name": "expired, but within the two-minute clock allowance",
+      "code": {
+        "v": 1,
+        "name": "fixture-mac",
+        "host": "192.168.1.23",
+        "port": 18765,
+        "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "nonce": "oKGio6SlpqeoqaqrrK2urw",
+        "exp": 1759999940,
+        "proto": 1
+      },
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzU5OTk5OTQwLCJwcm90byI6MX0"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a web link",
+      "link": "https://example.com/pair",
+      "error": "NOT_A_PAIRING_LINK"
+    },
+    {
+      "name": "a query instead of a fragment",
+      "link": "remi://pair?x=1",
+      "error": "NOT_A_PAIRING_LINK"
+    },
+    {
+      "name": "scheme in capitals",
+      "link": "REMI://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "NOT_A_PAIRING_LINK"
+    },
+    {
+      "name": "body is not base64url",
+      "link": "remi://pair#!!!!",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "body is not JSON",
+      "link": "remi://pair#aGVsbG8",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "body is an array",
+      "link": "remi://pair#WzFd",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "no version",
+      "link": "remi://pair#eyJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "a newer version",
+      "link": "remi://pair#eyJ2IjoyLCJhbnl0aGluZyI6dHJ1ZX0",
+      "error": "UNSUPPORTED_VERSION"
+    },
+    {
+      "name": "a missing field",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "an unknown field",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MSwicmVsYXkiOiJ3c3M6Ly94In0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "fields out of order",
+      "link": "remi://pair#eyJuYW1lIjoiZml4dHVyZS1tYWMiLCJ2IjoxLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "NOT_CANONICAL"
+    },
+    {
+      "name": "whitespace in the JSON",
+      "link": "remi://pair#ewogInYiOiAxLAogIm5hbWUiOiAiZml4dHVyZS1tYWMiLAogImhvc3QiOiAiMTkyLjE2OC4xLjIzIiwKICJwb3J0IjogMTg3NjUsCiAia2V5IjogIkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9IiwKICJub25jZSI6ICJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwKICJleHAiOiAxNzYwMDAwMzAwLAogInByb3RvIjogMQp9",
+      "error": "NOT_CANONICAL"
+    },
+    {
+      "name": "name with a control character",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoibWFjXHUwMDFiWzJLIiwiaG9zdCI6IjE5Mi4xNjguMS4yMyIsInBvcnQiOjE4NzY1LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "name with a bidi override",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoibWFj4oCuZXZpbCIsImhvc3QiOiIxOTIuMTY4LjEuMjMiLCJwb3J0IjoxODc2NSwia2V5IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QT0iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "name too long",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoibW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW0iLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "host not an address",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjMwMCIsInBvcnQiOjE4NzY1LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "host with brackets",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiWzo6MV0iLCJwb3J0IjoxODc2NSwia2V5IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QT0iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "host with a space",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoibXkgbWFjIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "port zero",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MCwia2V5IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QT0iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "port too large",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6NzAwMDAsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "port not an integer",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MS41LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "key of 31 bytes",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUT09Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "nonce of 15 bytes",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJCd2NIQndjSEJ3Y0hCd2NIQndjSCIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "nonce with padding",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3PT0iLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "expired",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzU5OTk5ODAwLCJwcm90byI6MX0",
+      "error": "EXPIRED"
+    },
+    {
+      "name": "expiry too far ahead",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAzNjAwLCJwcm90byI6MX0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "another protocol version",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6Mn0",
+      "error": "PROTOCOL_MISMATCH"
+    },
+    {
+      "name": "protocol version zero",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMTkyLjE2OC4xLjIzIiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MH0",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "too long",
+      "link": "remi://pair#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "error": "MALFORMED"
+    }
+  ]
+}
