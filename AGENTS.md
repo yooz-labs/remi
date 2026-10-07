@@ -635,7 +635,21 @@ those two are both exactly `{token, title, body}`.
   literally was: `settings.notifications` was written by the settings panel and
   read by nothing. Preferences ride up on `register_device_token` (idempotent
   and keyed by token, so a toggle change is just a re-register) and the daemon
-  filters its per-token fan-out in `notifications/push-preferences.ts`.
+  filters its per-token fan-out in `notifications/push-preferences.ts`. Until
+  #1258 the `cli.ts` wiring dropped them, so every device was stored with the
+  defaults and muting did nothing; sibling daemons now also adopt the newest
+  registration (its preferences included) from the shared store.
+- **A phone is pushed only while its lease holds** (#1254, owner decision).
+  The registration lives while the phone keeps connecting: the app
+  re-registers on every connection, and the daemon renews the lease while the
+  connection stays open and stamps it when the connection closes. The explicit
+  disconnect (`unregister_device_token`, #690) ends it at once; otherwise a
+  phone not seen for `[notifications] push_lease_hours` (default 24; 0 never
+  expires) is dropped from `device-tokens.json` on the next merge, by every
+  daemon sharing it. It covers a phone that removed the machine while the
+  daemon was unreachable, which the unregister cannot reach. The Worker-side
+  revocation (a phone telling the Worker directly) is R7 work. The store file
+  is written owner-only (0600).
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise. The next main-agent tool call or
