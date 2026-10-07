@@ -22,7 +22,7 @@ public struct RemiComposer: View {
             }
 
             HStack(alignment: .bottom, spacing: RemiTheme.Spacing.xs) {
-                TextField("Message the agent", text: $text, axis: .vertical)
+                TextField("Message", text: $text, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .padding(.horizontal, RemiTheme.Spacing.s)

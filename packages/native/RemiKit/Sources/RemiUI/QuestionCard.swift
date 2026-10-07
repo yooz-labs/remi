@@ -126,17 +126,23 @@ private struct QuestionOptions: View {
 }
 
 private struct QuestionOptionButton: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let option: RemiQuestionOption
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xs))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs))
+            layout {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                     Text(option.label).font(.body.weight(.semibold))
-                    if let detail = option.detail { Text(detail).font(.caption).foregroundStyle(option.role == .allow ? RemiTheme.Color.attentionInk.opacity(0.72) : .secondary) }
+                    if let detail = option.detail { Text(detail).font(.caption).foregroundStyle(option.role == .allow ? RemiTheme.Color.attentionInk : .secondary) }
                 }
-                Spacer(minLength: RemiTheme.Spacing.xs)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Spacer(minLength: RemiTheme.Spacing.xs)
+                }
                 if option.grantsForSession { Text("This session").font(.caption2.weight(.semibold)) }
                 else if option.role == .allow { Text("Allow once").font(.caption2.weight(.semibold)) }
             }
@@ -179,7 +185,11 @@ private struct QuestionSteps: View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
             ForEach(steps) { step in
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-                    if let header = step.header { Text(header).font(RemiTheme.Typography.eyebrow).foregroundStyle(RemiTheme.Color.attention) }
+                    if let header = step.header {
+                        Text(header)
+                            .font(RemiTheme.Typography.eyebrow)
+                            .foregroundStyle(.primary)
+                    }
                     Text(step.text).font(.subheadline.weight(.semibold))
                     if step.allowsMultipleSelection { Text("Select all that apply").font(.caption).foregroundStyle(.secondary) }
                     ForEach(step.options) { option in

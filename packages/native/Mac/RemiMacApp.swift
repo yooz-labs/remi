@@ -41,6 +41,7 @@ struct RemiMacApp: App {
                 }
             }
             .frame(minWidth: 980, minHeight: 640)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
 
         MenuBarExtra {
@@ -54,16 +55,19 @@ struct RemiMacApp: App {
         }
 
         Settings {
-            if let store {
-                MacPreferencesView(publicIdentity: store.publicIdentity)
-            } else {
-                ContentUnavailableView(
-                    "Device identity unavailable",
-                    systemImage: "key.slash",
-                    description: Text(startupError ?? "The Keychain is unavailable.")
-                )
-                .frame(width: 520, height: 360)
+            Group {
+                if let store {
+                    MacPreferencesView(publicIdentity: store.publicIdentity)
+                } else {
+                    ContentUnavailableView(
+                        "Device identity unavailable",
+                        systemImage: "key.slash",
+                        description: Text(startupError ?? "The Keychain is unavailable.")
+                    )
+                    .frame(width: 520, height: 360)
+                }
             }
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
     }
 
