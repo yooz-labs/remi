@@ -49,7 +49,8 @@ export async function readWorkspace(
   const deadlineAt = Date.now() + (options.timeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS);
 
   const lookup = await resolveRepository(git, dir, deadlineAt);
-  if (lookup.kind === 'none' || lookup.kind === 'bare') return null;
+  // A path holding a newline is never described (it would reach clients as text), as before #1282.
+  if (lookup.kind === 'none' || lookup.kind === 'bare' || lookup.kind === 'ambiguous') return null;
   if (lookup.kind === 'unknown') {
     const { result } = lookup;
     if (result.timedOut) return unknown('git timed out');

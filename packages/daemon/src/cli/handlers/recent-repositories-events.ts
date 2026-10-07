@@ -23,6 +23,7 @@ export interface RecentRepositoriesHandlerDeps {
 
 export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandlerDeps) {
   let walking: Promise<RecentRepository[]> | null = null;
+  let lastLine = '';
 
   /** One walk at the largest limit; each request takes its own share of it. */
   const walk = async (): Promise<RecentRepository[]> => {
@@ -31,15 +32,17 @@ export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandler
         limit: MAX_RECENT_REPOSITORIES,
       });
       const left = Object.entries(report.skipped).filter(([, count]) => count > 0);
-      if (left.length > 0 || report.timedOut) {
-        // Counts only: the paths of the sessions stay out of the log.
-        const parts = [`listed ${report.repositories.length}`];
-        if (left.length > 0) {
-          parts.push(`left out: ${left.map(([reason, count]) => `${reason} ${count}`).join(', ')}`);
-        }
-        if (report.timedOut) parts.push('the deadline ended the walk');
-        log(`[RecentRepositories] ${parts.join('; ')}`);
+      // Counts only: the paths of the sessions stay out of the log.
+      const parts = [`listed ${report.repositories.length}`];
+      if (report.noGit) parts.push('git is not on the PATH');
+      if (left.length > 0) {
+        parts.push(`left out: ${left.map(([reason, count]) => `${reason} ${count}`).join(', ')}`);
       }
+      if (report.timedOut) parts.push('the deadline ended the walk');
+      const line = `[RecentRepositories] ${parts.join('; ')}`;
+      // Said once until it changes: a machine with an unchanging gap would otherwise log every walk.
+      if (parts.length > 1 && line !== lastLine) log(line);
+      lastLine = line;
       return report.repositories;
     } catch (err) {
       logError(

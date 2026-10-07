@@ -195,6 +195,13 @@ export async function prepareWorkspace(
   if (lookup.kind === 'none') {
     return { ok: false, error: TEXT.notGit, detail: `${shown} is in no worktree of a repository` };
   }
+  if (lookup.kind === 'ambiguous') {
+    return {
+      ok: false,
+      error: TEXT.unusablePath,
+      detail: `${shown} is in a repository whose path holds a newline`,
+    };
+  }
   if (lookup.kind === 'bare' || lookup.mainIsBare) {
     return { ok: false, error: TEXT.bare, detail: `${shown} belongs to a bare repository` };
   }

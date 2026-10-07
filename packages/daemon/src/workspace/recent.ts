@@ -37,8 +37,12 @@ const plain = (text: string): boolean => !hasControl(text) && escapeUnsafeText(t
 /** A session as the walk reads it from the store. */
 export interface RecentSession {
   readonly projectPath: string;
-  readonly startedAt: string;
   readonly exitedAt: string | null;
+}
+
+/** A repository's display name: its directory name, or its path when it has none (the root). */
+export function repositoryName(repository: string): string {
+  return path.basename(repository) || repository;
 }
 
 /** Why a session named no repository, counted for the log (never the path). */
@@ -47,8 +51,10 @@ export type RecentSkip = 'gone' | 'unreadable' | 'outside' | 'bare' | 'unknown' 
 export interface RecentRepositoriesReport {
   readonly repositories: RecentRepository[];
   readonly skipped: Readonly<Record<RecentSkip, number>>;
-  /** Whether the deadline ended the walk before the limit or the last session. */
+  /** Whether the deadline ended the walk, or cut a lookup short, before the limit was reached. */
   readonly timedOut: boolean;
+  /** Whether no git was found on the PATH, so nothing could be looked up. */
+  readonly noGit: boolean;
 }
 
 const TIMED_OUT = Symbol('timed out');
@@ -92,7 +98,7 @@ export async function recentRepositoriesReport(
   };
   const found: RecentRepository[] = [];
   const git = findGit();
-  if (git === null) return { repositories: found, skipped, timedOut: false };
+  if (git === null) return { repositories: found, skipped, timedOut: false, noGit: true };
   const limit = recentRepositoriesLimit(options.limit);
   const deadlineAt = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const usedNow = new Date((options.now ?? Date.now)()).toISOString();
@@ -141,7 +147,12 @@ export async function recentRepositoriesReport(
       skipped.outside += 1;
       continue;
     }
+    if (lookup.kind === 'ambiguous') {
+      skipped.unsafe += 1;
+      continue;
+    }
     if (lookup.kind === 'unknown') {
+      if (lookup.result.timedOut) timedOut = true;
       skipped.unknown += 1;
       continue;
     }
@@ -156,9 +167,9 @@ export async function recentRepositoriesReport(
       continue;
     }
     seenRepositories.add(repository);
-    found.push({ repository, name: path.basename(repository) || repository, lastUsedAt });
+    found.push({ repository, name: repositoryName(repository), lastUsedAt });
   }
-  return { repositories: found, skipped, timedOut };
+  return { repositories: found, skipped, timedOut, noGit: false };
 }
 
 /** The repositories `sessions` ran in: {@link recentRepositoriesReport} without the report. */

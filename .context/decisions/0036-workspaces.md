@@ -62,13 +62,13 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
      - a directory that is gone, is a file, or is one git cannot run in;
      - one outside any repository, in a bare repository, or in a linked worktree of one;
      - one whose repository path `escapeUnsafeText` would change.
-     A path holding a newline is never read from `rev-parse`'s line output: the NUL-separated worktree list names the repository, and an ambiguous top level is unknown. One session that fails leaves the others listed.
+     A path holding a newline is never read from `rev-parse`'s line output: the NUL-separated worktree list names the repository when it can, and otherwise the lookup is `ambiguous`, which phase A refuses as unusable, phase B shows as no workspace, and this walk counts as unsafe. One session that fails leaves the others listed.
    - **Limit.** 1 to 20 as asked; above 20 is 20; absent, or anything else, is 10.
    - **Deadline.** One 5-second deadline covers the walk, every directory check and git call; reading the store comes before it. Past the deadline, git calls return at once and the walk ends with what it found.
      A list cut short is not marked on the wire: it is a convenience, and a client can always ask for a path instead. The hub logs it, with counts of what was left out by reason and never a path.
    - **Errors and load.** A store that cannot be read is an empty list, never silence, since the client waits for the answer. Requests that arrive while a walk runs share it.
    - **Capability.** It is part of the `workspaces` capability, which no release has shipped without it: a daemon that does not list `workspaces` does not answer, and a client checks first.
-   - **Disclosure.** It tells an approved device the project paths of the machine's sessions from the last week, exited ones included. That is by design: the device can already list the live sessions and start an agent in any directory.
+   - **Disclosure.** It tells an approved device the repositories (main worktrees, at most 20) that the machine's sessions from the last week ran in, exited ones included. That is by design: the device can already list the live sessions and start an agent in any directory.
 
 ## Consequences
 
