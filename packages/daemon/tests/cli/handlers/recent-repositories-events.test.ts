@@ -1,0 +1,95 @@
+/**
+ * The recent-repositories request (#1236 phase C): the handler reads the machine's real session
+ * store and answers the requesting connection with the repositories of its recent sessions.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type { ProtocolMessage, RecentRepositoriesResponseMessage, UUID } from '@remi/shared';
+import { createRecentRepositoriesHandlers } from '../../../src/cli/handlers/recent-repositories-events.ts';
+import { SessionStore } from '../../../src/session/session-store.ts';
+
+const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
+const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
+
+describe('recent_repositories_request (#1236 phase C)', () => {
+  let root: string;
+  let store: SessionStore;
+  let sent: Array<{ connectionId: UUID; message: ProtocolMessage }>;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-recent-handler-')));
+    store = new SessionStore(path.join(root, 'sessions.json'));
+    sent = [];
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function repo(name: string): string {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir);
+    const run = (...args: string[]) =>
+      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: dir });
+    run('init', '-q', '-b', 'main');
+    run('commit', '-q', '--allow-empty', '-m', 'first');
+    return fs.realpathSync(dir);
+  }
+
+  function record(projectPath: string, startedAt: string, id: string): void {
+    store.save({
+      remiSessionId: id as UUID,
+      claudeSessionId: null,
+      projectPath,
+      port: 0,
+      pid: null,
+      startedAt,
+      exitedAt: null,
+      exitCode: null,
+    });
+  }
+
+  const handlers = () =>
+    createRecentRepositoriesHandlers({
+      sessionStore: store,
+      send: (connectionId, message) => {
+        sent.push({ connectionId, message });
+        return true;
+      },
+    });
+
+  test('answers the requester with the repositories of the store, most recent first', async () => {
+    const a = repo('a');
+    const b = repo('b');
+    record(a, '2026-10-07T10:00:00.000Z', '11111111-1111-4111-8111-111111111111');
+    record(b, '2026-10-07T11:00:00.000Z', '22222222-2222-4222-8222-222222222222');
+    await handlers().onRecentRepositoriesRequest(CID, REQ, undefined);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.connectionId).toBe(CID);
+    const response = sent[0]?.message as RecentRepositoriesResponseMessage;
+    expect(response.type).toBe('recent_repositories_response');
+    expect(response.requestId).toBe(REQ);
+    expect(response.repositories.map((r) => r.repository)).toEqual([b, a]);
+  });
+
+  test('an empty store answers with an empty list, never silence', async () => {
+    await handlers().onRecentRepositoriesRequest(CID, REQ, 5);
+    expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toEqual([]);
+  });
+
+  test('the limit the client asked for is applied', async () => {
+    for (let i = 0; i < 4; i++) {
+      record(
+        repo(`r${i}`),
+        `2026-10-07T1${i}:00:00.000Z`,
+        `${i}1111111-1111-4111-8111-111111111111`,
+      );
+    }
+    await handlers().onRecentRepositoriesRequest(CID, REQ, 2);
+    expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toHaveLength(2);
+  });
+});
