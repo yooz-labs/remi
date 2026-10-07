@@ -39,7 +39,7 @@ So Claude is compatible too, and the remi-drawn prompt chosen on 2026-10-01 is u
 
 | Evidence | Source |
 |---|---|
-| LLM layer approves 87 of 275 operations it evaluates (31.6%) | `.context/approval-rate-baseline-2026-08.md` |
+| LLM layer approves 87 of 275 operations it evaluates (31.6%) | `.context/archive/2026-h2/approval-rate-baseline-2026-08.md` |
 | Escalation p50 5.3 s, p95 25 s; MacBook Air approve p50 9.4 s and 498 engine-timeout errors | same |
 | Deterministic coverage of real main-agent commands: 12.9% | #996 |
 | `auto-approve/` is 22,920 of 65,007 daemon source lines; its tests 34,766 of 91,924 | `wc -l` |

@@ -45,6 +45,11 @@ Rules, all cheap:
 
 Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
 
+## Roadmap
+
+What comes next, in order, and how each step is tested: [`.context/plan.md`](.context/plan.md).
+The work is tracked as GitHub milestones (0.7.16 release, Relay R7, Protocol freeze, then the native apps) and area labels; decisions the roadmap waits on are collected in #1233.
+
 ## Architecture decisions
 
 Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
@@ -240,7 +245,7 @@ describing an intention, not this codebase (#543).
 
 ## Question Detection and Notifications
 
-See `.context/notification-and-session-flow.md` for the full flow diagram.
+The old flow diagram (from before the held-hook relay, #1125/#1126) is archived at `.context/archive/2026-h2/notification-and-session-flow.md`; this section is the current description, and #1145 tracks a new diagram.
 
 **Question sources** (daemon side):
 

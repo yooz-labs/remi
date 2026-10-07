@@ -1,6 +1,6 @@
 # Handoff — 2026-07-28
 
-> **Superseded in part (2026-10-01).** The engine, `remi model` and local-model paragraphs below describe code removed in #1125 (ADR 0030): remi runs no local model and depends on no Yooz engine. Current direction: [strategy-2026-10.md](strategy-2026-10.md).
+> **Superseded in part (2026-10-01).** The engine, `remi model` and local-model paragraphs below describe code removed in #1125 (ADR 0030): remi runs no local model and depends on no Yooz engine. Current direction: [strategy-2026-10.md](../../strategy-2026-10.md).
 
 State of the world after the 0.7.3 release.
 Decisions live in `.context/decisions/` (ADRs 0001-0008); this file is the working snapshot.

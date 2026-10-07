@@ -75,7 +75,7 @@ Each item: protocol types in `packages/shared`, daemon support, golden fixtures,
 - [ ] **Project structure.** Create the `RemiKit` package. Replace xcodegen with a checked-in Xcode project whose groups are synchronized folders, so an agent adding a file does not have to run `scripts/generate-macos-project.sh` (owner decision 4).
 - [ ] **CI on the new toolchain.** A macOS runner with an Xcode that matches local, building both apps and running the `RemiKit` tests; decide whether the existing Xcode 15.4 job stays while the WebView app ships.
 - [ ] **Instructions for Swift agents.** A Swift section in `AGENTS.md`: bundle and group ids (`live.yooz.remi`, `group.live.yooz.remi`), the sandbox rule, the credential rule, no mocks of business logic (preview data comes from the golden fixtures), the relay test vectors as the oracle, and ADR 0011.
-- [ ] **Fix the docs that would mislead an agent** (ADR 0011):
+- [x] **Fix the docs that would mislead an agent** (ADR 0011; done 2026-10-06 with the roadmap):
   - `relay-rebuild-plan-2026-10.md:8` says nothing is built.
   - `native-ios-live-activities-guide.md` uses `com.yooz.remi` ids and calls the NSE a likely skip.
   - The competitive review's remi row describes the relay as working without end-to-end encryption by default; since #1193 it is off by default and accepts nothing without an authenticator.
