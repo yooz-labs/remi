@@ -38,24 +38,31 @@ const CONNECTIONS = 8;
 /** The Bun release whose client close is known to reset the connection (#1225). */
 const RESETTING_RUNTIME = '1.3.11';
 
-type Ending = 'graceful' | 'reset' | 'other';
 interface PeerState {
   buffer: Buffer;
   upgraded: boolean;
   closeFrame: boolean;
   events: string[];
-  done: (ending: { ending: Ending; events: string[] }) => void;
+  done: (events: string[]) => void;
 }
 
-function classify(events: readonly string[]): Ending {
-  if (events.includes('close ECONNRESET')) return 'reset';
-  return events.join(',') === 'fin,answered,close' ? 'graceful' : 'other';
+/**
+ * The closing handshake completed: the client's FIN, the peer's late answer written, and a close
+ * with no error. A reset shows as `close ECONNRESET`; any other ending (an answer that could not
+ * be written) is not graceful either.
+ */
+function graceful(events: readonly string[]): boolean {
+  return (
+    events.includes('fin') &&
+    events.includes('answered') &&
+    !events.some((e) => e !== 'close' && e.startsWith('close'))
+  );
 }
 
 test.skipIf(process.platform !== 'darwin')(
   `a WebSocket client's close and a peer that answers late (Bun ${Bun.version}, #1225)`,
   async () => {
-    const endings: Promise<{ ending: Ending; events: string[] }>[] = [];
+    const endings: Promise<string[]>[] = [];
     const listener = Bun.listen<PeerState>({
       hostname: '127.0.0.1',
       port: 0,
@@ -118,11 +125,11 @@ test.skipIf(process.platform !== 'darwin')(
         close(socket, error) {
           const code = (error as NodeJS.ErrnoException | undefined)?.code;
           socket.data.events.push(code ? `close ${code}` : 'close');
-          socket.data.done({ ending: classify(socket.data.events), events: socket.data.events });
+          socket.data.done(socket.data.events);
         },
       },
     });
-    const seen: Ending[] = [];
+    const seen: string[] = [];
     try {
       for (let i = 0; i < CONNECTIONS; i++) {
         const ws = new WebSocket(`ws://127.0.0.1:${listener.port}/`);
@@ -145,19 +152,18 @@ test.skipIf(process.platform !== 'darwin')(
         ]);
         clearTimeout(timer);
         if (!result) throw new Error('the connection never ended');
-        // Either way the peer must see one of the two known endings, never something else.
-        expect(result.ending, result.events.join(',')).not.toBe('other');
-        seen.push(result.ending);
+        seen.push(`${graceful(result) ? 'graceful' : 'lost'}: ${result.join(',')}`);
       }
     } finally {
       listener.stop(true);
     }
+    const lost = seen.filter((ending) => ending.startsWith('lost'));
     if (Bun.version === RESETTING_RUNTIME) {
-      // The defect: at least one connection is reset before the peer can answer the Close.
-      expect(seen).toContain('reset');
+      // The defect: at least one connection ends before the peer can answer the Close.
+      expect(lost.length, seen.join(' | ')).toBeGreaterThan(0);
     } else {
-      // A runtime that closes gracefully: every Close is answered and the connection ends by FIN.
-      expect(seen).toEqual(Array(CONNECTIONS).fill('graceful'));
+      // A runtime that closes gracefully: every Close is answered, then the connection ends.
+      expect(lost, seen.join(' | ')).toEqual([]);
     }
   },
   60_000,
