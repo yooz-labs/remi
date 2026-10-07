@@ -67,7 +67,8 @@ afterEach(async () => {
           const entry = JSON.parse(fs.readFileSync(path.join(liveDir, file), 'utf-8')) as {
             pid: number;
           };
-          process.kill(entry.pid, 'SIGKILL');
+          // A bad file with pid 0 or 1 would signal a process group or init.
+          if (Number.isInteger(entry.pid) && entry.pid > 1) process.kill(entry.pid, 'SIGKILL');
         } catch {
           // already gone, or not a child of this test
         }
@@ -146,6 +147,22 @@ function childEntries(r: Running): Array<{ pid: number; wsPort: number; sessionI
     .filter((e) => typeof e.pid === 'number');
 }
 
+/** The pids above `pid`, nearest first, read with `ps` (at most 8 levels). */
+function ancestorsOf(pid: number): number[] {
+  const chain: number[] = [];
+  let current = pid;
+  for (let i = 0; i < 8; i++) {
+    const out = Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(current)])
+      .stdout.toString()
+      .trim();
+    const parent = Number(out);
+    if (!Number.isInteger(parent) || parent <= 1) break;
+    chain.push(parent);
+    current = parent;
+  }
+  return chain;
+}
+
 const why = (r: Running, response: object): string =>
   `response: ${JSON.stringify(response)}\nhub log tail:\n${r.log.text.slice(-1500)}`;
 
@@ -176,9 +193,20 @@ describe('remi serve resume (integration, #1129)', () => {
     expect(child, why(r, response)).toBeDefined();
     expect(child?.sessionId).toBe(response.sessionId as string);
     expect(child?.pid).not.toBe(r.hub.proc.pid);
-    // The Claude the fake recorded belongs to that child, not to the hub process.
+    // The Claude the fake recorded runs under that child daemon: the child's pid is among its
+    // ancestors, so it was the child that started it (the hub only started the child).
     const claudePid = Number(fs.readFileSync(path.join(r.agents.claudeDir, 'pid'), 'utf-8').trim());
-    expect(claudePid).not.toBe(r.hub.proc.pid);
+    expect(ancestorsOf(claudePid), why(r, response)).toContain(child?.pid as number);
+
+    // The contract the web client's follow relies on: the child's connection says hello for the
+    // session the response named.
+    const direct = await connectAndHello(response.port as number);
+    try {
+      const ack = direct.received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
+      expect(ack?.sessionId).toBe(response.sessionId as string);
+    } finally {
+      direct.ws.close();
+    }
 
     // The hub attached nobody to a session it does not own: only the session-less ack came.
     expect(

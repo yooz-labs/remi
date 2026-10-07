@@ -45,6 +45,7 @@ describe('createResumeSessionHandlers', () => {
   let bindingStore: SessionBindingStore;
   let transcriptDiscovery: TranscriptDiscovery;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
+  let logged: string[];
 
   function send(connectionId: UUID, message: ProtocolMessage): boolean {
     sendCalls.push({ connectionId, message });
@@ -60,7 +61,8 @@ describe('createResumeSessionHandlers', () => {
     bindingStore = new SessionBindingStore(sessionStore);
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     sendCalls = [];
-    configureLogger({ writeLog: () => {} });
+    logged = [];
+    configureLogger({ writeLog: (line: string) => logged.push(line) });
   });
 
   afterEach(async () => {
@@ -187,12 +189,14 @@ describe('createResumeSessionHandlers', () => {
     expect(msg.type).toBe('resume_session_response');
     expect(msg.success).toBe(false);
     expect(msg.error).toContain('Cannot resolve session unreadable-session');
-    expect(msg.error).toContain('sessions.json is unreadable');
+    // The cause is the host's business (it can hold a path or a lock holder): the log has it.
+    expect(msg.error).not.toContain('sessions.json');
+    expect(logged.join('\n')).toContain('sessions.json is unreadable');
   });
 
   test('does not fall through transcript discovery after an ambiguous binding', async () => {
     const ambiguousBindingStore = {
-      getByClaudeSessionId: () => {
+      getResumableByClaudeSessionId: () => {
         throw new AmbiguousSessionIdentityError('Claude', 'ambiguous-claude', 2);
       },
     } as unknown as SessionBindingStore;
@@ -327,13 +331,15 @@ describe('createResumeSessionHandlers', () => {
     let projectDir: string;
     let asked: Array<{ directory: string | undefined; extra: unknown }>;
     let outcome: StartSessionOutcome | Error;
-    let logged: string[];
+    /** Holds a start open, so two requests can be in flight at once. */
+    let gate: Promise<void>;
+    let clock: number;
 
     beforeEach(() => {
       asked = [];
       outcome = { ok: true, sessionId: CHILD, port: 19931 };
-      logged = [];
-      configureLogger({ writeLog: (line: string) => logged.push(line) });
+      gate = Promise.resolve();
+      clock = 1_000_000;
     });
 
     function seedResumable(overrides: Partial<StoredSession> = {}): {
@@ -363,9 +369,11 @@ describe('createResumeSessionHandlers', () => {
       return createResumeSessionHandlers({
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
+          await gate;
           if (outcome instanceof Error) throw outcome;
           return outcome;
         },
+        now: () => clock,
         harnessId: 'claude',
         harnesses: () => ['claude'],
         sessionRegistry,
@@ -532,7 +540,9 @@ describe('createResumeSessionHandlers', () => {
 
       expect(asked).toEqual([]);
       expect(response().success).toBe(false);
-      expect(response().error).toContain('store unreadable');
+      // The requester reads a fixed text; the cause (a path, a lock holder) is in the log.
+      expect(response().error).not.toContain('store unreadable');
+      expect(logged.join('\n')).toContain('store unreadable');
     });
 
     test('the requested id reaches the log written out, never as raw control characters', async () => {
@@ -542,6 +552,200 @@ describe('createResumeSessionHandlers', () => {
       expect(line).not.toContain('\u001b');
       expect(line).not.toContain('\u202E');
       expect(line).toContain('\\u001B');
+    });
+
+    // The #1308 review.
+
+    test.each([[undefined], [null], [['a']], [5]])(
+      'a session id that is not text (%p) is a failure response, not a throw, and starts nothing',
+      async (id) => {
+        await hubHandlers().onResumeSessionRequest(CID, id as never, REQ);
+
+        expect(asked).toEqual([]);
+        expect(response().success).toBe(false);
+        expect(response().error).toBe('The request does not name a session to resume.');
+      },
+    );
+
+    test('a Claude session id with several exited rows resumes from the newest, in the directory it last ran in', async () => {
+      const claudeSessionId = '66666666-6666-4666-8666-666666666666';
+      const older = path.join(tmpDir, 'older-project');
+      const newer = path.join(tmpDir, 'newer-project');
+      fs.mkdirSync(older, { recursive: true });
+      fs.mkdirSync(newer, { recursive: true });
+      const row = (projectPath: string, startedAt: string): StoredSession => ({
+        remiSessionId: crypto.randomUUID() as UUID,
+        claudeSessionId,
+        projectPath,
+        port: 0,
+        pid: null,
+        startedAt,
+        exitedAt: new Date(Date.parse(startedAt) + 1000).toISOString(),
+        exitCode: 0,
+      });
+      sessionStore.save(row(older, '2026-10-01T00:00:00.000Z'));
+      sessionStore.save(row(newer, '2026-10-02T00:00:00.000Z'));
+
+      await hubHandlers().onResumeSessionRequest(CID, claudeSessionId, REQ);
+
+      expect(asked).toEqual([{ directory: newer, extra: { args: ['--resume', claudeSessionId] } }]);
+      expect(response().success).toBe(true);
+    });
+
+    test('an unreadable store is a fixed text to the requester, naming the id the requester sent', async () => {
+      const throwingStore = {
+        findByRemiSessionId: () => {
+          throw new Error('Malformed session store /Users/someone/.remi/sessions.json: bad');
+        },
+      } as unknown as SessionStore;
+      const handlers = createResumeSessionHandlers({
+        childSessions: async () => ({ ok: true, sessionId: CHILD, port: 19931 }),
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
+        sessionRegistry,
+        sessionStore: throwingStore,
+        bindingStore,
+        transcriptDiscovery,
+        harness: new ClaudeHarness(transcriptDiscovery),
+        createNewSession: async () => undefined,
+        send,
+      });
+
+      await handlers.onResumeSessionRequest(CID, 'abc', REQ);
+
+      expect(response().error).toBe(
+        "Cannot resolve session abc: the host's session records could not be read.",
+      );
+      expect(logged.join('\n')).toContain('/Users/someone/.remi/sessions.json');
+    });
+
+    test('a long or hostile id is capped and written out in what the requester reads back', async () => {
+      await hubHandlers().onResumeSessionRequest(CID, `x\u001b[2J${'y'.repeat(500)}`, REQ);
+
+      const error = response().error ?? '';
+      expect(error).not.toContain('\u001b');
+      expect(error.length).toBeLessThan(200);
+      expect(error).toContain('x\\u001B[2J');
+    });
+
+    test("a record of another harness is never resumed with Claude's flag, even if it carries a Claude id", async () => {
+      const { remiSessionId } = seedResumable({
+        harness: 'codex',
+        harnessSessionId: '01950000-0000-7000-8000-0000000000aa',
+      });
+
+      await hubHandlers().onResumeSessionRequest(CID, remiSessionId, REQ);
+
+      expect(asked).toEqual([]);
+      expect(response().success).toBe(false);
+      expect(response().error).toContain('another harness');
+    });
+
+    test('a stored id that is not a UUID is not sent to Claude, and the requester is told why', async () => {
+      const { remiSessionId } = seedResumable({ claudeSessionId: 'not-a-uuid' });
+
+      await hubHandlers().onResumeSessionRequest(CID, remiSessionId, REQ);
+
+      expect(asked).toEqual([]);
+      expect(response().success).toBe(false);
+      expect(response().error).toBe(
+        "That session's Claude id is not a valid session id, so it cannot be resumed.",
+      );
+    });
+
+    test('a session found only as a transcript resumes in the directory the transcript recorded, dashes and all', async () => {
+      const claudeSessionId = '99999999-9999-4999-8999-999999999999';
+      const real = path.join(tmpDir, 'yooz-engine');
+      fs.mkdirSync(real, { recursive: true });
+      const projectDir = path.join(projectsDir, '-tmp-yooz-engine');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, `${claudeSessionId}.jsonl`),
+        `${JSON.stringify({ type: 'user', sessionId: claudeSessionId, cwd: real, message: {} })}\n`,
+      );
+
+      await hubHandlers().onResumeSessionRequest(CID, claudeSessionId, REQ);
+
+      expect(asked).toEqual([{ directory: real, extra: { args: ['--resume', claudeSessionId] } }]);
+    });
+
+    test('the same session asked for twice at once starts one child, and the second is told it was just resumed', async () => {
+      const { remiSessionId } = seedResumable();
+      let release: () => void = () => {};
+      gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const handlers = hubHandlers();
+
+      const first = handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+      await handlers.onResumeSessionRequest(
+        CID,
+        remiSessionId,
+        'req22222-0000-0000-0000-000000000000' as UUID,
+      );
+      release();
+      await first;
+
+      expect(asked).toHaveLength(1);
+      expect(sendCalls).toHaveLength(2);
+      const [refused, answered] = sendCalls.map((c) => c.message) as unknown as Array<{
+        success: boolean;
+        error?: string;
+        port?: number;
+      }>;
+      expect(refused?.success).toBe(false);
+      expect(refused?.error).toBe(
+        'That session was just resumed on the host; open it from the session list.',
+      );
+      expect(answered?.success).toBe(true);
+      expect(answered?.port).toBe(19931);
+    });
+
+    test('a start that failed frees the session at once; a success holds it for a short while only', async () => {
+      const { remiSessionId } = seedResumable();
+      const handlers = hubHandlers();
+
+      outcome = { ok: false, error: 'No port.' };
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+      outcome = { ok: true, sessionId: CHILD, port: 19931 };
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+      expect(asked).toHaveLength(2);
+
+      sendCalls = [];
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+      expect(asked).toHaveLength(2);
+      expect(response().success).toBe(false);
+
+      sendCalls = [];
+      clock += 60_000;
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+      expect(asked).toHaveLength(3);
+      expect(response().success).toBe(true);
+    });
+
+    test('a different session is not held up by one being resumed', async () => {
+      const { remiSessionId } = seedResumable();
+      const handlers = hubHandlers();
+      await handlers.onResumeSessionRequest(CID, remiSessionId, REQ);
+
+      const otherClaude = '12121212-1212-4212-8212-121212121212';
+      const otherDir = path.join(tmpDir, 'other-project');
+      fs.mkdirSync(otherDir, { recursive: true });
+      sessionStore.save({
+        remiSessionId: crypto.randomUUID() as UUID,
+        claudeSessionId: otherClaude,
+        projectPath: otherDir,
+        port: 0,
+        pid: null,
+        startedAt: new Date().toISOString(),
+        exitedAt: new Date().toISOString(),
+        exitCode: 0,
+      });
+      sendCalls = [];
+      await handlers.onResumeSessionRequest(CID, otherClaude, REQ);
+
+      expect(asked).toHaveLength(2);
+      expect(response().success).toBe(true);
     });
   });
 
@@ -577,6 +781,18 @@ describe('createResumeSessionHandlers', () => {
       expect('errorCode' in response).toBe(false);
       expect('port' in response).toBe(false);
     });
+
+    test.each([[undefined], [null], [['a']]])(
+      'a session id that is not text (%p) is a failure response, not a throw',
+      async (id) => {
+        await makeHandlers().onResumeSessionRequest(CID, id as never, REQ);
+
+        expect(sendCalls).toHaveLength(1);
+        const msg = sendCalls[0]?.message as { success: boolean; error?: string };
+        expect(msg.success).toBe(false);
+        expect(msg.error).toBe('The request does not name a session to resume.');
+      },
+    );
 
     test('a failure carries no errorCode (wire shape unchanged)', async () => {
       const handlers = makeHandlers();
