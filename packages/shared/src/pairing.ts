@@ -32,13 +32,17 @@ const MAX_TTL_SECONDS = 900;
 const CLOCK_SKEW_SECONDS = 120;
 /** The longest link accepted, so a hostile QR cannot make a client parse megabytes. */
 const MAX_LINK_LENGTH = 1024;
-const MAX_NAME_LENGTH = 64;
+/** The most a name may hold, in Unicode code points (Swift: `unicodeScalars.count`). */
+export const PAIRING_NAME_MAX_CODE_POINTS = 64;
 
 /** A pairing code, in its canonical field order. */
 export interface PairingCode {
   /** Always {@link PAIRING_CODE_VERSION}. */
   readonly v: number;
-  /** The machine's name, for display: 1 to 64 characters, nothing `escapeUnsafeText` writes out. */
+  /**
+   * The machine's name, for display: 1 to 64 code points, well formed, nothing `escapeUnsafeText`
+   * writes out, and no `"` or `\\`, so the canonical JSON holds no escape at all.
+   */
   readonly name: string;
   /** Where the phone connects: an IPv4 or IPv6 address (no brackets, no zone) or a DNS name. */
   readonly host: string;
@@ -131,18 +135,48 @@ function hasControl(text: string): boolean {
 }
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-const IPV6 = /^[0-9A-Fa-f:]{2,39}$/;
 const DNS_LABEL = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+const HEX_GROUP = /^[0-9A-Fa-f]{1,4}$/;
 
-/** An address a phone can dial: IPv4, IPv6 without brackets or a zone, or a DNS name. */
+/** An IPv6 address in hexadecimal groups: eight, or fewer around one `::`; no zone, no IPv4 tail. */
+function isIpv6(host: string): boolean {
+  const halves = host.split('::');
+  if (halves.length > 2) return false;
+  const groups = (part: string): string[] | null => {
+    if (part === '') return [];
+    const parts = part.split(':');
+    return parts.every((g) => HEX_GROUP.test(g)) ? parts : null;
+  };
+  if (halves.length === 1) {
+    const all = groups(host);
+    return all !== null && all.length === 8;
+  }
+  const head = groups(halves[0] as string);
+  const tail = groups(halves[1] as string);
+  return head !== null && tail !== null && head.length + tail.length <= 7;
+}
+
+/**
+ * An address a phone can dial: IPv4, IPv6 without brackets or a zone, or a DNS name whose last label
+ * is not all digits (`0x7f.1` is not a name).
+ */
 export function isPairingHost(host: string): boolean {
   if (host.length === 0 || host.length > 253) return false;
   if (IPV4.test(host)) return true;
-  if (host.includes(':')) return IPV6.test(host) && host.split('::').length <= 2;
-  // A name made only of digits and dots would read as an IPv4 address that failed to parse.
-  if (/^[\d.]+$/.test(host)) return false;
+  if (host.includes(':')) return isIpv6(host);
   const name = host.endsWith('.') ? host.slice(0, -1) : host;
-  return name.split('.').every((label) => DNS_LABEL.test(label));
+  const labels = name.split('.');
+  if (/^\d+$/.test(labels.at(-1) ?? '')) return false;
+  return labels.every((label) => DNS_LABEL.test(label));
+}
+
+/** Text a client can show and compare as it is: see {@link PairingCode.name}. */
+export function isPlainPairingText(text: unknown, maxCodePoints: number): text is string {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  if (!text.isWellFormed()) return false;
+  if ([...text].length > maxCodePoints) return false;
+  if (hasControl(text) || escapeUnsafeText(text) !== text) return false;
+  return !text.includes('"') && !text.includes('\\');
 }
 
 /** Why `code` is not a valid version 1 code, or null. Expiry and protocol are checked separately. */
@@ -153,15 +187,7 @@ function shapeError(code: Record<string, unknown>): string | null {
   }
   for (const key of FIELD_ORDER) if (!(key in code)) return `missing field ${key}`;
   const { name, host, port, key, nonce, exp, proto } = code;
-  if (
-    typeof name !== 'string' ||
-    name.length === 0 ||
-    name.length > MAX_NAME_LENGTH ||
-    hasControl(name) ||
-    escapeUnsafeText(name) !== name
-  ) {
-    return 'name';
-  }
+  if (!isPlainPairingText(name, PAIRING_NAME_MAX_CODE_POINTS)) return 'name';
   if (typeof host !== 'string' || !isPairingHost(host)) return 'host';
   if (typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
     return 'port';

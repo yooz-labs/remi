@@ -260,6 +260,7 @@ export { escapeUnsafeText } from './display-text.ts';
 export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
 export {
   PAIRING_CODE_VERSION,
+  PAIRING_NAME_MAX_CODE_POINTS,
   PAIRING_LINK_PREFIX,
   PAIRING_NONCE_BYTES,
   PAIRING_TTL_SECONDS,
@@ -268,6 +269,7 @@ export {
   generatePairingNonce,
   isPairingHost,
   isPairingNonce,
+  isPlainPairingText,
 } from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)
 export type { HubSupport, HubSupportAck } from './protocol-version.ts';
