@@ -9,7 +9,11 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { recentRepositories } from '../../src/workspace/recent.ts';
+import {
+  recentRepositories,
+  recentRepositoriesReport,
+  repositoryName,
+} from '../../src/workspace/recent.ts';
 
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync(
@@ -240,11 +244,37 @@ describe('recentRepositories (#1236 phase C)', () => {
     const separate = path.join(root, 'sep\nother');
     fs.mkdirSync(separate);
     git(separate, 'init', '-q', '--separate-git-dir', path.join(root, 'sep.git'));
-    const result = await recentRepositories([
+    const report = await recentRepositoriesReport([
       at(plainRepo, '2026-10-07T11:00:00.000Z'),
       at(separate, '2026-10-07T10:00:00.000Z'),
     ]);
-    expect(result).toEqual([]);
+    expect(report.repositories).toEqual([]);
+    expect(report.skipped.unsafe).toBe(2);
+    expect(report.skipped.unknown).toBe(0);
+  });
+
+  test('a machine without git says so in the report', async () => {
+    const fine = makeRepo(root, 'fine');
+    const empty = path.join(root, 'empty-bin');
+    fs.mkdirSync(empty);
+    process.env['PATH'] = empty;
+    const report = await recentRepositoriesReport([at(fine, '2026-10-07T10:00:00.000Z')]);
+    expect(report.repositories).toEqual([]);
+    expect(report.noGit).toBe(true);
+  });
+
+  test('a lookup cut short by the deadline is reported as the deadline, even on the last session', async () => {
+    const alpha = makeRepo(root, 'alpha');
+    process.env['PATH'] = `${stallingGit(root, 0)}:${savedPath ?? ''}`;
+    const report = await recentRepositoriesReport([at(alpha, '2026-10-07T10:00:00.000Z')], {
+      timeoutMs: 300,
+    });
+    expect(report.timedOut).toBe(true);
+  }, 20000);
+
+  test('a repository at the root is named by its path', () => {
+    expect(repositoryName('/')).toBe('/');
+    expect(repositoryName('/Users/sam/project')).toBe('project');
   });
 
   test('a running session counts as used now, so it ranks above one that ended earlier', async () => {
