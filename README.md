@@ -220,7 +220,7 @@ Remi is open core, and the license is set per directory.
 - **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
 
 The `@yooz-labs/remi` npm package is a small Node launcher; the platform packages it installs hold the compiled `remi` binary, which bundles daemon and shared code plus third-party dependencies.
-The npm packages are Apache-2.0, and the bundled dependencies keep their own licenses (their notices are not shipped yet, see [`LICENSE.md`](LICENSE.md)).
+The npm packages are Apache-2.0, and the bundled dependencies keep their own licenses; their notices ship as `THIRD_PARTY_NOTICES`, except the embedded Bun runtime's (see [`LICENSE.md`](LICENSE.md)).
 
 For commercial-use or dual-license inquiries about the PolyForm Shield parts: **dev@yooz.info**.
 

@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Third-party notices ship with remi (#1131)
+
+#### Fixed
+
+- The `remi` binary bundles MIT and BSD-3-Clause packages from `node_modules` (grammy, bonjour-service, smol-toml and their dependencies; 13 today) whose licenses require their notice to travel with copies, and none was shipped. Every npm package, the GitHub release and the Homebrew formula now carry `THIRD_PARTY_NOTICES`, generated at release time from the bundle's real inputs (`scripts/third-party-notices.ts`). It includes every license and NOTICE file a package ships. CI fails a pull request that bundles a package with no license file.
+- Not covered yet: the Bun runtime that `bun build --compile` embeds in the binary, which carries its own licenses (#1256).
+
 ### The agent's process no longer inherits remi's secrets (#1249)
 
 #### Security
