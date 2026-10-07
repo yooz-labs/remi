@@ -190,11 +190,14 @@ describe('lease edges (#1259 review)', () => {
   });
 
   test('a lastSeenAt that is not a number counts from registration', () => {
-    seed([entry('bogus', Date.now() - 30 * HOUR, { lastSeenAt: 'yesterday' })]);
+    seed([
+      entry('bogus-old', Date.now() - 30 * HOUR, { lastSeenAt: 'yesterday' }),
+      entry('bogus-recent', Date.now() - HOUR, { lastSeenAt: 'yesterday' }),
+    ]);
     const store = new DeviceTokenStore(file, { leaseMs: LEASE });
     store.load();
 
-    expect(store.map.has('bogus')).toBe(false);
+    expect([...store.map.keys()]).toEqual(['bogus-recent']);
   });
 
   test('a registration time that is not a number counts as expired, so a malformed entry stops pushes', () => {
