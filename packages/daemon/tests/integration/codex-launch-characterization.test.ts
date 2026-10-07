@@ -948,6 +948,8 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
         ['No', 'cancel'],
       ]);
       expect(card.terminalOnly).toBeUndefined();
+      // Codex takes the answer as a JSON-RPC response (#1235).
+      expect(card.answerPath).toBe('structured');
       expect(cards(a.received)[0]?.claudeSessionId).toBeUndefined();
 
       // Every way of answering that is not one of the card's options is refused, and nothing
@@ -1175,6 +1177,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       const card = (cards(a.received)[0] as QuestionMessage).question;
       expect(card.text).toContain('e2e file change');
       expect(card.terminalOnly).toBe(true);
+      expect(card.answerPath).toBe('none');
       expect(card.options).toEqual([]);
 
       await refusedWith(a, createAnswer(a.sessionId, card.id, 'Yes'), 'STALE_ANSWER');

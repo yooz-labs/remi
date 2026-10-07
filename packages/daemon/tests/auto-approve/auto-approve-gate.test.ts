@@ -59,6 +59,8 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
   let registry: SessionRegistry;
   let submits: string[];
   let escalated: PermissionRequestHookInput[];
+  /** How each pushed card's answer reaches Claude, in push order (#1235). */
+  let pushPaths: string[];
   let escalatedIds: UUID[];
   let parks: PermissionRequestHookInput[];
   let pushNowIds: UUID[];
@@ -90,8 +92,9 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
           parks.push(i);
           return generateId() as UUID;
         },
-        onHeldEscalate: (id) => {
+        onHeldEscalate: (id, path) => {
           pushNowIds.push(id);
+          pushPaths.push(path);
         },
         alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
         ...over,
@@ -104,6 +107,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     submits = [];
     escalated = [];
+    pushPaths = [];
     escalatedIds = [];
     parks = [];
     pushNowIds = [];
@@ -129,6 +133,8 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     // Pushed now, by id: the dialog renders during the hold, the card does
     // not wait for it.
     expect(pushNowIds).toEqual(escalatedIds);
+    // Its answer goes back through the held hook, as data (#1235).
+    expect(pushPaths).toEqual(['structured']);
     expect(parks).toEqual([]);
     expect(submits).toEqual([]);
     expect(settled).toBe(false);
@@ -150,6 +156,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     );
     expect(pushNowIds).toEqual(escalatedIds);
     expect(pushNowIds).toHaveLength(1);
+    expect(pushPaths).toEqual(['structured']);
     expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
     // Its dialog renders during the hold, like a binary prompt's.
     expect(g.hasMainHold()).toBe(true);
@@ -164,6 +171,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
       pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
     );
     expect(pushNowIds).toEqual(escalatedIds);
+    expect(pushPaths).toEqual(['structured']);
     expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
     g.forceRelease('test');
     expect(await hook).toBe('passthrough');
@@ -180,6 +188,9 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     );
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
+    // Not held: anything a phone could answer would be typed (its card is terminal-only, so the
+    // stamp makes it none).
+    expect(pushPaths).toEqual(['keystroke']);
   });
 
   test('a string-label multi-choice permission_suggestions set is pushed immediately', async () => {
@@ -188,6 +199,8 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     );
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
+    // Its pick is typed into the terminal behind the screen guards (#1134).
+    expect(pushPaths).toEqual(['keystroke']);
   });
 
   test('an escalate that throws still answers passthrough and pushes nothing', async () => {

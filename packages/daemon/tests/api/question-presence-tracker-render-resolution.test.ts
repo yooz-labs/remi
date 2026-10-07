@@ -280,6 +280,30 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(gone).toHaveLength(0);
   });
 
+  test('a push says how the card is answered: as the gate said for a held one, typed for a render (#1235)', () => {
+    const pushes: Array<{ id: string; opts: unknown }> = [];
+    const tracker = new QuestionPresenceTracker(
+      (q, opts): QuestionRegistrationOutcome => {
+        pushes.push({ id: q.id, opts });
+        return { status: 'registered' };
+      },
+      { onHooklessQuestionGone: () => {} },
+    );
+    const held = makeHookRecord('Allow Bash: rm -rf /tmp');
+    tracker.recordPendingHook(held);
+    tracker.pushHeldHook(held.id, 'structured');
+    const passthrough = makeHookRecord('Allow Edit: pick one');
+    tracker.recordPendingHook(passthrough);
+    tracker.pushHeldHook(passthrough.id, 'keystroke');
+    const hookless = makeHooklessPTYQuestion('Allow network access?');
+    tracker.onPTYPromptVisible(hookless);
+    expect(pushes).toEqual([
+      { id: held.id, opts: { held: true, answerPath: 'structured' } },
+      { id: passthrough.id, opts: { held: true, answerPath: 'keystroke' } },
+      { id: hookless.id, opts: { answerPath: 'keystroke' } },
+    ]);
+  });
+
   test('a throwing onHooklessQuestionGone dep is caught and logged, never propagated', () => {
     const pushed: Question[] = [];
     const tracker = new QuestionPresenceTracker(
