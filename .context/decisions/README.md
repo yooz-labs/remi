@@ -50,6 +50,7 @@ add a row below.
 | [0032](0032-harness-seam-and-identity-shim.md) | Harness seam with Claude as the only implementation: `harness` and `harnessSessionId` are typed on the wire (emitted since #1179, see 0033), persisted Claude records store neither (absence means Claude, `version` stays 1), and `getIdentity` derives a Claude identity from `claudeSessionId` and returns null for an unknown harness; phase 2 adds the `Harness` descriptor (`gracefulExitInput`, `resumeArgs`, `transcriptPath`, no registry yet) behind the daemon's transcript-path, Stop and resume call sites; phase 3 moves Claude's launch out of `createNewSession` into `HarnessSession` (`createSession`), replaces the per-session gate, tracker and binder maps with one `harnessSessions` map (a `DecisionChannel` and `dispose()`), and adds the harness boundary ratchet test |
 | [0033](0033-codex-adapter-app-server.md) | (proposed) The Codex adapter goes through Codex's shared app-server, never typed keys: a hand-rolled RFC 6455 client over `node:net` (Bun 1.3.11 has no `ws+unix`, 1.3.13 does), which answers server requests only with results and never logs a frame body; fixtures are redacted by an allowlist scan; phase 5 (#1179) dual-emits `harness` and `harnessSessionId` on `hello_ack`, `question` and the session list, advertises `harnesses` on every ack, validates a create request's `harness` and `args` at the trust boundary and spawns the child with them after `--`, refuses resume on a Codex daemon, and says what a headless Codex create cannot know |
 | [0035](0035-protocol-version-and-capabilities.md) | `hello_ack` carries `protocolVersion` (an integer, 1, changed only by a breaking change) and `capabilities` (additive features a client cannot see in the messages, documented in `PROTOCOL_CAPABILITIES`; empty, since everything before is the baseline of version 1); clients decide with `hubSupport`, never by comparing `daemonVersion`; `serverVersion` is a constant kept for the WebView Mac app's decoder. 0034 is the relay v2 protocol, on the relay epic branch |
+| [0036](0036-workspaces.md) | (phase A) `create_session_request.workspace` names a repository and optionally a new branch and base; the hub checks the values as text, then with git (no shell, no inherited `GIT_*`), makes the worktree at `<parent>/remi-worktrees/<name>-<branch>` once a port is held, starts the session there and reports the workspace; new branches only, nothing deletes a worktree; `workspaces` is the first capability. Phases B (the workspace on the session list) and C (recent repositories) are planned |
 
 ## By area
 
@@ -59,6 +60,6 @@ another one closed.
 
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
-- **Protocol + contracts:** 0035, 0012, 0013, 0014, 0006
+- **Protocol + contracts:** 0035, 0036, 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033
 - **Process:** 0007, 0008, 0011

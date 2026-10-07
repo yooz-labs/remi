@@ -16,6 +16,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HarnessId } from '@remi/shared';
@@ -23,6 +24,7 @@ import type {
   CreateSessionResponseMessage,
   HelloAckMessage,
   ProtocolMessage,
+  WorkspaceRequest,
 } from '@remi/shared/protocol.ts';
 import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
@@ -128,7 +130,7 @@ interface Asked {
 /** Connect, send one create request built by the shipping factory, and wait for its response. */
 async function ask(
   r: Running,
-  options: { harness?: unknown; args?: unknown; directory?: unknown } = {},
+  options: { harness?: unknown; args?: unknown; directory?: unknown; workspace?: unknown } = {},
 ): Promise<Asked> {
   const { ws, received } = await connectAndHello(r.hub.port);
   try {
@@ -136,6 +138,7 @@ async function ask(
     const request = createCreateSessionRequest(directory as string | undefined, {
       harness: options.harness as HarnessId | undefined,
       args: options.args as readonly string[] | undefined,
+      workspace: options.workspace as WorkspaceRequest | undefined,
     });
     ws.send(serialize(request));
     const isResponse = (m: ProtocolMessage): m is CreateSessionResponseMessage =>
@@ -266,14 +269,51 @@ describe('a hub creating a session for a harness (#1179)', () => {
     ).toEqual(['claude']);
   }, 60000);
 
-  test("the hub's session-less ack names the protocol version and the capabilities, none yet (#1237)", async () => {
+  test("the hub's session-less ack names the protocol version and the capabilities (#1237, #1236)", async () => {
     const r = await startHub({ claude: true });
     const { ws, received } = await connectAndHello(r.hub.port);
     ws.close();
     const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
     expect(ack?.sessionId).toBeNull();
     expect(ack?.protocolVersion).toBe(1);
-    expect(ack?.capabilities).toEqual([]);
+    expect(ack?.capabilities).toEqual(['workspaces']);
+  }, 60000);
+
+  test('a workspace request: the hub makes the worktree and the agent starts in it (#1236)', async () => {
+    const r = await startHub({ claude: true });
+    const git = (cwd: string, ...args: string[]): string => {
+      const result = spawnSync(
+        'git',
+        ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', ...args],
+        { cwd, encoding: 'utf-8' },
+      );
+      if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
+      return result.stdout.trim();
+    };
+    const repo = path.join(fs.realpathSync(r.hub.work), 'project');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'hello\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'first');
+    const head = git(repo, 'rev-parse', 'HEAD');
+
+    const { ack, response } = await ask(r, {
+      directory: repo,
+      workspace: { repository: repo, worktree: { branch: 'feature/one' } },
+    });
+    expect(ack.capabilities).toEqual(['workspaces']);
+    expect(response.success, why(r, response)).toBe(true);
+    const dir = path.join(path.dirname(repo), 'remi-worktrees', 'project-feature-one');
+    expect(response.workspace).toEqual({
+      repository: repo,
+      directory: dir,
+      worktree: { branch: 'feature/one', base: head },
+    });
+    // The child's agent runs in the worktree, on the new branch.
+    await waitForArgv(r.agents.claudeDir);
+    expect(fs.readFileSync(path.join(r.agents.claudeDir, 'cwd'), 'utf-8').trim()).toBe(dir);
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/one');
   }, 60000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {

@@ -97,6 +97,8 @@ export type {
   TranscriptLoadCompleteMessage,
   TranscriptUsage,
   CreateSessionRequestMessage,
+  WorkspaceRequest,
+  SessionWorkspace,
   CreateSessionResponseMessage,
   TerminalResizeMessage,
   AuthChallengeMessage,

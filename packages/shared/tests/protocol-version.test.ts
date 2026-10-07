@@ -23,8 +23,9 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
     ]);
   });
 
-  test('the registry starts empty: what predates #1237 is the baseline of version 1', () => {
-    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual([]);
+  test('the registry documents workspaces, the first capability (#1236): nothing older is in it', () => {
+    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual(['workspaces']);
+    expect(PROTOCOL_CAPABILITIES['workspaces']).toBe('start a session in a new git worktree');
   });
 });
 
@@ -48,6 +49,19 @@ describe('hubSupport (#1237)', () => {
       missing: ['example.feature'],
       message:
         "This machine's remi (0.7.16) cannot example.feature. Update remi on that machine and restart it.",
+    });
+  });
+
+  test('a missing capability the registry documents is named by what it does (#1236)', () => {
+    expect(hubSupport(legacy, ['workspaces'])).toEqual({
+      supported: false,
+      reason: 'capabilities',
+      missing: ['workspaces'],
+      message:
+        "This machine's remi (0.7.16) cannot start a session in a new git worktree. Update remi on that machine and restart it.",
+    });
+    expect(hubSupport({ ...current, capabilities: ['workspaces'] }, ['workspaces'])).toEqual({
+      supported: true,
     });
   });
 

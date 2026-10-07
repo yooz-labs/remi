@@ -195,13 +195,13 @@ describe('a Claude daemon on the wire (#1179)', () => {
     }
   }, 40000);
 
-  test('hello_ack names the protocol version and the capabilities, none yet (#1237)', async () => {
+  test('hello_ack names the protocol version and the capabilities (#1237, #1236)', async () => {
     const d = await daemon();
     const { ws, received } = await connectAndHello(d.port);
     try {
       const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
       expect(ack?.protocolVersion).toBe(1);
-      expect(ack?.capabilities).toEqual([]);
+      expect(ack?.capabilities).toEqual(['workspaces']);
     } finally {
       ws.close();
     }
