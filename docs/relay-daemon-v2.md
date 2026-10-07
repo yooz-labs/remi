@@ -118,8 +118,10 @@ reset). The full 2 s is spent only when the far side does not close: on `stop()`
 awaits every pipe still in its grace), on a revocation made outside the hub (the
 authorized keys edited, caught at the pipe's next send) and with a client that ignores
 the BYE. A revoke through the hub also tells the Worker, which drops the client's
-socket at the edge and the pipe with it, so that wait ends early. While the hub waits, it reads only the peer's reply
-BYE, so the stream ends clean; nothing the peer sends after the hub's BYE is acted on.
+socket at the edge and the pipe with it, so that wait ends early. While the hub waits,
+it opens each binary frame the peer sends: the reply BYE ends the stream clean, a data
+frame is dropped, and nothing is acted on; a frame that fails to open fails the
+channel, which ends the wait with the failure close (4400).
 `stop()` forgets the Worker control before closing it, since on 1.3.11 the control's
 close handler runs inside the close and would otherwise fail every pipe first. The
 hub's shutdown runs its push drain (2 s at most, #1223) beside the relay's stop, so
