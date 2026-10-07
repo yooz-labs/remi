@@ -24,9 +24,14 @@ import type {
   CreateSessionResponseMessage,
   HelloAckMessage,
   ProtocolMessage,
+  SessionListResponseMessage,
   WorkspaceRequest,
 } from '@remi/shared/protocol.ts';
-import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
+import {
+  createCreateSessionRequest,
+  createSessionListRequest,
+  serialize,
+} from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
@@ -314,6 +319,27 @@ describe('a hub creating a session for a harness (#1179)', () => {
     await waitForArgv(r.agents.claudeDir);
     expect(fs.readFileSync(path.join(r.agents.claudeDir, 'cwd'), 'utf-8').trim()).toBe(dir);
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/one');
+
+    // Phase B: the child's own session list names that workspace, read from git.
+    const child = await connectAndHello(response.port as number);
+    try {
+      let entry: { workspace?: unknown } | undefined;
+      await pollUntil(
+        () => {
+          child.ws.send(serialize(createSessionListRequest(false)));
+          const lists = child.received.filter(
+            (m): m is SessionListResponseMessage => m.type === 'session_list_response',
+          );
+          entry = lists.at(-1)?.sessions[0];
+          return entry?.workspace !== undefined;
+        },
+        15000,
+        'a session list entry with a workspace',
+      );
+      expect(entry?.workspace).toEqual({ repository: repo, directory: dir, branch: 'feature/one' });
+    } finally {
+      child.ws.close();
+    }
   }, 60000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {
