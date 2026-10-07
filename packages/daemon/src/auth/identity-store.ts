@@ -580,9 +580,7 @@ export class IdentityStore {
       if (record === undefined) return 'PAIRING_UNKNOWN';
       if (record.state === 'cancelled') return 'PAIRING_CANCELLED';
       if (record.claim !== null && record.claim.publicKey !== publicKey) {
-        if (record.state === 'claimed') {
-          save({ ...record, contested: record.contested + 1, lastContender: fingerprint });
-        }
+        save({ ...record, contested: record.contested + 1, lastContender: fingerprint });
         return 'PAIRING_USED';
       }
       if (record.state === 'rejected') return 'PAIRING_REJECTED';
