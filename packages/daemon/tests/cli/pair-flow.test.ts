@@ -290,6 +290,25 @@ describe('pairFlow (#1275)', () => {
     expect(env.store.listPendingKeys()).toHaveLength(0);
   });
 
+  test('a yes that arrives together with a stop signal does not approve', async () => {
+    const env = await setup();
+    const controller = new AbortController();
+    const flow = pairFlow(
+      deps(
+        env,
+        async () => {
+          controller.abort(143);
+          return 'y';
+        },
+        { signal: controller.signal },
+      ),
+    );
+    while (env.linkOf() === '') await Bun.sleep(10);
+    void env.phoneConnects(env.linkOf());
+    expect(await flow).toBe(143);
+    expect(env.store.isAuthorized(env.phone.publicKey, env.phone.fingerprint)).toBe(false);
+  });
+
   test('an abort while waiting exits with its code: 143 for SIGTERM', async () => {
     const env = await setup();
     const controller = new AbortController();
