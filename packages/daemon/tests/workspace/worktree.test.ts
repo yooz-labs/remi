@@ -377,9 +377,10 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('same');
   });
 
-  test('the time limit holds even when a hook outlives git: the call returns, and says so', async () => {
+  test('the time limit holds even when a hook outlives git: the call returns, and the hook is ended', async () => {
     const repo = makeRepo(root);
-    hook(repo, 'post-checkout', 'sleep 30');
+    const pidFile = path.join(root, 'hook.pid');
+    hook(repo, 'post-checkout', `echo $$ > '${pidFile}'; sleep 30`);
     const started = Date.now();
     const result = await prepareWorkspace(
       parsed({ repository: repo, worktree: { branch: 'slow' } }),
@@ -392,6 +393,10 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     if (result.ok) return;
     expect(result.error).toContain('took too long');
     expect(result.detail).toContain('timed out');
+    // The hook ran in git's process group, which was ended: after the grace period it is gone.
+    const hookPid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+    await Bun.sleep(2500);
+    expect(() => process.kill(hookPid, 0)).toThrow();
   }, 20000);
 
   test('a hook that fails after the worktree is made: the worktree is used, with a notice', async () => {
@@ -415,6 +420,44 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     const branch = 'b'.repeat(200);
     expect(await no({ repository: repo, worktree: { branch } })).toContain('too long');
     expect(git(repo, 'branch', '--list', branch)).toBe('');
+  });
+
+  test('a failed add that made nothing: the empty claim is removed, and no branch stays', async () => {
+    const repo = makeRepo(root);
+    // A stale ref lock makes git fail before it creates anything.
+    fs.writeFileSync(path.join(repo, '.git', 'refs', 'heads', 'locked.lock'), '');
+    const result = await prepareWorkspace(
+      parsed({ repository: repo, worktree: { branch: 'locked' } }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "git could not create the worktree; the host's remi log has the reason.",
+    );
+    expect(result.detail).toContain('removed the empty claim');
+    expect(fs.existsSync(path.join(root, 'remi-worktrees', 'project-locked'))).toBe(false);
+    expect(git(repo, 'branch', '--list', 'locked')).toBe('');
+  });
+
+  test('a failed add that made the branch: the refusal says the branch stays', async () => {
+    const repo = makeRepo(root);
+    // git makes the branch first, then fails to record the worktree.
+    const meta = path.join(repo, '.git', 'worktrees');
+    fs.mkdirSync(meta);
+    fs.chmodSync(meta, 0o500);
+    try {
+      const result = await prepareWorkspace(
+        parsed({ repository: repo, worktree: { branch: 'kept' } }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain('the branch it made stays');
+      expect(result.detail).toContain('the branch kept stays');
+      expect(git(repo, 'branch', '--list', 'kept')).toContain('kept');
+      expect(fs.existsSync(path.join(root, 'remi-worktrees', 'project-kept'))).toBe(false);
+    } finally {
+      fs.chmodSync(meta, 0o700);
+    }
   });
 
   test('a branch that is a prefix of an existing one, or the other way round, is refused by name', async () => {
