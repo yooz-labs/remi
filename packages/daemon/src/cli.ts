@@ -1272,9 +1272,30 @@ const spawningPorts = new Set<number>();
 // can push immediately, and a dead token pruned on APNS rejection stays pruned.
 // `deviceTokens` is the store's live in-memory map (stable reference), so all the
 // existing Map consumers are unchanged.
-const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+const pushLeaseMs = remiConfig.notifications.push_lease_hours * 3_600_000;
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'), {
+  leaseMs: pushLeaseMs,
+});
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
+// #1254: the token each live connection registered. While the phone stays
+// connected its push lease is renewed, and when the connection closes the
+// lease counts from that moment (the explicit disconnect ends it at once, via
+// `unregister_device_token`). The app re-registers on every new connection.
+const connectionTokens = new Map<UUID, string>();
+const pushLeaseTouchTimer = setInterval(
+  () => {
+    if (connectionTokens.size > 0) deviceTokenStore.touch(connectionTokens.values());
+  },
+  pushLeaseMs > 0 ? Math.min(15 * 60_000, Math.max(1000, pushLeaseMs / 3)) : 15 * 60_000,
+);
+pushLeaseTouchTimer.unref?.();
+const forgetConnectionToken = (connectionId: UUID): void => {
+  const token = connectionTokens.get(connectionId);
+  if (token === undefined) return;
+  connectionTokens.delete(connectionId);
+  deviceTokenStore.touch([token]);
+};
 
 // Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
 // (#672): shared by every session's hook bridge so its escalation rate-limit
@@ -1769,11 +1790,20 @@ const ptyMessageFanout = createPtyMessageFanout({
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
-  registerDeviceToken: (token, platform, connectionId) =>
-    deviceTokenStore.register(token, platform, connectionId),
+  // The phone's preferences are stored with the token (#1258: they were dropped
+  // here, so a muted push class kept arriving).
+  registerDeviceToken: (token, platform, connectionId, pushPrefs) => {
+    deviceTokenStore.register(token, platform, connectionId, pushPrefs);
+    connectionTokens.set(connectionId, token);
+  },
   // #690: explicit user removal of this server from the phone app. Never
   // fires on a mere disconnect/app suspension — those must keep pushing.
-  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
+  unregisterDeviceToken: (token) => {
+    deviceTokenStore.unregister(token);
+    for (const [connectionId, held] of connectionTokens) {
+      if (held === token) connectionTokens.delete(connectionId);
+    }
+  },
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
@@ -2128,6 +2158,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onPeerDisconnect: hubClientTracker
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
+  onConnectionClosed: forgetConnectionToken,
 });
 
 const sharedEvents = {
@@ -2402,6 +2433,7 @@ async function cleanup(): Promise<void> {
     updateWatcher.stop();
     updateWatcher = null;
   }
+  clearInterval(pushLeaseTouchTimer);
 
   if (mdnsPublisher) {
     try {

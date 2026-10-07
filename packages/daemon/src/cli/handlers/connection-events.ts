@@ -68,6 +68,9 @@ export interface ConnectionHandlerDeps {
    */
   onPeerConnect?: ((connectionId: UUID, metadata: AdapterMetadata) => void) | undefined;
   onPeerDisconnect?: ((connectionId: UUID) => void) | undefined;
+  /** Any connection closed (#1254): the daemon marks the device behind it as
+   *  seen now, so its push lease counts from the moment it left. */
+  onConnectionClosed?: ((connectionId: UUID) => void) | undefined;
 }
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
@@ -88,6 +91,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     remiVersion,
     onPeerConnect,
     onPeerDisconnect,
+    onConnectionClosed,
   } = deps;
 
   /** Every hello_ack names the daemon's version and the harnesses it can start (#539, #1179). */
@@ -218,6 +222,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       untrackConnection(connectionId);
       onConnectionRemoved();
       onPeerDisconnect?.(connectionId);
+      onConnectionClosed?.(connectionId);
     },
   };
 }
