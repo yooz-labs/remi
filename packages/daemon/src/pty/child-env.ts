@@ -2,14 +2,20 @@
  * The environment the agent's process gets (#1249).
  *
  * The harness (Claude Code, Codex) and every command it runs can read its
- * environment, so remi's own secrets never reach it: the identity passphrase,
- * the push bearer and the Telegram bot token. They are removed after the
- * session's own `env` is laid over `process.env`, so no launch path can hand
- * one through. A hub-spawned child daemon is not a harness and is spawned
- * elsewhere (`spawnDaemon`), so it still receives what it needs.
+ * environment, so remi's own secrets are not inherited by it: the identity
+ * passphrase, the push bearer and the Telegram bot token. They are removed
+ * after the session's own `env` is laid over `process.env`, so no launch path
+ * can hand one through. A hub-spawned child daemon is not a harness and is
+ * spawned elsewhere (`spawnDaemon`), so it still receives what it needs.
  *
- * `pty-child-env-secrets.test.ts` fails if the daemon reads a secret-named
- * variable that is not listed here.
+ * This stops inheritance only. A process running as the same user can still
+ * read the daemon's own environment and arguments (`ps eww`, Linux's
+ * `/proc/<pid>/environ`); keeping secrets out of the environment is #1252.
+ * For Codex it covers the TUI remi launches; the commands Codex runs execute
+ * in its shared app-server, which keeps the environment it was started with.
+ *
+ * `pty-child-env-secrets.test.ts` fails if a secret-named string literal
+ * under `packages/daemon/src` is not listed here.
  */
 
 /** The environment variables remi reads that are secrets. */
