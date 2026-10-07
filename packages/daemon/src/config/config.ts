@@ -77,6 +77,13 @@ export interface NotificationsConfig {
    */
   readonly turn_complete_min_seconds: number;
   /**
+   * How long a phone keeps getting pushes after it was last seen (#1254, owner
+   * decision 2026-10-06). The phone renews it by connecting and by staying
+   * connected; its explicit disconnect ends it at once. 0 means it never
+   * expires. Hours; fractions are allowed.
+   */
+  readonly push_lease_hours: number;
+  /**
    * Subagent (foreground or background) commands worth an informational
    * push when Claude ran them without asking (its own allow rules permitted
    * them), sent when the call finishes (#807, #1155,
@@ -237,6 +244,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // it, short enough to still be useful for "went to get coffee" absences.
     // Personal preference varies a lot here, hence configurable.
     turn_complete_min_seconds: 60,
+    // A phone not seen for a day stops getting pushes (#1254).
+    push_lease_hours: 24,
     // Subagent commands (foreground or background) worth a heads-up when
     // Claude ran them without asking (#807, #1155; a call that prompts is
     // shown as its prompt).
@@ -499,6 +508,15 @@ function validateNotifications(cfg: NotificationsConfig, configPath: string): vo
       `Invalid notifications.turn_complete_min_seconds in ${configPath}: must be a non-negative number (seconds), got ${typeof cfg.turn_complete_min_seconds === 'string' ? `string "${cfg.turn_complete_min_seconds}"` : typeof cfg.turn_complete_min_seconds}. Example: turn_complete_min_seconds = 60`,
     );
   }
+  if (
+    typeof cfg.push_lease_hours !== 'number' ||
+    !Number.isFinite(cfg.push_lease_hours) ||
+    cfg.push_lease_hours < 0
+  ) {
+    throw new Error(
+      `Invalid notifications.push_lease_hours in ${configPath}: must be a non-negative number (hours; 0 never expires), got ${typeof cfg.push_lease_hours === 'string' ? `string "${cfg.push_lease_hours}"` : typeof cfg.push_lease_hours}. Example: push_lease_hours = 24`,
+    );
+  }
 }
 
 /**
@@ -687,6 +705,11 @@ authorized_user_ids = []
 # actually done yet) or with no device registered.
 on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
 turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
+# A phone that has not connected for this many hours stops getting pushes from
+# this machine; it is renewed whenever the phone connects or stays connected,
+# and ends at once when the phone disconnects from this machine (#1254).
+# 0 means pushes never expire.
+push_lease_hours = ${DEFAULT_CONFIG.notifications.push_lease_hours}
 # Subagent commands (foreground or background) worth an informational push
 # when Claude ran them without asking (your allow rules permitted them); sent
 # when the command finishes (#807). A command that asks for permission shows
@@ -774,6 +797,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[notifications]');
   lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
   lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
+  lines.push(`  push_lease_hours = ${config.notifications.push_lease_hours}`);
   lines.push(
     `  subagent_alert = [${config.notifications.subagent_alert.map((s) => `"${s}"`).join(', ')}]`,
   );
