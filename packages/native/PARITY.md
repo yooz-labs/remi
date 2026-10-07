@@ -18,7 +18,7 @@ native targets now, not planned behavior.
 | Add/persist direct machines | Yes | Yes | Yes | Native apps can forget endpoints without stopping their remote sessions. Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
-| Kill/resume session | Yes | Kill only | Kill only | Native apps terminate daemon-owned sessions with confirmation. Hub resume remains unsupported (#1129), so native does not offer a misleading resume action. |
+| Kill/resume session | Yes | Kill only | Kill only | Native apps terminate daemon-owned sessions with confirmation. A hub resumes a session by starting a child daemon since #1129 (the response names its port), but native does not offer Resume yet (#1309). |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
 | Haptics and notification preferences | Yes | Yes | N/A | iPhone preferences control local question alerts, sounds, and answer feedback. |
 | Relay connection | No shipped client path | No | No | Out of scope until relay v2 (#1242). |
