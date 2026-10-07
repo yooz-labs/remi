@@ -79,6 +79,15 @@ describe('recentRepositories (#1236 phase C)', () => {
     expect(result.map((r) => r.repository)).toEqual([alpha]);
   });
 
+  test('a linked worktree of a bare repository is left out, as phase A refuses it', async () => {
+    const seed = makeRepo(root, 'seed');
+    const bare = path.join(root, 'bare.git');
+    git(root, 'clone', '-q', '--bare', seed, bare);
+    const linked = path.join(root, 'from-bare');
+    git(bare, 'worktree', 'add', '-q', '-b', 'work', linked);
+    expect(await recentRepositories([at(linked, '2026-10-07T10:00:00.000Z')])).toEqual([]);
+  });
+
   test('a submodule is a repository of its own', async () => {
     const lib = makeRepo(root, 'lib');
     const sup = makeRepo(root, 'super');

@@ -54,8 +54,8 @@ export async function recentRepositories(
     } catch {
       continue;
     }
+    // Past the deadline every git call returns at once, and the check above ends the walk.
     const lookup = await resolveRepository(git, dir, deadlineAt);
-    if (lookup.kind === 'unknown' && lookup.result.timedOut) break;
     if (lookup.kind !== 'repository' || lookup.mainIsBare) continue;
     const { repository } = lookup;
     if (seenRepositories.has(repository) || !plain(repository)) continue;

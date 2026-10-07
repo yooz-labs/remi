@@ -81,6 +81,13 @@ describe('recent_repositories_request (#1236 phase C)', () => {
     expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toEqual([]);
   });
 
+  test('a store that cannot be read still answers, with an empty list', async () => {
+    fs.writeFileSync(path.join(root, 'sessions.json'), '{ not json');
+    await handlers().onRecentRepositoriesRequest(CID, REQ, undefined);
+    expect(sent).toHaveLength(1);
+    expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toEqual([]);
+  });
+
   test('the limit the client asked for is applied', async () => {
     for (let i = 0; i < 4; i++) {
       record(
