@@ -371,10 +371,17 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }
       peer.receiveTail = peer.receiveTail
         .then(async () => {
+          // Three checks keep a frame from acting after this peer stops being current: this
+          // `active()` guard, the `current()` check after the ready stage's receive and the one
+          // at the top of `route()`. They are redundant on purpose; at the ready stage removing
+          // this guard alone changes nothing a test can see. The branch below exists for a peer
+          // that is no longer enrolled: the ready stage's enrollment check would refuse its reply
+          // BYE before the channel could read it.
           if (!this.active(peer)) {
             // In an orderly close's grace (#1225) the peer's reply BYE still arrives: open it so
             // the stream ends clean. Only the channel reads it; nothing after the hub's BYE is
-            // acted on, and a data frame here is opened and dropped.
+            // acted on, a data frame here is opened and dropped, and a frame that fails to open
+            // fails the channel, which closes the pipe with the failure close.
             if (peer.orderlyClosing && peer.channel && typeof event.data !== 'string')
               await peer.channel.receive(new Uint8Array(event.data)).catch(() => undefined);
             return;
