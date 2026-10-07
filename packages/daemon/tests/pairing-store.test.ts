@@ -208,6 +208,30 @@ describe('pairing records (#1275)', () => {
     expect(store.readPairing(nonce)?.state).toBe('cancelled');
   });
 
+  test('a claim whose pending key expired is renewed when the same key presents the code again', async () => {
+    const { store, clock } = setup();
+    const a = await createIdentity();
+    const { nonce } = store.createPairing();
+    await store.claimPairing(nonce, a.publicKey, 'x');
+    clock.now += 600_001;
+    expect(store.listPendingKeys()).toHaveLength(0);
+    await expect(store.approvePairing(nonce, a.fingerprint)).rejects.toThrow();
+    expect(await store.claimPairing(nonce, a.publicKey, 'x')).toBe('CLAIMED');
+    expect(store.listPendingKeys().map((k) => k.fingerprint)).toEqual([a.fingerprint]);
+    await store.approvePairing(nonce, a.fingerprint);
+    expect(store.isAuthorized(a.publicKey, a.fingerprint)).toBe(true);
+  });
+
+  test('a record is kept for ten minutes after its code expires, then dropped', async () => {
+    const { store, clock } = setup();
+    const { nonce } = store.createPairing();
+    store.cancelPairing(nonce);
+    clock.now += 300_000 + 600_000 - 1;
+    expect(store.readPairing(nonce)?.state).toBe('cancelled');
+    clock.now += 1;
+    expect(store.readPairing(nonce)).toBeNull();
+  });
+
   test('peekPairing reads without the lock: it answers while another process holds it', async () => {
     const { dir, store } = setup();
     const { nonce } = store.createPairing();
@@ -256,6 +280,48 @@ describe('pairing records (#1275)', () => {
     fs.writeFileSync(file, JSON.stringify({ version: 1, pairings: [missing] }));
     expect(() => store.peekPairing(nonce)).toThrow();
   });
+
+  for (const other of ['reject', 'cancel'] as const) {
+    test(`approval and ${other} in two processes at once: one decision, consistent, every round`, async () => {
+      const worker = path.join(import.meta.dir, 'pairing-decision-worker.ts');
+      for (let round = 0; round < 5; round++) {
+        const { dir } = setup(Date.now());
+        const store = new IdentityStore(dir);
+        const a = await createIdentity();
+        const { nonce } = store.createPairing();
+        await store.claimPairing(nonce, a.publicKey, 'x');
+        fs.writeFileSync(
+          path.join(dir, 'race.json'),
+          JSON.stringify({ nonce, fingerprint: a.fingerprint }),
+        );
+        const actions = ['approve', other];
+        const procs = actions.map((action) =>
+          Bun.spawn([process.execPath, worker, dir, action], { stdout: 'pipe', stderr: 'pipe' }),
+        );
+        while (!actions.every((action) => fs.existsSync(path.join(dir, `ready-${action}`))))
+          await Bun.sleep(5);
+        fs.writeFileSync(path.join(dir, 'go'), '');
+        const [approve, decided] = await Promise.all(
+          procs.map(async (p) => {
+            await p.exited;
+            return (await new Response(p.stdout).text()).trim();
+          }),
+        );
+        const after = new IdentityStore(dir);
+        const authorized = after.isAuthorized(a.publicKey, a.fingerprint);
+        const state = after.readPairing(nonce)?.state;
+        const label = `round ${round}: approve ${approve}, ${other} ${decided}, ${state}`;
+        if (authorized) {
+          expect([approve, decided, state], label).toEqual(['done', 'refused', 'approved']);
+        } else {
+          const expected = other === 'reject' ? 'rejected' : 'cancelled';
+          expect([approve, decided, state], label).toEqual(['refused', 'done', expected]);
+          // A rejection removes the pending key; a cancel leaves it pending, as an ordinary key.
+          expect(after.listPendingKeys(), label).toHaveLength(other === 'reject' ? 0 : 1);
+        }
+      }
+    }, 60000);
+  }
 
   test('two processes claiming one code at once: exactly one wins, every round', async () => {
     const worker = path.join(import.meta.dir, 'pairing-store-worker.ts');
