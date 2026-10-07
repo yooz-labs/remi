@@ -1,6 +1,6 @@
 # ADR 0036: Workspaces, a session in a new worktree the hub creates
 
-**Status:** accepted for phase A (#1236, milestone "Protocol freeze"); phases B and C are planned below
+**Status:** accepted for phases A and B (#1236, milestone "Protocol freeze"); phase C is planned below
 **Date:** 2026-10-07
 **Owner:** Yahya
 
@@ -42,10 +42,17 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
    A worktree made for a session that then fails to start stays, and the failure's log line names it: nothing deletes a worktree (owner decision), and an unused one costs a directory.
 6. **The capability.** The daemon lists `workspaces` in `hello_ack.capabilities` (ADR 0035), the first capability: an older hub ignores `workspace` and starts the session in `directory`, so a client checks `hubSupport(ack, ['workspaces'])` first.
 
-## Phases B and C (planned)
+## Decision (phase B): the workspace on the session
 
-- **B, the workspace on the session:** every session-list entry says its repository, its directory and, in a linked worktree, its branch, read from git for the session's directory, whether the hub created it or a person did.
-- **C, recent repositories:** a request for the repositories of the hub's recent sessions, main worktrees only, most recent first, so the app can offer "new session in repository X on machine Y".
+7. **A daemon's own session-list entry carries `workspace`:** `{ repository, directory, branch }`, the repository's main worktree (a bare repository's own directory), the top level of the worktree the session's directory is in, and the branch checked out there (null when HEAD is detached).
+   It is read from git for the session's directory (`describeWorkspace`, `workspace/describe.ts`: `rev-parse --show-toplevel`, the first entry of `worktree list --porcelain -z`, `symbolic-ref --short -q HEAD`, with the same runner rules as phase A and a 5-second deadline), not remembered from a create request: a session a person started in a worktree is described too, and a branch the agent checks out later shows.
+   It is absent outside a repository, for git older than 2.36, when a path or the branch holds a control character, on transcript entries, and from an older daemon.
+8. **The list never waits on git.** `WorkspaceCache` answers from its last read at once and starts a read when it has none or the last is older than 10 seconds; reads of one directory never overlap. The registry asks once when the session registers, so the first read usually finishes before the first list; until it does, the entry has no `workspace`, and a branch change shows within about ten seconds of the next list.
+   The registry builds the entry for both the requested list and the live-sessions broadcast, so both carry it (the broadcast still lacks the harness identity: #1274).
+
+## Phase C (planned)
+
+- **Recent repositories:** a request for the repositories of the hub's recent sessions, main worktrees only, most recent first, so the app can offer "new session in repository X on machine Y".
 
 ## Consequences
 

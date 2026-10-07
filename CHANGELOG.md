@@ -12,6 +12,7 @@ All notable changes to Remi are documented here.
 - Only new branches, and nothing deletes a worktree: closing a session leaves its worktree in place.
 - The machine checks every value before git runs and runs git without a shell, with one 60-second limit that also ends the repository's hooks. A refusal says what was wrong (an invalid branch name, a branch that exists or conflicts with one, a base it cannot find) without naming anything on the machine; the remi log has git's reason. Two requests whose branches would share a directory cannot both go ahead. When a hook in the repository fails after the worktree is made, the session starts and the response says so. It needs git 2.36 or later on the machine.
 - A daemon that supports this lists the `workspaces` capability on `hello_ack`.
+- Each session in the session list says which repository, worktree and branch it runs in, read from git, so a worktree you made yourself and a branch the agent switches to both show (within about ten seconds).
 
 ### The protocol has a version, and a daemon says what it supports (#1237, [ADR 0035](.context/decisions/0035-protocol-version-and-capabilities.md))
 

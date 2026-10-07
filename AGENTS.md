@@ -714,7 +714,8 @@ The child starts in the worktree, and `create_session_response.workspace` says `
 A failed `git worktree add` that left a complete worktree on the branch (a hook failed) is used, with `notice` saying so; any other failure is refused, saying whether the branch stays, and the log lists what is left. The hub removes only its own empty claim.
 A refusal tells the client nothing it did not send; the log has git's reason, escaped.
 Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
-Not yet: the workspace on the session list (phase B) and a recent-repositories request (phase C).
+Phase B: a daemon's own session-list entry carries `workspace: {repository, directory, branch}` (branch null when HEAD is detached), read from git for the session's directory (`describeWorkspace`, `workspace/describe.ts`) so a worktree a person made and a branch checked out later both show. `WorkspaceCache` answers the list from its last read and refreshes an entry older than 10 seconds in the background; the registry primes it when the session registers, and until the first read finishes the entry has no `workspace`.
+Not yet: a recent-repositories request (phase C).
 
 ### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
 
