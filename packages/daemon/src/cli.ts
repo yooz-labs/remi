@@ -178,6 +178,7 @@ import {
   startLogFileSession,
   writeToLog,
 } from './cli/log-file.ts';
+import { guardLogFiles, logFilesBehind } from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -2487,6 +2488,21 @@ resolveShellPath({ log, error: logError }, harnessId === 'codex' ? 'codex' : 'cl
 if (cliDaemonMode) {
   console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
 
+  // A daemon or hub holds its stdout and stderr for its whole life, so it keeps
+  // the log files behind them bounded itself (#729): launchd's
+  // remi-stdout.log / remi-stderr.log, or the daemon.log `remi start` and the
+  // hub's children write to.
+  guardLogFiles(
+    logFilesBehind(
+      [1, 2],
+      [
+        path.join(REMI_DIR, 'daemon.log'),
+        path.join(REMI_DIR, 'remi-stdout.log'),
+        path.join(REMI_DIR, 'remi-stderr.log'),
+      ],
+    ),
+  );
+
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
     await registry.startAllExcept(['websocket']);
@@ -2793,7 +2809,9 @@ if (cliDaemonMode) {
   setPtyStdoutFd(1); // stdout file descriptor
 
   ensureRemiDir();
-  startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  const logSession = startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
+  // A wrapper session can run for days without reopening remi.log (#729).
+  if (logSession.path === LOG_FILE) guardLogFiles([LOG_FILE]);
 
   // Layer 1: Override console methods (catches Bun's native console path)
   const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));

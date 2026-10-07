@@ -16,7 +16,8 @@
  * capture of terminal-UI bytes, for example for the screen parser.
  *
  * Capture is best-effort: a write error disables it and logs ONCE, so a full disk
- * or a bad path can never disturb the live PTY.
+ * or a bad path can never disturb the live PTY. The file is bounded (#729):
+ * rotated at 10MB, with two backups kept.
  *
  * TEST CONTAMINATION (#934): unlike `REMI_HOOK_DEBUG`/`REMI_QUESTION_TRACE`,
  * this sink's destination is the env var's OWN value, not a fixed `~/.remi/*`
@@ -33,7 +34,7 @@
  * instead.
  */
 
-import { appendFileSync } from 'node:fs';
+import { appendBounded } from '../cli/log-rotation.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
 // Env is read lazily per call (not cached at import) so a process that sets
@@ -50,7 +51,8 @@ function record(dir: 'IN' | 'OUT', data: string | Uint8Array): void {
   if (!path || disabled) return;
   try {
     const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-    appendFileSync(path, `${dir} ${Date.now()} ${debugProvenance()} ${JSON.stringify(text)}\n`);
+    // Bounded like the other logs (#729): rotated at 10MB, two backups kept.
+    appendBounded(path, `${dir} ${Date.now()} ${debugProvenance()} ${JSON.stringify(text)}\n`);
   } catch (err) {
     disabled = true;
     // Loud-once: never silent, never recurring, never fatal to the PTY.

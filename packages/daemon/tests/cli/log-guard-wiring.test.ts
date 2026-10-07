@@ -19,7 +19,7 @@ function cliFrom(marker: string, length = 1500): string {
 describe('long-lived processes keep their logs bounded (#729)', () => {
   test('a daemon or hub guards the files behind its stdout and stderr', () => {
     const daemon = cliFrom('if (cliDaemonMode) {\n  console.log(serveMode');
-    expect(daemon).toMatch(/guardLogFiles\(\s*logFilesBehind\(\[1, 2\], \[/);
+    expect(daemon).toMatch(/guardLogFiles\(\s*logFilesBehind\(\s*\[1, 2\],\s*\[/);
     for (const name of ["'daemon.log'", "'remi-stdout.log'", "'remi-stderr.log'"]) {
       expect(daemon).toContain(name);
     }
