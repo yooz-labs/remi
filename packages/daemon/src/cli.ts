@@ -1263,26 +1263,33 @@ import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications. INTENTIONALLY persisted across
-// WebSocket disconnect — push notifications are the suspended-app path, so
-// dropping on disconnect breaks the only case they exist for. Cleanup happens
-// at process exit only. Issue #286.
+// Device tokens for push notifications. Kept across a WebSocket disconnect
+// (#286): push notifications are the suspended-app path, so dropping a token on
+// disconnect breaks the only case they exist for. They end on the explicit
+// removal (`unregister_device_token`), on an APNS rejection, or when the push
+// lease runs out (#1254).
 // Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
 // daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
 // can push immediately, and a dead token pruned on APNS rejection stays pruned.
 // `deviceTokens` is the store's live in-memory map (stable reference), so all the
-// existing Map consumers are unchanged.
+// existing Map consumers are unchanged. Every push path re-reads the file first
+// (`refreshFromDisk`), so a sibling's removal, mute (#1258) or expiry applies.
+//
+// #1254: `connectionTokens` holds the token each live connection registered.
+// While the phone stays connected its push lease is renewed and it never
+// expires here (`isLive`), and when the connection closes the lease counts
+// from that moment. The app re-registers on every new connection.
+const connectionTokens = new Map<UUID, string>();
 const pushLeaseMs = remiConfig.notifications.push_lease_hours * 3_600_000;
 const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'), {
   leaseMs: pushLeaseMs,
+  isLive: (token) => {
+    for (const held of connectionTokens.values()) if (held === token) return true;
+    return false;
+  },
 });
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
-// #1254: the token each live connection registered. While the phone stays
-// connected its push lease is renewed, and when the connection closes the
-// lease counts from that moment (the explicit disconnect ends it at once, via
-// `unregister_device_token`). The app re-registers on every new connection.
-const connectionTokens = new Map<UUID, string>();
 const pushLeaseTouchTimer = setInterval(
   () => {
     if (connectionTokens.size > 0) deviceTokenStore.touch(connectionTokens.values());
@@ -1305,6 +1312,7 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   liveSessionsRegistry,
   bindingStore,
   deviceTokens,
+  refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
   pushConfig: () => ({
     signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
     ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1330,6 +1338,8 @@ function deliverSubagentAlert(alert: SubagentAlert): void {
   // local record is what makes a silent background decision auditable.
   log(`[SubagentAlert] ${title} - ${body}`);
 
+  // A device removed or expired by a sibling daemon gets nothing (#1259 review).
+  deviceTokenStore.refreshFromDisk();
   if (deviceTokens.size === 0) return;
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   for (const dt of deviceTokens.values()) {
@@ -1399,7 +1409,11 @@ const turnEvents = createTurnEventSink({
     onTurnComplete: remiConfig.notifications.on_turn_complete,
     turnCompleteMinSeconds: remiConfig.notifications.turn_complete_min_seconds,
   }),
-  deviceTokens: () => deviceTokens.values(),
+  // Read fresh, so a sibling's mute (#1258) or an expired lease (#1254) applies.
+  deviceTokens: () => {
+    deviceTokenStore.refreshFromDisk();
+    return deviceTokens.values();
+  },
   sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,
   notifiers: sessionNotifiers,
   signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,

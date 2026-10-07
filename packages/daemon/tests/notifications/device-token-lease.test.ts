@@ -124,16 +124,17 @@ describe('the push lease (#1254)', () => {
 });
 
 describe('sibling daemons share the newest registration and the latest sighting (#1258, #1254)', () => {
+  // Every timestamp is in the past: a future one is clamped to now on load.
   test("a sibling's newer registration wins, with its preferences", () => {
+    const mine = Date.now() - 10_000;
+    seed([entry('t1', mine, { connectionId: 'c1', lastSeenAt: mine })]);
     const store = new DeviceTokenStore(file, { leaseMs: LEASE });
     store.load();
-    store.register('t1', 'ios', 'c1');
-    const mine = store.map.get('t1')?.registeredAt ?? 0;
     // A sibling daemon re-registered the same token later, with the phone's new preferences.
     seed([
-      entry('t1', mine + 1000, {
+      entry('t1', mine + 5000, {
         connectionId: 'c2',
-        lastSeenAt: mine + 1000,
+        lastSeenAt: mine + 5000,
         pushPrefs: { questions: true, turnComplete: false, harnessDenied: true, turnFailed: true },
       }),
     ]);
@@ -149,10 +150,10 @@ describe('sibling daemons share the newest registration and the latest sighting 
   });
 
   test("a sibling's later sighting of the same registration is kept, not overwritten", () => {
+    const registeredAt = Date.now() - 10_000;
+    seed([entry('t1', registeredAt, { connectionId: 'c1', lastSeenAt: registeredAt })]);
     const store = new DeviceTokenStore(file, { leaseMs: LEASE });
     store.load();
-    store.register('t1', 'ios', 'c1');
-    const registeredAt = store.map.get('t1')?.registeredAt ?? 0;
     const seenLater = registeredAt + 5000;
     seed([entry('t1', registeredAt, { connectionId: 'c1', lastSeenAt: seenLater })]);
 
@@ -194,6 +195,14 @@ describe('lease edges (#1259 review)', () => {
     store.load();
 
     expect(store.map.has('bogus')).toBe(false);
+  });
+
+  test('a registration time that is not a number counts as expired, so a malformed entry stops pushes', () => {
+    seed([entry('broken', Date.now()), { ...entry('malformed', 0), registeredAt: 'now' }]);
+    const store = new DeviceTokenStore(file, { leaseMs: LEASE });
+    store.load();
+
+    expect([...store.map.keys()]).toEqual(['broken']);
   });
 
   test('a lastSeenAt in the future is not trusted to keep a token alive forever', () => {

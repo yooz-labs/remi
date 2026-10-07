@@ -79,7 +79,9 @@ export interface NotificationsConfig {
   /**
    * How long a phone keeps getting pushes after it was last seen (#1254, owner
    * decision 2026-10-06). The phone renews it by connecting and by staying
-   * connected; its explicit disconnect ends it at once. 0 means it never
+   * connected, and the lease counts from when its connection closed;
+   * disconnecting the machine in the app (`unregister_device_token`, sent only
+   * while the machine is reachable) ends it at once. 0 means it never
    * expires. Hours; fractions are allowed.
    */
   readonly push_lease_hours: number;
@@ -705,9 +707,9 @@ authorized_user_ids = []
 # actually done yet) or with no device registered.
 on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
 turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
-# A phone that has not connected for this many hours stops getting pushes from
-# this machine; it is renewed whenever the phone connects or stays connected,
-# and ends at once when the phone disconnects from this machine (#1254).
+# A phone stops getting pushes from this machine this many hours after it was
+# last connected; staying connected renews it (#1254). Disconnecting this
+# machine in the app ends it at once, if the machine is reachable then.
 # 0 means pushes never expire.
 push_lease_hours = ${DEFAULT_CONFIG.notifications.push_lease_hours}
 # Subagent commands (foreground or background) worth an informational push

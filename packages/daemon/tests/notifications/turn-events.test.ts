@@ -493,7 +493,8 @@ describe('cli.ts wires the sink (source pins)', () => {
     const call = callFrom('createTurnEventSink({');
     expect(call).toContain('remiConfig.notifications.on_turn_complete');
     expect(call).toContain('remiConfig.notifications.turn_complete_min_seconds');
-    expect(call).toContain('deviceTokens: () => deviceTokens.values(),');
+    // The same devices, read after a refresh of the shared file (#1259 review).
+    expect(call).toMatch(/deviceTokens: \(\) => \{[^}]*return deviceTokens\.values\(\);\s*\},/);
     expect(call).toContain(
       'sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,',
     );
