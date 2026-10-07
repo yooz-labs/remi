@@ -9,11 +9,12 @@ struct MacLiveRootView: View {
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
     @State private var showingNewSession = false
     @State private var showingAddMachine = false
+    @State private var pendingMachineRemoval: MachineState?
 
     var body: some View {
         Group {
             if store.machines.isEmpty {
-                MacFirstRunView()
+                MacFirstRunView(onAddMachine: { showingAddMachine = true })
             } else {
                 NavigationSplitView {
                     List(store.machines, selection: machineSelection) { machine in
@@ -22,6 +23,11 @@ struct MacLiveRootView: View {
                             Text(statusText(machine.status)).font(.caption).foregroundStyle(.secondary)
                         }
                         .tag(machine.id)
+                        .contextMenu {
+                            Button("Remove machine", systemImage: "trash", role: .destructive) {
+                                pendingMachineRemoval = machine
+                            }
+                        }
                     }
                     .navigationTitle("Remi")
                     .toolbar {
@@ -141,6 +147,25 @@ struct MacLiveRootView: View {
                     workspace: workspace
                 )
             }
+        }
+        .confirmationDialog(
+            "Remove \(pendingMachineRemoval?.displayName ?? "machine")?",
+            isPresented: Binding(
+                get: { pendingMachineRemoval != nil },
+                set: { if !$0 { pendingMachineRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove machine", role: .destructive) {
+                guard let machine = pendingMachineRemoval else { return }
+                store.removeMachine(machine.endpoint)
+                MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+                pendingMachineRemoval = nil
+                reconcileNavigation()
+            }
+            Button("Cancel", role: .cancel) { pendingMachineRemoval = nil }
+        } message: {
+            Text("Remi will forget this endpoint and its cached conversations on this Mac. Sessions on the machine keep running.")
         }
     }
 

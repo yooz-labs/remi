@@ -146,6 +146,9 @@ public final class MachineStore {
     }
 
     public func removeMachine(_ endpoint: MachineEndpoint) {
+        let removedMachine = machines.first { $0.endpoint == endpoint }
+        let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
+        let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
         machines.removeAll { $0.endpoint == endpoint }
         let endpoints = parentByConnection.compactMap { connection, parent in
             parent == endpoint ? connection : nil
@@ -157,6 +160,17 @@ public final class MachineStore {
             parentByConnection[child] = nil
         }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
+        sessionByKillRequest = sessionByKillRequest.filter { _, sessionID in
+            !sessionIDs.contains(sessionID)
+        }
+        for sessionID in sessionIDs {
+            transcriptsBySession[sessionID] = nil
+            sessionViewsBySession[sessionID] = nil
+        }
+        for viewID in viewIDs {
+            transcriptsBySession[viewID] = nil
+        }
+        recentRepositoriesByMachine[endpoint.id] = nil
     }
 
     public func retryApproval(for endpoint: MachineEndpoint) {

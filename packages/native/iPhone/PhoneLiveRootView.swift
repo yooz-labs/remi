@@ -33,6 +33,7 @@ struct PhoneLiveRootView: View {
                 onTerminateSession: store.terminateSession,
                 onCreateSession: createSession,
                 onAddMachine: addMachine,
+                onRemoveMachine: removeMachine,
                 onDismissError: store.clearLatestError
             )
         }
@@ -233,6 +234,12 @@ struct PhoneLiveRootView: View {
 
     private func addMachine(_ endpoint: MachineEndpoint) {
         store.addMachine(endpoint)
+        MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+    }
+
+    private func removeMachine(_ machineID: String) {
+        guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
+        store.removeMachine(machine.endpoint)
         MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
     }
 

@@ -25,6 +25,7 @@ struct HomeScreen: View {
     let onTerminateSession: (String) -> Void
     let onCreateSession: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
+    let onRemoveMachine: (String) -> Void
     let onDismissError: () -> Void
 
     init(
@@ -47,6 +48,7 @@ struct HomeScreen: View {
         onTerminateSession: @escaping (String) -> Void = { _ in },
         onCreateSession: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void = { _, _, _, _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
+        onRemoveMachine: @escaping (String) -> Void = { _ in },
         onDismissError: @escaping () -> Void = {}
     ) {
         self.questions = questions
@@ -68,6 +70,7 @@ struct HomeScreen: View {
         self.onTerminateSession = onTerminateSession
         self.onCreateSession = onCreateSession
         self.onAddMachine = onAddMachine
+        self.onRemoveMachine = onRemoveMachine
         self.onDismissError = onDismissError
     }
 
@@ -116,7 +119,7 @@ struct HomeScreen: View {
                 }
 
                 if !machines.isEmpty {
-                    MachinesSection(machines: machines)
+                    MachinesSection(machines: machines, onRemove: onRemoveMachine)
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -368,14 +371,48 @@ private struct SessionsSection: View {
 
 private struct MachinesSection: View {
     let machines: [RemiMachineSummary]
+    let onRemove: (String) -> Void
+    @State private var pendingRemoval: RemiMachineSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             Text("Machines").font(.title2.weight(.bold))
             ForEach(machines) { machine in
-                RemiMachineRow(machine: machine)
+                HStack(spacing: RemiTheme.Spacing.s) {
+                    RemiMachineRow(machine: machine)
+                    Menu {
+                        Button("Remove machine", systemImage: "trash", role: .destructive) {
+                            pendingRemoval = machine
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .frame(
+                                width: RemiTheme.Size.minimumTapTarget,
+                                height: RemiTheme.Size.minimumTapTarget
+                            )
+                            .contentShape(.rect)
+                    }
+                    .accessibilityLabel("Machine actions")
+                }
                 if machine.id != machines.last?.id { Divider() }
             }
+        }
+        .alert(
+            "Remove machine?",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            presenting: pendingRemoval
+        ) { machine in
+            Button("Remove", role: .destructive) {
+                onRemove(machine.id)
+                pendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRemoval = nil }
+        } message: { machine in
+            Text("Remi will forget \(machine.name) and its cached conversations on this device. Sessions on the machine keep running.")
         }
     }
 }
