@@ -25,4 +25,23 @@ describe('disposeAndDismiss (#1223)', () => {
     });
     expect(events).toEqual(['dispose', `dismiss ${B}`]);
   });
+
+  test('a disposal that throws is reported, and the held cards are still dismissed (#1268 review)', () => {
+    const dismissed: UUID[] = [];
+    const reported: unknown[] = [];
+    const failure = new Error('dispose failed');
+    expect(() =>
+      disposeAndDismiss({
+        dispose: () => {
+          throw failure;
+        },
+        pendingQuestionIds: [A, B],
+        alreadyResolved: new Set<UUID>(),
+        dismiss: (id) => dismissed.push(id),
+        onDisposeError: (error) => reported.push(error),
+      }),
+    ).not.toThrow();
+    expect(dismissed).toEqual([A, B]);
+    expect(reported).toEqual([failure]);
+  });
 });
