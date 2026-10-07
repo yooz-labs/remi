@@ -1754,6 +1754,12 @@ function App() {
       case 'raw_pty_output':
         break;
 
+      // #1236 phase C: the native new-session sheet asks for the hub's recent repositories; the
+      // web client has no such sheet yet, so it neither sends the request nor reads the answer.
+      case 'recent_repositories_request':
+      case 'recent_repositories_response':
+        break;
+
       default:
         assertNever(message);
     }

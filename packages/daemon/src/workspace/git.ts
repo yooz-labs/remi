@@ -119,8 +119,9 @@ export function outputLines(stdout: string): string[] {
 /**
  * Where a directory sits in git (#1236, #1276 review): in a worktree (`top` is that worktree's top
  * level, `repository` the repository's main worktree), in a bare repository, in no repository (or
- * inside a `.git` directory), or unknown because git could not answer (a timeout, git older than
- * 2.36, a repository git does not trust).
+ * inside a `.git` directory), ambiguous because a path git printed holds a newline (so its
+ * line-based answer has no single reading; #1282 review), or unknown because git could not answer
+ * (a timeout, git older than 2.36, a repository git does not trust).
  *
  * A directory whose git directory is the common directory is its own repository: a main worktree, a
  * submodule (whose git directory lives under the superproject's `.git/modules`) or a checkout with a
@@ -136,6 +137,7 @@ export type RepositoryLookup =
     }
   | { readonly kind: 'bare'; readonly path: string }
   | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' }
   | { readonly kind: 'unknown'; readonly result: GitResult };
 
 /** A failed lookup: no repository when git says so, otherwise unknown. */
@@ -162,9 +164,13 @@ export async function resolveRepository(
     deadlineAt,
   );
   if (info.code !== 0) return failedLookup(info);
-  const [bare, gitDir, commonDir] = outputLines(info.stdout);
-  if (gitDir === undefined || commonDir === undefined) return { kind: 'unknown', result: info };
-  if (bare === 'true') return { kind: 'bare', path: gitDir };
+  // One line per answer, unless a path holds a newline and shifts them. Then the paths here are
+  // not read: the NUL-separated worktree list below names the repository exactly.
+  const infoLines = outputLines(info.stdout);
+  const aligned = infoLines.length === 3;
+  const [bare, gitDir, commonDir] = infoLines;
+  if (bare === 'true')
+    return aligned ? { kind: 'bare', path: gitDir as string } : { kind: 'ambiguous' };
 
   const top = await runGit(git, dir, ['rev-parse', '--show-toplevel'], deadlineAt);
   if (top.code !== 0) {
@@ -172,9 +178,11 @@ export async function resolveRepository(
     if (!top.timedOut && top.stderr.includes('must be run in a work tree')) return { kind: 'none' };
     return failedLookup(top);
   }
-  const topLevel = outputLines(top.stdout)[0];
-  if (topLevel === undefined) return { kind: 'unknown', result: top };
-  if (gitDir === commonDir) {
+  // The directory's own top level has no unambiguous reading when it holds a newline.
+  const topLines = outputLines(top.stdout);
+  if (topLines.length !== 1) return { kind: 'ambiguous' };
+  const topLevel = topLines[0] as string;
+  if (aligned && gitDir === commonDir) {
     return { kind: 'repository', top: topLevel, repository: topLevel, mainIsBare: false };
   }
 

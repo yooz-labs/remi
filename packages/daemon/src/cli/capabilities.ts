@@ -9,6 +9,8 @@
  * version 1.
  *
  * - `workspaces` (#1236, ADR 0036): `create_session_request.workspace`, a session
- *   in a new worktree the daemon creates (`cli/handlers/create-session-events.ts`).
+ *   in a new worktree the daemon creates (`cli/handlers/create-session-events.ts`),
+ *   and `recent_repositories_request`, the repositories of recent sessions to offer
+ *   for one (`cli/handlers/recent-repositories-events.ts`).
  */
 export const DAEMON_CAPABILITIES: readonly string[] = ['workspaces'];
