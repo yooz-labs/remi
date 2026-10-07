@@ -17,6 +17,7 @@ struct HomeScreen: View {
     let onCancel: (String, String) -> Void
     let onOpenSession: (String) -> Void
     let onSend: (String, String) -> Void
+    let onTerminateSession: (String) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
     let onDismissError: () -> Void
 
@@ -34,6 +35,7 @@ struct HomeScreen: View {
         onCancel: @escaping (String, String) -> Void = { _, _ in },
         onOpenSession: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String, String) -> Void = { _, _ in },
+        onTerminateSession: @escaping (String) -> Void = { _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onDismissError: @escaping () -> Void = {}
     ) {
@@ -50,6 +52,7 @@ struct HomeScreen: View {
         self.onCancel = onCancel
         self.onOpenSession = onOpenSession
         self.onSend = onSend
+        self.onTerminateSession = onTerminateSession
         self.onAddMachine = onAddMachine
         self.onDismissError = onDismissError
     }
@@ -89,7 +92,8 @@ struct HomeScreen: View {
                         onSubmit: onSubmit,
                         onCancel: onCancel,
                         onOpenSession: onOpenSession,
-                        onSend: onSend
+                        onSend: onSend,
+                        onTerminateSession: onTerminateSession
                     )
                 }
 
@@ -254,6 +258,7 @@ private struct SessionsSection: View {
     let onCancel: (String, String) -> Void
     let onOpenSession: (String) -> Void
     let onSend: (String, String) -> Void
+    let onTerminateSession: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
@@ -278,7 +283,8 @@ private struct SessionsSection: View {
                                 onAnswer: { onAnswer(session.id, $0, $1) },
                                 onSubmit: { onSubmit(session.id, $0, $1) },
                                 onCancel: { onCancel(session.id, $0) },
-                                onSend: { onSend(session.id, $0) }
+                                onSend: { onSend(session.id, $0) },
+                                onTerminate: { onTerminateSession(session.id) }
                             )
                             .onAppear { onOpenSession(session.id) }
                         } label: {

@@ -509,6 +509,19 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     );
   });
 
+  test('a repository whose path holds a newline cannot be used, named directly or through a symlink', async () => {
+    const odd = makeRepo(root, 'new\nline');
+    const link = path.join(root, 'link-to-odd');
+    fs.symlinkSync(odd, link);
+    expect(await no({ repository: link })).toContain('cannot be used');
+    expect(await no({ repository: link, worktree: { branch: 'b' } })).toContain('cannot be used');
+    const bare = path.join(root, 'bare\nrepo.git');
+    git(root, 'init', '-q', '--bare', bare);
+    const bareLink = path.join(root, 'link-to-bare');
+    fs.symlinkSync(bare, bareLink);
+    expect(await no({ repository: bareLink })).toContain('cannot be used');
+  });
+
   test('a detached HEAD is a base like any other commit', async () => {
     const repo = makeRepo(root);
     const head = git(repo, 'rev-parse', 'HEAD');

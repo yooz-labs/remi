@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { WorkspaceCache, describeWorkspace } from '../../src/workspace/describe.ts';
+import { WorkspaceCache, describeWorkspace, readWorkspace } from '../../src/workspace/describe.ts';
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync(
@@ -105,6 +105,8 @@ describe('describeWorkspace: what git says about a session directory (#1236 phas
   test('a worktree whose path holds a control character is not described', async () => {
     const odd = makeRepo(root, 'new\nline');
     expect(await describeWorkspace(odd)).toBeNull();
+    // Not described is an answer, not "git could not answer": nothing is kept or logged as unknown.
+    expect(await readWorkspace(odd)).toBeNull();
   });
 });
 

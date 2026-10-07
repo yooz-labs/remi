@@ -18,7 +18,7 @@ native targets now, not planned behavior.
 | Add/persist direct machines | Yes | Yes | Yes | Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Menu bar | iPhone foreground banner and dismissal are implemented. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
-| Kill/resume session | Yes | No | No | Native protocol/UI work remains; hub resume is unsupported (#1129). |
+| Kill/resume session | Yes | Kill only | No | iPhone can terminate daemon-owned sessions with confirmation. Hub resume remains unsupported (#1129), so native does not offer a misleading resume action. |
 | Subagent conversation picker | Yes | Yes | No | iPhone exposes active and finished subagents as read-only conversations; Mac support remains. |
 | Haptics and notification preferences | Yes | No | N/A | Native preferences remain. |
 | Relay connection | No shipped client path | No | No | Out of scope until relay v2 (#1242). |

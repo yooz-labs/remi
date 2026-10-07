@@ -15,7 +15,7 @@ struct PhoneLiveRootView: View {
                 sessions: allSessions,
                 machines: machineSummaries,
                 selectedMachineID: $selectedMachineID,
-                errorMessage: store.latestError?.message,
+                errorMessage: store.latestOperationError ?? store.latestError?.message,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
                 viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
@@ -24,6 +24,7 @@ struct PhoneLiveRootView: View {
                 onCancel: cancel,
                 onOpenSession: store.loadTranscript,
                 onSend: sendChat,
+                onTerminateSession: store.terminateSession,
                 onAddMachine: addMachine,
                 onDismissError: store.clearLatestError
             )
@@ -78,7 +79,8 @@ struct PhoneLiveRootView: View {
                     project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
                     status: count > 0 ? .needsYou : session.status == "active" ? .working : .idle,
                     lastMessage: session.lastMessage,
-                    openQuestionCount: count
+                    openQuestionCount: count,
+                    canTerminate: session.source == "daemon"
                 )
             }
         }

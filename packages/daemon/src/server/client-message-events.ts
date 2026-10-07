@@ -106,6 +106,8 @@ export interface ClientMessageEventArgs {
 
   /** Session list request received. */
   onSessionListRequest: [requestId: UUID, includeExternal: boolean];
+  /** The repositories of the machine's recent sessions (#1236 phase C). */
+  onRecentRepositoriesRequest: [requestId: UUID, limit: number | undefined];
 
   /** Transcript load request received. */
   onTranscriptLoadRequest: [sessionId: string, requestId: UUID];
@@ -158,6 +160,7 @@ export const CLIENT_MESSAGE_EVENT_KEYS = [
   'onAnswer',
   'onBulletExpandRequest',
   'onSessionListRequest',
+  'onRecentRepositoriesRequest',
   'onTranscriptLoadRequest',
   'onCreateSessionRequest',
   'onTerminalResize',

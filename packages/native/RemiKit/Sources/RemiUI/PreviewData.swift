@@ -128,7 +128,8 @@ public enum RemiPreviewData {
         project: "remi",
         status: .needsYou,
         lastMessage: "Allow Bash to run the test suite?",
-        openQuestionCount: 1
+        openQuestionCount: 1,
+        canTerminate: true
     )
 
     public static let sessions = [
