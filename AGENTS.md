@@ -220,7 +220,8 @@ An orderly close leaves the pipe open after the hub's BYE, at most 2 s, for the 
 (#1225): on the Bun 1.3.11 pin the hub's own close can reset the connection, and a reset right after
 the BYE could lose it. A client that does not close in time gets the hub's close, which on 1.3.11
 can still arrive as the Worker's failure close (4400) after an intact BYE; the stream verdict, from
-the authenticated BYE, is what counts (measured on macOS only, `docs/relay-daemon-v2.md`).
+the authenticated BYE, is what counts (measured on macOS only, `docs/relay-daemon-v2.md`). During
+the wait the hub reads only the peer's reply BYE; nothing sent after the hub's BYE is acted on.
 The old `RelayAdapter`, signaling code client and permanent code store are removed;
 `remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
 its legacy Authenticator methods have no current production callers. Direct
