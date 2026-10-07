@@ -72,26 +72,37 @@ struct MacPreferencesView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.background, in: .rect(cornerRadius: 10))
 
-            HStack(spacing: 12) {
-                Button(copiedValue == .command ? "Command copied" : "Copy command", systemImage: copiedValue == .command ? "checkmark" : "doc.on.doc") {
-                    copy(authorizeCommand, value: .command)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    actionButtons
                 }
-
-                Button(copiedValue == .identity ? "Identity copied" : "Copy public identity", systemImage: copiedValue == .identity ? "checkmark" : "key") {
-                    copy(publicIdentity.exportJSON, value: .identity)
-                }
-
-                ShareLink(
-                    item: publicIdentity.exportJSON,
-                    subject: Text("Remi public identity"),
-                    message: Text("Install this public identity on a Remi machine to pre-authorize this Mac.")
-                ) {
-                    Label("Share identity", systemImage: "square.and.arrow.up")
+                VStack(alignment: .leading, spacing: 10) {
+                    actionButtons
                 }
             }
         }
         .padding(20)
         .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 14))
+    }
+
+    private var actionButtons: some View {
+        Group {
+            Button(copiedValue == .command ? "Command copied" : "Copy command", systemImage: copiedValue == .command ? "checkmark" : "doc.on.doc") {
+                copy(authorizeCommand, value: .command)
+            }
+
+            Button(copiedValue == .identity ? "Identity copied" : "Copy public identity", systemImage: copiedValue == .identity ? "checkmark" : "key") {
+                copy(publicIdentity.exportJSON, value: .identity)
+            }
+
+            ShareLink(
+                item: publicIdentity.exportJSON,
+                subject: Text("Remi public identity"),
+                message: Text("Install this public identity on a Remi machine to pre-authorize this Mac.")
+            ) {
+                Label("Share identity", systemImage: "square.and.arrow.up")
+            }
+        }
     }
 
     private var authorizeCommand: String {

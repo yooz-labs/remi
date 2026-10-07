@@ -161,7 +161,9 @@ private struct ConversationPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Conversation").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Conversation")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
                     ConversationButton(
@@ -243,7 +245,7 @@ private struct SessionLocation: View {
             Text("\(machineName) / \(project)")
                 .font(RemiTheme.Typography.code)
                 .foregroundStyle(.secondary)
-            Text(harness).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.tertiary)
+            Text(harness).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.secondary)
         }
     }
 }

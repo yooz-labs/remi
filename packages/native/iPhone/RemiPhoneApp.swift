@@ -29,15 +29,18 @@ struct RemiPhoneApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let store {
-                PhoneLiveRootView(store: store)
-            } else {
-                ContentUnavailableView(
-                    "Couldn’t load device identity",
-                    systemImage: "key.slash",
-                    description: Text(startupError ?? "The Keychain is unavailable.")
-                )
+            Group {
+                if let store {
+                    PhoneLiveRootView(store: store)
+                } else {
+                    ContentUnavailableView(
+                        "Couldn’t load device identity",
+                        systemImage: "key.slash",
+                        description: Text(startupError ?? "The Keychain is unavailable.")
+                    )
+                }
             }
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
     }
 
