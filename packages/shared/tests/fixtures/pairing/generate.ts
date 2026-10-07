@@ -49,7 +49,8 @@ export function buildVectors() {
   ].map((v) => ({ ...v, link: encodePairingLink(v.code) }));
 
   const { nonce: _n, ...noNonce } = BASE;
-  const reordered = JSON.stringify({ name: BASE.name, v: 1, ...BASE });
+  const { name: baseName, v: baseVersion, ...rest } = BASE;
+  const reordered = JSON.stringify({ name: baseName, v: baseVersion, ...rest });
   const invalid = [
     { name: 'a web link', link: 'https://example.com/pair', error: 'NOT_A_PAIRING_LINK' },
     { name: 'a query instead of a fragment', link: 'remi://pair?x=1', error: 'NOT_A_PAIRING_LINK' },
