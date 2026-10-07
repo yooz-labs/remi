@@ -260,6 +260,49 @@ describe('a Codex daemon on the wire (#1179)', () => {
       client.ws.close();
     }
   }, 60000);
+  test("the session list a sibling daemon's arrival broadcasts names the harness too (#1274)", async () => {
+    const r = await startCodexDaemon();
+    const client = await connectAndHello(r.port);
+    try {
+      const ownId = (client.received.find(isAck) as HelloAckMessage).sessionId as string;
+      const liveDir = path.join(r.home, '.remi', 'live-sessions');
+      await pollUntil(
+        () => fs.existsSync(liveDir) && fs.readdirSync(liveDir).some((f) => f.endsWith('.json')),
+        20000,
+        "the daemon's own live-sessions entry",
+      );
+      const isList = (m: ProtocolMessage): m is SessionListResponseMessage =>
+        m.type === 'session_list_response';
+      const listsBefore = client.received.filter(isList).length;
+      // A sibling daemon registers: an entry for another port, alive as this test's process.
+      const siblingPort = await reserveRange(1, 50, '127.0.0.1');
+      fs.writeFileSync(
+        path.join(liveDir, 'sibling.json'),
+        JSON.stringify({
+          sessionId: 'sibling-session',
+          pid: process.pid,
+          wsPort: siblingPort,
+          hookPort: 0,
+          projectPath: r.work,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      await pollUntil(
+        () => client.received.filter(isList).length > listsBefore,
+        15000,
+        'the broadcast session list',
+      );
+      const broadcast = client.received.filter(isList).at(-1) as SessionListResponseMessage;
+      expect(broadcast.daemonPorts).toContain(siblingPort);
+      const own = broadcast.sessions.find((entry) => entry.sessionId === ownId);
+      expect(own?.harness).toBe('codex');
+      expect(own?.claudeSessionId).toBeUndefined();
+    } finally {
+      client.ws.close();
+    }
+  }, 60000);
+
   test('the live-sessions entry names the harness, for a daemon and for a wrapper (the two places cli.ts registers)', async () => {
     const daemon = await startCodexDaemon();
     const wrapper = await startCodexWrapper();
