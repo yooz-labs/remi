@@ -11,9 +11,10 @@ All notable changes to Remi are documented here.
 - A guide to the three ways a device gets into a machine's authorized keys (`remi pair` nearby, `remi authorize <fingerprint>` for a pending key, `remi authorize` with the device's public-only JSON ahead of time), the one record they share, and what removing or resetting a key does. It includes a script and a cloud-init example for machines that are rebuilt; the script is run from the guide by a test.
 - Real-hub tests for each of those: importing a key before the hub has ever started, approving a pending key and reconnecting, another key under the same label, removal, a reset device, one device on two machines, and a session daemon the hub starts. They show a grant belongs to the machine's remi home and applies to the hub and its session daemons at the next authentication.
 
-#### Known limit
+#### Known limits
 
 - Removing a key (`remi authorize --remove`) does not close a connection that key already authenticated; the next fresh authentication is refused (#1305).
+- `remi authorize` keeps only the public key of the JSON it is given and does not refuse one that holds a private key (#1320), and a `--label` is stored and printed as typed (#1321).
 
 ### A card says how it is answered and what resolved it (#1235, [ADR 0038](.context/decisions/0038-the-decision-object.md))
 

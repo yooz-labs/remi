@@ -493,6 +493,21 @@ describe('provisioning a client key (#1303)', () => {
     const script = /```sh\n(#!\/bin\/sh\n# provision-devices\.sh[\s\S]*?)```/.exec(doc)?.[1];
     if (script === undefined)
       throw new Error('the provisioning script is not in docs/PROVISIONING.md');
+    // The cloud-init example carries the same script, indented under its write_files entry.
+    const yamlBlock = /```yaml\n(#cloud-config[\s\S]*?)```/.exec(doc)?.[1] ?? '';
+    const entry = yamlBlock.split('\n');
+    const at = entry.findIndex((line) =>
+      line.includes('path: /usr/local/bin/provision-devices.sh'),
+    );
+    const body = entry.slice(
+      entry.findIndex((line, i) => i > at && line.includes('content: |')) + 1,
+    );
+    const embedded: string[] = [];
+    for (const line of body) {
+      if (line !== '' && !line.startsWith('      ')) break;
+      embedded.push(line.slice(6));
+    }
+    expect(`${embedded.join('\n').trimEnd()}\n`).toBe(script);
     const host = makeHost();
     const phone = await newClient();
     const mac = await newClient();
@@ -502,8 +517,8 @@ describe('provisioning a client key (#1303)', () => {
     fs.writeFileSync(path.join(devices, 'work-mac.json'), mac.publicJson);
     const scriptFile = path.join(host.dir, 'provision-devices.sh');
     fs.writeFileSync(scriptFile, script, { mode: 0o700 });
-    const run = async () => {
-      const proc = Bun.spawn(['sh', scriptFile, devices], {
+    const run = async (dir: string = devices) => {
+      const proc = Bun.spawn(['sh', scriptFile, dir], {
         env: host.env,
         cwd: host.dir,
         stdout: 'pipe',
@@ -536,6 +551,30 @@ describe('provisioning a client key (#1303)', () => {
         ['work-mac', mac.fingerprint],
       ].sort(),
     );
+    // Re-running never relabels: a renamed file for an authorized key changes nothing.
+    fs.renameSync(path.join(devices, 'work-iphone.json'), path.join(devices, 'renamed-phone.json'));
+    const renamed = await run();
+    expect(renamed.code).toBe(0);
+    expect(renamed.stdout).toContain('already authorized: renamed-phone');
+    expect(
+      new IdentityStore(host.home)
+        .listAuthorizedKeys()
+        .map((k) => k.label)
+        .sort(),
+    ).toEqual(['work-iphone', 'work-mac']);
+    // The script only adds: deleting a device's file leaves its key authorized.
+    fs.rmSync(path.join(devices, 'work-mac.json'));
+    expect((await run()).code).toBe(0);
+    expect(new IdentityStore(host.home).isAuthorized(mac.publicKey, mac.fingerprint)).toBe(true);
+    // A missing directory, or one with no device files, is an error rather than nothing provisioned.
+    const missing = await run(path.join(host.dir, 'no-such-devices'));
+    expect(missing.code).toBe(2);
+    expect(missing.stderr).toContain('no such directory');
+    const empty = path.join(host.dir, 'empty-devices');
+    fs.mkdirSync(empty);
+    const none = await run(empty);
+    expect(none.code).toBe(2);
+    expect(none.stderr).toContain('no device files');
     // A file that is not a device key is named, fails the run, and does not stop the others.
     fs.writeFileSync(path.join(devices, 'broken.json'), 'not json');
     const later = await newClient();
@@ -548,6 +587,7 @@ describe('provisioning a client key (#1303)', () => {
     // The grants made before the hub existed let the devices in.
     const port = await startHub(host);
     expect((await authenticate(port, phone.identity)).result.success).toBe(true);
+    expect((await authenticate(port, mac.identity)).result.success).toBe(true);
     expect((await authenticate(port, later.identity)).result.success).toBe(true);
   }, 90000);
 
