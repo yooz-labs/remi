@@ -26,7 +26,7 @@ struct HomeScreen: View {
     let onSend: (String, String) -> Void
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
-    let onCreateSession: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
+    let onCreateSession: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
@@ -52,7 +52,7 @@ struct HomeScreen: View {
         onSend: @escaping (String, String) -> Void = { _, _ in },
         onTerminateSession: @escaping (String) -> Void = { _ in },
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
-        onCreateSession: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void = { _, _, _, _ in },
+        onCreateSession: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void = { _, _, _, _, _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
