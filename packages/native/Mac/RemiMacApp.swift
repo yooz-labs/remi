@@ -28,7 +28,7 @@ struct RemiMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Remi", id: "main") {
             Group {
                 if let store {
                     MacLiveRootView(store: store)
@@ -41,6 +41,7 @@ struct RemiMacApp: App {
                 }
             }
             .frame(minWidth: 980, minHeight: 640)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
 
         MenuBarExtra {
@@ -51,6 +52,22 @@ struct RemiMacApp: App {
             }
         } label: {
             MacMenuBarLabel(store: store)
+        }
+
+        Settings {
+            Group {
+                if let store {
+                    MacPreferencesView(publicIdentity: store.publicIdentity)
+                } else {
+                    ContentUnavailableView(
+                        "Device identity unavailable",
+                        systemImage: "key.slash",
+                        description: Text(startupError ?? "The Keychain is unavailable.")
+                    )
+                    .frame(width: 520, height: 360)
+                }
+            }
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
     }
 

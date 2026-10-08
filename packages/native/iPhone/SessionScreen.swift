@@ -25,6 +25,7 @@ struct SessionScreen: View {
         transcript: [RemiTranscriptEntry],
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
+        initialConversationID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
         onSelectView: @escaping (String) -> Void = { _ in },
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
@@ -37,6 +38,7 @@ struct SessionScreen: View {
         self.transcript = transcript
         self.questions = questions
         self.views = views
+        _selectedViewID = State(initialValue: initialConversationID ?? "")
         self.transcriptForView = transcriptForView
         self.onSelectView = onSelectView
         self.onAnswer = onAnswer
@@ -159,7 +161,9 @@ private struct ConversationPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Conversation").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Conversation")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
                     ConversationButton(
@@ -241,7 +245,7 @@ private struct SessionLocation: View {
             Text("\(machineName) / \(project)")
                 .font(RemiTheme.Typography.code)
                 .foregroundStyle(.secondary)
-            Text(harness).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.tertiary)
+            Text(harness).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.secondary)
         }
     }
 }

@@ -44,10 +44,13 @@ public struct RemiSessionRow: View {
                     if session.openQuestionCount > 0 {
                         Label("\(session.openQuestionCount)", systemImage: "questionmark.bubble.fill")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(RemiTheme.Color.attention)
+                            .foregroundStyle(RemiTheme.Color.attentionInk)
+                            .padding(.horizontal, RemiTheme.Spacing.xs)
+                            .padding(.vertical, RemiTheme.Spacing.xxxs)
+                            .background(RemiTheme.Color.attention, in: Capsule())
                     }
                 }
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
@@ -65,7 +68,7 @@ public struct RemiMachineRow: View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
             Image(systemName: icon)
                 .font(.title3)
-                .foregroundStyle(machine.reachability == .waitingForApproval ? RemiTheme.Color.attention : .secondary)
+                .foregroundStyle(machine.reachability == .waitingForApproval ? Color.primary : .secondary)
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {

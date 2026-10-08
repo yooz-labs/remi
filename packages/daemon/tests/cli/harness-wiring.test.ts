@@ -39,6 +39,23 @@ describe('cli.ts passes the harness to its handlers (#1179)', () => {
     expect(block).toContain('harnesses: () => harnessRegistry.available(),');
   });
 
+  test('the shared events name the create event; startSession is not a client-message event (#1129)', () => {
+    const start = cli.indexOf('const sharedEvents = {');
+    const block = cli.slice(start, cli.indexOf('\n};', start));
+    expect(block).toContain(
+      'onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,',
+    );
+    expect(block).not.toContain('...createSessionHandlers_');
+  });
+
+  test('only a hub starts a child session daemon for a resume, through the create-session handler (#1129)', () => {
+    const block = call('createResumeSessionHandlers({');
+    expect(block).toContain('childSessions: serveMode');
+    expect(block).toContain('createSessionHandlers_.startSession(');
+    // The hub never runs Claude: it is handed no way to, and the old flag is gone.
+    expect(block).not.toContain('hubMode');
+  });
+
   test("the current-session resolver gets the daemon's harness", () => {
     expect(call('makeCurrentSessionResolver({')).toContain('\n  harnessId,');
   });

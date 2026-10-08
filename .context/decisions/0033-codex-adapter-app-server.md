@@ -531,7 +531,7 @@ The hub validated the arguments with the remote allowlist and the child validate
 `remote-new-client.ts` sends `harness` and `args` (`remi codex --host`, `remi new --host --harness codex`; the Phase 3 refusal of `--host` for a harness is gone) and only to a daemon whose `hello_ack` lists the harness (arguments with no harness are Claude's and need `claude` listed): an older daemon omits `harnesses` and would ignore both fields and start a plain Claude session, so the client refuses with "does not offer X; nothing was started".
 The conformance is two-sided over both transports as far as each allows (ADR 0014): over the direct WebSocket the shipping sender (`createRemoteSession`) runs against a real `WebSocketAdapter`, and the real web `WebSocketClient` sends the factory's request to a real `WebSocketAdapter` in the conformance test; over the relay the shipping factory's request goes through `RelayAdapter`'s `createTransport` seam, labeled as the transport-seam test it is (#881: no real relay client exists).
 6. **Resume.**
-A `resume_session_request` to a daemon that hosts anything but Claude is answered `UNSUPPORTED` (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`, text naming `remi codex resume <thread id>`, the request never echoed) before any path runs; `harnessId` is a required dependency of the handler, like `hubMode`.
+A `resume_session_request` to a daemon that hosts anything but Claude is answered `UNSUPPORTED` (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`, text naming `remi codex resume <thread id>`, the request never echoed) before any path runs; `harnessId` is a required dependency of the handler, like `childSessions`.
 7. **The live-sessions entry.**
 `LiveSessionEntry.harness?` (a string; absent means Claude): a Claude daemon writes none, so its entry is byte-identical to before (a test reads the file), and a Codex daemon or wrapper writes `codex`.
 `couldBeClaudeEntry` excludes only an entry that names a KNOWN other harness; absent, `claude` and a harness this build does not know count, the fail-safe `claudeChildLooksAlive` already uses for a legacy entry.
@@ -635,7 +635,7 @@ Status per item of item 13 (the letters are that list's):
   Refused as designed: `--permission-mode`, `--continue`, and `--resume` of an id a live session holds.
   A session started directly with `--permission-mode acceptEdits` and then resumed through the hub with `--resume` came back in `accept edits` mode, although the hub child's arguments named no mode and the account default differs: Claude restores the session's earlier mode on resume.
   That was seen with `acceptEdits` only; `bypassPermissions` was not tried.
-  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129).
+  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129; until #1129, which made the hub start a child daemon for it).
 - **(h) The headless Update and Trust prompts, and `remi attach` as the way out: NOT RUN.**
   No modal appeared, so `create_session_response.notice`'s sentence that `remi attach` lets the user answer an Update or Trust prompt is still UNVERIFIED and keeps its hedge.
 

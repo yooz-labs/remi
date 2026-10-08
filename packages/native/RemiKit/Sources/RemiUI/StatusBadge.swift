@@ -29,6 +29,6 @@ public struct RemiStatusBadge: View {
         }
     }
 
-    private var tint: Color { status == .needsYou ? RemiTheme.Color.attention : .secondary }
-    private var background: Color { status == .needsYou ? RemiTheme.Color.attention.opacity(0.14) : RemiTheme.Color.surface }
+    private var tint: Color { status == .needsYou ? RemiTheme.Color.attentionInk : .secondary }
+    private var background: Color { status == .needsYou ? RemiTheme.Color.attention : RemiTheme.Color.surface }
 }

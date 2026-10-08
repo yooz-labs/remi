@@ -1092,6 +1092,16 @@ export interface ResumeSessionResponseMessage {
   readonly timestamp: Timestamp;
   /** Session ID to use (existing if still alive, or newly created). Present on success. */
   readonly sessionId?: UUID;
+  /**
+   * Port of the child session daemon a HUB started for the resume (#1129), present only on a
+   * success from a hub. The session runs in that other process, not in the one that answered, so a
+   * client does not open `sessionId` on this connection: it learns of the session through the
+   * session list's `daemonPorts` and a direct connection, as it does for a `create_session_response`
+   * with a port. Absent when the answering daemon resumed the session itself (a session daemon or a
+   * wrapper) and on a failure, so absence means the session is on this connection. Additive: an
+   * older hub refuses the request instead (`UNSUPPORTED`), and an older client ignores the field.
+   */
+  readonly port?: number;
   /** Whether resume succeeded */
   readonly success: boolean;
   /** Error message if resume failed */
@@ -1100,7 +1110,9 @@ export interface ResumeSessionResponseMessage {
    * Machine-readable failure code, from the same vocabulary as the `error`
    * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
    * a stable code; absent on success and on older daemons, so clients must
-   * keep treating `error` as the human-readable fallback (#1124).
+   * keep treating `error` as the human-readable fallback (#1124). Today only a
+   * daemon that hosts another harness than Claude sets it (`UNSUPPORTED`); a
+   * hub used to (#1124) and now starts a child session daemon (#1129).
    *
    * No client reads this field yet: the web client shows `error` only
    * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
@@ -2353,6 +2365,7 @@ export function createResumeSessionResponse(
   sessionId?: UUID,
   error?: string,
   errorCode?: string,
+  port?: number,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -2363,6 +2376,7 @@ export function createResumeSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(errorCode !== undefined && { errorCode }),
+    ...(port !== undefined && { port }),
   };
 }
 

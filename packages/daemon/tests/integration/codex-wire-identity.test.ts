@@ -240,7 +240,7 @@ describe('a Codex daemon on the wire (#1179)', () => {
       second?.ws.close();
     }
   }, 60000);
-  test('a resume request is refused UNSUPPORTED, like the hub: nothing is attached and no second ack is sent', async () => {
+  test('a resume request is refused UNSUPPORTED: nothing is attached and no second ack is sent', async () => {
     const r = await startCodexDaemon();
     const client = await connectAndHello(r.port);
     try {

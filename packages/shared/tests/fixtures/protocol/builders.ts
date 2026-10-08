@@ -435,6 +435,13 @@ export const FIXTURE_VARIANTS: Record<
         worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
       }),
   },
+  // A resume through a hub (#1129): the hub started a child session daemon for it, so the response
+  // says which port the session runs on. A session daemon resumes in its own process and sends none.
+  resume_session_response_child: {
+    type: 'resume_session_response',
+    build: () =>
+      createResumeSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, undefined, 19924),
+  },
   // A phone's first answer after scanning a pairing link (#1275, ADR 0037): the ordinary signed
   // answer, plus the link's nonce and the name the person gave the phone.
   auth_response_pairing: {

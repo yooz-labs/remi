@@ -93,6 +93,14 @@ export class SessionBindingStore {
   }
 
   /**
+   * The row a resume of this Claude session starts from (#1129): like {@link getByClaudeSessionId},
+   * but several exited rows of one session resolve to the newest instead of being an ambiguity.
+   */
+  getResumableByClaudeSessionId(claudeSessionId: string): StoredSession | null {
+    return this.store.findResumableByClaudeSessionId(claudeSessionId);
+  }
+
+  /**
    * The port recorded for this remi session at spawn time (#672). Written once
    * by `preAssign` and never refreshed on a later daemon restart, so it stays
    * fixed at whatever port was live when the session was created — unlike the
