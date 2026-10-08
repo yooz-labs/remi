@@ -2116,20 +2116,6 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   send: sendToConnection,
 });
 
-const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
-  // `remi serve` is session-less and must never run Claude (#1124).
-  hubMode: serveMode,
-  harnessId,
-  harnesses: () => harnessRegistry.available(),
-  sessionRegistry,
-  sessionStore,
-  bindingStore,
-  transcriptDiscovery,
-  harness,
-  createNewSession,
-  send: sendToConnection,
-});
-
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
   harnesses: harnessRegistry,
   liveSessionsRegistry,
@@ -2151,6 +2137,24 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
     args.push('--bind', bindHost);
     return args;
   },
+  send: sendToConnection,
+});
+
+const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  // `remi serve` is session-less and must never run Claude (#1124): a resume there starts a child
+  // session daemon with `--resume` through the create-session path (#1129). Every other process
+  // resumes in its own.
+  childSessions: serveMode
+    ? (directory, extra) => createSessionHandlers_.startSession(directory, extra)
+    : null,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
+  sessionRegistry,
+  sessionStore,
+  bindingStore,
+  transcriptDiscovery,
+  harness,
+  createNewSession,
   send: sendToConnection,
 });
 
@@ -2210,7 +2214,7 @@ const sharedEvents = {
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
-  ...createSessionHandlers_,
+  onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,
   ...resumeSessionHandlers,
   // Expose the shared answer core under the adapter's relay event name (#575,
   // P4a). The HTTP /answer endpoint routes through the SAME logic as the

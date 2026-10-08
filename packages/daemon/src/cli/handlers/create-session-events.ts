@@ -2,6 +2,9 @@
  * sharedEvents handler for spawning a new daemon:
  *   onCreateSessionRequest, find a free port, spawn a child remi daemon
  *     with the parent's flags, and acknowledge with its session id + port.
+ *   startSession, the same without the acknowledgment: it says how the start
+ *     went and sends nothing, so a resume through a hub (#1129) starts its
+ *     child through the one path that checks, reserves a port and spawns.
  *
  * One session per daemon is a hard invariant, so "create session" always
  * means "spawn a new daemon process". The in-flight `spawningPorts` set
@@ -37,6 +40,27 @@ export interface SpawnResult {
   readonly port: number;
   readonly pid: number;
 }
+
+/**
+ * How starting a child session daemon went (#1129). A refusal's `error` is the text the requester
+ * reads: short and free of the host's paths and pids, which only the log gets.
+ */
+export type StartSessionOutcome =
+  | {
+      readonly ok: true;
+      readonly sessionId: UUID;
+      readonly port: number;
+      /** What a success does not say, one line each (see `CreateSessionResponseMessage.notice`). */
+      readonly notice?: string;
+      readonly workspace?: SessionWorkspace;
+    }
+  | { readonly ok: false; readonly error: string };
+
+/** Starts a child session daemon for a directory and request, and says how it went. */
+export type StartChildSession = (
+  directory: string | undefined,
+  extra?: CreateSessionExtra,
+) => Promise<StartSessionOutcome>;
 
 /** What a requester is told when the child could not be started: the cause is in the host's log (G8). */
 const START_FAILED_TEXT =
@@ -216,7 +240,120 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
     spawnDaemon = defaultSpawnRemiDaemon,
   } = deps;
 
+  /**
+   * Check a request, reserve a port, make the worktree it names and spawn the child daemon. Sends
+   * nothing: the caller answers its requester with the outcome (`onCreateSessionRequest`, or a
+   * resume through a hub, #1129). Never throws: a failure is a refusal with the generic text, and
+   * the host's log has the cause.
+   */
+  const startSession: StartChildSession = async (directory, extra) => {
+    // A worktree made for this request, so a failed spawn can say where it was left.
+    let made: SessionWorkspace | undefined;
+    try {
+      // The trust boundary (#1179): refuse before a port is chosen or anything is spawned.
+      // The client gets a short text; the host's log gets the reason, escaped (the arguments in
+      // it came off the wire).
+      const badDirectory = directoryRefusal(directory);
+      if (badDirectory !== null) {
+        log('Session start refused: the directory is not acceptable; nothing spawned');
+        return { ok: false, error: badDirectory };
+      }
+      const workspaceRequest = checkWorkspaceRequest(directory, extra);
+      if (!workspaceRequest.ok) {
+        log('Session start refused: the workspace is not acceptable; nothing spawned');
+        return { ok: false, error: workspaceRequest.error };
+      }
+      const request = checkHarnessRequest(harnesses, extra);
+      if (!request.ok) {
+        log(
+          `Session start refused: ${escapeUnsafeText(request.detail ?? request.error)}; nothing spawned`,
+        );
+        return { ok: false, error: request.error };
+      }
+      if (workspaceRequest.workspace?.worktree !== undefined && resumes(request.spawnArgs)) {
+        log('Session start refused: a resume into a new worktree; nothing spawned');
+        return { ok: false, error: RESUME_INTO_WORKTREE_TEXT };
+      }
+
+      // Include in-flight spawn ports to prevent a TOCTOU race on
+      // concurrent create requests.
+      const liveUsed = new Set([
+        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
+        ...spawningPorts,
+      ]);
+      const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
+      if (freePort === null) {
+        const rangeEnd = basePort + portRange - 1;
+        return {
+          ok: false,
+          error: `All ports in range ${basePort}-${rangeEnd} are in use.`,
+        };
+      }
+
+      spawningPorts.add(freePort);
+      try {
+        // The worktree is made only once a port is held, so a request that cannot start makes
+        // none (#1236). The port stays reserved while git runs.
+        let workspace: SessionWorkspace | undefined;
+        let workspaceNotice: string | undefined;
+        if (workspaceRequest.workspace !== undefined) {
+          const prepared = await prepareWorkspace(workspaceRequest.workspace);
+          if (!prepared.ok) {
+            log(`Session start refused: ${prepared.detail}; nothing spawned`);
+            return { ok: false, error: prepared.error };
+          }
+          workspace = prepared.workspace;
+          if (workspace.worktree !== undefined) made = workspace;
+          if (prepared.notice !== undefined) {
+            workspaceNotice = prepared.notice;
+            log(`Workspace made with a warning: ${prepared.detail ?? ''}`);
+          }
+        }
+        // #1025: no/empty/whitespace directory means "home", never the
+        // hub's own cwd (an accident of where `remi serve` was started);
+        // see resolveRequestedSessionDirectory for the full rationale.
+        const resolvedDirectory =
+          workspace?.directory ?? resolveRequestedSessionDirectory(directory);
+        log(
+          `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
+        );
+        const result = await spawnDaemon(freePort, resolvedDirectory, [
+          ...inheritedArgs(),
+          ...request.spawnArgs,
+        ]);
+        const notice = joinNotices(
+          request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
+          workspaceNotice,
+        );
+        log(
+          `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
+        );
+        return {
+          ok: true,
+          sessionId: result.sessionId as UUID,
+          port: result.port,
+          ...(notice !== undefined && { notice }),
+          ...(workspace !== undefined && { workspace }),
+        };
+      } finally {
+        spawningPorts.delete(freePort);
+      }
+    } catch (err) {
+      // The failure is the host's business: it can hold a path, a pid or a log file name. The
+      // requester is told only that the session did not start (G8).
+      logError(
+        `Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}${
+          made === undefined
+            ? ''
+            : `; the worktree it was made for stays at ${escapeUnsafeText(made.directory)} (nothing deletes a worktree, #1236)`
+        }`,
+      );
+      return { ok: false, error: START_FAILED_TEXT };
+    }
+  };
+
   return {
+    startSession,
     onCreateSessionRequest: async (
       connectionId: UUID,
       directory: string | undefined,
@@ -224,143 +361,21 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       extra?: CreateSessionExtra,
     ): Promise<void> => {
       log(`Create session request from ${connectionId}, spawning new daemon`);
-
-      // A worktree made for this request, so a failed spawn can say where it was left.
-      let made: SessionWorkspace | undefined;
-      try {
-        // The trust boundary (#1179): refuse before a port is chosen or anything is spawned.
-        // The client gets a short text; the host's log gets the reason, escaped (the arguments in
-        // it came off the wire).
-        const badDirectory = directoryRefusal(directory);
-        if (badDirectory !== null) {
-          log('Create session request refused: the directory is not acceptable; nothing spawned');
-          send(
-            connectionId,
-            createCreateSessionResponse(false, requestId, undefined, badDirectory),
-          );
-          return;
-        }
-        const workspaceRequest = checkWorkspaceRequest(directory, extra);
-        if (!workspaceRequest.ok) {
-          log('Create session request refused: the workspace is not acceptable; nothing spawned');
-          send(
-            connectionId,
-            createCreateSessionResponse(false, requestId, undefined, workspaceRequest.error),
-          );
-          return;
-        }
-        const request = checkHarnessRequest(harnesses, extra);
-        if (!request.ok) {
-          log(
-            `Create session request refused: ${escapeUnsafeText(request.detail ?? request.error)}; nothing spawned`,
-          );
-          send(
-            connectionId,
-            createCreateSessionResponse(false, requestId, undefined, request.error),
-          );
-          return;
-        }
-        if (workspaceRequest.workspace?.worktree !== undefined && resumes(request.spawnArgs)) {
-          log('Create session request refused: a resume into a new worktree; nothing spawned');
-          send(
-            connectionId,
-            createCreateSessionResponse(false, requestId, undefined, RESUME_INTO_WORKTREE_TEXT),
-          );
-          return;
-        }
-
-        // Include in-flight spawn ports to prevent a TOCTOU race on
-        // concurrent create requests.
-        const liveUsed = new Set([
-          ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
-          ...spawningPorts,
-        ]);
-        const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
-        if (freePort === null) {
-          const rangeEnd = basePort + portRange - 1;
-          send(
-            connectionId,
-            createCreateSessionResponse(
-              false,
-              requestId,
-              undefined,
-              `All ports in range ${basePort}-${rangeEnd} are in use.`,
-            ),
-          );
-          return;
-        }
-
-        spawningPorts.add(freePort);
-        try {
-          // The worktree is made only once a port is held, so a request that cannot start makes
-          // none (#1236). The port stays reserved while git runs.
-          let workspace: SessionWorkspace | undefined;
-          let workspaceNotice: string | undefined;
-          if (workspaceRequest.workspace !== undefined) {
-            const prepared = await prepareWorkspace(workspaceRequest.workspace);
-            if (!prepared.ok) {
-              log(`Create session request refused: ${prepared.detail}; nothing spawned`);
-              send(
-                connectionId,
-                createCreateSessionResponse(false, requestId, undefined, prepared.error),
-              );
-              return;
-            }
-            workspace = prepared.workspace;
-            if (workspace.worktree !== undefined) made = workspace;
-            if (prepared.notice !== undefined) {
-              workspaceNotice = prepared.notice;
-              log(`Workspace made with a warning: ${prepared.detail ?? ''}`);
-            }
-          }
-          // #1025: no/empty/whitespace directory means "home", never the
-          // hub's own cwd (an accident of where `remi serve` was started);
-          // see resolveRequestedSessionDirectory for the full rationale.
-          const resolvedDirectory =
-            workspace?.directory ?? resolveRequestedSessionDirectory(directory);
-          log(
-            `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
-          );
-          const result = await spawnDaemon(freePort, resolvedDirectory, [
-            ...inheritedArgs(),
-            ...request.spawnArgs,
-          ]);
-          send(
-            connectionId,
-            createCreateSessionResponse(
+      const outcome = await startSession(directory, extra);
+      send(
+        connectionId,
+        outcome.ok
+          ? createCreateSessionResponse(
               true,
               requestId,
-              result.sessionId as UUID,
+              outcome.sessionId,
               undefined,
-              result.port,
-              joinNotices(
-                request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
-                workspaceNotice,
-              ),
-              workspace,
-            ),
-          );
-          log(
-            `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
-          );
-        } finally {
-          spawningPorts.delete(freePort);
-        }
-      } catch (err) {
-        // The failure is the host's business: it can hold a path, a pid or a log file name. The
-        // requester is told only that the session did not start (G8).
-        logError(
-          `Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}${
-            made === undefined
-              ? ''
-              : `; the worktree it was made for stays at ${escapeUnsafeText(made.directory)} (nothing deletes a worktree, #1236)`
-          }`,
-        );
-        send(
-          connectionId,
-          createCreateSessionResponse(false, requestId, undefined, START_FAILED_TEXT),
-        );
-      }
+              outcome.port,
+              outcome.notice,
+              outcome.workspace,
+            )
+          : createCreateSessionResponse(false, requestId, undefined, outcome.error),
+      );
     },
   };
 }
