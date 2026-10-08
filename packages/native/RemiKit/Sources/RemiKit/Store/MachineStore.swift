@@ -494,8 +494,8 @@ public final class MachineStore {
         case .questionResolved(let message):
             resolveQuestion(message, machineIndex: index, machineID: parent.id)
         case .questionSnapshot(let snapshot):
-            machines = Self.reconcilingQuestionSnapshot(
-                in: machines,
+            machines[index] = Self.reconcilingQuestionSnapshot(
+                in: machines[index],
                 sessionId: snapshot.sessionId,
                 liveQuestionIDs: Set(snapshot.questionIds)
             )
@@ -683,17 +683,15 @@ public final class MachineStore {
     }
 
     static func reconcilingQuestionSnapshot(
-        in states: [MachineState],
+        in state: MachineState,
         sessionId: String,
         liveQuestionIDs: Set<String>
-    ) -> [MachineState] {
-        states.map { state in
-            var state = state
-            state.questions.removeAll {
-                $0.sessionId == sessionId && !liveQuestionIDs.contains($0.question.id)
-            }
-            return state
+    ) -> MachineState {
+        var state = state
+        state.questions.removeAll {
+            $0.sessionId == sessionId && !liveQuestionIDs.contains($0.question.id)
         }
+        return state
     }
 
     private func requestSessions(from endpoint: MachineEndpoint) {

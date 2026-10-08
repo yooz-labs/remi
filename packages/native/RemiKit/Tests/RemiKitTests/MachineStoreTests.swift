@@ -170,12 +170,15 @@ struct MachineStoreTests {
         )
         #expect(afterResolution.flatMap(\.questions).map(\.question.id) == ["question-2"])
 
-        let afterSnapshot = MachineStore.reconcilingQuestionSnapshot(
-            in: afterResolution,
+        var otherMachine = afterResolution[1]
+        otherMachine.questions = [resolved]
+        let firstAfterSnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: afterResolution[0],
             sessionId: "session-1",
             liveQuestionIDs: []
         )
-        #expect(afterSnapshot.allSatisfy { $0.questions.isEmpty })
+        #expect(firstAfterSnapshot.questions.isEmpty)
+        #expect(otherMachine.questions.map(\.question.id) == ["question-1"])
     }
 
     @Test func machineEndpointsPersistWithoutLeakingUIState() {

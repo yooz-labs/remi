@@ -64,7 +64,7 @@ struct PhoneLiveRootView: View {
             PhoneNotificationCoordinator.remove(ids: Array(removed))
             for id in newValue.subtracting(knownQuestionIDs) {
                 guard let question = allQuestions.first(where: { $0.id == id }),
-                      let destination = destination(forQuestionID: id)
+                      let destination = destination(forQuestionIdentity: id)
                 else { continue }
                 Task {
                     await PhoneNotificationCoordinator.notify(
@@ -164,7 +164,15 @@ struct PhoneLiveRootView: View {
     }
 
     private var activeQuestionIDs: Set<String> {
-        Set(store.machines.flatMap(\.questions).map(\.question.id))
+        Set(store.machines.flatMap { machine in
+            machine.questions.map { message in
+                RemiQuestionCardModel.identity(
+                    machineID: machine.id,
+                    sessionID: message.sessionId,
+                    questionID: message.question.id
+                )
+            }
+        })
     }
 
     private func questions(_ sessionId: String) -> [RemiQuestionCardModel] {
@@ -194,7 +202,12 @@ struct PhoneLiveRootView: View {
         let question = message.question
         let kind = RemiQuestionKind(wireValue: question.kind)
         return RemiQuestionCardModel(
-            id: question.id,
+            id: RemiQuestionCardModel.identity(
+                machineID: machine.id,
+                sessionID: message.sessionId,
+                questionID: question.id
+            ),
+            questionID: question.id,
             kind: kind,
             text: question.text,
             detail: question.detail,
@@ -230,7 +243,8 @@ struct PhoneLiveRootView: View {
                 )
             },
             terminalOnly: question.terminalOnly == true
-                || question.answerPath == QuestionAnswerPath.none,
+                || question.answerPath == QuestionAnswerPath.none
+                || question.hasUnknownAnswerPath,
             answerPath: answerPath(question.answerPath),
             state: state
         )
@@ -365,13 +379,19 @@ struct PhoneLiveRootView: View {
         store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
     }
 
-    private func destination(forQuestionID id: String) -> RemiNavigationDestination? {
+    private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
         for machine in store.machines {
-            if let message = machine.questions.first(where: { $0.question.id == id }) {
+            if let message = machine.questions.first(where: {
+                RemiQuestionCardModel.identity(
+                    machineID: machine.id,
+                    sessionID: $0.sessionId,
+                    questionID: $0.question.id
+                ) == id
+            }) {
                 return RemiNavigationDestination(
                     machineID: machine.id,
                     sessionID: message.sessionId,
-                    questionID: id,
+                    questionID: message.question.id,
                     agentID: message.question.agentId
                 )
             }

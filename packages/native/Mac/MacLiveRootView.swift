@@ -366,7 +366,12 @@ struct MacLiveRootView: View {
             let question = message.question
             let kind = RemiQuestionKind(wireValue: question.kind)
             return RemiQuestionCardModel(
-                id: question.id,
+                id: RemiQuestionCardModel.identity(
+                    machineID: machine.id,
+                    sessionID: message.sessionId,
+                    questionID: question.id
+                ),
+                questionID: question.id,
                 kind: kind,
                 text: question.text,
                 detail: question.detail,
@@ -403,7 +408,8 @@ struct MacLiveRootView: View {
                     )
                 },
                 terminalOnly: question.terminalOnly == true
-                    || question.answerPath == QuestionAnswerPath.none,
+                    || question.answerPath == QuestionAnswerPath.none
+                    || question.hasUnknownAnswerPath,
                 answerPath: answerPath(question.answerPath),
                 state: state
             )

@@ -28,7 +28,7 @@ public struct QuestionStep: Codable, Sendable, Equatable {
 
 /// A card: the agent needs the person (`Question` in `packages/shared/src/types.ts`).
 /// Only the fields every card has are required; the rest are optional on the wire.
-public struct Question: Codable, Sendable, Equatable, Identifiable {
+public struct Question: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
     public let text: String
     public let options: [QuestionOption]
@@ -45,6 +45,9 @@ public struct Question: Codable, Sendable, Equatable, Identifiable {
     public let held: Bool?
     public let agentId: String?
     public let answerPath: QuestionAnswerPath?
+    /// True when the wire supplied an answer path this client does not understand.
+    /// Callers must fail closed instead of treating that value like a legacy omission.
+    public let hasUnknownAnswerPath: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, text, options, allowsFreeText, isAnswered, detail, terminalOnly
@@ -66,8 +69,9 @@ public struct Question: Codable, Sendable, Equatable, Identifiable {
         submitLabel = try values.decodeIfPresent(String.self, forKey: .submitLabel)
         held = try values.decodeIfPresent(Bool.self, forKey: .held)
         agentId = try values.decodeIfPresent(String.self, forKey: .agentId)
-        answerPath = try values.decodeIfPresent(String.self, forKey: .answerPath)
-            .flatMap(QuestionAnswerPath.init(rawValue:))
+        let rawAnswerPath = try values.decodeIfPresent(String.self, forKey: .answerPath)
+        answerPath = rawAnswerPath.flatMap(QuestionAnswerPath.init(rawValue:))
+        hasUnknownAnswerPath = rawAnswerPath != nil && answerPath == nil
     }
 }
 

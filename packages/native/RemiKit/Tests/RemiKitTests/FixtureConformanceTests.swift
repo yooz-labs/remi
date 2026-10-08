@@ -83,7 +83,14 @@ struct FixtureConformanceTests {
         let resolution = try JSONDecoder().decode(QuestionResolvedMessage.self, from: resolutionData)
         #expect(question.question.kind == "future_kind")
         #expect(question.question.answerPath == nil)
+        #expect(question.question.hasUnknownAnswerPath)
         #expect(resolution.resolvedBy == nil)
+    }
+
+    @Test func omittedAnswerPathRemainsLegacyRatherThanUnknown() throws {
+        let message = try JSONDecoder().decode(QuestionMessage.self, from: Self.fixture("question"))
+        #expect(message.question.answerPath == nil)
+        #expect(!message.question.hasUnknownAnswerPath)
     }
 
     @Test func sessionListDecodes() throws {

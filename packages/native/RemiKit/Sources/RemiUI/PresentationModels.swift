@@ -123,6 +123,7 @@ public enum RemiQuestionForm {
 
 public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let id: String
+    public let questionID: String
     public let kind: RemiQuestionKind
     public let text: String
     public let detail: String?
@@ -135,8 +136,9 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let answerPath: RemiAnswerPath?
     public let state: RemiQuestionState
 
-    public init(id: String, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
+    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
         self.id = id
+        self.questionID = questionID ?? id
         self.kind = kind
         self.text = text
         self.detail = detail
@@ -148,6 +150,10 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
         self.terminalOnly = terminalOnly
         self.answerPath = answerPath
         self.state = state
+    }
+
+    public static func identity(machineID: String, sessionID: String, questionID: String) -> String {
+        "\(machineID)|\(sessionID)|\(questionID)"
     }
 }
 

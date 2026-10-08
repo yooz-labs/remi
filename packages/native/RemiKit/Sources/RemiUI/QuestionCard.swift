@@ -143,7 +143,7 @@ private struct QuestionCardContent: View {
         case .phone: "Answered from a phone"
         case .lockscreen: "Answered from the Lock Screen"
         case .terminal: "Answered at the terminal"
-        case .harness: "Closed by the agent"
+        case .harness: "Closed by the harness"
         case .timeout: "Remi stopped waiting for an answer"
         case nil: "Resolved elsewhere"
         }
