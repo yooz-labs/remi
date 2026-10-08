@@ -54,7 +54,7 @@ struct PhoneLiveRootView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
-        .onChange(of: Set<String>(allQuestions.map(\.id)), initial: true) { oldValue, newValue in
+        .onChange(of: activeQuestionIDs, initial: true) { oldValue, newValue in
             guard notificationBaselineEstablished else {
                 knownQuestionIDs = newValue
                 notificationBaselineEstablished = true
@@ -64,7 +64,7 @@ struct PhoneLiveRootView: View {
             PhoneNotificationCoordinator.remove(ids: Array(removed))
             for id in newValue.subtracting(knownQuestionIDs) {
                 guard let question = allQuestions.first(where: { $0.id == id }),
-                      let destination = destination(forQuestionID: id)
+                      let destination = destination(forQuestionIdentity: id)
                 else { continue }
                 Task {
                     await PhoneNotificationCoordinator.notify(
@@ -147,28 +147,68 @@ struct PhoneLiveRootView: View {
     }
 
     private var allQuestions: [RemiQuestionCardModel] {
-        store.machines.flatMap { machine in
+        let active = store.machines.flatMap { machine in
             machine.questions.map { presentation($0, machine: machine) }
         }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard let machine = store.machines.first(where: { $0.id == record.machineID }) else {
+                return nil
+            }
+            return presentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
+    }
+
+    private var activeQuestionIDs: Set<String> {
+        Set(store.machines.flatMap { machine in
+            machine.questions.map { message in
+                RemiQuestionCardModel.identity(
+                    machineID: machine.id,
+                    sessionID: message.sessionId,
+                    questionID: message.question.id
+                )
+            }
+        })
     }
 
     private func questions(_ sessionId: String) -> [RemiQuestionCardModel] {
-        store.machines.flatMap { machine in
+        let active = store.machines.flatMap { machine in
             machine.questions.filter { $0.sessionId == sessionId }.map {
                 presentation($0, machine: machine)
             }
         }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard record.message.sessionId == sessionId,
+                  let machine = store.machines.first(where: { $0.id == record.machineID })
+            else { return nil }
+            return presentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
     }
 
     private func presentation(
         _ message: QuestionMessage,
-        machine: MachineState
+        machine: MachineState,
+        state: RemiQuestionState = .pending
     ) -> RemiQuestionCardModel {
         let question = message.question
+        let kind = RemiQuestionKind(wireValue: question.kind)
         return RemiQuestionCardModel(
-            id: question.id,
-            kind: question.kind == "multi_question" ? .askUser
-                : question.kind == "plan_approval" ? .planApproval : .permission,
+            id: RemiQuestionCardModel.identity(
+                machineID: machine.id,
+                sessionID: message.sessionId,
+                questionID: question.id
+            ),
+            questionID: question.id,
+            kind: kind,
             text: question.text,
             detail: question.detail,
             machineID: machine.id,
@@ -180,7 +220,7 @@ struct PhoneLiveRootView: View {
                     id: option.value,
                     label: option.label,
                     detail: option.description,
-                    role: option.isYes ? .allow : option.isNo ? .deny : .neutral,
+                    role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
                     grantsForSession: option.standingGrant != nil,
                     isRecommended: option.isRecommended
                 )
@@ -202,8 +242,32 @@ struct PhoneLiveRootView: View {
                     }
                 )
             },
-            terminalOnly: question.terminalOnly ?? false
+            terminalOnly: question.terminalOnly == true
+                || question.answerPath == QuestionAnswerPath.none
+                || question.hasUnknownAnswerPath,
+            answerPath: answerPath(question.answerPath),
+            state: state
         )
+    }
+
+    private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
+        switch value {
+        case .some(.structured): .structured
+        case .some(.keystroke): .keystroke
+        case .some(.none): RemiAnswerPath.none
+        case nil: nil
+        }
+    }
+
+    private func resolutionSource(_ value: QuestionResolvedBy?) -> RemiResolutionSource? {
+        switch value {
+        case .phone: .phone
+        case .lockscreen: .lockscreen
+        case .terminal: .terminal
+        case .harness: .harness
+        case .timeout: .timeout
+        case nil: nil
+        }
     }
 
     private func transcript(_ sessionId: String) -> [RemiTranscriptEntry] {
@@ -315,13 +379,19 @@ struct PhoneLiveRootView: View {
         store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
     }
 
-    private func destination(forQuestionID id: String) -> RemiNavigationDestination? {
+    private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
         for machine in store.machines {
-            if let message = machine.questions.first(where: { $0.question.id == id }) {
+            if let message = machine.questions.first(where: {
+                RemiQuestionCardModel.identity(
+                    machineID: machine.id,
+                    sessionID: $0.sessionId,
+                    questionID: $0.question.id
+                ) == id
+            }) {
                 return RemiNavigationDestination(
                     machineID: machine.id,
                     sessionID: message.sessionId,
-                    questionID: id,
+                    questionID: message.question.id,
                     agentID: message.question.agentId
                 )
             }

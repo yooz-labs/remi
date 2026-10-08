@@ -106,6 +106,14 @@ public struct ResumeSessionKey: Sendable, Hashable {
     }
 }
 
+public struct ResolvedQuestionRecord: Sendable, Equatable, Identifiable {
+    public let id: String
+    public let machineID: String
+    public let message: QuestionMessage
+    public let resolvedBy: QuestionResolvedBy?
+    public let reason: String
+}
+
 /// The single source of truth for every configured machine and its joined session daemons.
 @MainActor
 @Observable
@@ -120,6 +128,7 @@ public final class MachineStore {
     public private(set) var resumedSessionDestination: ResumedSessionDestination?
     public private(set) var resumingSessions: Set<ResumeSessionKey> = []
     public private(set) var resumeErrorsBySession: [ResumeSessionKey: String] = [:]
+    public private(set) var recentlyResolvedQuestions: [ResolvedQuestionRecord] = []
 
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
@@ -131,6 +140,7 @@ public final class MachineStore {
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var resolvedQuestionRemovalTasks: [String: Task<Void, Never>] = [:]
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
 
@@ -164,6 +174,9 @@ public final class MachineStore {
         resumeRequestByChild.removeAll()
         resumingSessions.removeAll()
         resumeErrorsBySession.removeAll()
+        for task in resolvedQuestionRemovalTasks.values { task.cancel() }
+        resolvedQuestionRemovalTasks.removeAll()
+        recentlyResolvedQuestions.removeAll()
         Task {
             for connection in activeConnections {
                 await connection.stop()
@@ -187,6 +200,11 @@ public final class MachineStore {
         resumeErrorsBySession = resumeErrorsBySession.filter { $0.key.machineID != endpoint.id }
         if resumedSessionDestination?.machineID == endpoint.id {
             resumedSessionDestination = nil
+        }
+        let resolvedIDs = recentlyResolvedQuestions.filter { $0.machineID == endpoint.id }.map(\.id)
+        recentlyResolvedQuestions.removeAll { $0.machineID == endpoint.id }
+        for id in resolvedIDs {
+            resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
         }
         let removedMachine = machines.first { $0.endpoint == endpoint }
         let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
@@ -466,15 +484,18 @@ public final class MachineStore {
             routeBySession[message.sessionId] = endpoint
             machines[index].questions.removeAll { $0.question.id == message.question.id }
             machines[index].questions.append(message)
-        case .questionResolved(let message):
-            machines = Self.resolvingQuestion(
-                in: machines,
-                sessionId: message.sessionId,
-                questionId: message.questionId
+            let resolvedID = Self.resolvedQuestionID(
+                machineID: parent.id,
+                sessionID: message.sessionId,
+                questionID: message.question.id
             )
+            recentlyResolvedQuestions.removeAll { $0.id == resolvedID }
+            resolvedQuestionRemovalTasks.removeValue(forKey: resolvedID)?.cancel()
+        case .questionResolved(let message):
+            resolveQuestion(message, machineIndex: index, machineID: parent.id)
         case .questionSnapshot(let snapshot):
-            machines = Self.reconcilingQuestionSnapshot(
-                in: machines,
+            machines[index] = Self.reconcilingQuestionSnapshot(
+                in: machines[index],
                 sessionId: snapshot.sessionId,
                 liveQuestionIDs: Set(snapshot.questionIds)
             )
@@ -617,18 +638,60 @@ public final class MachineStore {
         }
     }
 
+    private func resolveQuestion(
+        _ resolution: QuestionResolvedMessage,
+        machineIndex: Int,
+        machineID: String
+    ) {
+        guard let message = machines[machineIndex].questions.first(where: {
+            $0.sessionId == resolution.sessionId && $0.question.id == resolution.questionId
+        }) else { return }
+
+        machines[machineIndex].questions.removeAll {
+            $0.sessionId == resolution.sessionId && $0.question.id == resolution.questionId
+        }
+        let id = Self.resolvedQuestionID(
+            machineID: machineID,
+            sessionID: resolution.sessionId,
+            questionID: resolution.questionId
+        )
+        recentlyResolvedQuestions.removeAll { $0.id == id }
+        recentlyResolvedQuestions.append(ResolvedQuestionRecord(
+            id: id,
+            machineID: machineID,
+            message: message,
+            resolvedBy: resolution.resolvedBy,
+            reason: resolution.reason
+        ))
+        resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
+        resolvedQuestionRemovalTasks[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.recentlyResolvedQuestions.removeAll { $0.id == id }
+                self?.resolvedQuestionRemovalTasks[id] = nil
+            }
+        }
+    }
+
+    private static func resolvedQuestionID(
+        machineID: String,
+        sessionID: String,
+        questionID: String
+    ) -> String {
+        "\(machineID)|\(sessionID)|\(questionID)"
+    }
+
     static func reconcilingQuestionSnapshot(
-        in states: [MachineState],
+        in state: MachineState,
         sessionId: String,
         liveQuestionIDs: Set<String>
-    ) -> [MachineState] {
-        states.map { state in
-            var state = state
-            state.questions.removeAll {
-                $0.sessionId == sessionId && !liveQuestionIDs.contains($0.question.id)
-            }
-            return state
+    ) -> MachineState {
+        var state = state
+        state.questions.removeAll {
+            $0.sessionId == sessionId && !liveQuestionIDs.contains($0.question.id)
         }
+        return state
     }
 
     private func requestSessions(from endpoint: MachineEndpoint) {

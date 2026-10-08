@@ -83,9 +83,9 @@ struct SessionScreen: View {
                     ForEach(selectedViewID.isEmpty ? questions : []) { question in
                         RemiQuestionCard(
                             model: question,
-                            onAnswer: { onAnswer(question.id, $0) },
-                            onSubmit: { onSubmit(question.id, $0) },
-                            onCancel: { onCancel(question.id) }
+                            onAnswer: { onAnswer(question.questionID, $0) },
+                            onSubmit: { onSubmit(question.questionID, $0) },
+                            onCancel: { onCancel(question.questionID) }
                         )
                     }
                 }

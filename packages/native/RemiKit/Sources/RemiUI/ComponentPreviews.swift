@@ -7,6 +7,7 @@ private struct QuestionCardGallery: View {
         RemiPreviewData.binaryQuestion,
         RemiPreviewData.standingGrantQuestion,
         RemiPreviewData.multipleChoiceQuestion,
+        RemiPreviewData.genericQuestion,
         RemiPreviewData.askUserQuestion,
         RemiPreviewData.planQuestion,
         RemiPreviewData.terminalOnlyQuestion,
@@ -104,5 +105,15 @@ private struct ComposerPreview: View {
 
 #Preview("Components · Accessibility") {
     SupportingComponentsGallery().environment(\.dynamicTypeSize, .accessibility5)
+}
+
+#Preview("Generic decision") {
+    RemiQuestionCard(model: RemiPreviewData.genericQuestion)
+        .padding(RemiTheme.Spacing.m)
+}
+
+#Preview("Resolved decision") {
+    RemiQuestionCard(model: RemiPreviewData.questionStates[2])
+        .padding(RemiTheme.Spacing.m)
 }
 #endif

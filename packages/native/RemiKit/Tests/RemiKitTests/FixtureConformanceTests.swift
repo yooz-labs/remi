@@ -38,6 +38,61 @@ struct FixtureConformanceTests {
         #expect(message.question.options.first?.isYes == true)
     }
 
+    @Test(arguments: [
+        "question_claude_permission",
+        "question_claude_ask_user_question",
+        "question_claude_plan_approval",
+        "question_claude_terminal_prompt",
+        "question_claude_terminal_only",
+        "question_codex_command",
+        "question_codex_terminal_only",
+    ])
+    func frozenDecisionFixturesDecode(_ name: String) throws {
+        let message = try JSONDecoder().decode(QuestionMessage.self, from: Self.fixture(name))
+        #expect(message.question.answerPath != nil)
+    }
+
+    @Test func resolvedByFixtureDecodes() throws {
+        let message = try JSONDecoder().decode(
+            QuestionResolvedMessage.self,
+            from: Self.fixture("question_resolved_terminal")
+        )
+        #expect(message.resolvedBy == .terminal)
+    }
+
+    @Test func unknownDecisionEnumsDecodeAsUnknown() throws {
+        let questionData = Data(#"""
+        {
+          "type":"question","id":"message","timestamp":"2026-10-08T12:00:00Z",
+          "sessionId":"session","question":{
+            "id":"question","text":"Future request","options":[],
+            "allowsFreeText":false,"isAnswered":false,
+            "kind":"future_kind","answerPath":"future_path"
+          }
+        }
+        """#.utf8)
+        let resolutionData = Data(#"""
+        {
+          "type":"question_resolved","id":"resolution","timestamp":"2026-10-08T12:00:01Z",
+          "sessionId":"session","questionId":"question","reason":"cancelled",
+          "resolvedBy":"future_source"
+        }
+        """#.utf8)
+
+        let question = try JSONDecoder().decode(QuestionMessage.self, from: questionData)
+        let resolution = try JSONDecoder().decode(QuestionResolvedMessage.self, from: resolutionData)
+        #expect(question.question.kind == "future_kind")
+        #expect(question.question.answerPath == nil)
+        #expect(question.question.hasUnknownAnswerPath)
+        #expect(resolution.resolvedBy == nil)
+    }
+
+    @Test func omittedAnswerPathRemainsLegacyRatherThanUnknown() throws {
+        let message = try JSONDecoder().decode(QuestionMessage.self, from: Self.fixture("question"))
+        #expect(message.question.answerPath == nil)
+        #expect(!message.question.hasUnknownAnswerPath)
+    }
+
     @Test func sessionListDecodes() throws {
         let list = try JSONDecoder().decode(
             SessionListResponse.self, from: Self.fixture("session_list_response"))
