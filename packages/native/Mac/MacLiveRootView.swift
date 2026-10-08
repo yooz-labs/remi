@@ -12,7 +12,7 @@ struct MacLiveRootView: View {
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
     @State private var notificationDestination: RemiNavigationDestination?
-    @State private var pendingResumeSessionID: String?
+    @State private var pendingResume: ResumeSessionKey?
 
     var body: some View {
         Group {
@@ -174,6 +174,7 @@ struct MacLiveRootView: View {
         }
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
+            pendingResume = nil
             notificationDestination = destination
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
@@ -182,10 +183,14 @@ struct MacLiveRootView: View {
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
             guard let destination,
-                  pendingResumeSessionID == destination.requestedSessionID,
-                  pendingResumeSessionID == selectedSessionID
+                  pendingResume == ResumeSessionKey(
+                    machineID: destination.machineID,
+                    sessionID: destination.requestedSessionID
+                  ),
+                  selectedMachineID == destination.machineID,
+                  selectedSessionID == destination.requestedSessionID
             else { return }
-            pendingResumeSessionID = nil
+            pendingResume = nil
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
             store.consumeResumedSessionDestination(id: destination.id)
@@ -243,6 +248,7 @@ struct MacLiveRootView: View {
                 guard next != selectedMachineID else { return }
                 selectedMachineID = next
                 selectedSessionID = ""
+                pendingResume = nil
                 notificationDestination = nil
                 reconcileNavigation()
             }
@@ -254,8 +260,9 @@ struct MacLiveRootView: View {
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
                 selectedSessionID = $0 ?? ""
-                if selectedSessionID != pendingResumeSessionID {
-                    pendingResumeSessionID = nil
+                if pendingResume?.machineID != selectedMachineID
+                    || pendingResume?.sessionID != selectedSessionID {
+                    pendingResume = nil
                 }
                 notificationDestination = nil
             }
@@ -312,9 +319,15 @@ struct MacLiveRootView: View {
                 openQuestionCount: questionCount,
                 canTerminate: session.source == "daemon",
                 canResume: session.source != "daemon" && session.canResume == true,
-                isResuming: store.resumingSessionIDs.contains(session.sessionId),
+                isResuming: store.resumingSessions.contains(ResumeSessionKey(
+                    machineID: machine.id,
+                    sessionID: session.sessionId
+                )),
                 resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
-                resumeError: store.resumeErrorsBySession[session.sessionId]
+                resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                    machineID: machine.id,
+                    sessionID: session.sessionId
+                )]
             )
         }
     }
@@ -323,7 +336,7 @@ struct MacLiveRootView: View {
         guard let machine = store.machines.first(where: { $0.id == session.machineID }) else { return }
         selectedMachineID = machine.id
         selectedSessionID = session.id
-        pendingResumeSessionID = session.id
+        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: session.id)
         store.resumeSession(on: machine.endpoint, sessionId: session.id)
     }
 

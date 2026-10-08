@@ -58,6 +58,14 @@ struct MachineStoreTests {
         #expect(object["sessionId"] as? String == "stored-session")
     }
 
+    @Test func resumeStateKeepsIdenticalSessionIDsSeparateByMachine() {
+        let first = ResumeSessionKey(machineID: "one.example:18765", sessionID: "shared-id")
+        let second = ResumeSessionKey(machineID: "two.example:18765", sessionID: "shared-id")
+
+        #expect(first != second)
+        #expect(Set([first, second]).count == 2)
+    }
+
     @Test func recentRepositoriesResponseDecodes() throws {
         let data = Data(#"""
         {
