@@ -1,25 +1,52 @@
 import RemiKit
 import SwiftUI
+import UIKit
 import VisionKit
 
 struct PairingScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    let phoneFingerprint: String?
+    let machineStates: [MachineState]
     let onConnect: (MachineEndpoint) -> Void
 
     @State private var payload: PairingPayload?
     @State private var error: PairingPayloadError?
     @State private var pastedCode = ""
+    @State private var requestedApproval = false
+    @State private var scannerFailed = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 if let payload {
-                    PairingConfirmation(payload: payload) {
-                        onConnect(payload.endpoint)
-                        dismiss()
+                    if requestedApproval {
+                        PairingApprovalWait(
+                            payload: payload,
+                            phoneFingerprint: phoneFingerprint,
+                            status: machineStates.first(where: { $0.id == payload.endpoint.id })?.status,
+                            onTryAgain: {
+                                requestedApproval = false
+                                self.payload = nil
+                            }
+                        )
+                    } else {
+                        PairingConfirmation(payload: payload, phoneFingerprint: phoneFingerprint) {
+                        let label = UIDevice.current.name
+                        onConnect(MachineEndpoint(
+                            host: payload.endpoint.host,
+                            port: payload.endpoint.port,
+                            expectedFingerprint: payload.endpoint.expectedFingerprint,
+                            expectedPublicKey: payload.endpoint.expectedPublicKey,
+                            pairingNonce: payload.endpoint.pairingNonce,
+                            pairingLabel: PairingPayload.isValidLabel(label) ? label : nil
+                        ))
+                            requestedApproval = true
+                        }
                     }
-                } else if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-                    PairingCodeScanner(onCode: validate)
+                } else if !scannerFailed && DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
+                    PairingCodeScanner(onCode: validate) {
+                        scannerFailed = true
+                    }
                         .overlay(alignment: .bottom) {
                             scannerInstructions
                         }
@@ -31,7 +58,7 @@ struct PairingScannerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(requestedApproval ? "Done" : "Cancel") { dismiss() }
                 }
             }
             .alert("Pairing code not accepted", isPresented: errorBinding) {
@@ -98,12 +125,11 @@ struct PairingScannerSheet: View {
     private var errorMessage: LocalizedStringKey {
         switch error {
         case .unsupportedVersion: "This pairing code uses an unsupported version."
-        case .invalidEndpoint: "The machine address or port is invalid."
-        case .invalidFingerprint: "The daemon fingerprint is invalid."
-        case .invalidNonce: "The one-time pairing value is invalid."
-        case .invalidLifetime: "The pairing code lifetime is invalid."
+        case .protocolMismatch: "This machine uses an incompatible Remi protocol version."
+        case .notCanonical: "This pairing code was altered or is not in canonical form."
+        case .malformed: "This pairing code contains invalid data. Run `remi pair` again."
         case .expired: "This pairing code has expired. Run `remi pair` again."
-        case .invalidURL, .none: "This is not a valid Remi pairing code."
+        case .notAPairingLink, .none: "This is not a valid Remi pairing code."
         }
     }
 
@@ -114,22 +140,117 @@ struct PairingScannerSheet: View {
         } catch let parsingError as PairingPayloadError {
             error = parsingError
         } catch {
-            self.error = .invalidURL
+            self.error = .malformed
+        }
+    }
+}
+
+private struct PairingApprovalWait: View {
+    let payload: PairingPayload
+    let phoneFingerprint: String?
+    let status: MachineConnectionStatus?
+    let onTryAgain: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(spacing: 16) {
+                    statusSymbol
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(statusTitle)
+                            .font(.title2.weight(.semibold))
+                        Text(payload.machineName)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 16) {
+                    fingerprintRow("Machine", payload.daemonFingerprint)
+                    Divider()
+                    fingerprintRow("This phone", phoneFingerprint ?? "Unavailable")
+                }
+                .padding(20)
+                .background(.thinMaterial, in: .rect(cornerRadius: 20))
+
+                Label(
+                    "At the machine, compare both fingerprints and enter the first four characters of this phone’s fingerprint.",
+                    systemImage: "checkmark.shield"
+                )
+                .foregroundStyle(.secondary)
+
+                Text("Remi retries with a fresh challenge while the terminal is waiting. You can close this screen; the connection continues in the background.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                if case .unavailable = status {
+                    Button("Scan a new code", action: onTryAgain)
+                        .buttonStyle(.glassProminent)
+                }
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(24)
+        }
+    }
+
+    @ViewBuilder
+    private var statusSymbol: some View {
+        switch status {
+        case .connected:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.green)
+        case .unavailable:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.orange)
+        default:
+            ProgressView().controlSize(.large)
+        }
+    }
+
+    private var statusTitle: String {
+        switch status {
+        case .connected: "Pairing approved"
+        case .unavailable(let reason): reason ?? "Pairing could not be completed"
+        case .waitingForApproval: "Waiting for manual authorization"
+        default: "Waiting for terminal approval"
+        }
+    }
+
+    private func fingerprintRow(_ title: LocalizedStringKey, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.body, design: .monospaced, weight: .semibold))
+                .textSelection(.enabled)
         }
     }
 }
 
 private struct PairingConfirmation: View {
     let payload: PairingPayload
+    let phoneFingerprint: String?
     let onConnect: () -> Void
 
     var body: some View {
         List {
             Section("Machine") {
+                LabeledContent("Name", value: payload.machineName)
                 LabeledContent("Address", value: payload.endpoint.id)
                 LabeledContent("Daemon fingerprint", value: payload.daemonFingerprint)
                     .textSelection(.enabled)
                 LabeledContent("Expires", value: payload.expiresAt.formatted(date: .omitted, time: .standard))
+            }
+            Section("Compare at the terminal") {
+                LabeledContent("Machine", value: payload.daemonFingerprint)
+                    .textSelection(.enabled)
+                LabeledContent("This phone", value: phoneFingerprint ?? "Unavailable")
+                    .textSelection(.enabled)
+                Text("The terminal will ask for the first four characters of this phone’s fingerprint. Approve only when both displays match.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Label(
@@ -155,9 +276,10 @@ private struct PairingConfirmation: View {
 
 private struct PairingCodeScanner: UIViewControllerRepresentable {
     let onCode: (String) -> Void
+    let onUnavailable: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onCode: onCode)
+        Coordinator(onCode: onCode, onUnavailable: onUnavailable)
     }
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
@@ -171,12 +293,21 @@ private struct PairingCodeScanner: UIViewControllerRepresentable {
             isHighlightingEnabled: true
         )
         scanner.delegate = context.coordinator
-        try? scanner.startScanning()
+        do {
+            try scanner.startScanning()
+        } catch {
+            Task { @MainActor in context.coordinator.scannerUnavailable() }
+        }
         return scanner
     }
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
-        if !scanner.isScanning { try? scanner.startScanning() }
+        guard !scanner.isScanning else { return }
+        do {
+            try scanner.startScanning()
+        } catch {
+            Task { @MainActor in context.coordinator.scannerUnavailable() }
+        }
     }
 
     static func dismantleUIViewController(
@@ -189,10 +320,23 @@ private struct PairingCodeScanner: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         private let onCode: (String) -> Void
+        private let onUnavailable: () -> Void
         private var delivered = false
 
-        init(onCode: @escaping (String) -> Void) {
+        init(onCode: @escaping (String) -> Void, onUnavailable: @escaping () -> Void) {
             self.onCode = onCode
+            self.onUnavailable = onUnavailable
+        }
+
+        func scannerUnavailable() {
+            onUnavailable()
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
+        ) {
+            onUnavailable()
         }
 
         func dataScanner(

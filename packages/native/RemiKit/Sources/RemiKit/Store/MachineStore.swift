@@ -9,30 +9,38 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
     public let host: String
     public let port: Int
     public let expectedFingerprint: String?
+    /// Ephemeral key pin from a pairing QR. Deliberately excluded from persistence.
+    public let expectedPublicKey: String?
     /// Ephemeral QR rendezvous token. Deliberately excluded from Codable persistence.
     public let pairingNonce: String?
+    /// Ephemeral display label sent with a pairing claim. Deliberately excluded from persistence.
+    public let pairingLabel: String?
 
     public init(
         host: String,
         port: Int,
         expectedFingerprint: String? = nil,
-        pairingNonce: String? = nil
+        expectedPublicKey: String? = nil,
+        pairingNonce: String? = nil,
+        pairingLabel: String? = nil
     ) {
         self.host = host
         self.port = port
         self.expectedFingerprint = expectedFingerprint
+        self.expectedPublicKey = expectedPublicKey
         self.pairingNonce = pairingNonce
+        self.pairingLabel = pairingLabel
     }
 
     public var webSocketURL: URL? {
+        if host.contains(":") {
+            return URL(string: "ws://[\(host)]:\(port)/ws")
+        }
         var components = URLComponents()
         components.scheme = "ws"
         components.host = host
         components.port = port
         components.path = "/ws"
-        if let pairingNonce {
-            components.queryItems = [URLQueryItem(name: "pairing_nonce", value: pairingNonce)]
-        }
         return components.url
     }
 
@@ -45,7 +53,9 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         host = try values.decode(String.self, forKey: .host)
         port = try values.decode(Int.self, forKey: .port)
         expectedFingerprint = try values.decodeIfPresent(String.self, forKey: .expectedFingerprint)
+        expectedPublicKey = nil
         pairingNonce = nil
+        pairingLabel = nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -185,7 +195,9 @@ public final class MachineStore {
     }
 
     public func addMachine(_ endpoint: MachineEndpoint, displayName: String? = nil) {
-        guard !machines.contains(where: { $0.endpoint == endpoint }) else { return }
+        if let existing = machines.first(where: { $0.id == endpoint.id }) {
+            removeMachine(existing.endpoint)
+        }
         machines.append(MachineState(endpoint: endpoint, displayName: displayName ?? endpoint.id))
         connect(endpoint, parent: endpoint)
     }
@@ -399,7 +411,10 @@ public final class MachineStore {
                 clientVersion: clientVersion,
                 clientId: clientId,
                 deviceId: clientId,
-                expectedServerFingerprint: endpoint.expectedFingerprint
+                expectedServerFingerprint: endpoint.expectedFingerprint,
+                expectedServerPublicKey: endpoint.expectedPublicKey,
+                pairingNonce: endpoint.pairingNonce,
+                pairingLabel: endpoint.pairingLabel
             ),
             identity: identity,
             stateHandler: { [weak self] state in

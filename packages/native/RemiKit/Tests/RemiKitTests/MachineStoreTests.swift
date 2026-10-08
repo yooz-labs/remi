@@ -121,6 +121,31 @@ struct MachineStoreTests {
         #expect(store.machines.isEmpty)
     }
 
+    @Test @MainActor func rescanningPairingCodeReplacesStableEndpointIdentity() {
+        let original = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let replacement = MachineEndpoint(
+            host: "127.0.0.1",
+            port: 18765,
+            expectedFingerprint: "ae216c2ef5247a37",
+            expectedPublicKey: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+            pairingNonce: "oKGio6SlpqeoqaqrrK2urw",
+            pairingLabel: "Fixture phone"
+        )
+        let store = MachineStore(
+            endpoints: [original],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test"
+        )
+
+        store.addMachine(replacement)
+
+        #expect(store.machines.count == 1)
+        #expect(store.machines[0].id == original.id)
+        #expect(store.machines[0].endpoint.pairingNonce == replacement.pairingNonce)
+        store.stop()
+    }
+
     @Test func activeSessionsMatchCapacitorDaemonSourceRule() throws {
         var machine = MachineState(
             endpoint: MachineEndpoint(host: "host.example", port: 18765),

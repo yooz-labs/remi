@@ -78,6 +78,8 @@ public struct AuthResponseMessage: Codable, Sendable, Equatable {
     public let clientFingerprint: String
     public let relayEphemeralKey: String?
     public let relayKexSignature: String?
+    public let pairingNonce: String?
+    public let pairingLabel: String?
 
     public init(
         id: String,
@@ -86,7 +88,9 @@ public struct AuthResponseMessage: Codable, Sendable, Equatable {
         signature: String,
         clientFingerprint: String,
         relayEphemeralKey: String? = nil,
-        relayKexSignature: String? = nil
+        relayKexSignature: String? = nil,
+        pairingNonce: String? = nil,
+        pairingLabel: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -95,6 +99,8 @@ public struct AuthResponseMessage: Codable, Sendable, Equatable {
         self.clientFingerprint = clientFingerprint
         self.relayEphemeralKey = relayEphemeralKey
         self.relayKexSignature = relayKexSignature
+        self.pairingNonce = pairingNonce
+        self.pairingLabel = pairingLabel
     }
 }
 
