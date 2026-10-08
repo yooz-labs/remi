@@ -11,6 +11,46 @@ final class MacNotificationRouter {
     var destination: RemiNavigationDestination?
 }
 
+enum MacNotificationAccess: Sendable, Equatable {
+    case unknown
+    case allowed
+    case denied
+}
+
+@MainActor
+@Observable
+final class MacNotificationPermission {
+    static let shared = MacNotificationPermission()
+    private(set) var access: MacNotificationAccess
+
+    init(access: MacNotificationAccess = .unknown) {
+        self.access = access
+    }
+
+    func refresh() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        access = Self.access(for: settings.authorizationStatus)
+    }
+
+    func requestIfNeeded() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            _ = try? await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+        }
+        await refresh()
+    }
+
+    nonisolated static func access(for status: UNAuthorizationStatus) -> MacNotificationAccess {
+        switch status {
+        case .denied: .denied
+        case .authorized, .provisional, .ephemeral: .allowed
+        case .notDetermined: .unknown
+        @unknown default: .unknown
+        }
+    }
+}
+
 final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -38,8 +78,7 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
 
 enum MacNotificationCoordinator {
     static func requestAuthorization() async {
-        _ = try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound])
+        await MacNotificationPermission.shared.requestIfNeeded()
     }
 
     static func notify(

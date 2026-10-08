@@ -3,10 +3,23 @@ import RemiKit
 import SwiftUI
 
 struct MacPreferencesView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let publicIdentity: PublicClientIdentity
+    private let refreshNotificationPermission: Bool
 
     @State private var copiedValue: CopiedValue?
+    @State private var notificationPermission = MacNotificationPermission.shared
     @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
+
+    init(
+        publicIdentity: PublicClientIdentity,
+        notificationPermission: MacNotificationPermission = .shared,
+        refreshNotificationPermission: Bool = true
+    ) {
+        self.publicIdentity = publicIdentity
+        self.refreshNotificationPermission = refreshNotificationPermission
+        _notificationPermission = State(initialValue: notificationPermission)
+    }
 
     var body: some View {
         ScrollView {
@@ -21,10 +34,41 @@ struct MacPreferencesView: View {
         }
         .frame(width: 680, height: 560)
         .navigationTitle("Remi Settings")
+        .task {
+            guard refreshNotificationPermission else { return }
+            await notificationPermission.refresh()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard refreshNotificationPermission, phase == .active else { return }
+            Task { await notificationPermission.refresh() }
+        }
     }
 
     private var notificationCard: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if notificationPermission.access == .denied {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "bell.slash.fill")
+                        .font(.title3)
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Notifications are off")
+                            .font(.headline)
+                        Text("Remi can still show waiting questions in the app and menu bar, but macOS will not show banners or play notification sounds.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Button("Open System Settings") {
+                        openNotificationSettings()
+                    }
+                }
+                .padding(.bottom, 8)
+
+                Divider()
+            }
+
             Toggle("Concise question summaries", isOn: $summariesEnabled)
                 .font(.headline)
             Text("For longer questions, Remi uses Apple Intelligence on device when available. The original question remains unchanged in the conversation.")
@@ -33,6 +77,16 @@ struct MacPreferencesView: View {
         }
         .padding(20)
         .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 14))
+    }
+
+    private func openNotificationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        ) else { return }
+        if !NSWorkspace.shared.open(url),
+           let settingsURL = URL(string: "x-apple.systempreferences:") {
+            NSWorkspace.shared.open(settingsURL)
+        }
     }
 
     private var header: some View {
@@ -140,6 +194,8 @@ private enum CopiedValue {
         publicIdentity: PublicClientIdentity(
             publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             fingerprint: "6323efd4d1c6c63f"
-        )
+        ),
+        notificationPermission: MacNotificationPermission(access: .denied),
+        refreshNotificationPermission: false
     )
 }
