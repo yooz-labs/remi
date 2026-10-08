@@ -7,11 +7,12 @@ struct PhoneNewSessionSheet: View {
 
     let machines: [MachineState]
     let recentRepositories: [String: [RecentRepository]]
-    let onCreate: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
+    let onCreate: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
 
     @State private var machineID: String
     @State private var repository = ""
     @State private var harness = "claude"
+    @State private var model = ""
     @State private var createsWorktree = false
     @State private var branch = ""
     @State private var base = ""
@@ -19,7 +20,7 @@ struct PhoneNewSessionSheet: View {
     init(
         machines: [MachineState],
         recentRepositories: [String: [RecentRepository]],
-        onCreate: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
+        onCreate: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
     ) {
         self.machines = machines
         self.recentRepositories = recentRepositories
@@ -92,6 +93,14 @@ struct PhoneNewSessionSheet: View {
                             Text(Self.harnessName(value)).tag(value)
                         }
                     }
+
+                    TextField("Model (optional)", text: $model)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    Text("Leave this empty to use the harness default configured on the machine.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("New session")
@@ -161,7 +170,8 @@ struct PhoneNewSessionSheet: View {
         } else {
             workspace = nil
         }
-        onCreate(selectedMachine.endpoint, trimmedRepository, harness, workspace)
+        let args = HarnessLaunchArguments.model(model)
+        onCreate(selectedMachine.endpoint, trimmedRepository, harness, args, workspace)
         dismiss()
     }
 
@@ -173,6 +183,35 @@ struct PhoneNewSessionSheet: View {
         }
     }
 }
+
+#if DEBUG
+private var newSessionPreviewMachine: MachineState {
+    var machine = MachineState(
+        endpoint: MachineEndpoint(host: "studio.local", port: 18765),
+        displayName: "Studio"
+    )
+    machine.status = .connected
+    machine.capabilities = ["workspaces"]
+    machine.harnesses = ["claude", "codex"]
+    return machine
+}
+
+#Preview("New session") {
+    PhoneNewSessionSheet(
+        machines: [newSessionPreviewMachine],
+        recentRepositories: [
+            newSessionPreviewMachine.id: [
+                RecentRepository(
+                    repository: "/Users/yahya/Projects/remi",
+                    name: "remi",
+                    lastUsedAt: "2026-10-08T20:00:00.000Z"
+                )
+            ]
+        ],
+        onCreate: { _, _, _, _, _ in }
+    )
+}
+#endif
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }

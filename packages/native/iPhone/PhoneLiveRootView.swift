@@ -354,12 +354,14 @@ struct PhoneLiveRootView: View {
         endpoint: MachineEndpoint,
         directory: String,
         harness: String,
+        args: [String],
         workspace: WorkspaceRequest?
     ) {
         store.createSession(
             on: endpoint,
             directory: directory,
             harness: harness,
+            args: args,
             workspace: workspace
         )
     }
