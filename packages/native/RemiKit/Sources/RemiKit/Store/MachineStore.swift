@@ -195,7 +195,9 @@ public final class MachineStore {
     }
 
     public func addMachine(_ endpoint: MachineEndpoint, displayName: String? = nil) {
-        guard !machines.contains(where: { $0.endpoint == endpoint }) else { return }
+        if let existing = machines.first(where: { $0.id == endpoint.id }) {
+            removeMachine(existing.endpoint)
+        }
         machines.append(MachineState(endpoint: endpoint, displayName: displayName ?? endpoint.id))
         connect(endpoint, parent: endpoint)
     }

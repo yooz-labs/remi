@@ -6,12 +6,14 @@ import VisionKit
 struct PairingScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let phoneFingerprint: String?
+    let machineStates: [MachineState]
     let onConnect: (MachineEndpoint) -> Void
 
     @State private var payload: PairingPayload?
     @State private var error: PairingPayloadError?
     @State private var pastedCode = ""
     @State private var requestedApproval = false
+    @State private var scannerFailed = false
 
     var body: some View {
         NavigationStack {
@@ -20,7 +22,12 @@ struct PairingScannerSheet: View {
                     if requestedApproval {
                         PairingApprovalWait(
                             payload: payload,
-                            phoneFingerprint: phoneFingerprint
+                            phoneFingerprint: phoneFingerprint,
+                            status: machineStates.first(where: { $0.id == payload.endpoint.id })?.status,
+                            onTryAgain: {
+                                requestedApproval = false
+                                self.payload = nil
+                            }
                         )
                     } else {
                         PairingConfirmation(payload: payload, phoneFingerprint: phoneFingerprint) {
@@ -36,8 +43,10 @@ struct PairingScannerSheet: View {
                             requestedApproval = true
                         }
                     }
-                } else if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-                    PairingCodeScanner(onCode: validate)
+                } else if !scannerFailed && DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
+                    PairingCodeScanner(onCode: validate) {
+                        scannerFailed = true
+                    }
                         .overlay(alignment: .bottom) {
                             scannerInstructions
                         }
@@ -139,15 +148,16 @@ struct PairingScannerSheet: View {
 private struct PairingApprovalWait: View {
     let payload: PairingPayload
     let phoneFingerprint: String?
+    let status: MachineConnectionStatus?
+    let onTryAgain: () -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
+                    statusSymbol
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Waiting for terminal approval")
+                        Text(statusTitle)
                             .font(.title2.weight(.semibold))
                         Text(payload.machineName)
                             .foregroundStyle(.secondary)
@@ -171,9 +181,39 @@ private struct PairingApprovalWait: View {
                 Text("Remi retries with a fresh challenge while the terminal is waiting. You can close this screen; the connection continues in the background.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                if case .unavailable = status {
+                    Button("Scan a new code", action: onTryAgain)
+                        .buttonStyle(.glassProminent)
+                }
             }
             .frame(maxWidth: 560, alignment: .leading)
             .padding(24)
+        }
+    }
+
+    @ViewBuilder
+    private var statusSymbol: some View {
+        switch status {
+        case .connected:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.green)
+        case .unavailable:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.orange)
+        default:
+            ProgressView().controlSize(.large)
+        }
+    }
+
+    private var statusTitle: String {
+        switch status {
+        case .connected: "Pairing approved"
+        case .unavailable(let reason): reason ?? "Pairing could not be completed"
+        case .waitingForApproval: "Waiting for manual authorization"
+        default: "Waiting for terminal approval"
         }
     }
 
@@ -236,9 +276,10 @@ private struct PairingConfirmation: View {
 
 private struct PairingCodeScanner: UIViewControllerRepresentable {
     let onCode: (String) -> Void
+    let onUnavailable: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onCode: onCode)
+        Coordinator(onCode: onCode, onUnavailable: onUnavailable)
     }
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
@@ -252,12 +293,21 @@ private struct PairingCodeScanner: UIViewControllerRepresentable {
             isHighlightingEnabled: true
         )
         scanner.delegate = context.coordinator
-        try? scanner.startScanning()
+        do {
+            try scanner.startScanning()
+        } catch {
+            Task { @MainActor in context.coordinator.scannerUnavailable() }
+        }
         return scanner
     }
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
-        if !scanner.isScanning { try? scanner.startScanning() }
+        guard !scanner.isScanning else { return }
+        do {
+            try scanner.startScanning()
+        } catch {
+            Task { @MainActor in context.coordinator.scannerUnavailable() }
+        }
     }
 
     static func dismantleUIViewController(
@@ -270,10 +320,23 @@ private struct PairingCodeScanner: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         private let onCode: (String) -> Void
+        private let onUnavailable: () -> Void
         private var delivered = false
 
-        init(onCode: @escaping (String) -> Void) {
+        init(onCode: @escaping (String) -> Void, onUnavailable: @escaping () -> Void) {
             self.onCode = onCode
+            self.onUnavailable = onUnavailable
+        }
+
+        func scannerUnavailable() {
+            onUnavailable()
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
+        ) {
+            onUnavailable()
         }
 
         func dataScanner(

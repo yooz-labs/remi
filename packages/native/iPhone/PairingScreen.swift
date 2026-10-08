@@ -8,6 +8,7 @@ struct PairingScreen: View {
     private let authorizeCommand = "remi authorize <fingerprint> --label phone"
     let onAddMachine: (MachineEndpoint) -> Void
     let publicIdentity: PublicClientIdentity?
+    let machineStates: [MachineState]
 
     @State private var host = "127.0.0.1"
     @State private var port = 18765
@@ -16,9 +17,11 @@ struct PairingScreen: View {
 
     init(
         publicIdentity: PublicClientIdentity? = nil,
+        machineStates: [MachineState] = [],
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in }
     ) {
         self.publicIdentity = publicIdentity
+        self.machineStates = machineStates
         self.onAddMachine = onAddMachine
     }
 
@@ -69,7 +72,10 @@ struct PairingScreen: View {
         }
         .navigationTitle("Add a machine")
         .sheet(isPresented: $showingScanner) {
-            PairingScannerSheet(phoneFingerprint: publicIdentity?.fingerprint) { endpoint in
+            PairingScannerSheet(
+                phoneFingerprint: publicIdentity?.fingerprint,
+                machineStates: machineStates
+            ) { endpoint in
                 onAddMachine(endpoint)
                 added = true
             }

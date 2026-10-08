@@ -52,6 +52,7 @@ public struct PairingPayload: Sendable, Equatable {
         guard dictionary.keys.contains("v") else { throw PairingPayloadError.malformed }
         guard let version = dictionary["v"] as? NSNumber,
               CFGetTypeID(version) != CFBooleanGetTypeID(),
+              Self.isInteger(version),
               version.intValue == Self.currentVersion
         else { throw PairingPayloadError.unsupportedVersion }
 
