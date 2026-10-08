@@ -19,7 +19,10 @@ public enum AuthenticationHandshake {
         to frame: AuthChallengeMessage,
         identity: ClientIdentity,
         id: String = UUID().uuidString.lowercased(),
-        timestamp: String = ISO8601DateFormatter().string(from: Date())
+        timestamp: String = ISO8601DateFormatter().string(from: Date()),
+        expectedServerPublicKey: String? = nil,
+        pairingNonce: String? = nil,
+        pairingLabel: String? = nil
     ) throws -> (AuthResponseMessage, PendingAuthentication) {
         guard let challenge = Data(base64Encoded: frame.challenge),
               let serverKey = Data(base64Encoded: frame.serverPublicKey)
@@ -32,6 +35,9 @@ public enum AuthenticationHandshake {
         else {
             throw AuthenticationHandshakeError.invalidServerKey
         }
+        guard expectedServerPublicKey == nil || frame.serverPublicKey == expectedServerPublicKey else {
+            throw AuthenticationHandshakeError.fingerprintMismatch
+        }
         guard ClientIdentity.fingerprint(ofPublicKeyRaw: serverKey) == frame.serverFingerprint else {
             throw AuthenticationHandshakeError.fingerprintMismatch
         }
@@ -41,7 +47,9 @@ public enum AuthenticationHandshake {
             timestamp: timestamp,
             clientPublicKey: identity.publicKeyBase64,
             signature: try identity.signatureBase64(for: challenge),
-            clientFingerprint: identity.fingerprint
+            clientFingerprint: identity.fingerprint,
+            pairingNonce: pairingNonce,
+            pairingLabel: pairingLabel
         )
         return (response, PendingAuthentication(challenge: challenge, serverPublicKey: serverKey))
     }

@@ -148,7 +148,7 @@ struct FixtureConformanceTests {
     }
 
     @Test(arguments: [
-        "hello", "auth_response", "answer", "transcript_load_request", "session_list_request",
+        "hello", "auth_response", "auth_response_pairing", "answer", "transcript_load_request", "session_list_request",
         "create_session_request", "create_session_request_plain", "resume_session_request",
         "kill_session_request", "user_input"
     ])
@@ -161,7 +161,7 @@ struct FixtureConformanceTests {
         case "hello":
             let decoded = try decoder.decode(HelloMessage.self, from: data)
             _ = try decoder.decode(HelloMessage.self, from: encoder.encode(decoded))
-        case "auth_response":
+        case "auth_response", "auth_response_pairing":
             let decoded = try decoder.decode(AuthResponseMessage.self, from: data)
             _ = try decoder.decode(AuthResponseMessage.self, from: encoder.encode(decoded))
         case "answer":

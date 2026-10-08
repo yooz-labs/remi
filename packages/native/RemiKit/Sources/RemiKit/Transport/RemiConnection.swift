@@ -6,19 +6,28 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let clientId: String
     public let deviceId: String?
     public let expectedServerFingerprint: String?
+    public let expectedServerPublicKey: String?
+    public let pairingNonce: String?
+    public let pairingLabel: String?
 
     public init(
         url: URL,
         clientVersion: String,
         clientId: String,
         deviceId: String? = nil,
-        expectedServerFingerprint: String? = nil
+        expectedServerFingerprint: String? = nil,
+        expectedServerPublicKey: String? = nil,
+        pairingNonce: String? = nil,
+        pairingLabel: String? = nil
     ) {
         self.url = url
         self.clientVersion = clientVersion
         self.clientId = clientId
         self.deviceId = deviceId
         self.expectedServerFingerprint = expectedServerFingerprint
+        self.expectedServerPublicKey = expectedServerPublicKey
+        self.pairingNonce = pairingNonce
+        self.pairingLabel = pairingLabel
     }
 }
 
@@ -177,10 +186,20 @@ public actor RemiConnection {
                 transition(to: .rejected(reason: "The daemon fingerprint does not match the scanned pairing code."))
                 return
             }
+            if let expected = configuration.expectedServerPublicKey,
+               challenge.serverPublicKey != expected {
+                shouldRun = false
+                closeSocket()
+                transition(to: .rejected(reason: "The daemon public key does not match the scanned pairing code."))
+                return
+            }
             transition(to: .authenticating(serverFingerprint: challenge.serverFingerprint))
             let (response, pending) = try AuthenticationHandshake.response(
                 to: challenge,
-                identity: identity
+                identity: identity,
+                expectedServerPublicKey: configuration.expectedServerPublicKey,
+                pairingNonce: configuration.pairingNonce,
+                pairingLabel: configuration.pairingLabel
             )
             pendingAuthentication = pending
             try await task.send(.data(encoder.encode(response)))
@@ -192,6 +211,10 @@ public actor RemiConnection {
                 if result.error == "UNKNOWN_KEY" {
                     shouldRun = false
                     transition(to: .awaitingLocalApproval(fingerprint: identity.fingerprint))
+                    return
+                }
+                if Self.shouldRetryAuthentication(result.error) {
+                    closeSocket()
                     return
                 }
                 shouldRun = false
@@ -272,10 +295,22 @@ public actor RemiConnection {
         min(pow(2, Double(max(0, attempt - 1))), 30)
     }
 
+    public nonisolated static func shouldRetryAuthentication(_ code: String?) -> Bool {
+        code == "PAIRING_PENDING"
+            || code == "PENDING_QUEUE_FULL"
+            || code?.hasPrefix("AUTH_STORE_ERROR") == true
+    }
+
     public nonisolated static func authenticationDescription(_ code: String?) -> String {
         switch code {
         case "PENDING_QUEUE_FULL":
             "The daemon's pending approval queue is full."
+        case "PAIRING_REJECTED": "The pairing request was rejected at the machine."
+        case "PAIRING_CANCELLED": "Pairing was cancelled at the machine."
+        case "PAIRING_EXPIRED": "The pairing code expired. Run remi pair again."
+        case "PAIRING_USED": "Another device already claimed this pairing code."
+        case "PAIRING_UNKNOWN": "The machine does not recognize this pairing code."
+        case "PAIRING_MALFORMED": "The pairing request was malformed. Scan a new code."
         case let code? where code.hasPrefix("AUTH_STORE_ERROR"):
             "The daemon could not save the approval request (\(code))."
         case "FINGERPRINT_MISMATCH":

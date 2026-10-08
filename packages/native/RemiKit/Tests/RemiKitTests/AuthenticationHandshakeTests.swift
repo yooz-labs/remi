@@ -67,4 +67,51 @@ struct AuthenticationHandshakeTests {
             try AuthenticationHandshake.response(to: frame, identity: ClientIdentity())
         }
     }
+
+    @Test func refusesScannedPublicKeyMismatchBeforeSigning() {
+        let server = Curve25519.Signing.PrivateKey()
+        let otherServer = Curve25519.Signing.PrivateKey()
+        let frame = AuthChallengeMessage(
+            type: "auth_challenge",
+            id: "challenge-id",
+            timestamp: "2026-10-07T00:00:00Z",
+            challenge: Data("challenge".utf8).base64EncodedString(),
+            serverFingerprint: ClientIdentity.fingerprint(ofPublicKeyRaw: server.publicKey.rawRepresentation),
+            serverPublicKey: server.publicKey.rawRepresentation.base64EncodedString(),
+            relayEphemeralKey: nil,
+            relayKexSignature: nil,
+            answerEncryptionKey: nil
+        )
+
+        #expect(throws: AuthenticationHandshakeError.fingerprintMismatch) {
+            try AuthenticationHandshake.response(
+                to: frame,
+                identity: ClientIdentity(),
+                expectedServerPublicKey: otherServer.publicKey.rawRepresentation.base64EncodedString()
+            )
+        }
+    }
+
+    @Test func pairingResponseCarriesNonceAndLabel() throws {
+        let server = Curve25519.Signing.PrivateKey()
+        let frame = AuthChallengeMessage(
+            type: "auth_challenge",
+            id: "challenge-id",
+            timestamp: "2026-10-07T00:00:00Z",
+            challenge: Data("challenge".utf8).base64EncodedString(),
+            serverFingerprint: ClientIdentity.fingerprint(ofPublicKeyRaw: server.publicKey.rawRepresentation),
+            serverPublicKey: server.publicKey.rawRepresentation.base64EncodedString(),
+            relayEphemeralKey: nil,
+            relayKexSignature: nil,
+            answerEncryptionKey: nil
+        )
+        let (response, _) = try AuthenticationHandshake.response(
+            to: frame,
+            identity: ClientIdentity(),
+            pairingNonce: "oKGio6SlpqeoqaqrrK2urw",
+            pairingLabel: "Fixture phone"
+        )
+        #expect(response.pairingNonce == "oKGio6SlpqeoqaqrrK2urw")
+        #expect(response.pairingLabel == "Fixture phone")
+    }
 }

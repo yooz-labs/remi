@@ -180,7 +180,7 @@ struct HomeScreen: View {
         }
         .sheet(isPresented: $showingPairing) {
             NavigationStack {
-                PairingScreen(onAddMachine: onAddMachine)
+                PairingScreen(publicIdentity: publicIdentity, onAddMachine: onAddMachine)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Done") { showingPairing = false }

@@ -15,4 +15,13 @@ struct RemiConnectionTests {
         #expect(RemiConnection.authenticationDescription("PENDING_QUEUE_FULL") ==
             "The daemon's pending approval queue is full.")
     }
+
+    @Test func pairingRetryErrorsAreExplicitAndBounded() {
+        #expect(RemiConnection.shouldRetryAuthentication("PAIRING_PENDING"))
+        #expect(RemiConnection.shouldRetryAuthentication("PENDING_QUEUE_FULL"))
+        #expect(RemiConnection.shouldRetryAuthentication("AUTH_STORE_ERROR"))
+        #expect(RemiConnection.shouldRetryAuthentication("AUTH_STORE_ERROR: locked"))
+        #expect(!RemiConnection.shouldRetryAuthentication("PAIRING_REJECTED"))
+        #expect(!RemiConnection.shouldRetryAuthentication("PAIRING_EXPIRED"))
+    }
 }
