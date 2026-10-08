@@ -93,4 +93,3 @@ Before declaring an Apple-platform capability complete:
 - [ActivityKit](https://developer.apple.com/documentation/activitykit)
 - [Displaying live data with Live Activities](https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities)
 - [App Intents](https://developer.apple.com/documentation/appintents)
-
