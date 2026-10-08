@@ -1,6 +1,6 @@
 # Native app parity
 
-Verified against `packages/web/src` on 2026-10-07. This describes what ships in the
+Verified against `packages/web/src` on 2026-10-08. This describes what ships in the
 native targets now, not planned behavior.
 
 | Capability | Capacitor client | Native iPhone | Native Mac | Remaining work |
