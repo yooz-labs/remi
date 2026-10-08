@@ -131,8 +131,12 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let lastMessage: String?
     public let openQuestionCount: Int
     public let canTerminate: Bool
+    public let canResume: Bool
+    public let isResuming: Bool
+    public let resumeIdentity: String?
+    public let resumeError: String?
 
-    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, canTerminate: Bool = false) {
+    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
         self.id = id
         self.machineID = machineID ?? machineName
         self.machineName = machineName
@@ -143,6 +147,10 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
         self.lastMessage = lastMessage
         self.openQuestionCount = openQuestionCount
         self.canTerminate = canTerminate
+        self.canResume = canResume
+        self.isResuming = isResuming
+        self.resumeIdentity = resumeIdentity
+        self.resumeError = resumeError
     }
 }
 

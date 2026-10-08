@@ -11,6 +11,7 @@ struct PhoneLiveRootView: View {
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var notificationPath: [RemiNavigationDestination] = []
+    @State private var pendingResume: ResumeSessionKey?
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
@@ -31,9 +32,10 @@ struct PhoneLiveRootView: View {
                 onAnswer: answer,
                 onSubmit: submit,
                 onCancel: cancel,
-                onOpenSession: store.loadTranscript,
+                onOpenSession: openSession,
                 onSend: sendChat,
                 onTerminateSession: store.terminateSession,
+                onResumeSession: resumeSession,
                 onCreateSession: createSession,
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
@@ -82,6 +84,21 @@ struct PhoneLiveRootView: View {
             guard destination != nil else { return }
             routePendingNotification()
         }
+        .onChange(of: store.resumedSessionDestination) { _, destination in
+            guard let destination,
+                  pendingResume == ResumeSessionKey(
+                    machineID: destination.machineID,
+                    sessionID: destination.requestedSessionID
+                  )
+            else { return }
+            pendingResume = nil
+            selectedMachineID = destination.machineID
+            notificationPath = [RemiNavigationDestination(
+                machineID: destination.machineID,
+                sessionID: destination.sessionID
+            )]
+            store.consumeResumedSessionDestination(id: destination.id)
+        }
     }
 
     private var machineSummaries: [RemiMachineSummary] {
@@ -99,7 +116,7 @@ struct PhoneLiveRootView: View {
 
     private var allSessions: [RemiSessionSummary] {
         store.machines.flatMap { machine in
-            machine.activeSessions.map { session in
+            machine.sessions.filter { $0.source == "daemon" || $0.canResume == true }.map { session in
                 let count = machine.questions.count { $0.sessionId == session.sessionId }
                 return RemiSessionSummary(
                     id: session.sessionId,
@@ -108,10 +125,22 @@ struct PhoneLiveRootView: View {
                     name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                     harness: session.harness ?? "claude",
                     project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
-                    status: count > 0 ? .needsYou : session.status == "active" ? .working : .idle,
+                    status: session.source == "daemon"
+                        ? (count > 0 ? .needsYou : session.status == "active" ? .working : .idle)
+                        : .offline,
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
-                    canTerminate: session.source == "daemon"
+                    canTerminate: session.source == "daemon",
+                    canResume: session.source != "daemon" && session.canResume == true,
+                    isResuming: store.resumingSessions.contains(ResumeSessionKey(
+                        machineID: machine.id,
+                        sessionID: session.sessionId
+                    )),
+                    resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
+                    resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                        machineID: machine.id,
+                        sessionID: session.sessionId
+                    )]
                 )
             }
         }
@@ -271,6 +300,17 @@ struct PhoneLiveRootView: View {
         )
     }
 
+    private func openSession(_ sessionID: String) {
+        pendingResume = nil
+        store.loadTranscript(sessionId: sessionID)
+    }
+
+    private func resumeSession(machineID: String, sessionID: String) {
+        guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
+        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: sessionID)
+        store.resumeSession(on: machine.endpoint, sessionId: sessionID)
+    }
+
     private func rawQuestion(_ id: String) -> QuestionMessage? {
         store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
     }
@@ -291,6 +331,7 @@ struct PhoneLiveRootView: View {
 
     private func routePendingNotification() {
         guard let destination = notificationRouter.destination else { return }
+        pendingResume = nil
         selectedMachineID = destination.machineID
         notificationPath = [destination]
         notificationRouter.destination = nil

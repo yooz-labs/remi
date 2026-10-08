@@ -12,6 +12,7 @@ struct MacLiveRootView: View {
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
     @State private var notificationDestination: RemiNavigationDestination?
+    @State private var pendingResume: ResumeSessionKey?
 
     var body: some View {
         Group {
@@ -41,8 +42,28 @@ struct MacLiveRootView: View {
                     }
                 } content: {
                     List(visibleSessions, selection: sessionSelection) { session in
-                        RemiSessionRow(session: session)
-                            .tag(session.id)
+                        HStack(spacing: RemiTheme.Spacing.s) {
+                            RemiSessionRow(session: session)
+                            if session.canResume {
+                                Button {
+                                    resume(session)
+                                } label: {
+                                    if session.isResuming {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Label("Resume", systemImage: "play.fill")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                                .contentShape(.rect)
+                                .disabled(session.isResuming)
+                                .accessibilityLabel(
+                                    session.isResuming ? "Resuming session" : "Resume session"
+                                )
+                            }
+                        }
+                        .tag(session.id)
                     }
                     .navigationTitle("Sessions")
                     .toolbar {
@@ -54,7 +75,20 @@ struct MacLiveRootView: View {
                         .disabled(sessionCreationMachines.isEmpty)
                     }
                 } detail: {
-                    if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
+                    if let session = visibleSessions.first(where: { $0.id == selectedSessionID }),
+                       session.canResume {
+                        ContentUnavailableView {
+                            Label("Stored session", systemImage: "clock.arrow.circlepath")
+                        } description: {
+                            Text("Resume this session on the machine to continue its conversation.")
+                        } actions: {
+                            Button(session.isResuming ? "Resuming…" : "Resume session") {
+                                resume(session)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(session.isResuming)
+                        }
+                    } else if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
                         MacSessionDetail(
                             session: session,
                             transcript: transcript(for: session.id),
@@ -140,11 +174,26 @@ struct MacLiveRootView: View {
         }
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
+            pendingResume = nil
             notificationDestination = destination
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
             store.loadTranscript(sessionId: destination.agentID ?? destination.sessionID)
             notificationRouter.destination = nil
+        }
+        .onChange(of: store.resumedSessionDestination) { _, destination in
+            guard let destination,
+                  pendingResume == ResumeSessionKey(
+                    machineID: destination.machineID,
+                    sessionID: destination.requestedSessionID
+                  ),
+                  selectedMachineID == destination.machineID,
+                  selectedSessionID == destination.requestedSessionID
+            else { return }
+            pendingResume = nil
+            selectedMachineID = destination.machineID
+            selectedSessionID = destination.sessionID
+            store.consumeResumedSessionDestination(id: destination.id)
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet { host, port in
@@ -199,6 +248,7 @@ struct MacLiveRootView: View {
                 guard next != selectedMachineID else { return }
                 selectedMachineID = next
                 selectedSessionID = ""
+                pendingResume = nil
                 notificationDestination = nil
                 reconcileNavigation()
             }
@@ -210,6 +260,10 @@ struct MacLiveRootView: View {
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
                 selectedSessionID = $0 ?? ""
+                if pendingResume?.machineID != selectedMachineID
+                    || pendingResume?.sessionID != selectedSessionID {
+                    pendingResume = nil
+                }
                 notificationDestination = nil
             }
         )
@@ -249,7 +303,7 @@ struct MacLiveRootView: View {
 
     private var visibleSessions: [RemiSessionSummary] {
         guard let machine = selectedMachine else { return [] }
-        return machine.activeSessions.map { session in
+        return machine.sessions.filter { $0.source == "daemon" || $0.canResume == true }.map { session in
             let questionCount = machine.questions.count { $0.sessionId == session.sessionId }
             return RemiSessionSummary(
                 id: session.sessionId,
@@ -258,12 +312,32 @@ struct MacLiveRootView: View {
                 name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                 harness: session.harness ?? "claude",
                 project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
-                status: questionCount > 0 ? .needsYou : status(for: session.status),
+                status: session.source == "daemon"
+                    ? (questionCount > 0 ? .needsYou : status(for: session.status))
+                    : .offline,
                 lastMessage: session.lastMessage,
                 openQuestionCount: questionCount,
-                canTerminate: session.source == "daemon"
+                canTerminate: session.source == "daemon",
+                canResume: session.source != "daemon" && session.canResume == true,
+                isResuming: store.resumingSessions.contains(ResumeSessionKey(
+                    machineID: machine.id,
+                    sessionID: session.sessionId
+                )),
+                resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
+                resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                    machineID: machine.id,
+                    sessionID: session.sessionId
+                )]
             )
         }
+    }
+
+    private func resume(_ session: RemiSessionSummary) {
+        guard let machine = store.machines.first(where: { $0.id == session.machineID }) else { return }
+        selectedMachineID = machine.id
+        selectedSessionID = session.id
+        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: session.id)
+        store.resumeSession(on: machine.endpoint, sessionId: session.id)
     }
 
     private func questions(for sessionId: String) -> [RemiQuestionCardModel] {

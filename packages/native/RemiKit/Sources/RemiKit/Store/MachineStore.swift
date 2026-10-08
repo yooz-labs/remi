@@ -89,6 +89,23 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     }
 }
 
+public struct ResumedSessionDestination: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let machineID: String
+    public let requestedSessionID: String
+    public let sessionID: String
+}
+
+public struct ResumeSessionKey: Sendable, Hashable {
+    public let machineID: String
+    public let sessionID: String
+
+    public init(machineID: String, sessionID: String) {
+        self.machineID = machineID
+        self.sessionID = sessionID
+    }
+}
+
 /// The single source of truth for every configured machine and its joined session daemons.
 @MainActor
 @Observable
@@ -100,6 +117,9 @@ public final class MachineStore {
     public private(set) var latestError: ErrorMessage?
     public private(set) var latestOperationError: String?
     public private(set) var latestOperationNotice: String?
+    public private(set) var resumedSessionDestination: ResumedSessionDestination?
+    public private(set) var resumingSessions: Set<ResumeSessionKey> = []
+    public private(set) var resumeErrorsBySession: [ResumeSessionKey: String] = [:]
 
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
@@ -108,6 +128,9 @@ public final class MachineStore {
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
+    @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
+    @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
+    @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
 
@@ -135,6 +158,12 @@ public final class MachineStore {
         let activeConnections = Array(connections.values)
         connections.removeAll()
         parentByConnection.removeAll()
+        for task in resumeTimeoutTasks.values { task.cancel() }
+        resumeTimeoutTasks.removeAll()
+        resumeAttemptsByRequest.removeAll()
+        resumeRequestByChild.removeAll()
+        resumingSessions.removeAll()
+        resumeErrorsBySession.removeAll()
         Task {
             for connection in activeConnections {
                 await connection.stop()
@@ -149,6 +178,16 @@ public final class MachineStore {
     }
 
     public func removeMachine(_ endpoint: MachineEndpoint) {
+        let resumeRequestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
+            attempt.parent == endpoint ? requestID : nil
+        }
+        for requestID in resumeRequestIDs {
+            finishResume(requestID: requestID, error: nil)
+        }
+        resumeErrorsBySession = resumeErrorsBySession.filter { $0.key.machineID != endpoint.id }
+        if resumedSessionDestination?.machineID == endpoint.id {
+            resumedSessionDestination = nil
+        }
         let removedMachine = machines.first { $0.endpoint == endpoint }
         let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
         let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
@@ -185,6 +224,7 @@ public final class MachineStore {
         latestError = nil
         latestOperationError = nil
         latestOperationNotice = nil
+        resumeErrorsBySession.removeAll()
     }
 
     public func loadTranscript(sessionId: String) {
@@ -254,6 +294,53 @@ public final class MachineStore {
                 }
             }
         }
+    }
+
+    public func resumeSession(on endpoint: MachineEndpoint, sessionId: String) {
+        guard let connection = connections[endpoint] else {
+            latestOperationError = "Cannot resume session: its machine is unavailable."
+            return
+        }
+        let key = ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)
+        guard !resumingSessions.contains(key) else { return }
+
+        latestOperationError = nil
+        latestOperationNotice = nil
+        resumeErrorsBySession[key] = nil
+        let request = ResumeSessionRequestMessage(
+            id: UUID().uuidString.lowercased(),
+            timestamp: Date().ISO8601Format(),
+            sessionId: sessionId
+        )
+        resumeAttemptsByRequest[request.id] = ResumeAttempt(
+            parent: endpoint,
+            requestedSessionID: sessionId,
+            resolvedSessionID: nil
+        )
+        resumingSessions.insert(key)
+        resumeTimeoutTasks[request.id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.expireResume(requestID: request.id) }
+        }
+
+        Task {
+            do {
+                try await connection.send(request)
+            } catch {
+                await MainActor.run {
+                    self.finishResume(
+                        requestID: request.id,
+                        error: "Cannot resume session: its machine is unavailable."
+                    )
+                }
+            }
+        }
+    }
+
+    public func consumeResumedSessionDestination(id: UUID) {
+        guard resumedSessionDestination?.id == id else { return }
+        resumedSessionDestination = nil
     }
 
     public func createSession(
@@ -345,6 +432,13 @@ public final class MachineStore {
                     requestRecentRepositories(from: endpoint)
                 }
             }
+            if let requestID = resumeRequestByChild.removeValue(forKey: endpoint),
+               let attempt = resumeAttemptsByRequest[requestID] {
+                let sessionID = attempt.resolvedSessionID ?? acknowledgment.sessionId
+                    ?? attempt.requestedSessionID
+                routeBySession[sessionID] = endpoint
+                completeResume(requestID: requestID, sessionID: sessionID)
+            }
             requestSessions(from: endpoint)
         case .sessions(let response):
             for session in response.sessions {
@@ -359,6 +453,14 @@ public final class MachineStore {
             }
             for port in response.daemonPorts ?? [] where port != parent.port {
                 connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
+            }
+            if let requestID = resumeRequestByChild[endpoint],
+               let attempt = resumeAttemptsByRequest[requestID] {
+                let sessionID = attempt.resolvedSessionID ?? attempt.requestedSessionID
+                if response.sessions.contains(where: { $0.sessionId == sessionID }) {
+                    resumeRequestByChild[endpoint] = nil
+                    completeResume(requestID: requestID, sessionID: sessionID)
+                }
             }
         case .question(let message):
             routeBySession[message.sessionId] = endpoint
@@ -402,6 +504,8 @@ public final class MachineStore {
             } else if !response.success {
                 latestOperationError = "Could not create session: \(response.error ?? "Unknown daemon error")"
             }
+        case .resumeSessionResponse(let response):
+            handleResumeResponse(response, from: endpoint, parent: parent)
         case .killSessionResponse(let response):
             guard let sessionId = sessionByKillRequest.removeValue(forKey: response.requestId) else {
                 return
@@ -418,8 +522,84 @@ public final class MachineStore {
             }
         case .error(let error):
             latestError = error
+            if error.code == "AUTH_REQUIRED" {
+                let requestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
+                    attempt.parent == endpoint ? requestID : nil
+                }
+                for requestID in requestIDs {
+                    finishResume(requestID: requestID, error: error.message)
+                }
+            }
         case .sessionUpdate, .transcriptComplete, .unsupported:
             break
+        }
+    }
+
+    private func handleResumeResponse(
+        _ response: ResumeSessionResponseMessage,
+        from endpoint: MachineEndpoint,
+        parent: MachineEndpoint
+    ) {
+        guard var attempt = resumeAttemptsByRequest[response.requestId], endpoint == attempt.parent else {
+            return
+        }
+        guard response.success else {
+            finishResume(
+                requestID: response.requestId,
+                error: response.error ?? "The daemon could not resume this session."
+            )
+            return
+        }
+
+        let sessionID = response.sessionId ?? attempt.requestedSessionID
+        attempt.resolvedSessionID = sessionID
+        resumeAttemptsByRequest[response.requestId] = attempt
+        guard let port = response.port else {
+            routeBySession[sessionID] = endpoint
+            completeResume(requestID: response.requestId, sessionID: sessionID)
+            return
+        }
+
+        let child = MachineEndpoint(host: parent.host, port: port)
+        resumeRequestByChild[child] = response.requestId
+        if connections[child] == nil {
+            connect(child, parent: parent)
+        } else {
+            requestSessions(from: child)
+        }
+        requestSessions(from: parent)
+    }
+
+    private func completeResume(requestID: String, sessionID: String) {
+        guard let attempt = resumeAttemptsByRequest[requestID] else { return }
+        resumedSessionDestination = ResumedSessionDestination(
+            id: UUID(),
+            machineID: attempt.parent.id,
+            requestedSessionID: attempt.requestedSessionID,
+            sessionID: sessionID
+        )
+        finishResume(requestID: requestID, error: nil)
+    }
+
+    private func expireResume(requestID: String) {
+        finishResume(
+            requestID: requestID,
+            error: "The resumed session did not become available within 30 seconds."
+        )
+    }
+
+    private func finishResume(requestID: String, error: String?) {
+        guard let attempt = resumeAttemptsByRequest.removeValue(forKey: requestID) else { return }
+        resumeTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+        resumeRequestByChild = resumeRequestByChild.filter { $0.value != requestID }
+        let key = ResumeSessionKey(
+            machineID: attempt.parent.id,
+            sessionID: attempt.requestedSessionID
+        )
+        resumingSessions.remove(key)
+        if let error {
+            latestOperationError = error
+            resumeErrorsBySession[key] = error
         }
     }
 
@@ -485,4 +665,10 @@ public final class MachineStore {
         }
         return sessions.values.sorted { $0.projectPath < $1.projectPath }
     }
+}
+
+private struct ResumeAttempt {
+    let parent: MachineEndpoint
+    let requestedSessionID: String
+    var resolvedSessionID: String?
 }

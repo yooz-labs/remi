@@ -44,6 +44,28 @@ struct MachineStoreTests {
         #expect(object["workspace"] == nil)
     }
 
+    @Test func resumeSessionRequestMatchesTheWireContract() throws {
+        let request = ResumeSessionRequestMessage(
+            id: "resume-1",
+            timestamp: "2026-10-08T12:00:00Z",
+            sessionId: "stored-session"
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+
+        #expect(object["type"] as? String == "resume_session_request")
+        #expect(object["sessionId"] as? String == "stored-session")
+    }
+
+    @Test func resumeStateKeepsIdenticalSessionIDsSeparateByMachine() {
+        let first = ResumeSessionKey(machineID: "one.example:18765", sessionID: "shared-id")
+        let second = ResumeSessionKey(machineID: "two.example:18765", sessionID: "shared-id")
+
+        #expect(first != second)
+        #expect(Set([first, second]).count == 2)
+    }
+
     @Test func recentRepositoriesResponseDecodes() throws {
         let data = Data(#"""
         {
