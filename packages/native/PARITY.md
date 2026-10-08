@@ -1,6 +1,6 @@
 # Native app parity
 
-Verified against `packages/web/src` on 2026-10-07. This describes what ships in the
+Verified against `packages/web/src` on 2026-10-08. This describes what ships in the
 native targets now, not planned behavior.
 
 | Capability | Capacitor client | Native iPhone | Native Mac | Remaining work |
@@ -17,7 +17,7 @@ native targets now, not planned behavior.
 | Typed chat with prompt guard | Yes | Yes | Yes | Native apps present daemon errors in dismissible banners. |
 | Create session | Yes | Yes | Yes | Native apps support recent repositories, new worktrees, advertised harnesses, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Native apps can forget endpoints without stopping their remote sessions. Discovery is not inferred on loopback. |
-| Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. |
+| Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. Mac Settings also surfaces confirmed denied notification access and links back to System Settings. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
 | Kill/resume session | Yes | Yes | Yes | Native apps terminate daemon-owned sessions with confirmation and offer Resume for resumable stored sessions. A child response follows the returned port and opens after its authenticated hello; same-daemon responses open immediately (#1309). |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
