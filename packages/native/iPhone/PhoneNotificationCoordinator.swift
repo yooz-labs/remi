@@ -70,9 +70,12 @@ enum PhoneNotificationCoordinator {
     ) async {
         guard notificationsEnabled else { return }
         guard await authorizationState().isAllowed else { return }
+        let summarizedBody = summariesEnabled
+            ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
+            : QuestionNotificationSummarizer.fallback(for: body)
         let content = UNMutableNotificationContent()
         content.title = title
-        content.body = body
+        content.body = summarizedBody
         content.userInfo = destinationUserInfo(destination)
         if soundsEnabled {
             content.sound = .default
@@ -112,6 +115,10 @@ enum PhoneNotificationCoordinator {
 
     private static var soundsEnabled: Bool {
         UserDefaults.standard.object(forKey: PhonePreferenceKey.notificationSounds) as? Bool ?? true
+    }
+
+    private static var summariesEnabled: Bool {
+        UserDefaults.standard.object(forKey: QuestionNotificationSummarizer.preferenceKey) as? Bool ?? true
     }
 }
 

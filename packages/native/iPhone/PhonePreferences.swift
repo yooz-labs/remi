@@ -15,6 +15,7 @@ struct PhonePreferencesSheet: View {
     @AppStorage(PhonePreferenceKey.questionNotifications) private var notificationsEnabled = true
     @AppStorage(PhonePreferenceKey.notificationSounds) private var soundsEnabled = true
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
+    @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
     @State private var authorizationState = NotificationAuthorizationState.unknown
     @State private var copiedIdentity = false
 
@@ -28,6 +29,8 @@ struct PhonePreferencesSheet: View {
                 Section {
                     Toggle("Question notifications", isOn: $notificationsEnabled)
                     Toggle("Notification sounds", isOn: $soundsEnabled)
+                        .disabled(!notificationsEnabled)
+                    Toggle("Concise question summaries", isOn: $summariesEnabled)
                         .disabled(!notificationsEnabled)
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -121,7 +124,10 @@ struct PhonePreferencesSheet: View {
         if authorizationState == .denied {
             return "Notifications are blocked by iOS. Open Settings to allow alerts when a connected session needs you."
         }
-        return "Show a local alert when a connected session needs an answer."
+        if summariesEnabled {
+            return "Show a local alert when a session needs an answer. Longer questions are summarized on device with Apple Intelligence when available."
+        }
+        return "Show the original question text in local alerts when a connected session needs an answer."
     }
 
     private var authorizationLabel: some View {

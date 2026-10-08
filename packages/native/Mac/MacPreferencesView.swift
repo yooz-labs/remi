@@ -6,11 +6,13 @@ struct MacPreferencesView: View {
     let publicIdentity: PublicClientIdentity
 
     @State private var copiedValue: CopiedValue?
+    @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                notificationCard
                 accessCard
                 identityCard
             }
@@ -19,6 +21,18 @@ struct MacPreferencesView: View {
         }
         .frame(width: 680, height: 560)
         .navigationTitle("Remi Settings")
+    }
+
+    private var notificationCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Concise question summaries", isOn: $summariesEnabled)
+                .font(.headline)
+            Text("For longer questions, Remi uses Apple Intelligence on device when available. The original question remains unchanged in the conversation.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 14))
     }
 
     private var header: some View {
