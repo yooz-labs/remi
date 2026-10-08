@@ -599,7 +599,7 @@ private struct MacLiveNewSessionSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Create") {
                     guard let machine = machines.first(where: { $0.id == machineID }) else { return }
-                    let args = model.isEmpty ? [] : ["-m", model]
+                    let args = HarnessLaunchArguments.model(model)
                     let workspace: WorkspaceRequest?
                     if workspaceCapable {
                         let worktree = createsWorktree

@@ -170,8 +170,7 @@ struct PhoneNewSessionSheet: View {
         } else {
             workspace = nil
         }
-        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let args = trimmedModel.isEmpty ? [] : ["-m", trimmedModel]
+        let args = HarnessLaunchArguments.model(model)
         onCreate(selectedMachine.endpoint, trimmedRepository, harness, args, workspace)
         dismiss()
     }

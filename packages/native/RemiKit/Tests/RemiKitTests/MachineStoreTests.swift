@@ -4,6 +4,12 @@ import Testing
 @testable import RemiKit
 
 struct MachineStoreTests {
+    @Test func modelLaunchArgumentUsesTheCrossHarnessLongForm() {
+        #expect(HarnessLaunchArguments.model("sonnet") == ["--model", "sonnet"])
+        #expect(HarnessLaunchArguments.model("  gpt-5  ") == ["--model", "gpt-5"])
+        #expect(HarnessLaunchArguments.model(" \n ") == [])
+    }
+
     @Test func workspaceSessionRequestMatchesTheWireContract() throws {
         let request = CreateSessionRequestMessage(
             id: "request-1",
