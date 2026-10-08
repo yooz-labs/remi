@@ -230,6 +230,14 @@ struct MachineStoreTests {
             )]
         ))
     }
+
+    @Test func unknownQuestionKindUsesGenericPresentation() {
+        #expect(RemiQuestionKind(wireValue: "future_kind") == .generic)
+        #expect(RemiQuestionKind(wireValue: nil) == .generic)
+        #expect(RemiQuestionKind(wireValue: "permission") == .permission)
+        #expect(RemiQuestionKind.generic.optionRole(isYes: true, isNo: false) == .neutral)
+        #expect(RemiQuestionKind.permission.optionRole(isYes: true, isNo: false) == .allow)
+    }
 }
 
 private func session(id: String, source: String) throws -> DiscoverableSession {

@@ -154,6 +154,14 @@ public struct AnswerMessage: Codable, Sendable, Equatable {
     }
 }
 
+public enum QuestionResolvedBy: String, Codable, Sendable, Equatable {
+    case phone
+    case lockscreen
+    case terminal
+    case harness
+    case timeout
+}
+
 public struct QuestionResolvedMessage: Decodable, Sendable, Equatable {
     public let type: String
     public let id: String
@@ -161,6 +169,23 @@ public struct QuestionResolvedMessage: Decodable, Sendable, Equatable {
     public let sessionId: String
     public let questionId: String
     public let reason: String
+    public let resolvedBy: QuestionResolvedBy?
+
+    enum CodingKeys: String, CodingKey {
+        case type, id, timestamp, sessionId, questionId, reason, resolvedBy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        type = try values.decode(String.self, forKey: .type)
+        id = try values.decode(String.self, forKey: .id)
+        timestamp = try values.decode(String.self, forKey: .timestamp)
+        sessionId = try values.decode(String.self, forKey: .sessionId)
+        questionId = try values.decode(String.self, forKey: .questionId)
+        reason = try values.decode(String.self, forKey: .reason)
+        resolvedBy = try values.decodeIfPresent(String.self, forKey: .resolvedBy)
+            .flatMap(QuestionResolvedBy.init(rawValue:))
+    }
 }
 
 public struct QuestionSnapshotMessage: Decodable, Sendable, Equatable {

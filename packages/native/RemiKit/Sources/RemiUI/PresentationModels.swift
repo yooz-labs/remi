@@ -4,15 +4,46 @@ public enum RemiQuestionState: Sendable, Equatable {
     case pending
     case sending
     case answered(String)
-    case resolvedElsewhere
+    case resolvedElsewhere(RemiResolutionSource?)
     case stale
 }
 
 public enum RemiQuestionKind: Sendable, Equatable {
+    case generic
     case permission
     case multipleChoice
     case askUser
     case planApproval
+
+    public init(wireValue: String?) {
+        switch wireValue {
+        case "permission": self = .permission
+        case "multi_question": self = .askUser
+        case "plan_approval": self = .planApproval
+        default: self = .generic
+        }
+    }
+
+    public func optionRole(isYes: Bool, isNo: Bool) -> RemiQuestionOptionRole {
+        guard self != .generic else { return .neutral }
+        if isYes { return .allow }
+        if isNo { return .deny }
+        return .neutral
+    }
+}
+
+public enum RemiResolutionSource: Sendable, Equatable {
+    case phone
+    case lockscreen
+    case terminal
+    case harness
+    case timeout
+}
+
+public enum RemiAnswerPath: Sendable, Equatable {
+    case structured
+    case keystroke
+    case none
 }
 
 public enum RemiQuestionOptionRole: Sendable, Equatable {
@@ -101,9 +132,10 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let options: [RemiQuestionOption]
     public let steps: [RemiQuestionStep]
     public let terminalOnly: Bool
+    public let answerPath: RemiAnswerPath?
     public let state: RemiQuestionState
 
-    public init(id: String, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, state: RemiQuestionState = .pending) {
+    public init(id: String, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
         self.id = id
         self.kind = kind
         self.text = text
@@ -114,6 +146,7 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
         self.options = options
         self.steps = steps
         self.terminalOnly = terminalOnly
+        self.answerPath = answerPath
         self.state = state
     }
 }

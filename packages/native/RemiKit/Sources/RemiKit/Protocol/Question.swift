@@ -1,5 +1,11 @@
 import Foundation
 
+public enum QuestionAnswerPath: String, Codable, Sendable, Equatable {
+    case structured
+    case keystroke
+    case none
+}
+
 /// One choice on a card (`QuestionOption` in `packages/shared/src/types.ts`).
 public struct QuestionOption: Codable, Sendable, Equatable, Hashable {
     public let label: String
@@ -38,6 +44,31 @@ public struct Question: Codable, Sendable, Equatable, Identifiable {
     public let submitLabel: String?
     public let held: Bool?
     public let agentId: String?
+    public let answerPath: QuestionAnswerPath?
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, options, allowsFreeText, isAnswered, detail, terminalOnly
+        case cancelDismissesOnly, kind, questions, submitLabel, held, agentId, answerPath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        text = try values.decode(String.self, forKey: .text)
+        options = try values.decode([QuestionOption].self, forKey: .options)
+        allowsFreeText = try values.decode(Bool.self, forKey: .allowsFreeText)
+        isAnswered = try values.decode(Bool.self, forKey: .isAnswered)
+        detail = try values.decodeIfPresent(String.self, forKey: .detail)
+        terminalOnly = try values.decodeIfPresent(Bool.self, forKey: .terminalOnly)
+        cancelDismissesOnly = try values.decodeIfPresent(Bool.self, forKey: .cancelDismissesOnly)
+        kind = try values.decodeIfPresent(String.self, forKey: .kind)
+        questions = try values.decodeIfPresent([QuestionStep].self, forKey: .questions)
+        submitLabel = try values.decodeIfPresent(String.self, forKey: .submitLabel)
+        held = try values.decodeIfPresent(Bool.self, forKey: .held)
+        agentId = try values.decodeIfPresent(String.self, forKey: .agentId)
+        answerPath = try values.decodeIfPresent(String.self, forKey: .answerPath)
+            .flatMap(QuestionAnswerPath.init(rawValue:))
+    }
 }
 
 /// `{ "type": "question", ... }`: a card for a session.

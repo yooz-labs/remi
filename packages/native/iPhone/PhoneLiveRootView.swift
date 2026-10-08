@@ -54,7 +54,7 @@ struct PhoneLiveRootView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
-        .onChange(of: Set<String>(allQuestions.map(\.id)), initial: true) { oldValue, newValue in
+        .onChange(of: activeQuestionIDs, initial: true) { oldValue, newValue in
             guard notificationBaselineEstablished else {
                 knownQuestionIDs = newValue
                 notificationBaselineEstablished = true
@@ -147,28 +147,55 @@ struct PhoneLiveRootView: View {
     }
 
     private var allQuestions: [RemiQuestionCardModel] {
-        store.machines.flatMap { machine in
+        let active = store.machines.flatMap { machine in
             machine.questions.map { presentation($0, machine: machine) }
         }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard let machine = store.machines.first(where: { $0.id == record.machineID }) else {
+                return nil
+            }
+            return presentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
+    }
+
+    private var activeQuestionIDs: Set<String> {
+        Set(store.machines.flatMap(\.questions).map(\.question.id))
     }
 
     private func questions(_ sessionId: String) -> [RemiQuestionCardModel] {
-        store.machines.flatMap { machine in
+        let active = store.machines.flatMap { machine in
             machine.questions.filter { $0.sessionId == sessionId }.map {
                 presentation($0, machine: machine)
             }
         }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard record.message.sessionId == sessionId,
+                  let machine = store.machines.first(where: { $0.id == record.machineID })
+            else { return nil }
+            return presentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
     }
 
     private func presentation(
         _ message: QuestionMessage,
-        machine: MachineState
+        machine: MachineState,
+        state: RemiQuestionState = .pending
     ) -> RemiQuestionCardModel {
         let question = message.question
+        let kind = RemiQuestionKind(wireValue: question.kind)
         return RemiQuestionCardModel(
             id: question.id,
-            kind: question.kind == "multi_question" ? .askUser
-                : question.kind == "plan_approval" ? .planApproval : .permission,
+            kind: kind,
             text: question.text,
             detail: question.detail,
             machineID: machine.id,
@@ -180,7 +207,7 @@ struct PhoneLiveRootView: View {
                     id: option.value,
                     label: option.label,
                     detail: option.description,
-                    role: option.isYes ? .allow : option.isNo ? .deny : .neutral,
+                    role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
                     grantsForSession: option.standingGrant != nil,
                     isRecommended: option.isRecommended
                 )
@@ -202,8 +229,31 @@ struct PhoneLiveRootView: View {
                     }
                 )
             },
-            terminalOnly: question.terminalOnly ?? false
+            terminalOnly: question.terminalOnly == true
+                || question.answerPath == QuestionAnswerPath.none,
+            answerPath: answerPath(question.answerPath),
+            state: state
         )
+    }
+
+    private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
+        switch value {
+        case .some(.structured): .structured
+        case .some(.keystroke): .keystroke
+        case .some(.none): RemiAnswerPath.none
+        case nil: nil
+        }
+    }
+
+    private func resolutionSource(_ value: QuestionResolvedBy?) -> RemiResolutionSource? {
+        switch value {
+        case .phone: .phone
+        case .lockscreen: .lockscreen
+        case .terminal: .terminal
+        case .harness: .harness
+        case .timeout: .timeout
+        case nil: nil
+        }
     }
 
     private func transcript(_ sessionId: String) -> [RemiTranscriptEntry] {

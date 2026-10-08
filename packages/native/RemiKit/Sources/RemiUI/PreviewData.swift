@@ -112,10 +112,22 @@ public enum RemiPreviewData {
         ]
     )
 
+    public static let genericQuestion = RemiQuestionCardModel(
+        id: "question-generic",
+        kind: .generic,
+        text: "The agent has a request from a newer protocol version.",
+        machineName: "Studio",
+        sessionName: "native-app",
+        options: [
+            RemiQuestionOption(id: "continue", label: "Continue"),
+            RemiQuestionOption(id: "stop", label: "Stop"),
+        ]
+    )
+
     public static let questionStates: [RemiQuestionCardModel] = [
         RemiQuestionCardModel(id: "sending", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .sending),
         RemiQuestionCardModel(id: "answered", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .answered("Yes")),
-        RemiQuestionCardModel(id: "elsewhere", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .resolvedElsewhere),
+        RemiQuestionCardModel(id: "elsewhere", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .resolvedElsewhere(.terminal)),
         RemiQuestionCardModel(id: "stale", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .stale),
     ]
 

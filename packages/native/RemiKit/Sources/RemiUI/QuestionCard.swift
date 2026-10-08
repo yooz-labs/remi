@@ -20,7 +20,12 @@ public struct RemiQuestionCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            QuestionCardHeader(kind: model.kind, machineName: model.machineName, sessionName: model.sessionName)
+            QuestionCardHeader(
+                kind: model.kind,
+                machineName: model.machineName,
+                sessionName: model.sessionName,
+                requiresAttention: requiresAttention
+            )
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
                 Text(model.text).font(RemiTheme.Typography.cardTitle).fixedSize(horizontal: false, vertical: true)
                 if let detail = model.detail {
@@ -41,11 +46,27 @@ public struct RemiQuestionCard: View {
             .padding(RemiTheme.Spacing.m)
         }
         .glassEffect(.regular, in: .rect(cornerRadius: RemiTheme.Radius.card))
-        .overlay { RoundedRectangle(cornerRadius: RemiTheme.Radius.card).stroke(RemiTheme.Color.attention.opacity(0.34), lineWidth: 1).allowsHitTesting(false) }
+        .overlay {
+            RoundedRectangle(cornerRadius: RemiTheme.Radius.card)
+                .stroke(
+                    requiresAttention
+                        ? RemiTheme.Color.attention.opacity(0.34)
+                        : Color.secondary.opacity(0.16),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        }
         .opacity(model.state == .stale ? 0.62 : 1)
         .animation(RemiTheme.Motion.standard, value: model.state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Question from \(model.sessionName) on \(model.machineName)")
+    }
+
+    private var requiresAttention: Bool {
+        switch model.state {
+        case .pending, .sending: true
+        case .answered, .resolvedElsewhere, .stale: false
+        }
     }
 }
 
@@ -54,11 +75,14 @@ private struct QuestionCardHeader: View {
     let kind: RemiQuestionKind
     let machineName: String
     let sessionName: String
+    let requiresAttention: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
             HStack(spacing: RemiTheme.Spacing.xs) {
-                Circle().fill(RemiTheme.Color.attention).frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
+                Circle()
+                    .fill(requiresAttention ? RemiTheme.Color.attention : Color.secondary)
+                    .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
                 Text(title).font(RemiTheme.Typography.eyebrow).textCase(.uppercase).foregroundStyle(.secondary)
             }
             if dynamicTypeSize.isAccessibilitySize {
@@ -70,11 +94,16 @@ private struct QuestionCardHeader: View {
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RemiTheme.Color.attention.opacity(0.1))
+        .background(
+            requiresAttention
+                ? AnyShapeStyle(RemiTheme.Color.attention.opacity(0.1))
+                : AnyShapeStyle(.ultraThinMaterial)
+        )
     }
 
     private var title: LocalizedStringKey {
         switch kind {
+        case .generic: "Request"
         case .permission: "Permission request"
         case .multipleChoice: "Question"
         case .askUser: "Questions"
@@ -101,8 +130,22 @@ private struct QuestionCardContent: View {
             }
         case .sending: Label("Sending answer…", systemImage: "arrow.up.circle").foregroundStyle(.secondary)
         case .answered(let answer): ResolutionLabel(text: "Answered: \(answer)", systemImage: "checkmark.circle.fill")
-        case .resolvedElsewhere: ResolutionLabel(text: "Answered elsewhere", systemImage: "checkmark.circle")
+        case .resolvedElsewhere(let source): ResolutionLabel(
+            text: resolutionText(source),
+            systemImage: "checkmark.circle"
+        )
         case .stale: ResolutionLabel(text: "This question is no longer current", systemImage: "clock.badge.exclamationmark")
+        }
+    }
+
+    private func resolutionText(_ source: RemiResolutionSource?) -> String {
+        switch source {
+        case .phone: "Answered from a phone"
+        case .lockscreen: "Answered from the Lock Screen"
+        case .terminal: "Answered at the terminal"
+        case .harness: "Closed by the agent"
+        case .timeout: "Remi stopped waiting for an answer"
+        case nil: "Resolved elsewhere"
         }
     }
 }
@@ -169,7 +212,7 @@ private struct TerminalOnlyMessage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             Label("Answer this in the terminal.", systemImage: "terminal").foregroundStyle(.secondary)
-            Button("Dismiss", role: .cancel, action: onCancel).buttonStyle(.glass)
+            Button("Cancel", role: .cancel, action: onCancel).buttonStyle(.glass)
         }
     }
 }

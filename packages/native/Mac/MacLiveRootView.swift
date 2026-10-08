@@ -342,22 +342,44 @@ struct MacLiveRootView: View {
 
     private func questions(for sessionId: String) -> [RemiQuestionCardModel] {
         guard let machine = selectedMachine else { return [] }
-        return machine.questions.filter { $0.sessionId == sessionId }.map { message in
+        let active = machine.questions.filter { $0.sessionId == sessionId }.map { message in
+            questionPresentation(message, machine: machine)
+        }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard record.machineID == machine.id, record.message.sessionId == sessionId else {
+                return nil
+            }
+            return questionPresentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
+    }
+
+    private func questionPresentation(
+        _ message: QuestionMessage,
+        machine: MachineState,
+        state: RemiQuestionState = .pending
+    ) -> RemiQuestionCardModel {
             let question = message.question
+            let kind = RemiQuestionKind(wireValue: question.kind)
             return RemiQuestionCardModel(
                 id: question.id,
-                kind: questionKind(question.kind),
-            text: question.text,
-            detail: question.detail,
-            machineID: machine.id,
-            machineName: machine.displayName,
-                sessionName: visibleSessions.first(where: { $0.id == sessionId })?.name ?? sessionId,
+                kind: kind,
+                text: question.text,
+                detail: question.detail,
+                machineID: machine.id,
+                machineName: machine.displayName,
+                sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
+                    ?? message.sessionId,
                 options: question.options.map { option in
                     RemiQuestionOption(
                         id: option.value,
                         label: option.label,
                         detail: option.description,
-                        role: option.isYes ? .allow : (option.isNo ? .deny : .neutral),
+                        role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
                         grantsForSession: option.standingGrant != nil,
                         isRecommended: option.isRecommended
                     )
@@ -380,9 +402,11 @@ struct MacLiveRootView: View {
                         }
                     )
                 },
-                terminalOnly: question.terminalOnly ?? false
+                terminalOnly: question.terminalOnly == true
+                    || question.answerPath == QuestionAnswerPath.none,
+                answerPath: answerPath(question.answerPath),
+                state: state
             )
-        }
     }
 
     private func transcript(for sessionId: String) -> [RemiTranscriptEntry] {
@@ -417,11 +441,23 @@ struct MacLiveRootView: View {
         }
     }
 
-    private func questionKind(_ value: String?) -> RemiQuestionKind {
+    private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
         switch value {
-        case "multi_question": .askUser
-        case "plan_approval": .planApproval
-        default: .permission
+        case .some(.structured): .structured
+        case .some(.keystroke): .keystroke
+        case .some(.none): RemiAnswerPath.none
+        case nil: nil
+        }
+    }
+
+    private func resolutionSource(_ value: QuestionResolvedBy?) -> RemiResolutionSource? {
+        switch value {
+        case .phone: .phone
+        case .lockscreen: .lockscreen
+        case .terminal: .terminal
+        case .harness: .harness
+        case .timeout: .timeout
+        case nil: nil
         }
     }
 
