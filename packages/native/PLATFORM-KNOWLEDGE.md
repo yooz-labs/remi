@@ -32,7 +32,7 @@ Apple's iOS 27 Foundation Models additions include newer model capabilities and 
 
 ## Notifications and background execution
 
-The iPhone and Mac coordinators currently schedule immediate local notifications only after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. A tap decodes `RemiNavigationDestination` and routes to the exact machine, session, question, and agent. Invalid or incomplete payloads fail closed and do not guess a destination.
+The iPhone and Mac coordinators currently schedule immediate local notifications only after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. A tap decodes `RemiNavigationDestination`, selects the named machine and session, and may select the named agent conversation. The question ID is carried but is not currently consumed to focus or verify the question. A payload that cannot decode or names an unknown machine/session does not guess a destination; `questionID` and `agentID` are optional and their absence does not prevent routing.
 
 This does not wake a terminated app and is not remote push. Background notifications are low priority and are not guaranteed by the system, so they cannot be the sole transport for an urgent approval. A Notification Service Extension may decrypt or rewrite notification content before delivery, but it cannot dynamically redefine registered action titles and its work is time-limited.
 
@@ -56,7 +56,9 @@ Use an App Intent only when its input is sufficient to display and verify the ex
 
 SwiftUI's standard navigation, toolbars, sheets, controls, and materials adopt the current platform appearance automatically. Prefer those components before adding a custom `glassEffect`. When custom glass is necessary, group related effects in a `GlassEffectContainer`, preserve readable contrast, and avoid many simultaneous effects because they add rendering cost.
 
-Remi's visual rule remains: glass belongs on important interactive cards and controls; repeated session and machine rows stay lightweight. Spacious layout means clear hierarchy and touch targets, not decorative empty areas. Every glass treatment must still pass light/dark contrast, Reduce Transparency, Reduce Motion, VoiceOver, and the largest supported Dynamic Type sizes.
+Remi's visual rule remains: glass belongs on important interactive cards and controls; repeated session and machine rows stay lightweight. Spacious layout means clear hierarchy and touch targets, not decorative empty areas. Every glass treatment must still pass light/dark contrast, Reduce Transparency, Reduce Motion, VoiceOver, and the app's supported Dynamic Type range.
+
+Both app roots currently cap Dynamic Type at Accessibility 2 as a deliberate legibility/layout tradeoff. That is the shipping boundary, not full support for every system size. Revisit the global cap by testing and repairing individual layouts before claiming support through Accessibility 5; do not silently lower it further.
 
 ## iOS/macOS 27 watchlist
 
@@ -76,8 +78,8 @@ Before declaring an Apple-platform capability complete:
 - Trace the user event to the real caller and transport; do not use this document as evidence that code ships.
 - Check the API's runtime availability and user authorization state.
 - Verify failure, cancellation, expiry, and resolution on another device.
-- Confirm navigation lands on the exact machine and session, not merely the app's root.
-- Test the largest accessibility sizes without forcing a smaller maximum size unless a documented control-level exception is unavoidable.
+- Confirm navigation lands on the exact machine and session, not merely the app's root; separately verify question focus once that capability exists.
+- Test through the documented Accessibility 2 shipping cap. Treat raising or removing the global cap as accessibility work that requires layout verification, not as a documentation-only claim.
 - Record which checks ran on simulator, which ran on a physical device, and which require owner provisioning.
 - Re-run this research when Xcode, the deployment target, or the Foundation Models system model changes.
 
