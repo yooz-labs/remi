@@ -89,6 +89,11 @@ async function wait(check: () => boolean, what: string, ms = 15000): Promise<voi
   }
 }
 
+/** Nothing the host ran fell back to the default `$HOME/.remi`: every process honored REMI_HOME. */
+function expectDefaultHomeUntouched(host: Host): void {
+  expect(fs.existsSync(path.join(host.dir, '.remi'))).toBe(false);
+}
+
 /** A machine: its own home, with no real agent on its PATH (a launch would exit 88). */
 function makeHost(extraEnv: Record<string, string> = {}): Host {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-provision-'));
@@ -101,7 +106,9 @@ function makeHost(extraEnv: Record<string, string> = {}): Host {
     `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`,
     { mode: 0o700 },
   );
-  const home = path.join(dir, '.remi');
+  // Not `$HOME/.remi`, the default: a daemon that ignored REMI_HOME would then read the same
+  // directory by luck and the tests could not tell. `expectDefaultHomeUntouched` checks it.
+  const home = path.join(dir, 'state');
   const host: Host = {
     dir,
     home,
@@ -208,6 +215,7 @@ async function authenticate(
   port: number,
   who: UnlockedIdentity,
   claimedFingerprint: string = who.fingerprint,
+  pairing?: { readonly nonce: string; readonly label?: string },
 ): Promise<Attempt> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   sockets.push(ws);
@@ -223,6 +231,8 @@ async function authenticate(
             who.publicKeyRaw,
             await sign(who.privateKey, fromBase64(message.challenge)),
             claimedFingerprint,
+            undefined,
+            pairing,
           ),
         ),
       );
@@ -273,6 +283,7 @@ describe('provisioning a client key (#1303)', () => {
     expect(again.code).toBe(1);
     expect(again.stderr).toContain('already authorized');
     expect(store.listAuthorizedKeys()).toHaveLength(1);
+    expectDefaultHomeUntouched(host);
   }, 60000);
 
   test('only the public key in the JSON counts; a fingerprint field cannot name another key', async () => {
@@ -316,10 +327,16 @@ describe('provisioning a client key (#1303)', () => {
     const store = new IdentityStore(host.home);
     const [pending] = store.listPendingKeys();
     expect(pending?.fingerprint).toBe(client.fingerprint);
-    // The candidate lives ten minutes from the first attempt, and a retry does not extend it.
+    // The candidate lives ten minutes from the first attempt.
     expect(
       Date.parse(pending?.expiresAt as string) - Date.parse(pending?.firstSeenAt as string),
     ).toBe(600_000);
+    // A retry is refused the same way, and neither extends the window nor adds a second candidate.
+    await Bun.sleep(30);
+    expect((await authenticate(port, client.identity)).result).toMatchObject(
+      refused('UNKNOWN_KEY'),
+    );
+    expect(store.listPendingKeys()).toEqual([pending]);
 
     const approved = await remi(host, [
       'authorize',
@@ -336,7 +353,7 @@ describe('provisioning a client key (#1303)', () => {
     expect(store.listPendingKeys()).toHaveLength(0);
   }, 60000);
 
-  test('a different private key with the same label stays unauthorized', async () => {
+  test('authorization is by key: another key is unknown whatever it is called or claims to be', async () => {
     const host = makeHost();
     const port = await startHub(host);
     const real = await newClient();
@@ -345,16 +362,27 @@ describe('provisioning a client key (#1303)', () => {
       0,
     );
 
-    // Another device that calls itself the same name is just another unknown key.
+    // The wire carries no label outside a pairing claim, so another device is simply an unknown key.
     const attempt = await authenticate(port, impostor.identity);
     expect(attempt.result).toMatchObject(refused('UNKNOWN_KEY'));
     // Claiming the real device's fingerprint with its own key is refused before anything is stored.
     const spoof = await authenticate(port, impostor.identity, real.fingerprint);
     expect(spoof.result).toMatchObject(refused('FINGERPRINT_MISMATCH'));
 
+    // The one place a label does travel is a pairing claim: presenting the real device's label there
+    // names the claimant and grants nothing, and rejecting the claim leaves the grants as they were.
     const store = new IdentityStore(host.home);
+    const { nonce } = store.createPairing();
+    const claim = authenticate(port, impostor.identity, undefined, { nonce, label: 'Test iPhone' });
+    await wait(() => store.peekPairing(nonce)?.state === 'claimed', 'the pairing claim');
+    expect(store.peekPairing(nonce)?.claim?.label).toBe('Test iPhone');
     expect(store.listAuthorizedKeys().map((k) => k.fingerprint)).toEqual([real.fingerprint]);
-    expect(store.listPendingKeys().map((k) => k.fingerprint)).toEqual([impostor.fingerprint]);
+    expect(store.rejectPairing(nonce)).toBe(true);
+    expect((await claim).result).toMatchObject(refused('PAIRING_REJECTED'));
+
+    expect(store.listAuthorizedKeys().map((k) => k.fingerprint)).toEqual([real.fingerprint]);
+    // Rejecting a claim removes the claimant's pending key too.
+    expect(store.listPendingKeys()).toHaveLength(0);
     expect((await authenticate(port, real.identity)).result.success).toBe(true);
   }, 60000);
 
@@ -381,10 +409,11 @@ describe('provisioning a client key (#1303)', () => {
     expect(store.listPendingKeys().map((k) => k.fingerprint)).toEqual([client.fingerprint]);
 
     // The connection that was already open is not closed by the removal.
-    const stillServed = open.messages.length;
     open.ws.send(serialize(createSessionListRequest(false)));
-    await wait(() => open.messages.length > stillServed, 'a reply on the open connection');
-    expect(open.messages.some((m) => m.type === 'session_list_response')).toBe(true);
+    await wait(
+      () => open.messages.some((m) => m.type === 'session_list_response'),
+      'a session list on the open connection',
+    );
 
     // Approving it again restores access; a removed key has no memory.
     expect(
@@ -452,6 +481,8 @@ describe('provisioning a client key (#1303)', () => {
       refused('UNKNOWN_KEY'),
     );
     expect((await authenticate(portSecond, client.identity)).result.success).toBe(true);
+    expectDefaultHomeUntouched(first);
+    expectDefaultHomeUntouched(second);
   }, 90000);
 
   test('the provisioning script in the docs authorizes a directory of devices, twice, and says what failed', async () => {
@@ -520,7 +551,7 @@ describe('provisioning a client key (#1303)', () => {
     expect((await authenticate(port, later.identity)).result.success).toBe(true);
   }, 90000);
 
-  test('the command an app shows, with the label single-quoted, stores the label as the person typed it', async () => {
+  test("a label single-quoted by the guide's rule is stored exactly as typed", async () => {
     const host = makeHost();
     const client = await newClient();
     // The rule in the docs: wrap in single quotes, and write each ' in the label as '\''.
@@ -600,6 +631,8 @@ describe('provisioning a client key (#1303)', () => {
     expect((await authenticate(hubPort, unknown.identity)).result).toMatchObject(
       refused('UNKNOWN_KEY'),
     );
+    // The hub and the daemon it started both used the REMI_HOME they were given, nothing else.
+    expectDefaultHomeUntouched(host);
     fs.writeFileSync(path.join(agents.claudeDir, 'release'), '');
   }, 120000);
 });
