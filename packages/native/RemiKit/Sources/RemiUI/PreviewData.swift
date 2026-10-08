@@ -135,6 +135,18 @@ public enum RemiPreviewData {
     public static let sessions = [
         primarySession,
         RemiSessionSummary(id: "2", machineID: "studio", machineName: "Studio", name: "Protocol freeze", harness: "Codex", project: "remi", status: .working, lastMessage: "Reviewing the message registry"),
+        RemiSessionSummary(
+            id: "3",
+            machineID: "studio",
+            machineName: "Studio",
+            name: "Notification polish",
+            harness: "Claude",
+            project: "remi",
+            status: .offline,
+            lastMessage: "Ready to continue from the saved transcript",
+            canResume: true,
+            resumeIdentity: "a47d831c"
+        ),
     ]
 
     public static let machines = [

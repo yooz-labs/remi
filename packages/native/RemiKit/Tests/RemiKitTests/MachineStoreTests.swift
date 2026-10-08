@@ -44,6 +44,20 @@ struct MachineStoreTests {
         #expect(object["workspace"] == nil)
     }
 
+    @Test func resumeSessionRequestMatchesTheWireContract() throws {
+        let request = ResumeSessionRequestMessage(
+            id: "resume-1",
+            timestamp: "2026-10-08T12:00:00Z",
+            sessionId: "stored-session"
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+
+        #expect(object["type"] as? String == "resume_session_request")
+        #expect(object["sessionId"] as? String == "stored-session")
+    }
+
     @Test func recentRepositoriesResponseDecodes() throws {
         let data = Data(#"""
         {

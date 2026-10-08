@@ -40,6 +40,11 @@ public struct RemiSessionRow: View {
 
                 HStack {
                     Text(session.harness).font(.caption2.weight(.semibold)).textCase(.uppercase)
+                    if session.canResume {
+                        Text(storedSessionLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(session.isResuming ? Color.primary : .secondary)
+                    }
                     Spacer()
                     if session.openQuestionCount > 0 {
                         Label("\(session.openQuestionCount)", systemImage: "questionmark.bubble.fill")
@@ -51,10 +56,23 @@ public struct RemiSessionRow: View {
                     }
                 }
                 .foregroundStyle(.secondary)
+
+                if let resumeError = session.resumeError {
+                    Text(resumeError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
         .accessibilityElement(children: .combine)
+    }
+
+    private var storedSessionLabel: String {
+        if session.isResuming { return "Resuming…" }
+        guard let identity = session.resumeIdentity else { return "Stored" }
+        return "Stored · \(identity)"
     }
 }
 

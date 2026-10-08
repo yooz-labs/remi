@@ -318,6 +318,19 @@ public struct CreateSessionRequestMessage: Codable, Sendable, Equatable {
     }
 }
 
+public struct ResumeSessionRequestMessage: Codable, Sendable, Equatable {
+    public let type = "resume_session_request"
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+
+    public init(id: String, timestamp: String, sessionId: String) {
+        self.id = id
+        self.timestamp = timestamp
+        self.sessionId = sessionId
+    }
+}
+
 public struct WorkspaceRequest: Codable, Sendable, Equatable {
     public let repository: String
     public let worktree: WorktreeRequest?
@@ -383,6 +396,18 @@ public struct CreateSessionResponseMessage: Decodable, Sendable, Equatable {
     public let error: String?
     public let errorCode: String?
     public let notice: String?
+}
+
+public struct ResumeSessionResponseMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let success: Bool
+    public let requestId: String
+    public let sessionId: String?
+    public let port: Int?
+    public let error: String?
+    public let errorCode: String?
 }
 
 public struct KillSessionRequestMessage: Codable, Sendable, Equatable {

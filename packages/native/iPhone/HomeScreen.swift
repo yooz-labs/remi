@@ -25,6 +25,7 @@ struct HomeScreen: View {
     let onOpenSession: (String) -> Void
     let onSend: (String, String) -> Void
     let onTerminateSession: (String) -> Void
+    let onResumeSession: (String, String) -> Void
     let onCreateSession: (MachineEndpoint, String, String, WorkspaceRequest?) -> Void
     let onAddMachine: (MachineEndpoint) -> Void
     let onRemoveMachine: (String) -> Void
@@ -50,6 +51,7 @@ struct HomeScreen: View {
         onOpenSession: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String, String) -> Void = { _, _ in },
         onTerminateSession: @escaping (String) -> Void = { _ in },
+        onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onCreateSession: @escaping (MachineEndpoint, String, String, WorkspaceRequest?) -> Void = { _, _, _, _ in },
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
@@ -74,6 +76,7 @@ struct HomeScreen: View {
         self.onOpenSession = onOpenSession
         self.onSend = onSend
         self.onTerminateSession = onTerminateSession
+        self.onResumeSession = onResumeSession
         self.onCreateSession = onCreateSession
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
@@ -121,7 +124,8 @@ struct HomeScreen: View {
                         onCancel: onCancel,
                         onOpenSession: onOpenSession,
                         onSend: onSend,
-                        onTerminateSession: onTerminateSession
+                        onTerminateSession: onTerminateSession,
+                        onResumeSession: onResumeSession
                     )
                 }
 
@@ -341,6 +345,7 @@ private struct SessionsSection: View {
     let onOpenSession: (String) -> Void
     let onSend: (String, String) -> Void
     let onTerminateSession: (String) -> Void
+    let onResumeSession: (String, String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
@@ -354,25 +359,46 @@ private struct SessionsSection: View {
                         .padding(.top, RemiTheme.Spacing.xs)
 
                     ForEach(machineSessions) { session in
-                        NavigationLink {
-                            SessionScreen(
-                                session: session,
-                                transcript: transcriptForSession(session.id),
-                                questions: questionsForSession(session.id),
-                                views: viewsForSession(session.id),
-                                transcriptForView: transcriptForSession,
-                                onSelectView: onOpenSession,
-                                onAnswer: { onAnswer(session.id, $0, $1) },
-                                onSubmit: { onSubmit(session.id, $0, $1) },
-                                onCancel: { onCancel(session.id, $0) },
-                                onSend: { onSend(session.id, $0) },
-                                onTerminate: { onTerminateSession(session.id) }
-                            )
-                            .onAppear { onOpenSession(session.id) }
-                        } label: {
-                            RemiSessionRow(session: session)
+                        if session.canResume {
+                            HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
+                                RemiSessionRow(session: session)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button {
+                                    onResumeSession(session.machineID, session.id)
+                                } label: {
+                                    if session.isResuming {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Label("Resume", systemImage: "play.fill")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                                .contentShape(.rect)
+                                .disabled(session.isResuming)
+                                .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
+                            }
+                        } else {
+                            NavigationLink {
+                                SessionScreen(
+                                    session: session,
+                                    transcript: transcriptForSession(session.id),
+                                    questions: questionsForSession(session.id),
+                                    views: viewsForSession(session.id),
+                                    transcriptForView: transcriptForSession,
+                                    onSelectView: onOpenSession,
+                                    onAnswer: { onAnswer(session.id, $0, $1) },
+                                    onSubmit: { onSubmit(session.id, $0, $1) },
+                                    onCancel: { onCancel(session.id, $0) },
+                                    onSend: { onSend(session.id, $0) },
+                                    onTerminate: { onTerminateSession(session.id) }
+                                )
+                                .onAppear { onOpenSession(session.id) }
+                            } label: {
+                                RemiSessionRow(session: session)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
 
                         if session.id != machineSessions.last?.id { Divider() }
                     }
