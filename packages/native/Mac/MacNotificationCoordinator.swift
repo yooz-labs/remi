@@ -48,9 +48,15 @@ enum MacNotificationCoordinator {
         body: String,
         destination: RemiNavigationDestination
     ) async {
+        let summariesEnabled = UserDefaults.standard.object(
+            forKey: QuestionNotificationSummarizer.preferenceKey
+        ) as? Bool ?? true
+        let summarizedBody = summariesEnabled
+            ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
+            : QuestionNotificationSummarizer.fallback(for: body)
         let content = UNMutableNotificationContent()
         content.title = title
-        content.body = body
+        content.body = summarizedBody
         content.sound = .default
         content.userInfo = destinationUserInfo(destination)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
