@@ -1,10 +1,10 @@
 # Native iOS handoff — Live Activities + content-available + NSE (epic #571, deferred on #575)
 
-> **Partly historical (2026-10-01).** Since #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)) the daemon no longer emits the `evaluating` / `approved` statuses or any auto-resolve: the states below reduce to `waiting` and the plain working states, and `question_resolved` reasons to answered or cancelled. Design a Live Activity against those, not the cue this guide describes.
+> **Historical implementation sketch (reviewed 2026-10-08).** No native Live Activity, ActivityKit push path, App Intent answer, remote APNs path, or Notification Service Extension described below ships in `packages/native`. Since #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)) the daemon also no longer emits the `evaluating` / `approved` statuses or any auto-resolve. Use [`packages/native/PLATFORM-KNOWLEDGE.md`](../packages/native/PLATFORM-KNOWLEDGE.md) for the current platform and security boundary; retain this document only as design history.
 
 The daemon/web/signaling side of issue 6 is done (relay, pre-wake payload, dismissal, status). The remaining pieces need Xcode + an Apple Developer profile + a device, so they're a maintainer task. This is the implementation guide. Team `9DQ459HAZB`, bundle `com.yooz.remi`.
 
-## Already shipped (verify / deploy, no Xcode-target work)
+## Historical web/Capacitor work (not native-app shipping evidence)
 
 - **`AppDelegate.didReceiveRemoteNotification`** (in the epic) fires the Capacitor reconnect events on a `content-available` push so the connection re-establishes before the user taps. Carries an on-device checklist comment. Verify: background the app, trigger an escalation, confirm the WS reconnects pre-tap.
 - **APNS `content-available: 1` + `apns-collapse-id`** (signaling `apns.ts`) + the quiet `dismiss` push. Needs a worker redeploy: `cd packages/signaling && npx cfman wrangler --account yooz-labs deploy`.
@@ -38,7 +38,7 @@ Goal: a lock-screen / Dynamic Island card showing the live agent state (`evaluat
 
 ## B. Notification Service Extension (NSE) — limited; likely skip
 
-> **Superseded (2026-10-06).** The NSE ships (`packages/web/ios/App/RemiNotificationService`, bundle `live.yooz.remi.RemiNotificationService`) and is central to secure push since R5 (#1200): it opens the sealed payload. What follows is the July reasoning about button titles, still accurate on that point.
+> **Superseded claim corrected (2026-10-08).** This text referred to the Capacitor target and is not evidence that the native app has an NSE or secure remote push. Verify the current signaling, payload, extension, and caller path before reusing that design. The reasoning about fixed notification action titles remains relevant.
 
 NSE can rewrite a notification's **content** (title/body/attachments) but **cannot** change **action-button titles** — `UNNotificationAction` titles are fixed per `UNNotificationCategory` at registration. So "dynamic button labels via NSE" is not achievable. The notification **body already lists the real options** (Phase 3), which covers the visibility need. Only add an NSE if you later want decrypted/richer content or attachments; otherwise skip.
 

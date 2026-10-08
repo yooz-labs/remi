@@ -9,6 +9,7 @@ The epic is #1239.
 2. The root [AGENTS.md](../../../AGENTS.md), at least "Verify before you describe" and "Question Detection and Notifications".
 3. [../DESIGN.md](../DESIGN.md): the product and the design rules both apps share.
 4. The two tracks: [mac.md](mac.md) (the Mac app and RemiKit's core) and [ios.md](ios.md) (the iPhone app and RemiUI, the design system).
+5. [../PLATFORM-KNOWLEDGE.md](../PLATFORM-KNOWLEDGE.md): the dated Apple API baseline, current shipping boundary, and iOS/macOS 27 watchlist.
 
 ## Where the code is
 
