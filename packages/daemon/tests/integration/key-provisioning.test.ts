@@ -336,7 +336,9 @@ describe('provisioning a client key (#1303)', () => {
     expect((await authenticate(port, client.identity)).result).toMatchObject(
       refused('UNKNOWN_KEY'),
     );
-    expect(store.listPendingKeys()).toEqual([pending]);
+    const [kept, ...others] = store.listPendingKeys();
+    expect(kept).toEqual(pending);
+    expect(others).toHaveLength(0);
 
     const approved = await remi(host, [
       'authorize',
