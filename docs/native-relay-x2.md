@@ -421,3 +421,36 @@ UI (#1170) waits for its threat model and protocol freeze. Signed sandboxed Mac,
 signed Phone, actual dynamic category/extension delivery, locked-device, Watch
 and physical two-machine acceptance remain owner gates. No attachment UI,
 sealed-file transport, relay deployment or release acceptance is claimed.
+
+
+## Signed Mac startup follow-up (#1242)
+
+The signed Debug Mac app initially failed opening its shared namespace with
+`NSCocoaErrorDomain` 513. Its automatic Mac provisioning profile did not carry
+a grant for `group.live.yooz.remi`; refreshing that profile kept the same shape.
+The Mac app and NSE now both declare `$(DEVELOPMENT_TEAM).live.yooz.remi`,
+the supported macOS signing-team group format. Both Info.plists carry the same
+`RemiPushAppGroup`; configuration reads this declaration rather than deriving
+the signing team from an App Identifier Prefix, which can differ. The iPhone
+continues to use its registered `group.live.yooz.remi` container.
+
+Identity and secure-push Keychain access groups, service names and accounts
+are unchanged. This creates a different Mac public SQLite ledger: existing
+public machine trust and replay state in the old group are not migrated. A
+previous Mac installation that had usable old trust must explicitly re-enable
+relay notifications; a saved preference cannot recreate that trust. Private
+identity rotation is not part of this correction.
+
+The real Foundation bundle controls failed before the correction and pass
+afterward, including missing/invalid declarations and an App Identifier Prefix
+different from the signing team. A signed app and its embedded NSE were
+inspected for matching group, team and namespace, and the signed app physically
+opened and authenticated two owned hubs on separate Macs. It created an inert
+acceptance session on each and delivered a remote No through the held hook.
+No actual Claude/Codex service or command execution is claimed by those fixtures.
+
+The local-session accessibility hierarchy query then exposed a separate SwiftUI/
+AppKit recursion crash. Two-machine answer acceptance is therefore partial;
+that UI investigation and the original crash reports remain separate from the
+shared-container correction. A numeric Tailscale address also hit ATS -1022;
+the supplied Tailscale hostname connected using the existing networking policy.

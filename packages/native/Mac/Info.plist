@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>RemiPushAppGroup</key>
+	<string>$(DEVELOPMENT_TEAM).live.yooz.remi</string>
 	<key>RemiPushNamespace</key>
 	<string>$(REMI_PUSH_NAMESPACE)</string>
 	<key>RemiPushAccessGroup</key>

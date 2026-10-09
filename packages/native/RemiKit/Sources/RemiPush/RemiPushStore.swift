@@ -120,11 +120,32 @@ public final class RemiPushStore: @unchecked Sendable {
         #endif
     }
 
+    static func configuredApplicationGroup(bundle: Bundle) throws -> String {
+        _ = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
+        #if os(macOS)
+        // The app and NSE declare the same signing-team group (#1242).
+        // An App Identifier Prefix can differ from that team, so never derive it
+        // from the Keychain access group. macOS validates access at the container.
+        guard let group = bundle.object(forInfoDictionaryKey: "RemiPushAppGroup") as? String else {
+            throw RemiPushError.unavailable
+        }
+        let fields = group.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard fields.count == 2, fields[0].utf8.count == 10, fields[1] == "live.yooz.remi",
+              fields[0].utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) }) else {
+            throw RemiPushError.unavailable
+        }
+        return group
+        #else
+        return "group.live.yooz.remi"
+        #endif
+    }
+
     public static func configured(bundle: Bundle = .main) throws -> RemiPushStore {
+        let applicationGroup = try configuredApplicationGroup(bundle: bundle)
         guard let namespace = bundle.object(forInfoDictionaryKey: "RemiPushNamespace") as? String,
               ["native-debug", "native-release"].contains(namespace),
               let container = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: "group.live.yooz.remi") else { throw RemiPushError.unavailable }
+                forSecurityApplicationGroupIdentifier: applicationGroup) else { throw RemiPushError.unavailable }
         // Resolve declared sharing before opening state or writing any credential.
         let group = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
         let directory = container.appendingPathComponent(namespace, isDirectory: true)
