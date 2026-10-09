@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { relayV2 } from '@remi/shared';
 import { DEFAULT_CONFIG } from '../../packages/daemon/src/config/config.ts';
@@ -73,7 +74,7 @@ test('actual default relay endpoint construction reaches the real R2 nonce route
 test.each(['/connect', '/connect/'])(
   'recognized official legacy %s refuses before listener, dialing or model work and preserves TOML',
   async (path) => {
-    const dir = mkdtempSync('/private/tmp/remi-r3-legacy-url-');
+    const dir = mkdtempSync(join(tmpdir(), 'remi-r3-legacy-url-'));
     chmodSync(dir, 0o700);
     mkdirSync(join(dir, 'bin'), { mode: 0o700 });
     mkdirSync(join(dir, 'state'), { mode: 0o700 });

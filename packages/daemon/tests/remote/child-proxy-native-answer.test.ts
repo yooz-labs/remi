@@ -4,6 +4,7 @@
  */
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AnswerResultOutcome,
@@ -29,7 +30,7 @@ afterEach(() => {
 type ChildBehavior = 'close-after-hello' | 'ack-then-hold' | 'ack-then-answer';
 
 async function fixture(behavior: ChildBehavior, delayMs: number) {
-  const dir = mkdtempSync('/private/tmp/remi-child-native-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-child-native-'));
   chmodSync(dir, 0o700);
   const previous = process.env['REMI_HOME'];
   process.env['REMI_HOME'] = dir;

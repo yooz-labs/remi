@@ -4,7 +4,7 @@
  */
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type NativeAnswerMessage,
@@ -46,7 +46,7 @@ afterEach(async () => {
 async function fixture(options: { beforeApply?: () => void } = {}) {
   const logs: string[] = [];
   configureLogger({ writeLog: (line) => logs.push(line) });
-  const directory = mkdtempSync('/private/tmp/remi-native-ledger-');
+  const directory = mkdtempSync(join(tmpdir(), 'remi-native-ledger-'));
   chmodSync(directory, 0o700);
   const trust = new IdentityStore(directory);
   await trust.generate();

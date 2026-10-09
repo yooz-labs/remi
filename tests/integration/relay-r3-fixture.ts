@@ -1,5 +1,6 @@
 /** Owned real HubRelay/Worker/resumed device, used only for transport fault pins. */
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createHello,
@@ -17,7 +18,7 @@ import { SessionRegistryFile } from '../../packages/daemon/src/session/session-r
 import { Socket, admit, clientUrl } from '../../packages/signaling/tests/e2e/endpoints.ts';
 import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 export async function resumed(events: Partial<AdapterEvents> = {}) {
-  const dir = mkdtempSync('/private/tmp/remi-r3-fixture-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-r3-fixture-'));
   chmodSync(dir, 0o700);
   const worker = await startWorker();
   const trust = new IdentityStore(dir);

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IdentityStore } from '../../packages/daemon/src/auth/identity-store.ts';
 import { HubRelay } from '../../packages/daemon/src/remote/hub-relay.ts';
@@ -15,7 +16,7 @@ async function until(check: () => boolean) {
   }
 }
 test('completed edge revoke is not undone by startup enrollment snapshot', async () => {
-  const dir = mkdtempSync('/private/tmp/remi-r3-revoke-state-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-r3-revoke-state-'));
   chmodSync(dir, 0o700);
   const worker = await startWorker();
   let release: (() => void) | undefined;

@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { relayV2 } from '@remi/shared';
 import { CAPABILITY_HEADER } from '../../packages/daemon/src/auth/capability-token.ts';
@@ -25,7 +26,7 @@ import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 
 const selected = process.env['REMI_R3_CLOCK_GATE'];
 async function sourceHub() {
-  const dir = mkdtempSync('/private/tmp/remi-r3-clock-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-r3-clock-'));
   chmodSync(dir, 0o700);
   mkdirSync(join(dir, 'bin'), { mode: 0o700 });
   for (const command of ['claude', 'codex'])

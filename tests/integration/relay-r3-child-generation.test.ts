@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type ProtocolMessage,
@@ -20,7 +21,7 @@ import { SessionRegistryFile } from '../../packages/daemon/src/session/session-r
 import { Mailbox } from '../../packages/signaling/tests/e2e/endpoints.ts';
 
 async function fixture() {
-  const dir = mkdtempSync('/private/tmp/remi-r3-child-generation-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-r3-child-generation-'));
   chmodSync(dir, 0o700);
   const previous = process.env['REMI_HOME'];
   process.env['REMI_HOME'] = dir;

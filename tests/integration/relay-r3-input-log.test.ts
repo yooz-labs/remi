@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInputHandlers } from '../../packages/daemon/src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../packages/daemon/src/cli/logger.ts';
@@ -15,7 +16,7 @@ import {
   serialize,
 } from '../../packages/shared/src/index.ts';
 test('real WebSocket user input does not enter plaintext logs even when refused', async () => {
-  const dir = mkdtempSync('/private/tmp/remi-r3-log-state-');
+  const dir = mkdtempSync(join(tmpdir(), 'remi-r3-log-state-'));
   chmodSync(dir, 0o700);
   const registry = new SessionRegistry();
   const store = new SessionStore(join(dir, 'sessions.json'));
