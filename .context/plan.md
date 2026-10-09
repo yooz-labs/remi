@@ -42,15 +42,24 @@ The native apps (milestones 4 and 5) run in parallel too: Codex builds them in X
 They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 
-## Current backend continuation: recent repositories (#1284)
+## Completed backend continuation: recent repositories (#1284)
 
 The owner selected #1284 on 2026-10-09 while the native developer continues X2 separately.
 The wire stays unchanged; only successful hub starts write history, capped at 20 with no age expiry.
+Landed through [#1332](https://github.com/yooz-labs/remi/pull/1332) at `ef84b4c6`, with the same tree as tested `28ea5daf`.
+Both full Bun suites passed 7,942 tests with no failures; Linux CI and the actual 61-minute relay gate passed.
+The existing native caller needs no new Swift model or wire field for this persistence behavior.
 
 1. Pin the removed-worktree and expired-session regressions against the original source, plus ordinary creates and hub resumes (`tests/integration/hub-create-session.test.ts`, `hub-resume.test.ts`).
 2. Add restricted atomic history (`workspace/recent-store.ts`), merge it into `workspace/recent.ts`, and wire the successful shared starter and recent-repositories handler in `cli.ts`; async lock waiting reuses the existing ownership and stale recovery rules.
 3. Verify canonical main repositories, latest-use deduplication, cap, permissions, damaged-source fallback, simultaneous writers and responsive bounded lock waiting; update ADR 0036's source and disclosure descriptions.
 4. Review, mutation-check each behavior, run fresh full suites on Bun 1.4.2 and 1.3.11 and the existing CI gates, then land through a PR to develop.
+
+## Next work while native acceptance proceeds
+
+1. Continue existing [#1330](https://github.com/yooz-labs/remi/pull/1330), now ready for review. The owner has an iPhone and Watch available; signed app/extension, provider configuration, actual delivery, locked-device actions and two-machine Mac acceptance still need measured results. Source and unsigned receipts do not close those gates. Generic #1141 categories follow the accepted X2 answer path.
+2. Land the existing file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) after its refreshed source passes normal CI. Keep #1170 open: this is preparation, with no accepted freeze or implemented attachment capability.
+3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): prove standalone storage and bounded-decoder packaging, accept the staging ADR/fixtures, implement durable reservations and direct staging, then add one production client caller. Claude insertion, links, outbound files and relay/native depth each have separate gates. The existing decoder's compiled runtime failed to load; resolve that before upload implementation. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
 
 ## Tracks (work outside the milestones)
 

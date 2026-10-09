@@ -9,8 +9,10 @@ This separate follow-up does not establish or block relay backend release accept
 
 ## Current code and reuse
 
-Current source check: develop `1d478e07`, after the relay backend landed through [#1331](https://github.com/yooz-labs/remi/pull/1331) at `b1168126`.
-That merge has the same tree as tested backend `2858e4bd`; `1d478e07` changes only the development version.
+Current source check: develop `ef84b4c6`, after [#1284/#1332](https://github.com/yooz-labs/remi/pull/1332) retained recent repositories for native session creation.
+Its merge tree equals tested source `28ea5daf`; both full Bun suites and the actual 61-minute relay gate passed.
+Develop's successor `23df4739` changes only version strings to `0.7.17-dev.42` and is included in this documentation branch.
+The relay backend previously landed through [#1331](https://github.com/yooz-labs/remi/pull/1331) at `b1168126`, whose tree equals tested backend `2858e4bd`; `1d478e07` changes only the development version.
 The initial checks against develop `1d800273`, relay epic `8fb5b88b` and source composite `1e96c688` remain historical provenance.
 No upload, file-fetch or forwarded-browser implementation was found in the daemon, shared protocol or web client.
 `WebSocketAdapter`'s `onClientConnect` callback passes the server-derived fingerprint, `IdentityStore.withAuthorizationEpoch` supplies a grant-incarnation transaction, and `PTYSession.write` queues raw writes without a prompt callback.
@@ -260,6 +262,43 @@ Run each implementation spike on `bun-darwin-arm64`, `bun-darwin-x64`, `bun-linu
 | Relay attachment bytes | Unavailable until accepted v2 transport and real Worker/hub/client ciphertext-only controls; no APNs/HTTP-answer/legacy fallback. |
 
 ## Implementation order and gates
+
+### Preparation measured on 2026-10-09
+
+Private feasibility probes used owned temporary files and containers; no production handler, dependency, capability or native control changed.
+The storage prototype passed seven primitive controls on Bun 1.3.11 and 1.4.2: exclusive private creation/publication, same-descriptor inspection/read, component validation, symlink and hardlink refusal, and cleanup through a captured directory after path replacement.
+All eight target binaries built; six executions passed: Mac ARM natively, Linux ARM in a Docker VM and Linux x64 under Docker Desktop emulation, on both Bun versions.
+Mac x64 execution remains unmeasured because Rosetta was unavailable.
+These primitive controls do not establish the full race/credential corpus, durable quotas, recovery or transfer authority.
+
+The final experiment used a small C wrapper and checked native symbols with Bun's experimental compiler/FFI APIs.
+Earlier compiled experiments failed on embedded source lookup and Linux libc linking; a rejected pointer experiment crashed because it used a function property absent from the public API.
+Those failures remain part of the packaging evidence; no helper is selected for shipping.
+The existing development dependency `sharp` 0.33.5 passed five tiny source decode/refusal cases, but its compiled Mac ARM binary could not load the native runtime from an empty working directory.
+That candidate has no distributable or bounded-resource acceptance yet.
+Receipts and exact input hashes are retained in `/private/tmp/remi-1284-77yRf87N/tunnel-probe/`; these are local evidence, not repository dependencies.
+
+### Next independently reviewable changes
+
+Continue #1170 and this proposal; do not start another tunnel plan or duplicate native X2.
+Paths below are proposed implementation locations, not modules already present.
+Keep each change to one subsystem and about 500 net implementation lines; split it when needed.
+
+| Next PR | Existing code and proposed files | Prerequisite and exit gate |
+|---|---|---|
+| T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all four targets on both Bun gates, including Mac x64; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
+| T0b: decoder packaging proof | Compare explicitly declared PNG/JPEG decoder candidates and license/runtime assets; proposed `tunnel/image-validation.ts` and decoder corpus. Do not import Miniflare's development dependency as an implicit runtime dependency. | Standalone compiled execution on all targets, full decode with admission before excessive allocation, finite CPU/memory/deadline/concurrency limits and cancellation. A real held approval stays responsive. No chosen dependency before evidence. |
+| T0c: accept the staging contract | Reuse ADR 0035, protocol registry and fixture rules. Add the reviewed ADR, strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | T0a/T0b settle implementation feasibility. Owner reviews the concrete fields, bounds, outcomes and cleanup policy; an independent review finds no unresolved critical decision. Fixtures alone do not advertise support. |
+| T1a storage: reservations and recovery | Reuse `storage/interprocess-file-lock.ts`; proposed `tunnel/reservations.ts`, private artifact ledger and startup recovery. | Reserve bytes and artifact slots across actual processes before creation; retain failed-cleanup reservations. Crash recovery touches only captured private roots. This internal preparation exposes no upload API. |
+| T1a lifecycle: authenticated direct staging | Reuse server-derived identity, `withAuthorizationEpoch`, hub/child session routing and frozen validators; proposed `cli/handlers/image-upload-events.ts` and `tunnel/transfers.ts`. | Exact bytes/digest/decode; revoke/regrant, detach, rebind, lost-ack, cancellation, saturation and cleanup controls against real hub/child. Keep the capability unadvertised until its production client caller lands. |
+| T1a caller: one direct client upload | Reuse `packages/web/src/components/chat/InputArea.tsx`, connection dispatch and `hubSupport`; add explicit file selection, progress, staged result and cancellation. | One shipping caller completes an image against the source hub; rendered select/cancel/refusal/reconnect states pass. Advertise staging only with the accepted handler and caller. Completion never inserts a reference. |
+| T1b: optional Claude insertion | Reuse `harness/types.ts`, `prompt-up.ts` and the serialized PTY effect; add a separate insertion handler/capability and explicit caller. | Installed-version quoting and reference lifetime proof, zero input for each prompt refusal, and at most one possible effect after a lost receipt. Codex remains gated by #1207. |
+| T2-T4: links, fetch and native depth | Follow the gates below. X5 (#1245) adds native picker/progress for the landed staging contract; native insertion and fetch controls follow their separate capabilities. | Independent scope and acceptance for each. Direct staging does not wait for relay deployment or insertion; relay attachment bytes and signed native UI require their own runtime/device evidence. |
+
+T0a and T0b can proceed independently while native #1330 receives review and owner device acceptance.
+Use one implementation lead and one independent reviewer per change; keep the Xcode developer's existing native worktree and ownership.
+The immediate packaging probes require neither cloud deployment nor a paid harness turn.
+If a gate fails, preserve its evidence and resolve or narrow the supported scope before advancing.
 
 | Phase | Work | Gate before advancing |
 |---|---|---|
