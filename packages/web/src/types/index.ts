@@ -31,7 +31,7 @@ export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
  */
 export type UIMessageState = MessageState | 'failed';
 
-/** Peer role in WebRTC connection */
+/** @deprecated Unused v1 code-room role; v2 roles belong to relayV2 (#1202). */
 export type PeerRole = 'host' | 'client';
 
 /** Connection status for the daemon */
@@ -303,11 +303,11 @@ export interface AppSettings {
   readonly showTimestamps: boolean;
 }
 
-/** Connection configuration */
+/** @deprecated Unused v1 code-room configuration (#1202). */
 export interface ConnectionConfig {
   /** Direct connection URL (local daemon) */
   readonly directUrl?: string;
-  /** Signaling server URL for WebRTC */
+  /** Legacy v1 signaling URL */
   readonly signalingUrl?: string;
   /** Connection code for remote access */
   readonly connectionCode?: string;

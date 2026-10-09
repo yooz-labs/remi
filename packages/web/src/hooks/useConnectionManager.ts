@@ -398,7 +398,7 @@ export function useConnectionManager(
         challenge,
         serverPublicKey: srvPublicKey,
         serverFingerprint: srvFingerprint,
-        // Pin the answer encryption key with this server's identity (#875).
+        // Preserve an older daemon's v1 metadata; v2 answers do not use it (#1202).
         ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
       };
       mc.authAttempt = null;
