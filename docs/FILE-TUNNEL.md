@@ -1,13 +1,18 @@
 # Image and file tunnel: threat model and freeze plan
 
-Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), dated 2026-10-08.
+Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), started 2026-10-08; candidate contract updated 2026-10-09.
 This document specifies work to review before implementation; it adds no messages, capabilities, endpoints or native attachment controls.
+It is not an accepted protocol freeze or an implemented feature.
 The owner included the tunnel's frames in the protocol freeze (#1233, comment on #1170); native attachment and preview UI remains X5 (#1245).
+The first runnable unit is direct image staging; harness insertion has its own later gates.
+This separate follow-up does not establish or block relay backend release acceptance.
 
 ## Current code and reuse
 
-Checked against `origin/develop` at `1d800273` and the existing relay epic at `8fb5b88b`.
+Initial check: `origin/develop` at `1d800273` and the existing relay epic at `8fb5b88b`; follow-up caller review: source composite `1e96c688`.
 No upload, file-fetch or forwarded-browser implementation was found in the daemon, shared protocol or web client.
+In the composite, `websocket-adapter.ts:116` passes the server-derived fingerprint, `identity-store.ts:304` supplies a grant-incarnation transaction, and `pty-session.ts:216` queues raw writes without a prompt callback.
+Current chat checks `promptUp` before enqueue (`input-events.ts:1392`) and then appends Enter (`:1418`); neither operation is an attachment insertion implementation.
 
 | Existing implementation | Reuse and constraint |
 |---|---|
@@ -20,7 +25,7 @@ No upload, file-fetch or forwarded-browser implementation was found in the daemo
 | Relay epic: `auth/identity-store.ts`, `notifications/secure-push-store.ts` | `withAuthorizationEpoch` and the captured/current authority pattern distinguish a removed and replaced grant. Reuse the grant-incarnation helper when it is integrated; do not activate secure push or require relay enrollment for a direct tunnel. Develop's `isAuthorized` checks current membership only. |
 
 Issue #1170's older plaintext-relay description predates the rebuild.
-The shipping develop path has the relay off by default and fail-closed without authentication; the epic implements v2 separately.
+At the cited develop head, the relay is off by default and fail-closed without authentication; the epic implements v2 separately.
 No attachment bytes may use a legacy relay route, a Worker HTTP answer route, APNs or notification payloads.
 
 ## Assets, actors and boundaries
@@ -65,7 +70,7 @@ Administrator compromise and an intentionally disclosed secret in an otherwise p
 
 ## Ingress lifecycle
 
-First support PNG and JPEG images only; generic file ingress follows a separate allowlist review.
+First support single-frame PNG and JPEG images only; animated or multi-image containers and generic file ingress follow a separate allowlist review.
 Validate the declared kind against the completed bytes and a bounded image decoder before offering the result to a harness.
 Limit dimensions to 8,192 pixels per side and 32 million pixels total to bound decoder work; a header-only MIME check is insufficient.
 Do not alter image metadata silently or claim that an uploaded image is credential-free.
@@ -88,8 +93,9 @@ Codex insertion remains unavailable until the owner resolves #1207 and an app-se
 An upload must not start a Codex turn, change a thread or use `-i` on a resumed TUI implicitly.
 
 Abandoned and failed partial files are removed when the transfer ends.
-Completed files expire after 24 hours or session exit, whichever comes first; the implementation must first establish when each harness no longer needs its image reference.
-If it cannot establish that lifetime, insertion does not ship under this deletion policy.
+Uninserted completed files expire after 24 hours or session exit, whichever comes first.
+Before insertion ships, the implementation must establish when each harness no longer needs its image reference, including a later resume.
+If it cannot establish that lifetime, insertion does not ship under this deletion policy; it must not silently retain files forever instead.
 Crash recovery scans only its own private scratch namespace, with descriptor-based traversal; it never walks the project or follows links.
 Deletion is limited to owned transfer artifacts, with failures counted visibly and their reserved disk budget retained until cleanup succeeds.
 
@@ -108,9 +114,10 @@ Configured credential roots require component-aware containment checks against t
 There is no general-purpose secret detector: renamed credentials and secrets embedded in otherwise ordinary files remain a disclosure risk.
 
 Open relative to the captured root; reject symlinks at every component, non-regular files, devices, FIFOs, sockets, multiply linked files and an initial size over the budget.
-Read at most the admitted byte count plus one from that same descriptor; refuse growth, truncation or detected mutation.
-A file being rewritten cannot be promised as an atomic snapshot merely because a hash was computed.
-The implementation must choose and prove snapshot semantics before freezing the fetch completion contract; until then, concurrently modified files refuse.
+Read at most the admitted byte count plus one from that same descriptor into a reserved private copy; refuse growth, truncation or detected mutation before sending content to the client.
+The completed fetch describes immutable bytes of that validated private copy, not an atomic snapshot of the source file.
+The portability spike must establish the before/after descriptor checks and their limits; neither a hash nor unchanged metadata proves that every concurrent edit was detected.
+Publish and stream only the completed private copy, without reopening the project path; inability to enforce the chosen checks refuses egress.
 Never use a client-supplied path in an error or log; return a short refusal category without expanding the host path or exposing file existence beyond an admitted request.
 
 ## Link forwarding
@@ -140,7 +147,7 @@ These are reviewable initial limits, not settings or protocol constants already 
 | Total transfer lifetime | 5 minutes |
 | Completed image staging lifetime | At most 24 hours, subject to the harness lifetime gate above |
 
-Base64 of a 32 KiB chunk occupies 43,692 bytes, leaving room inside the proposed 64 KiB transfer frame and the epic's 524,288-byte channel plaintext limit.
+Padded base64 of a 32 KiB chunk occupies 43,692 bytes; the candidate unpadded base64url spelling occupies 43,691, leaving room inside the proposed 64 KiB transfer frame and the epic's 524,288-byte channel plaintext limit.
 Enforce both transfer and transport limits; changing the file budget must never relax channel limits.
 Count all a device's connections together and reserve hub capacity before the child starts writing.
 The per-home ledger atomically reserves the declared byte budget, minimum allocation cost and one artifact slot before file creation, across every hub and session process using that remi home.
@@ -150,7 +157,7 @@ Keep reservations for completed artifacts and failed deletions; reconcile crash 
 
 The following is candidate vocabulary for the protocol ADR, not permission to invent or advertise a wire field now.
 
-1. Define separate additive capabilities for staged image ingress, link forwarding and file egress. Advertise each only with a shipping handler and production client caller; a missing capability disables the operation through `hubSupport`.
+1. Define separate additive capabilities for staged image ingress, harness insertion, link forwarding and file egress. Advertise each only with a shipping handler and production client caller; a missing capability disables the operation through `hubSupport`. Backend preparation and tests are not production client callers.
 2. Specify begin/accepted, chunk/ack, complete/result and cancel/result for uploads and fetches. Include request correlation, host-issued transfer ID, session identity, direction, sequence, total bytes, content kind and final digest. Every field, encoding, bound, expiry, refusal and idempotency rule must be in the ADR before models are added.
 3. Distinguish staged, inserted, refused and uncertain outcomes. Existing transport acks acknowledge receipt; they must not be reused as proof of a completed disk write or harness insertion.
 4. Bind all state to device, authorization grant incarnation, runtime and harness epochs on the child. The hub routes authenticated transfers without gaining an unrestricted file-service path; revoke/regrant, a resumed session or a restarted child cannot revive an earlier transfer.
@@ -158,12 +165,105 @@ The following is candidate vocabulary for the protocol ADR, not permission to in
 6. Use the existing authenticated direct connection initially. Relay transfer support waits for the accepted v2 epic and real Worker/hub/client ciphertext-only controls; it adds no plaintext fallback or Worker file-storage endpoint.
 7. Keep native picker, share sheet, previews and attachment controls in X5 (#1245), after the relevant capability and conformance gates pass.
 
+## Candidate direct staging contract
+
+All names and fields below are proposals for review, not additions to the protocol registry.
+Initial staging targets an attached live Claude session with a known, non-null harness binding.
+It writes private storage only and never types a reference, presses Enter or starts a turn.
+
+### Envelope and encodings
+
+| Field or rule | Exact candidate meaning |
+|---|---|
+| `type`, `id`, `timestamp` | Every frame has the listed discriminator, a lowercase canonical UUID v4 message ID, and a valid 24-character UTC `YYYY-MM-DDTHH:mm:ss.sssZ` string, preserving the existing protocol timestamp shape. Client time is not authority. |
+| `requestId` | Every response echoes the initiating message's `id`; its own `id` identifies the response. Correlate type, request, session and transfer together, not the ID alone. |
+| `sessionId` | Canonical UUID of the live remi session. Every staging frame and response carries it. It must match the connection's actual attachment; knowledge of it grants nothing. |
+| `binding` | Begin carries exactly `{harness:"claude",harnessSessionId:<string>}` copied from the authenticated session's known binding. The ID is non-empty, at most 200 UTF-8 bytes and free of controls. Compare the exact bytes with the server's current binding; this is an expected-binding guard, not authority. |
+| `transferId`, `artifactId` | Distinct host-generated identifiers: 16 cryptographically random bytes encoded as canonical, unpadded base64url (22 characters). Never derive them from a path, name, device or digest; collision checks precede publication. |
+| `mediaType`, `byteLength`, `digest` | `image/png` or `image/jpeg`; integer 1 through 10,485,760; SHA-256 of the entire claimed file as 32 bytes of canonical, unpadded base64url (43 characters). Verify actual bytes at completion. |
+| `seq`, `data` | Integer sequence starting at 0, at most 319; canonical unpadded base64url, no whitespace or alternate spelling. Decoded length is exactly `min(32768, remaining bytes)`, bounding the chunk count to 320. |
+| `expiresAt`, `artifactExpiresAt` | Valid UTC timestamps in the same shape as `timestamp`, chosen by the host. Transfer expiry is five minutes after acceptance; local monotonic elapsed time also bounds execution. Staging expiry is at most 24 hours after completion, ending sooner on session exit. |
+| Parser limits | Measure at most 65,536 UTF-8 frame bytes before JSON/base64 allocation. Require valid UTF-8 and Unicode scalar strings; reject duplicate decoded member names at every object depth, unknown fields, wrong types, non-integer/out-of-range numbers and non-canonical encodings; no coercion or path/name fields. |
+| Common authority | Capture device public key, grant incarnation, attachment, session, child runtime and harness binding on the server. Recheck them at each read/write/publish/insertion effect. Store faults or changed grants/bindings permanently invalidate the transfer. |
+
+### Lifecycle and correlation
+
+Requests carry the common envelope plus `sessionId`; responses add `requestId`.
+The columns below list every additional field; no field is implicitly optional.
+
+| Client request | Response and fields | Transition or refusal |
+|---|---|---|
+| `image_upload_begin`: `binding`, `mediaType`, `byteLength`, `digest` | `image_upload_accepted`: `transferId`, `expiresAt` | Attached, currently authorized identity only. Reserve the declared bytes, allocation minimum, artifact slot and concurrency before exclusive partial creation; then enter `receiving`. Unauthenticated, capability-only or unbound connections cannot stage. |
+| `image_upload_chunk`: `transferId`, `seq`, `data` | `image_upload_chunk_ack`: `transferId`, `seq`, `receivedBytes` | In `receiving`, write exactly the next chunk to the captured private file descriptor, then increment sequence/bytes and acknowledge. `receivedBytes` is cumulative. At most one chunk is unacknowledged. Ack proves this private write completed, not crash persistence or harness delivery. |
+| `image_upload_complete`: `transferId` | `image_upload_result`: `transferId`, `outcome:"staged"`, `artifactId`, `artifactExpiresAt`, `byteLength`, `mediaType`, `digest` | Only after exact length, actual digest, bounded PNG/JPEG decode and current authority pass. Publish one private artifact, convert rather than duplicate its reservation, enter `staged`; return no host path or insertion text. |
+| `image_upload_cancel`: `transferId` | `image_upload_cancel_result`: `transferId`, `outcome:"cancelled"` | Cancel an owned unfinished transfer, close it and delete its partial file. Report success and release quota only after confirmed deletion. Failed cleanup stays terminal with its reservation retained. |
+| Any correlatable refused request | `image_upload_refused`: `operation`, `code` | `operation` is the rejected request discriminator; no host paths, details, transfer/artifact identifiers or existence evidence are returned. Malformed envelopes without usable canonical request and session IDs receive no correlated reply and end the transfer connection. |
+
+Refusal codes are exactly `malformed`, `unavailable`, `busy`, `conflict`, `sequence`, `integrity`, `unsupported_media`, `decode_failed`, `expired`, `binding_changed`, and `cleanup_failed`.
+Use `unavailable` for unknown IDs, another device/grant/session, revoked authority, missing binding or unreadable authority state; these cases share the same response shape without an existence oracle.
+Resolve identifiers only within the admitted device/grant/session namespace; never probe another owner's artifact and then report whether it exists.
+Other codes require the currently authorized owning device/grant: capacity is `busy`; conflicting request reuse is `conflict`; order/length is `sequence`; digest mismatch is `integrity`; content-kind mismatch is `unsupported_media`; decoder refusal is `decode_failed`.
+An owned known transfer reaching its deadline, changing binding or failing deletion uses `expired`, `binding_changed` or `cleanup_failed`, respectively; changed binding grants no further effect.
+
+### Retry, retirement and cleanup
+
+| Event | Exact candidate behavior |
+|---|---|
+| Same begin ID and identical begin fields | While `receiving`, return the same live acceptance, never allocate another partial. Changed fields, reuse for another operation or an already `staged` transfer is `conflict`; cancelled/expired transfer authority yields `unavailable`. Client timestamps do not refresh deadlines. |
+| Duplicate/gap chunk or premature completion | `sequence` is terminal for the owner's partial; stop accepting bytes and clean it up. A late chunk after `staged` returns `conflict` without deleting or changing the completed artifact. |
+| Lost chunk ack | The client cannot infer whether the write occurred. No blind retransmission and no partial resumption: cancel the owned transfer, then begin a new one with a fresh request ID after confirmed cancellation or expiry cleanup. |
+| Retried complete | While the one artifact is retained and its captured authority is current, return the same staged artifact/outcome, correlated to the retry's request ID. Never allocate another artifact or insert anything. Expired/revoked/missing artifacts yield `unavailable`. |
+| Retried cancel | An owned cancelled partial returns the same success while its bounded tombstone is retained; retry failed owned cleanup without releasing quota early. A staged artifact is not an unfinished partial: cancel returns `conflict` and cannot delete it. |
+| Disconnect, detach or restart | No resumable partial state. Invalidate unfinished transfers and schedule owned cleanup; restart recovers only private artifacts/reservations, not transfer authority. A lost completion may therefore remain unavailable even if cleanup finds a file. |
+| Unproductive wait or total expiry | Thirty seconds without an admitted completed write, or five minutes total, terminates a partial. Replays and rejected messages never extend either limit. |
+| Bookkeeping bounds | Admission also reserves one retry/tombstone slot, at most 128 per home and 32 per device, counting active transfers and partial tombstones together. Keep partial tombstones at most until their original five-minute expiry, including across restart for refusal only; never restore transfer authority. Retain at most one completion record per retained artifact, bounded by the existing artifact quotas. If safe correlation cannot be retained, refuse new admission rather than forget an uncertain effect. |
+
+Envelope examples illustrate candidate field spelling only; they are not golden fixtures or an end-to-end success receipt.
+The staged result shape is separate from the chunk example; actual matching PNG/JPEG bytes and digest require conformance fixtures.
+
+```json
+{"type":"image_upload_begin","id":"11111111-1111-4111-8111-111111111111","timestamp":"2026-10-09T00:00:00.000Z","sessionId":"22222222-2222-4222-8222-222222222222","binding":{"harness":"claude","harnessSessionId":"33333333-3333-4333-8333-333333333333"},"mediaType":"image/png","byteLength":32768,"digest":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+{"type":"image_upload_accepted","id":"44444444-4444-4444-8444-444444444444","timestamp":"2026-10-09T00:00:00.001Z","sessionId":"22222222-2222-4222-8222-222222222222","requestId":"11111111-1111-4111-8111-111111111111","transferId":"AQEBAQEBAQEBAQEBAQEBAQ","expiresAt":"2026-10-09T00:05:00.001Z"}
+{"type":"image_upload_chunk","id":"55555555-5555-4555-8555-555555555555","timestamp":"2026-10-09T00:00:01.000Z","sessionId":"22222222-2222-4222-8222-222222222222","transferId":"AQEBAQEBAQEBAQEBAQEBAQ","seq":0,"data":"AA"}
+{"type":"image_upload_refused","id":"66666666-6666-4666-8666-666666666666","timestamp":"2026-10-09T00:00:01.001Z","sessionId":"22222222-2222-4222-8222-222222222222","requestId":"55555555-5555-4555-8555-555555555555","operation":"image_upload_chunk","code":"sequence"}
+{"type":"image_upload_result","id":"77777777-7777-4777-8777-777777777777","timestamp":"2026-10-09T00:00:02.000Z","sessionId":"22222222-2222-4222-8222-222222222222","requestId":"88888888-8888-4888-8888-888888888888","transferId":"AQEBAQEBAQEBAQEBAQEBAQ","outcome":"staged","artifactId":"AgICAgICAgICAgICAgICAg","artifactExpiresAt":"2026-10-10T00:00:02.000Z","byteLength":32768,"mediaType":"image/png","digest":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+```
+
+### Separately gated candidate operations
+
+| Operation | Candidate frames and effect | Gate and availability |
+|---|---|---|
+| Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. Installed-Claude and lifetime gates remain unresolved. |
+| File fetch | Candidate `file_fetch_begin/accepted`, `file_fetch_chunk/ack`, `file_fetch_complete/result`, `file_fetch_cancel/result`; begin selects one permitted project-relative path. Prepare a reserved private copy before any content frame. Completion describes its length and SHA-256; never claim an atomic source snapshot. | Names stay in freeze scope, not advertised. Exact fetch fields/ack/cancellation rules await descriptor confinement, denial-policy and private-copy spike evidence; no placeholder implementation. |
+| Link forwarding | Candidate `link_candidate` and a client-local explicit open choice; candidate carries a bounded validated URL, never a host-fetch instruction. | Unavailable until the per-session shim, URL bounds, selected-client routing and actual launch boundary are specified and proven. |
+| Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
+
+## Spike plan and Xcode handoff
+
+No helper or decoder dependency is selected by this proposal.
+Run each implementation spike on `bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-arm64` and `bun-linux-x64`, including the actual compiled release shape and both project Bun gates, before relying on it.
+
+| Spike | Evidence and pass/fail gate |
+|---|---|
+| Portable private storage and egress | Identify descriptor-relative open/create/rename/unlink and regular-file inspection APIs. Use captured roots and the same opened descriptor; deterministic ancestor/final-component replacement, symlink/hardlink/device/FIFO, credential-root overlap and detected source-mutation cases must refuse. Prove private-copy publication and crash cleanup without project traversal. Unsupported target/API or inability to enforce checks means no corresponding capability, never a path-based fallback. |
+| Bounded image decode | Compare explicitly declared decoder candidates and their license/distribution requirements. Miniflare's transitive `sharp` is not a daemon runtime implementation. Before choosing, prove full PNG/JPEG decode, dimension/pixel admission before excessive allocation, finite CPU/memory/deadline/concurrency budgets, cancellation and malformed/truncated/decompression cases on all four compiled targets. Decoder work must not stall a real held approval. Failure leaves staging unavailable. |
+| Claude insertion and lifetime | Record the installed version; use owned scratch paths including spaces and quoting cases. Measure actual bytes/no Enter and no reference write for held, terminal, observed-menu and queued-prompt controls. Trace when image contents are consumed and whether session exit/resume still needs the file. Prove one effect with lost-receipt, revoke/regrant and changed-binding controls. Unproven quoting, prompt protection or reference lifetime leaves insertion unavailable. |
+
+| Xcode operation | Availability after this docs-only preparation |
+|---|---|
+| Picker/upload progress | No runnable capability yet. X5 may consume frozen staging frames only after handler, production caller and TypeScript/Swift conformance gates pass. |
+| Agent attachment insertion | Separate from staged upload; Claude unavailable until its effect/lifetime gates, Codex unavailable until #1207 and structured-operation proof. |
+| File download/preview | Unavailable until fetch fields, portable confinement, validated private-copy semantics and inert preview gates pass. |
+| Open agent link | Unavailable until explicit selected-client forwarding/launch gates pass; no automatic open or host fetch. |
+| Relay attachment bytes | Unavailable until accepted v2 transport and real Worker/hub/client ciphertext-only controls; no APNs/HTTP-answer/legacy fallback. |
+
 ## Implementation order and gates
 
 | Phase | Work | Gate before advancing |
 |---|---|---|
 | T0: threat model and freeze | Review this proposal; settle filesystem portability, snapshots, image lifetime, bounds and insertion semantics. Write the protocol ADR and fixtures. | No unresolved security-critical decision and a source trace for every reuse claim. |
-| T1: direct image staging and Claude insertion | Neutral private scratch storage, authenticated chunk lifecycle, exact-effect Claude guard and one real client caller. | Real source hub/child + installed Claude controls: no Enter, zero prompt input on refusal, correct insertion once, quotas and cleanup. |
+| T1a: direct image staging | Portable private storage, bounded decoder, authenticated chunk lifecycle and one real client caller; no insertion. | Real source hub/child: strict bytes/digest/decode, device/grant/session isolation, quotas, lost-ack/refusal and cleanup; a real held approval remains responsive. |
+| T1b: explicit Claude insertion | Optional harness attachment operation and guarded serialized reference write, with separate capability/caller. | Installed Claude: no Enter, zero prompt input on refusal, one effect under lost receipt, and proven image lifetime including resume. |
 | T2: explicit link forwarding | Session-scoped shim and user-triggered client launch. | Actual process environment/shim/client trace; no host fetch, automatic launch or credential inheritance. |
 | T3: read-only file egress | Portable descriptor confinement, denial policy, snapshot semantics and inert client handling. | macOS/Linux path-race corpus, credential overlap controls, quotas and revoked-device controls. No egress on an unsupported filesystem API. |
 | T4: relay transport and native depth | Reuse accepted v2 transport and implement X5 UI for capabilities already present. | Real Durable Object, hub and client; no content on Worker logs, HTTP answer routes or push; owner signs and exercises physical-device UI. |
@@ -175,7 +275,8 @@ A passing parser or build does not establish filesystem confinement, harness del
 ## Decisions still required before implementation
 
 - Prove the macOS/Linux descriptor API available to Bun, and choose any required platform helper explicitly; do not substitute a racy `realpath` check.
-- Define enforceable snapshot behavior for a file concurrently modified by an agent.
+- Prove the descriptor checks for validated private-copy fetch semantics; do not describe them as atomic source snapshots or complete concurrent-edit detection.
+- Choose a bounded decoder only after CPU/memory/concurrency and compiled-target evidence; dimensions and a transitive development dependency are insufficient.
 - Verify installed Claude reference insertion and establish image-reference lifetime before enabling automatic deletion.
 - Resolve Codex attachment delivery with #1207; observing a CLI flag is insufficient to authorize starting a turn.
 - Review the proposed type allowlist, bounds, cleanup lifetime and credential deny corpus before freezing them.
