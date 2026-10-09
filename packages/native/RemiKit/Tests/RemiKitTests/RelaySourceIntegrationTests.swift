@@ -122,6 +122,79 @@ struct RelaySourceIntegrationTests {
         }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_RELAY_REFERENCE_ROOT"] != nil,
+        "Requires the source relay composite; see docs/native-relay-x2.md."))
+    func survivesSourceHeartbeatWindowWithoutReconnect() async throws {
+        let reference = try #require(ProcessInfo.processInfo.environment["REMI_RELAY_REFERENCE_ROOT"])
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Integration/relay-fixture.ts")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["bun", script.path, reference]
+        let output = Pipe()
+        let input = Pipe()
+        process.standardOutput = output
+        process.standardInput = input
+        process.standardError = FileHandle.standardError
+        try process.run()
+        defer { cleanupFixture(process, input: input) }
+
+        let offer = try await next(from: output)
+        let token = try #require(offer["token"] as? String)
+        let identity = ClientIdentity()
+        let endpoint = try MachineEndpoint.pairingOverRelay(token)
+        let store = MachineStore(
+            endpoints: [],
+            identity: identity,
+            clientVersion: "native-x2-heartbeat",
+            clientId: "owned-swift-heartbeat-pair"
+        )
+        store.addMachine(endpoint)
+        let comparison = try await next(from: output)
+        let fingerprint = try #require(comparison["fingerprint"] as? String)
+        try await until("Swift heartbeat confirmation fingerprint") {
+            store.machines.first?.status == .waitingForRelayConfirmation(fingerprint: fingerprint)
+        }
+        try send(["kind": "confirm", "fingerprint": fingerprint], to: input)
+        try await until("paired heartbeat source connection") {
+            store.machines.first?.status == .connected && store.machines.first?.hasLoadedSessions == true
+        }
+        let saved = try #require(store.persistableEndpoints.first)
+        store.stop()
+
+        let probe = RelayConnectionProbe()
+        let connection = RemiConnection(
+            configuration: RemiConnectionConfiguration(
+                url: try #require(saved.webSocketURL),
+                clientVersion: "native-x2-heartbeat",
+                clientId: "owned-swift-heartbeat-probe",
+                relayPin: saved.relayPin
+            ),
+            identity: identity,
+            stateHandler: { _ in },
+            eventHandler: { event in Task { @MainActor in probe.receive(event) } }
+        )
+        await connection.start()
+        do {
+            try await until("standalone heartbeat connection hello") { probe.helloCount == 1 }
+            try await Task.sleep(for: .seconds(95))
+            #expect(probe.helloCount == 1, "The daemon must not reap and reconnect a responsive client")
+            try await connection.send(SessionListRequestMessage(
+                id: "owned-after-heartbeat-window",
+                timestamp: "owned",
+                includeExternal: true
+            ))
+            try await until("request after daemon heartbeat window") { probe.sessionCount == 1 }
+            await connection.stop()
+        } catch {
+            await connection.stop()
+            throw error
+        }
+        try send(["kind": "stop"], to: input)
+        try await until("owned heartbeat fixture cleanup") { !process.isRunning }
+        #expect(process.terminationStatus == 0)
+    }
+
     private func until(_ label: String, condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(25))
         while ContinuousClock.now < deadline {

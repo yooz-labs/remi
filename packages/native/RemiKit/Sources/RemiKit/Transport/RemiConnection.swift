@@ -376,6 +376,13 @@ public actor RemiConnection {
             let message = try decoder.decode(HelloAckMessage.self, from: data)
             transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message))
+        case "ping":
+            let ping = try decoder.decode(PingMessage.self, from: data)
+            try await send(PongMessage(
+                id: UUID().uuidString.lowercased(),
+                timestamp: Date().ISO8601Format(),
+                pingId: ping.id
+            ))
         case "session_list_response":
             eventHandler(.sessions(try decoder.decode(SessionListResponse.self, from: data)))
         case "question":

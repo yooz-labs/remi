@@ -11,6 +11,26 @@ public struct AnswerResultMessage: Decodable, Sendable, Equatable {
     public let outcome: String
 }
 
+public struct PingMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+}
+
+public struct PongMessage: Codable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let pingId: String
+
+    public init(id: String, timestamp: String, pingId: String) {
+        type = "pong"
+        self.id = id
+        self.timestamp = timestamp
+        self.pingId = pingId
+    }
+}
+
 /// Client introduction sent immediately after the WebSocket opens.
 public struct HelloMessage: Codable, Sendable, Equatable {
     public let type = "hello"

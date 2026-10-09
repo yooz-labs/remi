@@ -159,7 +159,7 @@ function cleanup(): Promise<void> {
 }
 const deadline = setTimeout(() => {
   void cleanup().then(() => process.exit(1));
-}, 90000);
+}, 180000);
 process.on('SIGTERM', () => {
   void cleanup().then(() => process.exit(1));
 });
