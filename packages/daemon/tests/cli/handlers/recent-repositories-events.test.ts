@@ -10,7 +10,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, RecentRepositoriesResponseMessage, UUID } from '@remi/shared';
 import { createRecentRepositoriesHandlers } from '../../../src/cli/handlers/recent-repositories-events.ts';
+import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+import { RecentRepositoryStore } from '../../../src/workspace/recent-store.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -19,14 +21,20 @@ describe('recent_repositories_request (#1236 phase C)', () => {
   let root: string;
   let store: SessionStore;
   let sent: Array<{ connectionId: UUID; message: ProtocolMessage }>;
+  let history: RecentRepositoryStore;
+  let logged: string[];
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-recent-handler-')));
     store = new SessionStore(path.join(root, 'sessions.json'));
     sent = [];
+    history = new RecentRepositoryStore(path.join(root, 'history', 'recent-repositories.json'));
+    logged = [];
+    configureLogger({ writeLog: (line) => logged.push(line) });
   });
 
   afterEach(() => {
+    __resetLoggerForTests();
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -56,6 +64,7 @@ describe('recent_repositories_request (#1236 phase C)', () => {
   const handlers = () =>
     createRecentRepositoriesHandlers({
       sessionStore: store,
+      repositoryStore: history,
       send: (connectionId, message) => {
         sent.push({ connectionId, message });
         return true;
@@ -79,6 +88,29 @@ describe('recent_repositories_request (#1236 phase C)', () => {
   test('an empty store answers with an empty list, never silence', async () => {
     await handlers().onRecentRepositoriesRequest(CID, REQ, 5);
     expect((sent[0]?.message as RecentRepositoriesResponseMessage).repositories).toEqual([]);
+  });
+
+  test('retained history still answers when the session store cannot be read', async () => {
+    const main = repo('retained');
+    await history.remember(main);
+    fs.writeFileSync(path.join(root, 'sessions.json'), '{ not json');
+    await handlers().onRecentRepositoriesRequest(CID, REQ, undefined);
+    expect(
+      (sent[0]?.message as RecentRepositoriesResponseMessage).repositories.map((r) => r.repository),
+    ).toEqual([main]);
+  });
+
+  test('damaged history is logged and ignored while session repositories still answer', async () => {
+    const main = repo('current');
+    record(main, new Date().toISOString(), '11111111-1111-4111-8111-111111111111');
+    fs.mkdirSync(path.dirname(history.filePath));
+    fs.writeFileSync(history.filePath, '{ private-contents');
+    await handlers().onRecentRepositoriesRequest(CID, REQ, undefined);
+    expect(
+      (sent[0]?.message as RecentRepositoriesResponseMessage).repositories.map((r) => r.repository),
+    ).toEqual([main]);
+    expect(logged.some((line) => line.includes('ignoring the file'))).toBe(true);
+    expect(logged.join('\n')).not.toContain('private-contents');
   });
 
   test('a store that cannot be read still answers, with an empty list', async () => {
