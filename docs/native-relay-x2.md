@@ -345,8 +345,8 @@ uncategorized verified fallback can present in the foreground but grants no OS
 action. Cold actions strict-load only the existing unprotected identity, use an
 unstarted endpoint-free Store and never create, migrate or reconcile identity.
 
-The ordinary package currently reports 95 tests: 92 passes and three explicit
-source opt-in skips. `NativePushActionTests` passes nine tests, including 20
+The ordinary package at `e235e083` reports 97 tests: 94 passes and three explicit
+source opt-in skips. `NativePushActionTests` passes 11 tests, including 22
 parameter cases for signed shape, exact display and cold identity refusal. Owned
 fixtures refuse OS category publication independently of identifier validation;
 only pure category merge/descriptor decisions and the actual source receiver are
@@ -359,11 +359,45 @@ revocation refuses fresh authentication. Keychain bytes and ledger generation
 remain unchanged through these actions. A delivered receipt alone is not claimed
 to invalidate the local capsule before a signed terminal update arrives.
 
-Local action receipts are `/private/tmp/remi-x2-phase4-ordinary.log`,
-`/private/tmp/remi-x2-action-cold-boundary.log` and
-`/private/tmp/remi-x2-actual-cold-action-source.log`. Independent review, mutations
-and final unsigned whole-head builds are separate gates recorded after this
-checkpoint; OS publication/delivery on signed devices is not measured here.
+Final receipts at production/test head `e235e083c2127aa816750c983a7f8142b2558441`:
+
+| Gate | Result | Receipt |
+| --- | --- | --- |
+| Full ordinary Swift package | 94 passes, three explicit opt-in skips; 1.281 seconds | `/private/tmp/remi-x2-phase4-final-swift.log` |
+| Full secure source suite, CLI Bun 1.3.11 / proxy 1.4.2 | Three passes, 30.421 seconds; foreground sender plus cold snapshot caller and control precondition | `/private/tmp/remi-x2-phase4-source-final-1311.log` |
+| Cold snapshot caller, CLI and proxy Bun 1.4.2 | One pass, 4.298 seconds | `/private/tmp/remi-x2-phase4-cold-source-final-142.log` |
+| Mac Debug unsigned build/test | 94 passes, three explicit source skips | `/private/tmp/remi-x2-action-gates.RPDK83/mac-debug-e235.log` |
+| Phone Debug unsigned build | Pass | `/private/tmp/remi-x2-action-gates.RPDK83/phone-debug-e235.log` |
+| Mac / Phone Release unsigned builds | Both pass | `/private/tmp/remi-x2-action-gates.RPDK83/mac-release-e235.log`, `phone-release-e235.log` |
+| Product inspection | Four app/extension product pairs and seven extension link lists; extensions contain RemiPush/NativeAPNsRuntime, no RemiKit/RemiUI/Dpk | `/private/tmp/remi-x2-action-gates.RPDK83/product-inspection-e235.json` |
+| Full spelling check | Pass | `/private/tmp/remi-x2-phase4-typos.log` |
+
+The app builds include both NSE targets. Existing WireMessages diagnostics and
+AppIntents notices remain unchanged; no new diagnostics were reported. The
+unsigned identifier prefix is empty, so product inspection verifies declarations
+and link separation, not entitlement enforcement or actual shared Keychain/APNs
+access. Independent source review cleared `65fcf151`; a read-only delta review
+cleared the `e235e083` snapshot regression. The delta changes only internal field
+visibility plus tests, with no public API or runtime behavior change.
+
+All 20 focused action mutants caused completed-build runtime assertion failures.
+They cover exact title/body/subtitle/action ID verification, No-first ordering,
+standing authentication, full-title boundary, protected public authority,
+immutable digest binding, same-facade ownership, the pure secure-prefix policy,
+registry cap, foreground category verification, cold creation/migration, and all
+six snapshot fields (including Unicode normalization). Every source file was
+restored byte-for-byte before the final package/source runs. The owned OS
+publication guards remained intact throughout; no owner registry mutation or
+actual OS publication is claimed. Receipts are
+`/private/tmp/remi-x2-action-mutations.json` and its named mutant logs.
+
+An initial test wrongly assumed that delivered alone already made the local
+capsule terminal. The strict replay refusal now requires the observed actual
+same-collapse signed higher-revision dismissal. The diagnostic excerpt is
+`/private/tmp/remi-x2-cold-replay-precondition-excerpt.log`; the complete first log
+was overwritten on rerun, so this excerpt is not claimed as an original full log.
+OS publication, actual APNs delivery, lock-screen behavior and Watch execution on
+signed devices remain unmeasured owner gates.
 
 The foundation busy/uncertain UI was also rendered from the real source sender's
 silent client-result fault in a private frozen `6a71caa1` clone. The 390-point

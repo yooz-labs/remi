@@ -50,3 +50,16 @@ On iOS the fixed shared directory and existing DB/WAL/SHM/identity-lock files us
 `completeUntilFirstUserAuthentication`, with directory inheritance for companions
 SQLite recreates. Unix permissions are directory0700/files0600. Locked-device
 Keychain/provisioning acceptance remains an owner gate.
+
+
+The native action facade adds immutable capsule-derived category/action IDs and
+shares the source's complete YN/YNA semantic choice policy with the app signer.
+The legacy consumer's empty-category presentation check is not used for these
+native alerts: the facade independently reopens the original and compares exact
+escaped UTF8 title/body, empty subtitle and the verified native category (or an
+intentional category-free fallback). Cooperative publication uses a separate
+native category lease with bounded OS reads/readback; unrelated OS writers can
+still cause availability loss. Both NSEs share this facade without Dpk access.
+Disposable owned stores refuse OS category publication independently of policy
+validation. Pure category objects and the real source action receiver are tested;
+signed device registry/delivery acceptance is a separate owner gate.
