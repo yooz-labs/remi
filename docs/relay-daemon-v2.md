@@ -137,11 +137,26 @@ or `by the far side`). Measured on macOS against the local workerd, where
 `relay-r3-transport-close.test.ts` pins the runtime's behavior (Bun 1.4.2 closes
 gracefully); not measured on Linux or against the deployed Worker.
 
+## Connection heartbeats
+
+The machine and each private child use the existing `Connection` heartbeat:
+a protocol Ping every 30 seconds, with an unresponsive peer closed after two
+missed intervals (about 60–90 seconds). `RelayMachineChannel` answers an
+authenticated machine Ping with `createPong(ping.id)` through its guarded
+encrypted send path and still forwards the Ping to its consumer. The hub's
+`ChildProxy` answers a verified child's Ping on that same local socket, after
+its authority, registry-generation and socket checks. Child Pings stay local;
+a sessionless remote Pong would otherwise reach the machine connection.
+Native foreground clients must likewise reply through their existing transport.
+The existing native X2 branch still needs this reply; its short source-wire
+receipts do not establish idle longevity. Server timeouts remain unchanged.
+
 ## Retirement and verification
 
 V1 `RelayAdapter`, signaling client, code store and `remi code` implementation are
-removed. Permanent-code requests refuse with migration guidance. The `kexSigningInput` compatibility encoding, export and cross-purpose signature
-fixtures remain unchanged. The unused v1 relay key-exchange methods, public
+removed. Permanent-code requests refuse with migration guidance. Historical v1
+signing bytes remain private test characterization; `kexSigningInput` has no
+runtime export (#1202). The unused v1 relay key-exchange methods, public
 crypto/sealed-answer helpers and old answer-key startup generation/announcement
 are retired in R7 (#1202, ADR 0034 section 14). Optional old wire fields and factory
 positions remain solely for additive/read compatibility; they do not recreate an
