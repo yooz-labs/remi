@@ -187,7 +187,7 @@ struct NativeSecureSourceIntegrationTests {
             client.ownedBeforeNativeSend = { proof in try await fixture.armLoss(id: proof.id) }
             await client.answerRelayNotification(choice: lostNo.value)
             #expect(client.lastRelayAnswerOutcome == "uncertain")
-            #expect(client.relayNotificationNotice?.contains("uncertain") == true)
+            #expect(client.relayNotificationNotice == "Delivery is uncertain. Check the current session before answering again.")
             try await denyEffect(fixture, push: context.push)
             try fixture.send(["kind": "receipts"])
             let firstReceipt = try await receipts(fixture, push: context.push)
