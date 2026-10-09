@@ -110,9 +110,9 @@ resolution. An inert owned CLI process keeps the PTY alive, as in the existing
 R6 source tests; no real Claude or Codex service is used. The transport control
 also refuses an oversized local send, then serves a valid list request, receives
 authenticated BYE during orderly hub restart, and resumes through a fresh Worker
-admission on the same native actor. The fixture observes one live socket per
-device key and waits for its owned hub and child processes before deleting
-scratch state. Concurrent cleanup calls share one promise.
+admission on the same native actor. The fixture stops each Store before starting
+another channel with the same device key. It waits for its owned hub and child
+processes before deleting scratch state. Concurrent cleanup calls share one promise.
 
 Thirteen semantic mutations were detected: signature, KDF, READY echo,
 canonical control, incoming direction, counter limit, expiry boundary, route
