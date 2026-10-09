@@ -429,7 +429,9 @@ public final class MachineStore {
             // tuple-correlated receipt remains valid after that terminal transition.
             lastRelayAnswerOutcome = response.outcome
             if presentationStore.matches(presentation) {
-                relayNotificationNotice = response.outcome == "delivered" ? "Answer delivered." : "The answer was not applied (\(response.outcome))."
+                relayNotificationNotice = response.outcome == "delivered" ? "Answer delivered." :
+                    response.outcome == "uncertain" ? "Delivery is uncertain. Check the current session before answering again." :
+                    "The answer was not applied (\(response.outcome))."
                 if response.outcome == "delivered" { verifiedRelayNotification = nil }
             }
         } catch {

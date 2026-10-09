@@ -3,7 +3,7 @@
 This milestone adds an opt-in relay v2 connection to the Swift Mac and Phone
 clients. It covers foreground pairing, reconnecting with a saved public machine
 pin, session discovery, semantic session requests, permission cards, and the
-existing `answer` / `answer_result` path. The next checkpoint adds verified secure
+existing `answer` / `answer_result` path. The verified-alert checkpoint adds secure
 alerts and an app-opened notification card whose offered choice uses the signed
 `native_answer` path. Issues #1242 and #1201 remain open; OS action categories and
 lock-screen/Watch answer acceptance are not enabled by this checkpoint.
@@ -306,6 +306,9 @@ through #1222. The current composite source is the separate draft #1331 at
 into develop/release by this native branch. Provider deployment, signed APNs
 provisioning, sandbox/extension delivery, locked-device behavior, Watch and the
 two-machine owner acceptance remain unmeasured here.
+The Worker's default `APNS_BUNDLE_ID` is `live.yooz.remi`; a signed Debug app
+(`live.yooz.remi.dev`) needs owner-controlled provider topic configuration matching
+that app before APNs delivery can be tested. No agent changes that deployment.
 
 ## Remaining X2 and #1201 gates
 
