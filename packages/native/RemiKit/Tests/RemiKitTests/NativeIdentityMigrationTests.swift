@@ -108,4 +108,20 @@ struct NativeIdentityMigrationTests {
         #expect(try context.push.authority() == cached.pushAuthority)
         #expect(try context.push.generation() == generation)
     }
+
+    @Test(arguments: [false, true])
+    func cachedSignerSeparatelyRejectsRevisionAndProtectionChange(protectionOnly: Bool) throws {
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let cached = try context.store.loadOrCreate()
+        let generation = try context.push.generation(), authority = try context.push.authority()
+        let changed = try context.record(identity: cached,
+            revision: protectionOnly ? cached.revision : UUID().uuidString, protected: protectionOnly)
+        #expect(SecItemUpdate(context.query as CFDictionary, [kSecValueData as String: changed] as CFDictionary) == errSecSuccess)
+        for phase in ["Worker admission", "H2", "native answer"] {
+            #expect(throws: (any Error).self) { try cached.signature(for: Data(phase.utf8)) }
+        }
+        #expect(try context.bytes() == changed)
+        #expect(try context.push.authority() == authority)
+        #expect(try context.push.generation() == generation)
+    }
 }
