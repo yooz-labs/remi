@@ -27,6 +27,76 @@ import {
 } from './helpers/relay-hub';
 registerOwnedRelayFixtureCleanup();
 
+test('the same real hub and child connections survive 93 seconds without application traffic', async () => {
+  const local = await ownedRelayOffer();
+  const child = await ownedRelayChild(local.running);
+  const messages = new Mailbox<ProtocolMessage>();
+  const protocolErrors: ProtocolMessage[] = [];
+  let machinePings = 0;
+  let closing = false;
+  let fail: (error: Error) => void = () => {};
+  const failed = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  void failed.catch(() => {});
+  const paired = await pair(
+    local,
+    (message) => {
+      if (message.type === 'ping') ++machinePings;
+      if (message.type === 'error') {
+        protocolErrors.push(message);
+        fail(new Error('The real relay hub or child reported a connection failure'));
+      }
+      messages.push(message);
+    },
+    () => {
+      if (!closing) fail(new Error('The original relay connection ended before 93 seconds'));
+    },
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await nextType(messages, 'hello_ack');
+    expect(
+      paired.client.send(
+        createHello('owned-r7-heartbeat', '2', {
+          resumeSessionId: child.entry.sessionId,
+        }),
+      ),
+    ).toBe(true);
+    const attached = await nextType(messages, 'hello_ack');
+    expect(attached.type === 'hello_ack' && attached.sessionId).toBe(child.entry.sessionId);
+    expect(attached.type === 'hello_ack' && attached.attachState).toBe('attached');
+    const started = performance.now();
+    // Both real Connection timers run at their unchanged 30s default. Only
+    // transport Pong replies may keep them alive during this silent interval.
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 93_000);
+      }),
+      failed,
+    ]);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(93_000);
+    expect(paired.client.connected).toBe(true);
+    expect(local.running.proc.exitCode).toBeNull();
+    expect(child.child.exitCode).toBeNull();
+    expect(machinePings).toBeGreaterThanOrEqual(3);
+    expect(protocolErrors).toEqual([]);
+    expect(paired.errors).toEqual([]);
+    const request = createSessionListRequest();
+    expect(paired.client.send(request)).toBe(true);
+    const response = await nextType(messages, 'session_list_response');
+    expect(response.type === 'session_list_response' && response.requestId).toBe(request.id);
+    expect(
+      response.type === 'session_list_response' &&
+        response.sessions.some((session) => session.sessionId === child.entry.sessionId),
+    ).toBe(true);
+  } finally {
+    closing = true;
+    if (timer) clearTimeout(timer);
+    await paired.client.close();
+  }
+}, 120000);
+
 async function nextType(inbox: Mailbox<ProtocolMessage>, type: ProtocolMessage['type']) {
   for (let i = 0; i < 128; i++) {
     const message = await inbox.next();

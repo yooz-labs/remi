@@ -7,6 +7,7 @@ import {
   createAnswer,
   createAnswerResult,
   createHelloAck,
+  createPing,
   createSessionUpdate,
   createUserInput,
   deserialize,
@@ -97,6 +98,34 @@ async function fixture() {
     },
   };
 }
+
+test('the verified child ping is answered on that exact socket, not forwarded to the machine client', async () => {
+  const owned = await fixture();
+  try {
+    const sent = owned.proxy.send(
+      owned.entry.sessionId,
+      createUserInput(owned.entry.sessionId, 'owned', false),
+    );
+    const hello = await owned.requests.next();
+    const unverified = createPing();
+    hello.reply(unverified);
+    expect(await owned.requests.quiet(50)).toBe(true);
+    hello.reply(owned.ack());
+    await sent;
+    await owned.requests.next();
+    const ping = createPing();
+    hello.reply(ping);
+    const reply = await owned.requests.next(500);
+    expect(reply.message.type).toBe('pong');
+    expect(reply.message.type === 'pong' && reply.message.pingId).toBe(ping.id);
+    expect(owned.forwarded.some((message) => message.type === 'ping')).toBe(false);
+    owned.revoke();
+    hello.reply(createPing());
+    expect(await owned.requests.quiet(80)).toBe(true);
+  } finally {
+    owned.cleanup();
+  }
+}, 3000);
 
 test('revocation while actual child hello waits prevents proxied user input after ready', async () => {
   const owned = await fixture();
