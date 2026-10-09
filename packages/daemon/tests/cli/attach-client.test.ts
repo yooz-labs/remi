@@ -689,8 +689,8 @@ describe('runAttachClient', () => {
   // until one has been observed (a second review fix) so it cannot read
   // "no question" for a session that already has one live. Proves the
   // mechanism end to end on the REAL attach-client code path (not a
-  // StatusBar unit test): the deferred first paint doubling as the onset
-  // paint, and — since #1038 removed the freeze — the bar continuing to
+  // StatusBar unit test): the first live-question paint, and — since #1038
+  // removed the freeze — the bar continuing to
   // track status for as long as the question stays open, with raw_pty_output
   // flowing the whole time so the PTY is never quiescent.
   test('the bar keeps tracking status while a question (question_snapshot) stays live', async () => {
@@ -735,28 +735,27 @@ describe('runAttachClient', () => {
           // heartbeat belongs to the actual first paint, not the test's start.
           later(() => {
             ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
-            later(() => {
-              ws.send(
-                serialize(
-                  createRemiStatus(
-                    targetSessionId as UUID,
-                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
-                  ),
+            // Ordered real frames, not delayed setup timers: attach-client's
+            // latestStatus is null until the idle frame is consumed, so its
+            // first idle paint proves the live snapshot was consumed first.
+            questionLive = true;
+            ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
+            ws.send(
+              serialize(
+                createRemiStatus(
+                  targetSessionId as UUID,
+                  mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
                 ),
-              );
-            }, 50);
-            later(() => {
-              questionLive = true;
-              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
-            }, 150);
+              ),
+            );
             // Keep the actual PTY forwarder busy while the question is live;
             // quiescence must not be needed for its status heartbeat (#1038).
             spinner = setInterval(() => {
               ws.send(
                 serialize(
                   createRawPtyOutput(
-                    targetSessionId as UUID,
                     Buffer.from('\r* Running...').toString('base64'),
+                    targetSessionId as UUID,
                   ),
                 ),
               );
@@ -791,9 +790,19 @@ describe('runAttachClient', () => {
     let thinkingWhileLive = false;
     let midQuestionOutput = '';
     try {
-      onsetObserved = await observe(() => currentBars()[0]?.includes('idle') === true, 2000);
+      onsetObserved = await observe(() => {
+        const output = fs.readFileSync(outputPath, 'utf-8');
+        // Actual forwarded spinner bytes prove the PTY gate has observed
+        // activity; the ordered snapshot/status frames prove live onset.
+        return (
+          questionLive &&
+          barsIn(output)[0]?.includes('idle') === true &&
+          output.includes('\r* Running...')
+        );
+      }, 2000);
       if (onsetObserved) {
-        sendThinking?.();
+        if (!sendThinking) throw new Error('thinking sender missing after live onset');
+        sendThinking();
         // Heartbeat plus two 250ms render ticks is a bounded scheduling margin,
         // measured from observed onset. Resolution cannot make this pass.
         thinkingWhileLive = await observe(
