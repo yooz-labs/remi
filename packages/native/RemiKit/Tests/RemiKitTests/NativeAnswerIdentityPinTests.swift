@@ -7,12 +7,15 @@ import Testing
 
 enum NativePushOracle {
     static func load(_ name: String) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: bytes(name)) as? [String: Any])
+    }
+    static func bytes(_ name: String) throws -> Data {
         let file = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("shared/tests/fixtures/relay-v2/\(name)")
-        return try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return try Data(contentsOf: file)
     }
 }
 

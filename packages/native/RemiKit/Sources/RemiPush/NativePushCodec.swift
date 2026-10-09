@@ -153,6 +153,12 @@ enum NativePushCodec {
     static func decodePayload(_ bytes: Data) throws -> Payload {
         try payload(StrictJSON.parse(bytes, maximum: 2048))
     }
+    static func strictObject(_ bytes: Data, maximum: Int) throws -> [String: Any] {
+        guard let object = try StrictJSON.parse(bytes, maximum: maximum) as? [String: Any] else {
+            throw NativePushCodecError.malformed
+        }
+        return object
+    }
     private static func payload(_ value: Any) throws -> Payload {
         guard let o = value as? [String: Any], let type = o["type"] as? String else { throw NativePushCodecError.malformed }
         if type == "dismiss" {

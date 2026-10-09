@@ -52,10 +52,21 @@ public struct ClientIdentity: Sendable {
     }
 
     public func signature(for challenge: Data) throws -> Data {
+        try validateForSigning()
+        return try privateKey.signature(for: challenge)
+    }
+
+    func validateForSigning() throws {
         // No native foreground passphrase unlock exists. Protected records never sign.
         guard !requiresAppUnlock else { throw NativeIdentityError.protected }
         try validateDurable?()
-        return try privateKey.signature(for: challenge)
+    }
+
+    /// A restricted connection still uses the real durable provider, adding its
+    /// original-capsule checks to EVERY admission/H2/final signature.
+    func restrictingSignatures(_ restriction: @escaping @Sendable () throws -> Void) -> ClientIdentity {
+        ClientIdentity(privateKey: privateKey, revision: revision, requiresAppUnlock: requiresAppUnlock,
+            validateDurable: { try self.validateForSigning(); try restriction() })
     }
 
     public func signatureBase64(for challenge: Data) throws -> String {
@@ -144,6 +155,12 @@ public struct ClientIdentityStore: Sendable {
         let (push, group) = try context()
         return try NativeIdentityRecordStore.load(authority: NativePushAuthorityAdapter(push),
             accessGroup: group, service: service, account: account).map { validated($0, push: push, group: group) }
+    }
+    /// Cold background launch/load-only path. It never migrates or creates Dpk.
+    public func loadCurrent() throws -> ClientIdentity? {
+        let (push, group) = try context()
+        return try NativeIdentityRecordStore.currentRecord(accessGroup: group, service: service, account: account)
+            .map { validated($0, push: push, group: group) }
     }
     private func validated(_ value: ClientIdentity, push: RemiPushStore, group: String?) -> ClientIdentity {
         let expected = value.pushAuthority

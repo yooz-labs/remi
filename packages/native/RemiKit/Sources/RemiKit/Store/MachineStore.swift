@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RemiPush
 
 /// Temporary machine identity until the protocol ships a durable machine object (#1234).
 /// Keeping it behind this value type prevents `host:port` from leaking through app UI APIs.
@@ -179,6 +180,24 @@ public final class MachineStore {
     public private(set) var resumingSessions: Set<ResumeSessionKey> = []
     public private(set) var resumeErrorsBySession: [ResumeSessionKey: String] = [:]
     public private(set) var recentlyResolvedQuestions: [ResolvedQuestionRecord] = []
+    public private(set) var verifiedRelayNotification: VerifiedPushNotification?
+    public private(set) var relayNotificationNotice: String?
+    public private(set) var relayNotificationBusy = false
+    public private(set) var lastRelayAnswerOutcome: String?
+    @ObservationIgnored private let pushStore: RemiPushStore?
+    @ObservationIgnored private var pushTrustIntents: Set<MachineEndpoint> = []
+    @ObservationIgnored private var pushEnabled: Set<String> = []
+    @ObservationIgnored private var suspendedRelayRooms: Set<Data> = []
+    @ObservationIgnored private var tokenRegistration: (token: String, environment: String)?
+    @ObservationIgnored private let registrationEpoch = RelayRegistrationEpoch()
+    @ObservationIgnored private let answerEpoch = RelayRegistrationEpoch()
+    @ObservationIgnored private let presentationEpoch = RelayRegistrationEpoch()
+    @ObservationIgnored private var running = false
+    #if DEBUG
+    @ObservationIgnored private var ownedTestSession: URLSession?
+    @ObservationIgnored var ownedBeforeNativeSend: (@Sendable (NativeAnswerProof) async throws -> Void)?
+    @ObservationIgnored var ownedBeforeNativeH2: (@Sendable () async throws -> Void)?
+    #endif
 
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
@@ -204,15 +223,226 @@ public final class MachineStore {
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
 
+    #if DEBUG
+    func useOwnedTestSession(_ session: URLSession) { ownedTestSession = session }
+    #endif
+
+    private func commitPushReady(_ endpoint: MachineEndpoint, connection: UUID,
+                                 explicit: Bool, ledgerGeneration: Int64?) throws {
+        guard connectionGenerations[endpoint] == connection else { throw RemiPushError.changed }
+        guard let pushStore, let pin = endpoint.relayPin else { return }
+        try identity.validateForSigning()
+        let machine = try RelayCrypto.unb64(pin.machinePublicKey), room = RelayCrypto.room(machine)
+        if explicit {
+            guard pushTrustIntents.contains(endpoint), let ledgerGeneration,
+                  try pushStore.generation() == ledgerGeneration else { throw RemiPushError.changed }
+            var generation = ledgerGeneration
+            if try pushStore.authority() != identity.pushAuthority {
+                let lease = try pushStore.acquireIdentityMutation(); defer { lease.release() }
+                guard try pushStore.generation() == generation else { throw RemiPushError.changed }
+                try identity.validateForSigning()
+                generation = try lease.invalidate()
+                try lease.install(identity.pushAuthority, generation: generation)
+            }
+            guard var origin = URLComponents(string: pin.relayURL), origin.scheme == "wss" else { throw RemiPushError.invalid }
+            origin.scheme = "https"; origin.path = ""
+            if origin.port == 443 { origin.port = nil }
+            guard let audience = origin.string else { throw RemiPushError.invalid }
+            try pushStore.commitMachine(room: room, machinePublicKey: machine, origin: audience,
+                relayURL: pin.relayURL, authority: identity.pushAuthority, generation: generation)
+            pushTrustIntents.remove(endpoint)
+        } else if let trust = try pushStore.machine(room: room) {
+            guard trust.authority == identity.pushAuthority, trust.machinePublicKey == machine,
+                  Data(trust.relayURL.utf8) == Data(pin.relayURL.utf8) else { throw RemiPushError.changed }
+        }
+        // A public UserDefaults hint with absent SQLite trust remains only a hint.
+    }
+
+    public func enableRelayNotifications(on endpoint: MachineEndpoint) async {
+        guard pushStore != nil, let pin = endpoint.relayPin, !pendingRelayIDs.contains(endpoint.id),
+              let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
+              !suspendedRelayRooms.contains(room) else {
+            relayNotificationNotice = "Finish pairing before enabling relay notifications."; return
+        }
+        let intent = UUID()
+        connectionGenerations[endpoint] = intent
+        let foreground = connections.removeValue(forKey: endpoint)
+        parentByConnection[endpoint] = nil
+        await foreground?.stop()
+        guard connectionGenerations[endpoint] == intent, machines.contains(where: { $0.endpoint == endpoint }) else { return }
+        pushEnabled.insert(endpoint.id); pushTrustIntents.insert(endpoint)
+        relayNotificationNotice = "Authenticating the relay before enabling notifications."
+        connect(endpoint, parent: endpoint)
+    }
+
+    /// Persisted preference is only registration intent. Existing completed
+    /// SQLite authority must already match the current durable private identity.
+    @discardableResult public func restoreRelayNotificationIntent(on endpoint: MachineEndpoint) -> Bool {
+        guard let pushStore, let pin = endpoint.relayPin else { return false }
+        do {
+            try identity.validateForSigning()
+            let machine = try RelayCrypto.unb64(pin.machinePublicKey), room = RelayCrypto.room(machine)
+            guard let trust = try pushStore.machine(room: room), trust.authority == identity.pushAuthority,
+                  trust.machinePublicKey == machine, Data(trust.relayURL.utf8) == Data(pin.relayURL.utf8) else { return false }
+            pushEnabled.insert(endpoint.id)
+            return true
+        } catch { return false }
+    }
+
+    /// OS delegates provide the token; environment is resolved from actual runtime
+    /// entitlements before this call. No bundle-name or configuration inference.
+    public func updateRelayPushToken(_ token: Data, environment: String) {
+        guard !token.isEmpty, token.count <= 256, ["sandbox", "production"].contains(environment) else { return }
+        tokenRegistration = (RelayCrypto.hex(token), environment)
+        registrationEpoch.replace()
+        for endpoint in machines.map(\.endpoint) where pushEnabled.contains(endpoint.id) {
+            if let generation = connectionGenerations[endpoint] { Task { await registerRelayToken(on: endpoint, generation: generation) } }
+        }
+    }
+
+    private func registerRelayToken(on endpoint: MachineEndpoint, generation: UUID) async {
+        guard connectionGenerations[endpoint] == generation, pushEnabled.contains(endpoint.id),
+              let tokenRegistration, let pushStore, let pin = endpoint.relayPin, let connection = connections[endpoint] else { return }
+        do {
+            let room = RelayCrypto.room(try RelayCrypto.unb64(pin.machinePublicKey))
+            guard let trust = try pushStore.machine(room: room), trust.authority == identity.pushAuthority,
+                  let recipient = try pushStore.recipient(createIfMissing: true) else { throw RemiPushError.unavailable }
+            let epoch = registrationEpoch.capture(), ledgerGeneration = try pushStore.generation(), identity = identity
+            let epochStore = registrationEpoch
+            let validate: @Sendable () throws -> Void = {
+                try identity.validateForSigning()
+                guard epochStore.matches(epoch), try pushStore.generation() == ledgerGeneration,
+                      try pushStore.machine(room: room) == trust, try pushStore.recipient() == recipient else { throw RemiPushError.changed }
+            }
+            try validate()
+            let request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
+                timestamp: Date().ISO8601Format(), token: tokenRegistration.token, environment: tokenRegistration.environment,
+                pushPublicKey: RelayCrypto.b64(recipient.publicKey), keyVersion: recipient.keyVersion)
+            let response = try await connection.exchange(request, id: request.id,
+                expected: .push(type: "secure_push_register_response", keyVersion: recipient.keyVersion),
+                until: .now.advanced(by: .seconds(10)), validate: validate)
+            guard connectionGenerations[endpoint] == generation else { return }
+            try validate()
+            guard case .push(let result) = response, result.success else { throw RemiPushError.unavailable }
+            relayNotificationNotice = "Relay notifications enabled."
+        } catch {
+            if connectionGenerations[endpoint] == generation { relayNotificationNotice = "Relay notifications could not be registered. Enable them again to retry." }
+        }
+    }
+
+    public func openRelayNotification(carrier: Data) {
+        presentationEpoch.replace()
+        do {
+            guard let pushStore else { throw RemiPushError.unavailable }
+            let opened = try pushStore.open(carrier: carrier)
+            guard opened.kind != .dismiss else { throw RemiPushError.changed }
+            verifiedRelayNotification = opened; relayNotificationNotice = nil
+        } catch { verifiedRelayNotification = nil; relayNotificationNotice = "This relay notification is no longer available. Open the current session." }
+    }
+    public var relayNotificationChoices: [VerifiedPushOption] {
+        verifiedRelayNotification.map(NativeAnswerProof.choices) ?? []
+    }
+    public func closeRelayNotification() { presentationEpoch.replace(); verifiedRelayNotification = nil }
+
+    /// One owner per current device authority/room. It suspends and awaits the
+    /// foreground channel before a single bounded resume attempt and never retries.
+    public func answerRelayNotification(choice: String) async {
+        let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(24))
+        guard !relayNotificationBusy, let original = verifiedRelayNotification, let pushStore,
+              !suspendedRelayRooms.contains(original.machine.room) else { return }
+        let brokerKey = RelayChannelBroker.key(device: identity.publicKeyRaw, room: original.machine.room)
+        guard let lease = RelayChannelBroker.shared.claim(key: brokerKey) else {
+            relayNotificationNotice = "Another relay answer is still settling."; return
+        }
+        suspendedRelayRooms.insert(original.machine.room); relayNotificationBusy = true
+        let matching = machines.first { state in
+            guard let pin = state.endpoint.relayPin, let key = try? RelayCrypto.unb64(pin.machinePublicKey) else { return false }
+            return RelayCrypto.room(key) == original.machine.room
+        }?.endpoint
+        let restoreForeground = running && matching.flatMap { connections[$0] } != nil
+        let identity = identity, lifetime = answerEpoch.capture(), lifetimeStore = answerEpoch
+        let presentation = presentationEpoch.capture(), presentationStore = presentationEpoch
+        let validate: @Sendable () throws -> Void = {
+            guard lifetimeStore.matches(lifetime), presentationStore.matches(presentation) else { throw RemiPushError.changed }
+            try identity.validateForSigning(); try pushStore.recheck(original)
+            let reopened = try pushStore.open(carrier: original.originalCarrier)
+            guard reopened.machine == original.machine, reopened.contentDigest == original.contentDigest,
+                  reopened.revision == original.revision else { throw RemiPushError.changed }
+        }
+        if let matching {
+            connectionGenerations.removeValue(forKey: matching)
+            let foreground = connections.removeValue(forKey: matching); parentByConnection[matching] = nil
+            // The broker also retains a prior lifecycle-stop retirement that is
+            // no longer present in this Store's dictionary.
+            _ = foreground
+        }
+        await lease.retired.value
+        var oneShot: RemiConnection?
+        var emitted = false
+        do {
+            try validate()
+            guard ContinuousClock.now < settlement else { throw RelayFailure.expired }
+            let pin = try RelayMachinePin(relayURL: original.machine.relayURL,
+                machinePublicKey: RelayCrypto.b64(original.machine.machinePublicKey))
+            guard let url = pin.clientURL else { throw RelayFailure.malformed }
+            let connection = RemiConnection(configuration: .init(url: url, clientVersion: clientVersion,
+                clientId: clientId, relayPin: pin), identity: identity.restrictingSignatures(validate),
+                readyHandler: { try validate() }, stateHandler: { _ in }, eventHandler: { _ in })
+            oneShot = connection
+            try await connection.configureOneShot()
+            #if DEBUG
+            if let ownedTestSession { try await connection.useOwnedTestSession(ownedTestSession) }
+            if let ownedBeforeNativeH2 { try await connection.beforeOwnedH2(ownedBeforeNativeH2) }
+            #endif
+            try validate()
+            await connection.start()
+            try validate()
+            try await connection.waitForRelayReady(until: settlement)
+            try validate()
+            let now = UInt64(Date().timeIntervalSince1970)
+            let reopened = try pushStore.open(carrier: original.originalCarrier)
+            let proof = try NativeAnswerProof.make(reopened, choice: choice, identity: identity, now: now)
+            #if DEBUG
+            try await ownedBeforeNativeSend?(proof)
+            try validate()
+            #endif
+            // Exactly one immutable proof/ID/nonce. A missing result is uncertainty.
+            emitted = true
+            let result = try await connection.exchange(proof, id: proof.id,
+                expected: .answer(session: proof.sessionId, question: proof.questionId), until: settlement,
+                validate: { try validate(); guard UInt64(Date().timeIntervalSince1970) < proof.expiresAt else { throw RelayFailure.expired } })
+            guard case .answer(let response) = result else { throw RelayFailure.malformed }
+            // A delivered answer itself resolves the capsule. Its authenticated,
+            // tuple-correlated receipt remains valid after that terminal transition.
+            lastRelayAnswerOutcome = response.outcome
+            if presentationStore.matches(presentation) {
+                relayNotificationNotice = response.outcome == "delivered" ? "Answer delivered." : "The answer was not applied (\(response.outcome))."
+                if response.outcome == "delivered" { verifiedRelayNotification = nil }
+            }
+        } catch {
+            lastRelayAnswerOutcome = emitted ? "uncertain" : "refused"
+            if presentationStore.matches(presentation) {
+                relayNotificationNotice = emitted ? "Delivery is uncertain. Check the current session before answering again." : "The notification could not be answered. Open the current session."
+            }
+        }
+        await oneShot?.stop()
+        RelayChannelBroker.shared.release(lease)
+        suspendedRelayRooms.remove(original.machine.room); relayNotificationBusy = false
+        if restoreForeground, running, answerEpoch.matches(lifetime), let matching,
+           machines.contains(where: { $0.endpoint == matching }) { connect(matching, parent: matching) }
+    }
+
     public init(
         endpoints: [MachineEndpoint],
         identity: ClientIdentity,
         clientVersion: String,
-        clientId: String
+        clientId: String,
+        pushStore: RemiPushStore? = nil
     ) {
         self.identity = identity
         self.clientVersion = clientVersion
         self.clientId = clientId
+        self.pushStore = pushStore
         machines = endpoints.map {
             MachineState(endpoint: $0.publicConfiguration, displayName: $0.displayAddress)
         }
@@ -220,17 +450,24 @@ public final class MachineStore {
             if let secret = endpoint.relayPairingSecret {
                 pendingRelayIDs.insert(endpoint.id)
                 relayPairingContexts[endpoint.publicConfiguration] = (secret, endpoint.relayPairingExpiresAt)
+                pushTrustIntents.insert(endpoint.publicConfiguration)
             }
         }
     }
 
     public func start() {
+        running = true
         for machine in machines {
             connect(machine.endpoint, parent: machine.endpoint)
         }
     }
 
     public func stop() {
+        running = false
+        registrationEpoch.replace(); answerEpoch.replace()
+        for (endpoint, generation) in connectionGenerations {
+            if let key = brokerKey(endpoint) { RelayChannelBroker.shared.retire(key: key, id: generation) }
+        }
         let activeConnections = Array(connections.values)
         connectionGenerations.removeAll()
         relayPairingContexts.removeAll()
@@ -256,19 +493,25 @@ public final class MachineStore {
     }
 
     public func addMachine(_ endpoint: MachineEndpoint, displayName: String? = nil) {
+        running = true
         if let existing = machines.first(where: { $0.id == endpoint.id }) {
-            removeMachine(existing.endpoint)
+            guard removeMachine(existing.endpoint) else { return }
         }
         let publicEndpoint = endpoint.publicConfiguration
         if let secret = endpoint.relayPairingSecret {
             pendingRelayIDs.insert(publicEndpoint.id)
             relayPairingContexts[publicEndpoint] = (secret, endpoint.relayPairingExpiresAt)
+            pushTrustIntents.insert(publicEndpoint)
         }
         machines.append(MachineState(endpoint: publicEndpoint, displayName: displayName ?? endpoint.displayAddress))
         connect(publicEndpoint, parent: publicEndpoint)
     }
 
-    public func removeMachine(_ endpoint: MachineEndpoint) {
+    @discardableResult public func removeMachine(_ endpoint: MachineEndpoint) -> Bool {
+        registrationEpoch.replace(); answerEpoch.replace()
+        if let pin = endpoint.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
+           verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
+        pushTrustIntents.remove(endpoint)
         pendingRelayIDs.remove(endpoint.id)
         relayPairingContexts.removeValue(forKey: endpoint)
         let answerIDs = pendingAnswers.compactMap { id, answer in
@@ -296,17 +539,32 @@ public final class MachineStore {
         let removedMachine = machines.first { $0.endpoint == endpoint }
         let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
         let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
-        machines.removeAll { $0.endpoint == endpoint }
         let endpoints = parentByConnection.compactMap { connection, parent in
             parent == endpoint ? connection : nil
         }
         for child in endpoints {
+            if let key = brokerKey(child), let generation = connectionGenerations[child] {
+                RelayChannelBroker.shared.retire(key: key, id: generation)
+            }
             connectionGenerations.removeValue(forKey: child)
             if let connection = connections.removeValue(forKey: child) {
                 Task { await connection.stop() }
             }
             parentByConnection[child] = nil
         }
+        // Callback/reconnect authority is invalidated before durable forget.
+        if let pin = endpoint.relayPin, let pushStore {
+            do { try pushStore.forgetMachine(room: RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey))) }
+            catch {
+                latestOperationError = "The relay notification trust could not be removed. Try Forget again."
+                if let index = machines.firstIndex(where: { $0.endpoint == endpoint }) {
+                    machines[index].status = .unavailable(reason: latestOperationError)
+                }
+                return false
+            }
+        }
+        machines.removeAll { $0.endpoint == endpoint }
+        pushEnabled.remove(endpoint.id)
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
         sessionByKillRequest = sessionByKillRequest.filter { _, sessionID in
             !sessionIDs.contains(sessionID)
@@ -319,6 +577,7 @@ public final class MachineStore {
             transcriptsBySession[viewID] = nil
         }
         recentRepositoriesByMachine[endpoint.id] = nil
+        return true
     }
 
     public func retryApproval(for endpoint: MachineEndpoint) {
@@ -501,6 +760,8 @@ public final class MachineStore {
 
     private func connect(_ endpoint: MachineEndpoint, parent: MachineEndpoint) {
         guard connections[endpoint] == nil, let url = endpoint.webSocketURL else { return }
+        if let pin = endpoint.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
+           suspendedRelayRooms.contains(room) { return }
         let pairing = relayPairingContexts.removeValue(forKey: endpoint)
         if pendingRelayIDs.contains(endpoint.id), pairing == nil {
             if let index = machines.firstIndex(where: { $0.endpoint == endpoint }) {
@@ -509,6 +770,8 @@ public final class MachineStore {
             return
         }
         let generation = UUID()
+        let trustIntent = pushTrustIntents.contains(endpoint)
+        let pushGeneration = try? pushStore?.generation()
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
         let connection = RemiConnection(
@@ -526,6 +789,10 @@ public final class MachineStore {
             identity: identity,
             relayPairingSecret: pairing?.0,
             relayPairingExpiresAt: pairing?.1,
+            readyHandler: { [weak self] in
+                try await self?.commitPushReady(endpoint, connection: generation,
+                    explicit: trustIntent, ledgerGeneration: pushGeneration)
+            },
             stateHandler: { [weak self] state in
                 Task { @MainActor [weak self] in
                     self?.receive(state, from: endpoint, generation: generation)
@@ -538,7 +805,34 @@ public final class MachineStore {
             }
         )
         connections[endpoint] = connection
-        Task { await connection.start() }
+        #if DEBUG
+        let session = ownedTestSession
+        Task { if let session { try? await connection.useOwnedTestSession(session) }; launchConnection(connection, endpoint: endpoint, generation: generation) }
+        #else
+        launchConnection(connection, endpoint: endpoint, generation: generation)
+        #endif
+    }
+
+    private func brokerKey(_ endpoint: MachineEndpoint) -> String? {
+        guard let pin = endpoint.relayPin, let machine = try? RelayCrypto.unb64(pin.machinePublicKey) else { return nil }
+        return RelayChannelBroker.key(device: identity.publicKeyRaw, room: RelayCrypto.room(machine))
+    }
+    private func launchConnection(_ connection: RemiConnection, endpoint: MachineEndpoint, generation: UUID) {
+        guard connectionGenerations[endpoint] == generation else { Task { await connection.stop() }; return }
+        guard let key = brokerKey(endpoint) else { Task { await connection.start() }; return }
+        let adopted = RelayChannelBroker.shared.adopt(key: key, id: generation, connection: connection,
+            current: { [weak self] in await self?.connectionIsCurrent(endpoint, generation: generation) == true },
+            resume: { [weak self] in await self?.resumeRetiredForeground(endpoint, generation: generation) })
+        if adopted == nil { connections[endpoint] = nil; connectionGenerations[endpoint] = nil; parentByConnection[endpoint] = nil }
+    }
+    private func connectionIsCurrent(_ endpoint: MachineEndpoint, generation: UUID) -> Bool {
+        running && connectionGenerations[endpoint] == generation
+    }
+    private func resumeRetiredForeground(_ endpoint: MachineEndpoint, generation: UUID) {
+        guard connectionIsCurrent(endpoint, generation: generation), !suspendedRelayRooms.contains(
+            (try? RelayCrypto.room(RelayCrypto.unb64(endpoint.relayPin?.machinePublicKey ?? ""))) ?? Data()) else { return }
+        connections[endpoint] = nil; connectionGenerations[endpoint] = nil; parentByConnection[endpoint] = nil
+        connect(endpoint, parent: endpoint)
     }
 
     func receive(_ state: RemiConnectionState, from endpoint: MachineEndpoint, generation: UUID) {
@@ -572,6 +866,7 @@ public final class MachineStore {
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
             pendingRelayIDs.remove(parent.id)
+            if pushEnabled.contains(endpoint.id) { Task { await registerRelayToken(on: endpoint, generation: generation) } }
         case .answerResult(let result):
             guard let pending = pendingAnswers[result.requestId],
                   routeBySession[pending.sessionId] == endpoint,
@@ -687,7 +982,7 @@ public final class MachineStore {
                     finishResume(requestID: requestID, error: error.message)
                 }
             }
-        case .sessionUpdate, .transcriptComplete, .unsupported:
+        case .sessionUpdate, .transcriptComplete, .unsupported, .pushRegistration:
             break
         }
     }
