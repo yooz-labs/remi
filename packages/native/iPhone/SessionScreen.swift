@@ -91,6 +91,7 @@ struct SessionScreen: View {
                 }
                 .padding(RemiTheme.Spacing.m)
             }
+            .modifier(SessionNavigationBarBehavior())
 
             Divider()
 
@@ -152,6 +153,17 @@ struct SessionScreen: View {
 
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+}
+
+private struct SessionNavigationBarBehavior: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 27.0, *) {
+            content.toolbarMinimizationBehavior(.onScrollDown, for: .navigationBar)
+        } else {
+            content
+        }
     }
 }
 
