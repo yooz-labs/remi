@@ -15,6 +15,7 @@ final class RelayChannelBroker: @unchecked Sendable {
         let oneShot: Bool
         let connection: RemiConnection?
         let closing: Task<Void, Never>?
+        let launch: Task<Void, Never>?
         let resume: (@Sendable () async -> Void)?
     }
     private let lock = NSLock()
@@ -25,7 +26,7 @@ final class RelayChannelBroker: @unchecked Sendable {
     #endif
     static func key(device: Data, room: Data) -> String { RelayCrypto.hex(device) + ":" + RelayCrypto.hex(room) }
     private func retirement(_ prior: Entry?) -> Task<Void, Never> {
-        Task { await prior?.closing?.value; await prior?.connection?.stop() }
+        Task { await prior?.closing?.value; await prior?.launch?.value; await prior?.connection?.stop() }
     }
     func adopt(key: String, id: UUID, connection: RemiConnection,
                current: @escaping @Sendable () async -> Bool,
@@ -34,8 +35,7 @@ final class RelayChannelBroker: @unchecked Sendable {
         let prior = entries[key]
         guard prior?.oneShot != true else { return nil }
         let closing = retirement(prior)
-        entries[key] = .init(id: id, oneShot: false, connection: connection, closing: closing, resume: resume)
-        return Task {
+        let launch = Task {
             await closing.value
             guard await current(), self.matches(key, id: id) else { await connection.stop(); return }
             #if DEBUG
@@ -43,19 +43,21 @@ final class RelayChannelBroker: @unchecked Sendable {
             #endif
             await connection.start()
         }
+        entries[key] = .init(id: id, oneShot: false, connection: connection, closing: closing, launch: launch, resume: resume)
+        return launch
     }
     func retire(key: String, id: UUID) {
         lock.lock(); defer { lock.unlock() }
         guard let prior = entries[key], prior.id == id, !prior.oneShot else { return }
         let closing = retirement(prior)
-        entries[key] = .init(id: UUID(), oneShot: false, connection: nil, closing: closing, resume: nil)
+        entries[key] = .init(id: UUID(), oneShot: false, connection: nil, closing: closing, launch: nil, resume: nil)
     }
     func claim(key: String) -> Lease? {
         lock.lock(); defer { lock.unlock() }
         let prior = entries[key]
         guard prior?.oneShot != true else { return nil }
         let id = UUID(), retired = retirement(prior)
-        entries[key] = .init(id: id, oneShot: true, connection: nil, closing: retired, resume: nil)
+        entries[key] = .init(id: id, oneShot: true, connection: nil, closing: retired, launch: nil, resume: nil)
         return .init(key: key, id: id, retired: retired, resume: prior?.resume)
     }
     func release(_ lease: Lease) {

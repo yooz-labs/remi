@@ -381,6 +381,7 @@ public final class MachineStore {
             #endif
             try validate()
         }
+        let answerIdentity = identity.restrictingSignatures(restrict)
         if let matching {
             connectionGenerations.removeValue(forKey: matching)
             let foreground = connections.removeValue(forKey: matching); parentByConnection[matching] = nil
@@ -398,7 +399,7 @@ public final class MachineStore {
                 machinePublicKey: RelayCrypto.b64(original.machine.machinePublicKey))
             guard let url = pin.clientURL else { throw RelayFailure.malformed }
             let connection = RemiConnection(configuration: .init(url: url, clientVersion: clientVersion,
-                clientId: clientId, relayPin: pin), identity: identity.restrictingSignatures(restrict),
+                clientId: clientId, relayPin: pin), identity: answerIdentity,
                 readyHandler: { try validate() }, stateHandler: { _ in }, eventHandler: { _ in })
             oneShot = connection
             try await connection.configureOneShot()
@@ -413,7 +414,7 @@ public final class MachineStore {
             try validate()
             let now = UInt64(Date().timeIntervalSince1970)
             let reopened = try pushStore.open(carrier: original.originalCarrier)
-            let proof = try NativeAnswerProof.make(reopened, choice: choice, identity: identity, now: now)
+            let proof = try NativeAnswerProof.make(reopened, choice: choice, identity: answerIdentity, now: now)
             #if DEBUG
             try await ownedBeforeNativeSend?(proof)
             try validate()
