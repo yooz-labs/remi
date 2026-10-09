@@ -1,4 +1,4 @@
-# #1224 outbound authority contention validation
+# #1224 authority contention validation
 
 Source baseline: `1e96c688f89409043e17177c1914d8eec247de7e`.
 First failing pin: `f60e0530` (`test: pin relay lock contention #1224`).
@@ -65,3 +65,55 @@ Local diagnostic artifacts are retained at
 `focused-{142,1311}.log`, `mutations.json` and `mutant-*.log`. These are local
 receipts, not required checkout inputs. Tests use the selected Bun executable via
 `process.execPath`; no developer-specific executable path is committed.
+
+## READY retirement follow-up
+
+Independent review of `2e5176b9` found that the initial outbound fix left a
+distinct incoming path: `Channel.receive` authenticated and consumed DATA, then
+the READY wrapper returned silently when `current` refused a busy store.
+The same bare return existed after session-list and native-answer awaits.
+Connection queries could also temporarily hide, then revive, the same peer.
+
+First three-trigger pin: `47dd8bf2`. Central lifecycle fix:
+`6767d3f21cb027da6896d629ba5c08df51616051`. Post-await pin: `8a508921`.
+`current` now initiates orderly retirement of a still-active READY peer whenever
+its check fails. Cancellation is synchronous; closure is not awaited, so the
+wrapper queue can drain the counterpart's authenticated BYE. Non-READY checks
+and an existing transport close retain their previous behavior. Callers at the
+incoming wrapper, both session-list awaits, the native-answer signature await,
+the queued emitter and both public connection queries share this decision.
+
+Real owned-writer pins independently exercise an encrypted Ping, connection
+count, connection presence and an actual session-list response held until after
+lock acquisition. The old source fails the missing-BYE runtime assertion on
+both Bun versions while the holder is alive, the actual fault log is present,
+and owner lock bytes and durable grant/enrollment files are unchanged.
+The fixed pins require BYE within 500 ms, no DATA, a drained reply BYE, permanent
+retirement after release and actual same-device fresh-READY Ping/Pong recovery.
+The held local response proves the first refusal occurs after the await,
+without replacing cryptography or its result.
+
+The three-trigger old controls each report 0 passed / 3 failed (1.4.2: 8.14 s;
+1.3.11: 8.48 s). The post-await old control fails on both versions (2.89/2.97 s)
+and its fixed control passes with 24 assertions on each (2.85/2.86 s).
+Four additional causal families fail at runtime on each version: omitted READY
+retirement, admission of a store fault, restored blocking current reads and
+delayed retirement. Both private production files are SHA256-checked restored.
+
+Final focused controls, including all four new triggers, revocation, orderly
+close, wrapper drain and actual encrypted DATA replay: 16 passed / 0 failed on
+both Bun versions (25.05/25.11 s; 150/149 assertions across five files).
+An initial 1.3.11 replay control failed on its already-characterized immediate
+close reason loss; the corrected test requires the exact hub and first Worker
+close records before allowing R3's pinned-runtime exception. The counter-removal
+probe still fails on both runtimes. It does not relax replay admission or
+change the sender's constant failure close.
+
+Receipts: `/private/tmp/remi-1224-inbound-pin-root-{142,1311}.log`,
+`/private/tmp/remi-1224-post-await-9mhmddgd/` and
+`/private/tmp/remi-1224-ready-gates-yprz2_ah/` (`mutations.json`,
+`restoration.json`, `replay-counter.json`, original failed control and
+`restored-final-{142,1311}.log`). The scoped R3 TypeScript gate passes.
+Full exact-head suites, the 61-minute soak and Linux CI are separate integration
+gates; deployed Worker, Apple APNs and signed-device acceptance remain owner
+gates. This receipt does not claim those outcomes.

@@ -1,7 +1,7 @@
 /** Actual HubRelay + local Worker; replays captured encrypted DATA, not admission metadata. */
 import { expect, test } from 'bun:test';
 import { createPing, deserialize, relayV2, serialize } from '@remi/shared';
-import { roomSeen } from '../../packages/signaling/tests/e2e/endpoints';
+import { roomCloses, roomSeen } from '../../packages/signaling/tests/e2e/endpoints';
 import { resumed } from './relay-r3-fixture';
 
 test('actual DATA replay fails uniformly and cannot produce a second semantic pong', async () => {
@@ -29,7 +29,27 @@ test('actual DATA replay fails uniformly and cannot produce a second semantic po
           timer = setTimeout(() => reject(new Error('Replayed DATA was not refused')), 1500);
         }),
       ]);
-      expect(closed).toEqual(relayV2.FAILURE_CLOSE);
+      expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
+      // Carry R3's measured Bun 1.3.11 close defect (#1225): an immediate
+      // failure close can lose its reason or reset. Require both real endpoints'
+      // records before accepting either exception, never just an empty reason.
+      const deadline = Date.now() + 1500;
+      let pipe: string | undefined;
+      while (Date.now() < deadline) {
+        pipe = (await roomCloses(running.worker, rid))[0];
+        if (pipe && running.logs.some((line) => line.startsWith('Relay pipe closed by '))) break;
+        await Bun.sleep(10);
+      }
+      expect(running.logs.filter((line) => line.startsWith('Relay pipe closed by '))).toEqual([
+        `Relay pipe closed by the hub (${relayV2.FAILURE_CLOSE.code})`,
+      ]);
+      if (Bun.version === '1.3.11' && pipe === 'close 4400 ""')
+        expect(closed).toEqual({ code: relayV2.FAILURE_CLOSE.code, reason: '' });
+      else {
+        if (!(Bun.version === '1.3.11' && pipe?.startsWith('close 1006 ')))
+          expect(pipe).toBe('close 4400 "closed"');
+        expect(closed).toEqual(relayV2.FAILURE_CLOSE);
+      }
       expect(await running.socket.quiet(50)).toBe(true);
     } finally {
       clearTimeout(timer);

@@ -50,7 +50,7 @@ Their presence is coverage inventory; a passing receipt must name the exact run 
 | --- | --- |
 | Admission transcript/role/room, weak keys, stranger join and atomic ticket burn | `packages/signaling/tests/e2e/room-protocol.e2e.test.ts`, `client-admission.e2e.test.ts`; the concurrent-ticket test admits exactly one actual socket |
 | Admission-proof/ticket replay, host displacement, revocation and plaintext exclusion | `relay.e2e.test.ts`, `room-protocol.e2e.test.ts`, plus real daemon `tests/integration/relay-r3.test.ts` and `relay-r3-revoke.test.ts` |
-| Captured encrypted DATA replay through the real Worker and source HubRelay | New `tests/integration/relay-r7-replay.test.ts`: one actual pong, exact accepted ciphertext replay, uniform failure close and no second response |
+| Captured encrypted DATA replay through the real Worker and source HubRelay | New `tests/integration/relay-r7-replay.test.ts`: one actual pong, exact accepted ciphertext replay, failure close and no second response |
 | MAX_FRAME and MAX_FRAME+1, per-address/device/room caps | `packages/signaling/tests/e2e/limits.e2e.test.ts` |
 | Durable local approval before READY, production RNG, bounded handshakes and pairing expiry | `tests/integration/relay-r3.test.ts`, `relay-r3-offers.test.ts`, `relay-r3-qr.test.ts` and `relay-r3-boundaries.test.ts` |
 | BYE, close draining, local send refusal and silent-peer grace | `tests/integration/relay-r3-orderly-close.test.ts`, `relay-r3-drain.test.ts`, `relay-r3-transport-close.test.ts`; `packages/web/tests/relay-machine-channel.test.ts` |
@@ -61,6 +61,8 @@ Their presence is coverage inventory; a passing receipt must name the exact run 
 The existing Worker test named “older than an hour” advances a test clock and uses library endpoint wrappers.
 It guards against TTL reaping; it does not replace this wall-clock source-hub/client/session run.
 The new DATA-frame replay test fills a different gap from admission-proof/ticket replay and Channel counter unit tests.
+It carries R3's measured Bun 1.3.11 immediate-close defect (#1225): a missing reason or reset is accepted only with the source hub's failure-close log and the matching actual Worker close record.
+Other runtimes and uncorroborated close variants fail; this does not change the protocol's constant failure code/reason or the existing runtime exception.
 The existing R3 production half-open, confirmation and offer clock probes remain opt-in; their commands are in [the daemon runbook](relay-daemon-v2.md).
 
 ## Local landing, default-on and owner gates
