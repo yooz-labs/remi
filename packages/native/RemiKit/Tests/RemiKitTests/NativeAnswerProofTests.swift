@@ -5,6 +5,34 @@ import Testing
 @testable import RemiKit
 
 struct NativeAnswerProofTests {
+    @Test(arguments: ["capsule", "presentation", "lifetime"])
+    func finalProofRestrictionChecksIndependentCurrentAuthorities(change: String) throws {
+        let oracle = try NativePushOracle.load("push-vectors.json")
+        let vector = try #require((oracle["cases"] as? [[String: Any]])?.first)
+        let context = try OwnedPushContext(vector: vector, oracle: oracle)
+        defer { try? context.cleanup() }
+        var payload = try #require(JSONSerialization.jsonObject(with: RelayOracle.hex(vector["payloadHex"] as? String ?? "")) as? [String: Any])
+        payload["category"] = "REMI_YN"
+        payload["options"] = [
+            ["value": "allow", "label": "Yes", "isYes": true, "isNo": false, "description": NSNull(), "standingGrant": NSNull()],
+            ["value": "deny", "label": "No", "isYes": false, "isNo": true, "description": NSNull(), "standingGrant": NSNull()]
+        ]
+        let carrier = try OwnedPushContext.resealed(vector, oracle: oracle, payload: JSONSerialization.data(withJSONObject: payload))
+        let opened = try context.store.open(carrier: carrier, now: 1_700_000_001)
+        let presentation = RelayRegistrationEpoch(), lifetime = RelayRegistrationEpoch()
+        let initialPresentation = presentation.capture(), initialLifetime = lifetime.capture()
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: RelayOracle.hex(oracle["deviceSeedHex"] as? String ?? ""))
+        let identity = ClientIdentity(privateKey: key, revision: context.authority.revision).restrictingSignatures {
+            guard presentation.matches(initialPresentation), lifetime.matches(initialLifetime) else { throw RemiPushError.changed }
+            try context.store.recheck(opened, now: 1_700_000_001)
+        }
+        _ = try NativeAnswerProof.make(opened, choice: "deny", identity: identity, now: 1_700_000_001)
+        if change == "capsule" { try context.store.forgetMachine(room: context.room) }
+        if change == "presentation" { presentation.replace() }
+        if change == "lifetime" { lifetime.replace() }
+        #expect(throws: (any Error).self) { try NativeAnswerProof.make(opened, choice: "deny", identity: identity, now: 1_700_000_001) }
+    }
+
     @Test func exactTupleBodyDigestAndSigningInputMatchAllEightSourceVectors() throws {
         struct Vector: Decodable { let name: String; let message: NativeAnswerProof; let bodyHex: String; let signingInputHex: String; let requestDigest: String }
         struct Oracle: Decodable { let cases: [Vector] }

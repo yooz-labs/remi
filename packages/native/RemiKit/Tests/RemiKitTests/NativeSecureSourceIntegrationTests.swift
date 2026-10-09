@@ -105,6 +105,27 @@ private final class OwnedRelayCA: NSObject, URLSessionDelegate, @unchecked Senda
     }
 }
 
+/// Scheduling observation only: the real facade opens the original signed
+/// terminal carrier exactly at the third durable signature boundary.
+private final class OwnedFinalSignatureDismissal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var carrier: Data?
+    private var signatures = 0
+    private var verified = false
+    func retain(_ bytes: Data) { lock.lock(); carrier = bytes; lock.unlock() }
+    func count() -> Int { lock.lock(); defer { lock.unlock() }; return signatures }
+    func didVerify() -> Bool { lock.lock(); defer { lock.unlock() }; return verified }
+    func observe(push: RemiPushStore, original: VerifiedPushNotification) throws {
+        lock.lock(); signatures += 1; let third = signatures == 3; let bytes = carrier; lock.unlock()
+        guard third else { return }
+        guard let bytes else { throw CocoaError(.fileReadUnknown) }
+        let terminal = try push.open(carrier: bytes)
+        guard terminal.kind == .dismiss, terminal.collapseID == original.collapseID,
+              terminal.revision > original.revision else { throw CocoaError(.fileReadUnknown) }
+        lock.lock(); verified = true; lock.unlock()
+    }
+}
+
 @MainActor
 struct NativeSecureSourceIntegrationTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"] != nil))
@@ -210,6 +231,23 @@ struct NativeSecureSourceIntegrationTests {
             client.start()
             try await until("foreground restored after uncertainty") { client.machines.first?.status == .connected }
             try fixture.send(["kind": "question"])
+            let finalCarrier = try await question(fixture, push: context.push)
+            client.openRelayNotification(carrier: finalCarrier)
+            let finalOriginal = try #require(client.verifiedRelayNotification)
+            let finalGuard = OwnedFinalSignatureDismissal(), finalPush = context.push
+            client.ownedBeforeNativeH2 = {
+                finalGuard.retain(try await Self.retainDismissAtH2(fixture, original: finalOriginal))
+            }
+            client.ownedBeforeNativeSignature = { try finalGuard.observe(push: finalPush, original: finalOriginal) }
+            await client.answerRelayNotification(choice: no.value)
+            #expect(finalGuard.count() == 3, "Worker admission, H2 and final production proof use the same restricted signer")
+            #expect(finalGuard.didVerify(), "Actual signed same-collapse higher revision becomes terminal at final signing")
+            #expect(client.lastRelayAnswerOutcome == "refused")
+            #expect(throws: (any Error).self) { try finalPush.open(carrier: finalCarrier) }
+            client.ownedBeforeNativeH2 = nil; client.ownedBeforeNativeSignature = nil
+
+            try await until("foreground after final signing refusal") { client.machines.first?.status == .connected }
+            try fixture.send(["kind": "question"])
             let staleCarrier = try await question(fixture, push: context.push)
             client.openRelayNotification(carrier: staleCarrier)
             let stale = try #require(client.verifiedRelayNotification)
@@ -271,6 +309,24 @@ struct NativeSecureSourceIntegrationTests {
                 }
             }
         }
+    }
+    private static func retainDismissAtH2(_ fixture: SecureFixtureIPC,
+                                          original: VerifiedPushNotification) async throws -> Data {
+        try fixture.send(["kind": "question_cancel"])
+        var aborted = false, carrier: Data?
+        while !aborted || carrier == nil {
+            let event = try await fixture.message()
+            if event["kind"] as? String == "hook-aborted" { aborted = true }
+            if event["kind"] as? String == "push", let raw = event["carrier"] as? [String: Any],
+               raw["collapseId"] as? String == original.collapseID {
+                // No authority is taken from this outer match. The signature,
+                // kind, tuple and higher revision are verified by the real core
+                // when the retained bytes enter the final signature boundary.
+                carrier = try JSONSerialization.data(withJSONObject: raw)
+            }
+            try #require(event["kind"] as? String != "effect", "The actual aborted hook cannot produce an answer effect")
+        }
+        return try #require(carrier)
     }
     @Test func failedControlCannotCountAsSourceRevocationAcceptance() {
         #expect(!Self.revocationSucceeded(["kind": "revoked", "success": false, "edgeAcknowledged": false, "error": "NOT_FOUND"]))

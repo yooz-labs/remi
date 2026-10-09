@@ -5,7 +5,7 @@ import Testing
 import RemiPush
 @testable import RemiKit
 
-struct OwnedPushContext {
+struct OwnedPushContext: Sendable {
     let directory: URL
     let store: RemiPushStore
     let service: String

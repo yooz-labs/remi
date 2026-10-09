@@ -197,6 +197,7 @@ public final class MachineStore {
     @ObservationIgnored private var ownedTestSession: URLSession?
     @ObservationIgnored var ownedBeforeNativeSend: (@Sendable (NativeAnswerProof) async throws -> Void)?
     @ObservationIgnored var ownedBeforeNativeH2: (@Sendable () async throws -> Void)?
+    @ObservationIgnored var ownedBeforeNativeSignature: (@Sendable () throws -> Void)?
     #endif
 
     @ObservationIgnored private let identity: ClientIdentity
@@ -371,6 +372,15 @@ public final class MachineStore {
             guard reopened.machine == original.machine, reopened.contentDigest == original.contentDigest,
                   reopened.revision == original.revision else { throw RemiPushError.changed }
         }
+        #if DEBUG
+        let ownedBeforeNativeSignature = self.ownedBeforeNativeSignature
+        #endif
+        let restrict: @Sendable () throws -> Void = {
+            #if DEBUG
+            try ownedBeforeNativeSignature?()
+            #endif
+            try validate()
+        }
         if let matching {
             connectionGenerations.removeValue(forKey: matching)
             let foreground = connections.removeValue(forKey: matching); parentByConnection[matching] = nil
@@ -388,7 +398,7 @@ public final class MachineStore {
                 machinePublicKey: RelayCrypto.b64(original.machine.machinePublicKey))
             guard let url = pin.clientURL else { throw RelayFailure.malformed }
             let connection = RemiConnection(configuration: .init(url: url, clientVersion: clientVersion,
-                clientId: clientId, relayPin: pin), identity: identity.restrictingSignatures(validate),
+                clientId: clientId, relayPin: pin), identity: identity.restrictingSignatures(restrict),
                 readyHandler: { try validate() }, stateHandler: { _ in }, eventHandler: { _ in })
             oneShot = connection
             try await connection.configureOneShot()

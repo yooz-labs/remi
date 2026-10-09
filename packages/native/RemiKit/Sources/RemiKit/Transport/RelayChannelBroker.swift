@@ -19,6 +19,10 @@ final class RelayChannelBroker: @unchecked Sendable {
     }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    #if DEBUG
+    private let ownedBeforeStart: (@Sendable () async -> Void)?
+    init(ownedBeforeStart: (@Sendable () async -> Void)? = nil) { self.ownedBeforeStart = ownedBeforeStart }
+    #endif
     static func key(device: Data, room: Data) -> String { RelayCrypto.hex(device) + ":" + RelayCrypto.hex(room) }
     private func retirement(_ prior: Entry?) -> Task<Void, Never> {
         Task { await prior?.closing?.value; await prior?.connection?.stop() }
@@ -34,6 +38,9 @@ final class RelayChannelBroker: @unchecked Sendable {
         return Task {
             await closing.value
             guard await current(), self.matches(key, id: id) else { await connection.stop(); return }
+            #if DEBUG
+            await self.ownedBeforeStart?()
+            #endif
             await connection.start()
         }
     }
