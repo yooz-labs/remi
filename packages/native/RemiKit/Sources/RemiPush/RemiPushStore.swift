@@ -121,12 +121,20 @@ public final class RemiPushStore: @unchecked Sendable {
     }
 
     static func configuredApplicationGroup(bundle: Bundle) throws -> String {
-        let accessGroup = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
+        _ = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
         #if os(macOS)
-        // macOS validates this group against the signing team (#1242). A group.
-        // identifier instead needs a profile grant that automatic Mac signing omitted.
-        let team = accessGroup.split(separator: ".", maxSplits: 1)[0]
-        return "\(team).live.yooz.remi"
+        // The app and NSE declare the same signing-team group (#1242).
+        // An App Identifier Prefix can differ from that team, so never derive it
+        // from the Keychain access group. macOS validates access at the container.
+        guard let group = bundle.object(forInfoDictionaryKey: "RemiPushAppGroup") as? String else {
+            throw RemiPushError.unavailable
+        }
+        let fields = group.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard fields.count == 2, fields[0].utf8.count == 10, fields[1] == "live.yooz.remi",
+              fields[0].utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) }) else {
+            throw RemiPushError.unavailable
+        }
+        return group
         #else
         return "group.live.yooz.remi"
         #endif

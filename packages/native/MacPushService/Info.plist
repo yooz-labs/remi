@@ -16,6 +16,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
+	<key>RemiPushAppGroup</key>
+	<string>$(DEVELOPMENT_TEAM).live.yooz.remi</string>
 	<key>RemiPushNamespace</key>
 	<string>$(REMI_PUSH_NAMESPACE)</string>
 	<key>RemiPushAccessGroup</key>
