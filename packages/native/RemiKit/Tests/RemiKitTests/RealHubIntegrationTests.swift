@@ -19,6 +19,10 @@ private actor RealHubRecorder {
         states.contains { if case .connected = $0 { true } else { false } }
     }
 
+    var errorCodes: [String] {
+        events.compactMap { if case .error(let error) = $0 { error.code } else { nil } }
+    }
+
     var receivedSessionList: Bool {
         events.contains { if case .sessions = $0 { true } else { false } }
     }
@@ -27,7 +31,11 @@ private actor RealHubRecorder {
 struct RealHubIntegrationTests {
     /// Opt-in because it launches no stand-in server: the source daemon must already be running.
     /// Run with REMI_E2E_URL, REMI_E2E_HOME and REMI_REPO_ROOT set.
-    @Test func authenticatesAndListsSessionsFromRealSourceHub() async throws {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_E2E_URL"] != nil &&
+        ProcessInfo.processInfo.environment["REMI_E2E_HOME"] != nil &&
+        ProcessInfo.processInfo.environment["REMI_REPO_ROOT"] != nil,
+        "Requires an owned source hub; see RealHubIntegrationTests.swift."))
+    func authenticatesAndListsSessionsFromRealSourceHub() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let urlString = environment["REMI_E2E_URL"],
               let url = URL(string: urlString),
@@ -61,10 +69,23 @@ struct RealHubIntegrationTests {
         try await connection.send(SessionListRequestMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
-            includeExternal: true
+            includeExternal: false
         ))
         try await waitUntil { await recorder.receivedSessionList }
+        // The initial Hello is refused until the signed response succeeds (#1242).
+        // That handshake response must not become a stale warning after connection.
+        #expect(await !recorder.errorCodes.contains("AUTH_REQUIRED"))
+        try await connection.send(UnknownClientMessage(
+            id: UUID().uuidString.lowercased(), type: "owned-unknown-message"
+        ))
+        try await waitUntil { await recorder.errorCodes.contains("INVALID_MESSAGE") }
+        #expect(await recorder.errorCodes.contains("INVALID_MESSAGE"))
         await connection.stop()
+    }
+
+    private struct UnknownClientMessage: Encodable, Sendable {
+        let id: String
+        let type: String
     }
 
     private func waitUntil(
