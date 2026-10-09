@@ -11,12 +11,12 @@ import AppKit
 /// Copies untrusted OS delivery fields across the delegate's actor boundary.
 /// Verification still uses the original carrier and every displayed field.
 public struct NativeRelayActionDelivery: Sendable {
-    fileprivate let carrier: Data?
-    fileprivate let title: String
-    fileprivate let subtitle: String
-    fileprivate let body: String
-    fileprivate let categoryIdentifier: String
-    fileprivate let identifier: String
+    let carrier: Data?
+    let title: String
+    let subtitle: String
+    let body: String
+    let categoryIdentifier: String
+    let identifier: String
 
     public init(content: UNNotificationContent, identifier: String) {
         carrier = NativeRelayNotifications.carrier(from: content.userInfo)

@@ -21,6 +21,7 @@ struct NativePushActionTests {
             var no: [String: Any] = ["value": "no", "label": "No", "isYes": false, "isNo": true, "description": NSNull(), "standingGrant": NSNull()]
             var standing: [String: Any] = ["value": "always", "label": "Allow", "isYes": true, "isNo": false, "description": "x", "standingGrant": "addRules"]
             if change == "long" { yes["label"] = String(repeating: "Y", count: 25) }
+            if change == "boundary" { yes["label"] = String(repeating: "Y", count: 24) }
             if change == "control" { no["description"] = "\u{202e}" }
             if change == "empty" { yes["description"] = " " }
             if change == "duplicate" { no["value"] = "yes" }
@@ -44,6 +45,11 @@ struct NativePushActionTests {
         let (context, carrier) = try inputs(category: category); defer { try? context.cleanup() }
         let opened = try context.store.open(carrier: carrier)
         let set = try #require(try context.store.actionSet(for: opened))
+        let tuple = try RelayCrypto.tuple(Data("remi-native-v2 actions".utf8), opened.machine.room,
+            opened.machine.machinePublicKey, opened.machine.authority.publicKey,
+            Data(opened.machine.authority.revision.utf8), opened.contentDigest)
+        let digest = RelayCrypto.hex(Data(SHA256.hash(data: tuple)))
+        #expect(set.categoryIdentifier == NativePushActionPolicy.prefix + String(opened.expiresAt) + "." + digest)
         #expect(set.actions.count == (category == "REMI_YNA" ? 3 : 2))
         #expect(set.actions.first?.value == "no")
         #expect(set.actions.first?.title == "No" && set.actions.first?.authenticationRequired == false)
@@ -77,6 +83,38 @@ struct NativePushActionTests {
         let opened = try context.store.open(carrier: carrier)
         #expect(try context.store.actionSet(for: opened) == nil)
         #expect(opened.nativeAnswerChoices.isEmpty)
+    }
+
+    @Test(arguments: ["boundary", "long"])
+    func completeTitleBoundaryNeverTruncates(change: String) throws {
+        let (context, carrier) = try inputs(change: change); defer { try? context.cleanup() }
+        let opened = try context.store.open(carrier: carrier)
+        let set = try context.store.actionSet(for: opened)
+        if change == "boundary" {
+            let yes = try #require(set?.actions.first { $0.value == "yes" })
+            #expect(yes.title == String(repeating: "Y", count: 24))
+        } else { #expect(set == nil) }
+    }
+
+    @Test func shippingSnapshotPreservesExactUntrustedOSValues() throws {
+        let (context, carrier) = try inputs(); defer { try? context.cleanup() }
+        let opened = try context.store.open(carrier: carrier)
+        let set = try #require(try context.store.actionSet(for: opened))
+        let content = try Self.content(opened, set: set)
+        // These deliberately invalid display fields must reach verification as
+        // received, rather than being normalized or reconstructed from the capsule.
+        content.title = "e\u{0301}"; content.body = "left\u{202e}right"
+        content.subtitle = "untrusted subtitle"
+        let identifier = try #require(set.actions.first).identifier
+        let snapshot = NativeRelayActionDelivery(content: content, identifier: identifier)
+        #expect(snapshot.carrier == opened.originalCarrier)
+        #expect(Data(snapshot.title.utf8) == Data(content.title.utf8))
+        #expect(Data(snapshot.body.utf8) == Data(content.body.utf8))
+        #expect(Data(snapshot.subtitle.utf8) == Data(content.subtitle.utf8))
+        #expect(Data(snapshot.categoryIdentifier.utf8) == Data(content.categoryIdentifier.utf8))
+        #expect(Data(snapshot.identifier.utf8) == Data(identifier.utf8))
+        content.userInfo = [:]
+        #expect(NativeRelayActionDelivery(content: content, identifier: identifier).carrier == nil)
     }
 
     @Test(arguments: ["title", "body", "subtitle", "category", "action", "carrier", "unsafe-display", "canonical-title"])
