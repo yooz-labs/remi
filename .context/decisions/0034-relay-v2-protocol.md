@@ -629,6 +629,17 @@ The seal's AAD binds `rid || collapse_id`, and the push content's machine signat
 
 Not R3, listed so nobody deletes them early: `packages/shared/src/sealed-answer.ts`, `packages/daemon/src/auth/answer-key.ts`, `packages/daemon/tests/remote/sealed-answer-relay.test.ts` and `packages/web/src/lib/push-answer-relay.ts` belong to the v1 lock-screen answer path and are replaced in R6; the Worker's `code-generator.ts`, `connection-room.ts` and the `/answer/<code>` route are R2 and R7.
 
+**R7 executable retirement status (#1202):** the remaining unused v1 Authenticator
+KEX methods/signing helper, sealed-answer library and daemon answer-key generation/
+announcement have now been removed with their exclusive tests/exports. The historical
+v1 signing-byte comparator remains private to the v2 domain-disjointness tests.
+The optional legacy auth fields and factory argument positions listed above are
+retained solely for decode/additive compatibility at `PROTOCOL_VERSION = 1`;
+current direct auth neither announces nor verifies a v1 relay key exchange.
+Existing `answer-key.json` data is left untouched. Direct signed `/answer`, relay v2
+and the native answer-seal key manager are separate and remain unchanged. This
+retirement supplies no plaintext relay fallback and is not deployed/device R7 acceptance.
+
 ## 15. Issues found while specifying
 
 This section is for the independent cryptography review and for the lead.

@@ -1,7 +1,7 @@
 /**
  * Sealing a body to a recipient's P-256 key (ADR 0034 section 10): the ECIES
- * shape of `sealed-answer.ts`, used for pushes (daemon to device) and later for
- * lock-screen answers. Base-mode ECIES does not authenticate the sender.
+ * shape documented for secure pushes (daemon to device). Base-mode ECIES does
+ * not authenticate the sender; signed push content supplies that authentication.
  *
  *   sealed = E (65) || nonce (12) || AES-256-GCM(key, nonce, aad, plaintext)
  *   key    = HKDF-SHA256(ECDH(e, R), salt = E, info = lps(label, R), 32)

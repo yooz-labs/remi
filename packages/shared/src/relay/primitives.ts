@@ -3,7 +3,7 @@
  *
  * Uses the ADR's transcript and pairing-secret derivation, with directional
  * counters for nonces. The retired v1 payload encryption is not reused;
- * relay-crypto.ts retains only direct-auth compatibility signing input (#1198).
+ * the remaining executable v1 compatibility helpers were retired in R7 (#1202).
  * Only `crypto.subtle` primitives the ADR names appear here, and
  * `systemRandom` is the only place the library touches the platform
  * random source: every state machine takes a `Rng` instead.

@@ -141,10 +141,14 @@ gracefully); not measured on Linux or against the deployed Worker.
 
 V1 `RelayAdapter`, signaling client, code store and `remi code` implementation are
 removed. Permanent-code requests refuse with migration guidance. The `kexSigningInput` compatibility encoding, export and cross-purpose signature
-fixtures remain unchanged. Its legacy `createChallengeWithRelayKex` and
-`verifyRelayKex` methods have no current production callers; direct Connection
-auth uses `createChallenge` and `verifyResponse`. Detached signed direct `/answer`
-remains authorized-only; this phase does not implement encrypted offline answers.
+fixtures remain unchanged. The unused v1 relay key-exchange methods, public
+crypto/sealed-answer helpers and old answer-key startup generation/announcement
+are retired in R7 (#1202, ADR 0034 section 14). Optional old wire fields and factory
+positions remain solely for additive/read compatibility; they do not recreate an
+executable v1 relay. Existing historical `answer-key.json` data is left untouched.
+Direct Connection auth still uses `createChallenge`/`verifyResponse`, and detached
+signed direct `/answer` remains authorized-only and retains its actual handler.
+
 
 ## Outbound authority contention (#1224)
 

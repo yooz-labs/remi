@@ -16,9 +16,19 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fromBase64, generateChallenge } from '../../src/crypto.ts';
-import { kexSigningInput } from '../../src/relay-crypto.ts';
 import * as r from '../../src/relay/internal.ts';
 import { hex, seed } from './helpers.ts';
+
+/** Historical v1 byte fixture only: no executable compatibility export (ADR 0034 section 14). */
+function legacyKexSigningInput(
+  challenge: string,
+  daemonKey: string,
+  clientKey: string | null,
+): ArrayBuffer {
+  const parts = ['remi-relay-kex-v1', challenge, daemonKey, clientKey ?? ''];
+  return new TextEncoder().encode(parts.map((part) => `${part.length}:${part}`).join(''))
+    .buffer as ArrayBuffer;
+}
 
 const lpLabel = (name: string): Uint8Array => r.lps(name);
 
@@ -68,7 +78,7 @@ describe('v2 signing inputs are disjoint from every other signed message', () =>
   test('none can be a v1 direct-auth challenge, a v1 key exchange input or an answer message', () => {
     const challenge = fromBase64(generateChallenge());
     expect(challenge.byteLength).toBe(32);
-    const kex = new Uint8Array(kexSigningInput('challenge', 'daemon-ephemeral', null));
+    const kex = new Uint8Array(legacyKexSigningInput('challenge', 'daemon-ephemeral', null));
     expect(new TextDecoder().decode(kex)).toBe(
       '17:remi-relay-kex-v19:challenge16:daemon-ephemeral0:',
     );

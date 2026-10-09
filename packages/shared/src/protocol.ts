@@ -1178,22 +1178,15 @@ export interface AuthChallengeMessage {
   /** Base64-encoded server Ed25519 public key */
   readonly serverPublicKey: string;
   /**
-   * Relay end-to-end encryption (#543). Present ONLY on the relay transport;
-   * the direct WebSocket path leaves both absent and is unchanged by this.
-   *
-   * The daemon's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, thisKey, null)` made with the identity key in
-   * `serverPublicKey`. The signature is what stops the worker substituting its
-   * own key: it forwards these fields and can replace them, but cannot forge a
-   * signature the client will accept.
+   * Retired v1 relay key-exchange fields (#1202, ADR 0034 section 14).
+   * Retained only for additive wire/read compatibility at PROTOCOL_VERSION 1.
+   * Current direct auth never emits them; relay v2 uses its own signed handshake.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
   /**
-   * The daemon's long-lived P-256 answer key, base64 (#875). Phones pin this
-   * alongside the fingerprint so a lock-screen answer can be sealed with no
-   * live connection to negotiate over. Absent on a daemon that has none, in
-   * which case a client must refuse to send rather than send in the clear.
+   * Retired v1 answer-key announcement, retained only for historical wire reads.
+   * Current daemon startup neither creates the old key file nor advertises this field.
    */
   readonly answerEncryptionKey?: string;
 }
@@ -1210,15 +1203,8 @@ export interface AuthResponseMessage {
   /** Client's fingerprint for display */
   readonly clientFingerprint: string;
   /**
-   * Relay end-to-end encryption (#543), relay transport only.
-   *
-   * The client's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, daemonKey, thisKey)` made with the identity in
-   * `clientPublicKey`. Binding BOTH keys means neither side's contribution can
-   * be swapped after the fact.
-   *
-   * `signature` above is unchanged and still covers the challenge alone, so the
-   * direct path's verification is untouched.
+   * Retired v1 relay key-exchange fields: decode/additive compatibility only.
+   * They grant no authority and are not used by direct Ed25519 verification.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
@@ -2304,7 +2290,8 @@ export function createTerminalResize(cols: number, rows: number): TerminalResize
 }
 
 /**
- * Create an auth challenge message.
+ * Create an auth challenge message. Optional legacy arguments retain their wire positions
+ * for additive compatibility only; they do not implement key exchange or answer sealing.
  */
 export function createAuthChallenge(
   challenge: string,
@@ -2329,7 +2316,8 @@ export function createAuthChallenge(
 }
 
 /**
- * Create an auth response message.
+ * Create an auth response message. The optional legacy relayKex position is retained
+ * for additive compatibility only; direct verification still signs only the challenge.
  */
 export function createAuthResponse(
   clientPublicKey: string,

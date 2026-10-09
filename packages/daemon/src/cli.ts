@@ -117,7 +117,6 @@ import {
 import type { HarnessId, ProtocolMessage, ResolvedBy, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
@@ -2473,16 +2472,6 @@ if (authEnabled) {
 
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
   relayIdentity = unlockedIdentity;
-  // Published in every auth challenge so phones can pin it and seal
-  // lock-screen answers to this daemon (#875). Non-fatal: without it the
-  // daemon simply cannot open sealed answers and says so when one arrives,
-  // which is better than refusing to start.
-  try {
-    const answerKey = await loadOrCreateAnswerKey(undefined, logError);
-    authenticator.setAnswerEncryptionKey(answerKey.publicKeyBase64);
-  } catch (err) {
-    logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
-  }
   serverFingerprint = storedIdentity.fingerprint;
   console.log(
     `Authentication enabled (fingerprint: ${serverFingerprint}, unknown keys require local approval)`,

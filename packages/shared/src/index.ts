@@ -209,8 +209,6 @@ export { dispatchMessage, assertNever } from './dispatch.ts';
 
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
-export * from './relay-crypto.ts';
-export * from './sealed-answer.ts';
 // Relay protocol v2 (ADR 0034); namespaced so no name collides with the v1 modules above.
 export * as relayV2 from './relay/index.ts';
 export {
