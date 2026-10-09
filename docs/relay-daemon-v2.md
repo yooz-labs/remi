@@ -146,6 +146,24 @@ fixtures remain unchanged. Its legacy `createChallengeWithRelayKex` and
 auth uses `createChallenge` and `verifyResponse`. Detached signed direct `/answer`
 remains authorized-only; this phase does not implement encrypted offline answers.
 
+## Outbound authority contention (#1224)
+
+A ready peer's semantic send and final encrypted-frame emission recheck its captured
+public key, fingerprint, grant epoch and enrollment epoch under the durable
+identity-store lock. This current check makes exactly one ownership attempt; it
+never waits for another process, reclaims a stale lock, or caches authority. Busy,
+unknown and stale locks refuse as a store fault, preserving the existing distinct
+fault log and peer retirement. The client can reconnect and resync after the
+contention ends. Filesystem calls remain synchronous, so this is not a hard bound
+on storage I/O.
+
+Writer transactions, lazy admission migrations, secure push subscription effects
+and native-answer commit effects keep their existing blocking lock behavior and
+synchronous check/effect boundary. The change is limited to `isCurrentAuthority`.
+The real child-writer/Hub/Worker/client regression, both Bun versions and causal
+mutation receipts are recorded in
+[the #1224 validation receipt](../.context/issue-1224-authority-contention.md).
+
 Focused tests live in `tests/integration/relay-r3*.test.ts` and
 `packages/daemon/tests/answer-results.test.ts`. They use private 0700 HOME/state,
 controlled harness executables and owned local Worker processes. No installed

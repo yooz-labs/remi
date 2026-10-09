@@ -311,7 +311,7 @@ export class IdentityStore {
   ): T {
     return this.transaction(() => this.decideAuthorizationEpoch(publicKey, operation, migrate));
   }
-  /** Current generation read under one ownership attempt; never migrates or writes (#1224). */
+  /** Current generation read under one ownership attempt; no grant-record migration (#1224). */
   withAuthorizationEpochNonblocking<T>(
     publicKey: string,
     operation: (current: string | null) => T,
