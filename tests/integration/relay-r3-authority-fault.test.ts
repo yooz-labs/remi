@@ -2,43 +2,63 @@
  * An unreadable store and a revoked grant both close the peer; the log says which (#1201).
  */
 import { expect, test } from 'bun:test';
-import { rmSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createSessionUpdate } from '@remi/shared';
+import { createSessionUpdate, relayV2 } from '@remi/shared';
 import { resumed } from './relay-r3-fixture.ts';
 
-/** A lock owned by a live foreign process, exactly what a concurrent `remi authorize` leaves. */
-function holdForeignLock(dir: string): () => void {
-  const lockPath = join(dir, 'authorized_keys.json.lock');
-  writeFileSync(
-    lockPath,
-    JSON.stringify({
-      version: 1,
-      ownerId: 'owned-foreign-owner',
-      pid: process.ppid,
-      host: hostname(),
-      acquiredAt: Date.now(),
-    }),
-  );
-  return () => rmSync(lockPath, { force: true });
-}
-
-test('an unreadable authority store closes the peer and is logged as a store fault, not a revocation (#1201)', async () => {
+test('a real busy authority writer retires the peer without blocking the hub event loop (#1224)', async () => {
   const owned = await resumed();
-  const release = holdForeignLock(owned.dir);
+  const durablePaths = ['authorized_keys.json', 'relay_devices.json'].map((name) =>
+    join(owned.dir, name),
+  );
+  const durableBefore = durablePaths.map((file) => readFileSync(file));
+  const holder = Bun.spawn(
+    [
+      process.execPath,
+      new URL('../../packages/daemon/tests/lock-holder-worker.ts', import.meta.url).pathname,
+      owned.dir,
+      '2600',
+    ],
+    { cwd: owned.dir, env: {}, stdout: 'pipe', stderr: 'pipe' },
+  );
   try {
-    // The outbound check waits out the real 2 s lock timeout, then fails closed.
+    const deadline = performance.now() + 3000;
+    while (!existsSync(join(owned.dir, 'lock-held'))) {
+      if (holder.exitCode !== null || performance.now() >= deadline)
+        throw new Error('OWNED_LOCK_HOLDER_DID_NOT_ACQUIRE');
+      await Bun.sleep(5);
+    }
+    const lockPath = join(owned.dir, 'authorized_keys.json.lock');
+    const lockBefore = readFileSync(lockPath);
+    expect(JSON.parse(lockBefore.toString()).pid).toBe(holder.pid);
+    const started = performance.now();
+    const tick = new Promise<number>((resolve) =>
+      setTimeout(() => resolve(performance.now() - started), 0),
+    );
     owned.relay.broadcast(createSessionUpdate('owned-session', 'idle'));
-    release();
+    const elapsed = performance.now() - started;
+    const timerElapsed = await tick;
+    expect(holder.exitCode).toBeNull();
+    expect(readFileSync(lockPath)).toEqual(lockBefore);
+    expect(durablePaths.map((file) => readFileSync(file))).toEqual(durableBefore);
+    expect(elapsed).toBeLessThan(500);
+    expect(timerElapsed).toBeLessThan(500);
+    // Only an authenticated BYE may leave after the failed authority check.
+    const frame = await owned.socket.binary();
+    expect(frame[0]).toBe(relayV2.TYPE_BYE);
+    expect(await owned.channel.receive(frame)).toBeNull();
+    await owned.channel.bye();
     expect((await owned.socket.closed).code).toBeGreaterThan(0);
+    expect(await owned.socket.quiet(50)).toBe(true);
     const authority = owned.logs.filter((line) => line.startsWith('Relay authority'));
     expect(authority).toEqual([
       'Relay authority store unreadable (InterprocessFileLockError); failing closed, not a revocation',
     ]);
     expect(owned.logs.some((line) => line.includes('no longer current'))).toBe(false);
   } finally {
-    release();
+    expect(await holder.exited).toBe(0);
+    expect(await new Response(holder.stderr).text()).toBe('');
     await owned.cleanup();
   }
 }, 15000);
