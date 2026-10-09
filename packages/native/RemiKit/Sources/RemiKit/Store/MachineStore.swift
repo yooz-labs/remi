@@ -347,7 +347,9 @@ public final class MachineStore {
     /// One owner per current device authority/room. It suspends and awaits the
     /// foreground channel before a single bounded resume attempt and never retries.
     public func answerRelayNotification(choice: String) async {
-        let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(24))
+        // Reserve two seconds of the 25-second total for the bounded BYE and
+        // URLSession cancellation/actor retirement, not only BYE emission.
+        let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(23))
         guard !relayNotificationBusy, let original = verifiedRelayNotification, let pushStore,
               !suspendedRelayRooms.contains(original.machine.room) else { return }
         let brokerKey = RelayChannelBroker.key(device: identity.publicKeyRaw, room: original.machine.room)
