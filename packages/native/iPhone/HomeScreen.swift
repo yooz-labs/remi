@@ -156,26 +156,47 @@ struct HomeScreen: View {
         }
         .navigationTitle("Remi")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
+            if #available(iOS 27.0, *) {
+                ToolbarOverflowMenu {
+                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                        showingPairing = true
+                    }
+                    Button("Preferences", systemImage: "gearshape") {
+                        showingPreferences = true
+                    }
+                }
+
+                ToolbarItem(placement: .topBarPinnedTrailing) {
                     Button("New session", systemImage: "plus.rectangle.on.folder") {
                         showingNewSession = true
                     }
                     .disabled(availableSessionMachines.isEmpty)
+                }
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New session", systemImage: "plus.rectangle.on.folder") {
+                            showingNewSession = true
+                        }
+                        .disabled(availableSessionMachines.isEmpty)
 
-                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                        showingPairing = true
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
+
+                        Divider()
+
+                        Button("Preferences", systemImage: "gearshape") {
+                            showingPreferences = true
+                        }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .frame(
+                                minWidth: RemiTheme.Size.minimumTapTarget,
+                                minHeight: RemiTheme.Size.minimumTapTarget
+                            )
+                            .contentShape(.rect)
                     }
-
-                    Divider()
-
-                    Button("Preferences", systemImage: "gearshape") {
-                        showingPreferences = true
-                    }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                        .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
-                        .contentShape(.rect)
                 }
             }
         }
