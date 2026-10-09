@@ -27,8 +27,9 @@ struct NativeAppGroupTests {
         #expect(try RemiPushStore.configuredApplicationGroup(bundle: bundle) == "9DQ459HAZB.live.yooz.remi")
     }
 
-    @Test func absentMacGroupIsRefused() throws {
-        let (bundle, directory) = try makeBundle(accessGroup: "9DQ459HAZB.live.yooz.remi.secure-push", applicationGroup: nil)
+    @Test(arguments: [nil, "group.live.yooz.remi", "9dq459hazb.live.yooz.remi", "9DQ459HAZB.live.yooz.other", "SHORT.live.yooz.remi"])
+    func invalidMacGroupIsRefused(applicationGroup: String?) throws {
+        let (bundle, directory) = try makeBundle(accessGroup: "9DQ459HAZB.live.yooz.remi.secure-push", applicationGroup: applicationGroup)
         defer { try? FileManager.default.removeItem(at: directory) }
         #expect(throws: (any Error).self) { try RemiPushStore.configuredApplicationGroup(bundle: bundle) }
     }
