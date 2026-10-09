@@ -97,7 +97,7 @@ public actor RemiConnection {
     private let relayPairingExpiresAt: UInt64?
     private var relayEnrolled: Bool
     private var relayDeadline: Task<Void, Never>?
-    private var sendTail: Task<Void, Error>?
+    private var sendTail: Task<Void, Never>?
     private var pendingSends = 0
     private var relayClosing = false
 
@@ -155,10 +155,18 @@ public actor RemiConnection {
             pendingSends += 1
             let prior = sendTail
             let job = Task {
-                try await prior?.value
+                await prior?.value
                 guard self.socket === socket, let channel = self.relayChannel else { throw RelayFailure.closed }
+                let frame: Data
+                do { frame = try channel.seal(data) }
+                catch {
+                    if channel.closed {
+                        socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
+                    }
+                    throw error
+                }
                 do {
-                    try await socket.send(.data(channel.seal(data)))
+                    try await socket.send(.data(frame))
                 } catch {
                     channel.fail()
                     socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation,
@@ -166,7 +174,7 @@ public actor RemiConnection {
                     throw error
                 }
             }
-            sendTail = job
+            sendTail = Task { _ = try? await job.value }
             defer { pendingSends -= 1 }
             try await job.value
         } else {
@@ -181,6 +189,7 @@ public actor RemiConnection {
             transition(to: .connecting(attempt: attempt))
             do {
                 try await connectAndReceive()
+                closeSocket()
                 if case .awaitingLocalApproval = state { return }
                 if case .rejected = state { return }
             } catch is CancellationError {
@@ -356,6 +365,7 @@ public actor RemiConnection {
         relayDeadline = nil
         relayHandshake?.abort()
         relayHandshake = nil
+        relaySecret = nil
         relayChannel?.close()
         relayChannel = nil
         sendTail = nil
@@ -388,6 +398,7 @@ public actor RemiConnection {
                 guard case .data(let bytes) = frame else { channel.fail(); throw RelayFailure.type }
                 guard let plaintext = try channel.open(bytes) else {
                     relayClosing = true
+                    armRelayDeadline(task, after: .seconds(1))
                     try await sendRelayBye(on: task)
                     eventHandler(.relayStreamEnded(clean: !channel.failed))
                     task.cancel(with: .normalClosure, reason: Data("closed".utf8))
@@ -466,7 +477,7 @@ public actor RemiConnection {
 
     private func sendRelayBye(on task: URLSessionWebSocketTask) async throws {
         let prior = sendTail
-        try await prior?.value
+        await prior?.value
         guard socket === task, let channel = relayChannel else { throw RelayFailure.closed }
         try await task.send(.data(channel.seal(Data(), bye: true)))
     }

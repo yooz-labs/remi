@@ -83,7 +83,7 @@ final class RelayHandshake {
         guard started.duration(to: .now) <= .seconds(pair ? 120 : 30), let keys else { throw RelayFailure.expired }
         let ciphertext = try RelayCrypto.control(frame, type: "ready", fields: [("c", 17...17)])[0]
         let echo = try RelayCrypto.open(ciphertext, key: keys.1, type: 2, direction: 2, counter: 0)
-        guard echo == Data([pair ? 1 : 2]) else { throw RelayFailure.mode }
+        guard echo == Data([pair ? 1 : 2]) else { throw RelayFailure.modeMismatch }
         return RelayChannel(send: keys.0, receive: keys.1)
     }
 
@@ -130,19 +130,25 @@ final class RelayChannel {
     func open(_ frame: Data) throws -> Data? {
         do {
             guard let receiveKey else { throw RelayFailure.closed }
+            let (type, counter) = try Self.header(frame)
             guard !peerEnded else { throw RelayFailure.ended }
-            guard frame.count >= 25 else { throw RelayFailure.malformed }
-            guard frame.count <= RelayCrypto.maxFrame else { throw RelayFailure.oversize }
-            let type = frame[frame.startIndex]
-            guard type == 3 || type == 4 else { throw RelayFailure.type }
-            guard type == 4 ? frame.count == 25 : frame.count >= 26 else { throw RelayFailure.malformed }
-            let counter = RelayCrypto.number(frame.dropFirst().prefix(8))
-            guard counter <= RelayCrypto.maxCounter, counter == nextReceive else { throw RelayFailure.counter }
+            guard counter == nextReceive else { throw RelayFailure.counter }
             let plaintext = try RelayCrypto.open(frame.dropFirst(9), key: receiveKey, type: type, direction: 3 - sendDirection, counter: counter)
             nextReceive += 1
             if type == 4 { peerEnded = true; return nil }
             return plaintext
         } catch { fail(); throw error }
+    }
+
+    static func header(_ frame: Data) throws -> (UInt8, UInt64) {
+        guard frame.count >= 25 else { throw RelayFailure.malformed }
+        guard frame.count <= RelayCrypto.maxFrame else { throw RelayFailure.oversize }
+        let type = frame[frame.startIndex]
+        guard type == 3 || type == 4 else { throw RelayFailure.type }
+        guard type == 4 ? frame.count == 25 : frame.count >= 26 else { throw RelayFailure.malformed }
+        let counter = RelayCrypto.number(frame.dropFirst().prefix(8))
+        guard counter <= RelayCrypto.maxCounter else { throw RelayFailure.counterLimit }
+        return (type, counter)
     }
 
     var streamEnd: String { failed ? "failed" : peerEnded ? "clean" : "unclean" }

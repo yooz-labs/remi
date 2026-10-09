@@ -44,20 +44,22 @@ struct RelayPairingToken {
     let expiresAt: UInt64
 
     init(_ text: String, now: UInt64) throws {
-        guard text.hasPrefix("remi-pair2:"), text.utf8.count <= 4096 else { throw RelayFailure.malformed }
-        let bytes = try RelayCrypto.unb64(String(text.dropFirst("remi-pair2:".count)))
-        guard bytes.count >= 75, bytes[0] == 2, bytes[1] <= 1 else { throw RelayFailure.malformed }
+        guard text.hasPrefix("remi-pair2:"), text.utf8.count <= 4096 else { throw RelayFailure.token }
+        guard let bytes = try? RelayCrypto.unb64(String(text.dropFirst("remi-pair2:".count))) else { throw RelayFailure.token }
+        guard bytes.count >= 75, bytes[0] == 2, bytes[1] <= 1 else { throw RelayFailure.token }
         let routeStart = bytes[1] == 1 ? 139 : 74
         guard bytes.count > routeStart, let route = String(data: bytes.dropFirst(routeStart), encoding: .utf8)
-        else { throw RelayFailure.malformed }
+        else { throw RelayFailure.token }
         expiresAt = RelayCrypto.number(bytes.dropFirst(2).prefix(8))
-        guard expiresAt <= 9_007_199_254_740_991 else { throw RelayFailure.malformed }
+        guard expiresAt <= 9_007_199_254_740_991,
+              let pin = try? RelayMachinePin(relayURL: route, machinePublicKey: RelayCrypto.b64(bytes.dropFirst(10).prefix(32)))
+        else { throw RelayFailure.token }
         guard expiresAt > now else { throw RelayFailure.expired }
-        guard expiresAt - now <= 660 else { throw RelayFailure.malformed }
+        guard expiresAt - now <= 660 else { throw RelayFailure.token }
         if bytes[1] == 1 {
-            _ = try P256.KeyAgreement.PublicKey(x963Representation: bytes.dropFirst(74).prefix(65))
+            guard (try? P256.KeyAgreement.PublicKey(x963Representation: bytes.dropFirst(74).prefix(65))) != nil else { throw RelayFailure.token }
         }
-        pin = try RelayMachinePin(relayURL: route, machinePublicKey: RelayCrypto.b64(bytes.dropFirst(10).prefix(32)))
+        self.pin = pin
         secret = bytes.dropFirst(42).prefix(32)
     }
 }

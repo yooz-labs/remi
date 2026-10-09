@@ -67,12 +67,14 @@ struct RelayClientTests {
             checked += 1
             let frame = try #require(item["text"] as? String)
             var accepted = false
+            var code: String?
             do {
                 let values = try RelayCrypto.control(frame, type: type, fields: fields)
                 if type == "hello_ack", values[0].first != 4 { throw RelayFailure.malformed }
                 accepted = true
-            } catch {}
+            } catch { code = (error as? RelayFailure)?.wireCode }
             #expect(accepted == (item["expect"] as? String == "accept"), "\(item["name"] ?? "")")
+            #expect(code == item["code"] as? String, "\(item["name"] ?? "")")
         }
         #expect(checked > 0)
     }
@@ -90,6 +92,7 @@ struct RelayClientTests {
             let client = try handshake(oracle, mode: mode,
                 machine: kind == "hello_ack_verify" ? RelayOracle.bytes(item, "machinePublicKey") : nil)
             var accepted = false
+            var code: String?
             do {
                 if kind == "hello_ack_verify" {
                     _ = try client.acknowledge(#require(item["helloAck"] as? String))
@@ -99,8 +102,9 @@ struct RelayClientTests {
                     _ = try client.ready(#require(item["ready"] as? String))
                 }
                 accepted = true
-            } catch {}
+            } catch { code = (error as? RelayFailure)?.wireCode }
             #expect(accepted == (item["expect"] as? String == "accept"), "\(item["name"] ?? "")")
+            #expect(code == item["code"] as? String, "\(item["name"] ?? "")")
         }
         #expect(checked == 21)
     }
@@ -112,14 +116,16 @@ struct RelayClientTests {
         for item in negatives where item["kind"] as? String == "token_decode" {
             checked += 1
             var accepted = false
+            var code: String?
             do {
                 let token = try RelayPairingToken(#require(item["text"] as? String), now: #require(item["nowSec"] as? NSNumber).uint64Value)
                 let encoded = try JSONEncoder().encode(token.pin)
                 #expect(try JSONDecoder().decode(RelayMachinePin.self, from: encoded) == token.pin)
                 #expect(!String(decoding: encoded, as: UTF8.self).contains(RelayCrypto.b64(token.secret)))
                 accepted = true
-            } catch {}
+            } catch { code = (error as? RelayFailure)?.wireCode }
             #expect(accepted == (item["expect"] as? String == "accept"), "\(item["name"] ?? "")")
+            #expect(code == item["code"] as? String, "\(item["name"] ?? "")")
         }
         #expect(checked == 34)
     }
@@ -135,12 +141,14 @@ struct RelayClientTests {
             let channel = RelayChannel(send: key, receive: key, direction: 3 - peerDirection,
                 nextReceive: try #require(item["startRecv"] as? NSNumber).uint64Value)
             var accepted = 0
+            var code: String?
             for frame in try #require(item["frames"] as? [String]) {
                 do { _ = try channel.open(RelayOracle.hex(frame)); accepted += 1 }
-                catch { break }
+                catch { code = (error as? RelayFailure)?.wireCode; break }
             }
             #expect(accepted == (item["accepted"] as? NSNumber)?.intValue, "\(item["name"] ?? "")")
             #expect(channel.failed == (item["expect"] as? String == "reject"))
+            #expect(code == item["code"] as? String, "\(item["name"] ?? "")")
             if channel.failed {
                 #expect(channel.closed)
                 #expect(throws: (any Error).self) { try channel.open(Data()) }
@@ -163,5 +171,30 @@ struct RelayClientTests {
         #expect(!channel.closed)
         #expect(try channel.seal(Data(), bye: true).count == 25)
         #expect(channel.streamEnd == "unclean")
+    }
+
+    @Test func realP256ImportsAndFrameHeaderBoundaryVectors() throws {
+        let oracle = try RelayOracle.load()
+        let negatives = try #require(oracle["negative"] as? [[String: Any]])
+        var checked = 0
+        for item in negatives {
+            let kind = item["kind"] as? String
+            guard kind == "ec_point" || kind == "frame_length" else { continue }
+            checked += 1
+            var accepted = false
+            do {
+                if kind == "ec_point" {
+                    _ = try P256.KeyAgreement.PublicKey(x963Representation: RelayOracle.bytes(item, "publicKey"))
+                } else {
+                    let length = try #require(item["length"] as? NSNumber).intValue
+                    var bytes = Data(count: length)
+                    if !bytes.isEmpty { bytes[0] = try #require(item["type"] as? NSNumber).uint8Value }
+                    _ = try RelayChannel.header(bytes)
+                }
+                accepted = true
+            } catch {}
+            #expect(accepted == (item["expect"] as? String == "accept"), "\(item["name"] ?? "")")
+        }
+        #expect(checked == 17)
     }
 }

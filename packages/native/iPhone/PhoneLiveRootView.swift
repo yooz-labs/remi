@@ -109,7 +109,7 @@ struct PhoneLiveRootView: View {
             RemiMachineSummary(
                 id: machine.id,
                 name: machine.displayName,
-                address: machine.endpoint.id,
+                address: machine.endpoint.displayAddress,
                 reachability: reachability(machine.status),
                 transport: machine.endpoint.relayPin != nil ? .relay :
                     machine.endpoint.host == "127.0.0.1" ? .local : .direct,
@@ -135,13 +135,15 @@ struct PhoneLiveRootView: View {
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
                     canTerminate: session.source == "daemon",
-                    canResume: session.source != "daemon" && session.canResume == true,
+                    canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                     isResuming: store.resumingSessions.contains(ResumeSessionKey(
                         machineID: machine.id,
                         sessionID: session.sessionId
                     )),
                     resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
-                    resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                    resumeError: machine.endpoint.relayPin != nil && session.source != "daemon"
+                        ? "Resume this session on the machine. Relay Resume is unavailable."
+                        : store.resumeErrorsBySession[ResumeSessionKey(
                         machineID: machine.id,
                         sessionID: session.sessionId
                     )]

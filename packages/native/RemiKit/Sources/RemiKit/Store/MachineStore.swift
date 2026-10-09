@@ -9,6 +9,8 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         return "\(host):\(port)"
     }
 
+    public var displayAddress: String { relayPin?.relayURL ?? "\(host):\(port)" }
+
     public let host: String
     public let port: Int
     public let expectedFingerprint: String?
@@ -48,7 +50,7 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         return MachineEndpoint(relayToken: decoded)
     }
 
-    private init(relayToken: RelayPairingToken) {
+    init(relayToken: RelayPairingToken) {
         host = URLComponents(string: relayToken.pin.relayURL)?.host ?? "relay"
         port = URLComponents(string: relayToken.pin.relayURL)?.port ?? 443
         expectedFingerprint = nil
@@ -70,6 +72,11 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         components.port = port
         components.path = "/ws"
         return components.url
+    }
+
+    var publicConfiguration: MachineEndpoint {
+        guard let relayPin else { return self }
+        return MachineEndpoint(host: host, port: port, relayPin: relayPin)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -177,6 +184,8 @@ public final class MachineStore {
     @ObservationIgnored private let clientVersion: String
     @ObservationIgnored private let clientId: String
     @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
+    @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
+    @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
@@ -184,13 +193,13 @@ public final class MachineStore {
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var resolvedQuestionRemovalTasks: [String: Task<Void, Never>] = [:]
-    private var confirmedRelayIDs: Set<String> = []
+    private var pendingRelayIDs: Set<String> = []
     @ObservationIgnored private var pendingAnswers: [String: AnswerMessage] = [:]
     @ObservationIgnored private var answerTimeoutTasks: [String: Task<Void, Never>] = [:]
 
     /// Pending relay pairings are not durable trust. Both app roots save this list after READY.
     public var persistableEndpoints: [MachineEndpoint] {
-        machines.map(\.endpoint).filter { $0.relayPairingSecret == nil || confirmedRelayIDs.contains($0.id) }
+        machines.map(\.endpoint).filter { !pendingRelayIDs.contains($0.id) }
     }
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
@@ -205,7 +214,13 @@ public final class MachineStore {
         self.clientVersion = clientVersion
         self.clientId = clientId
         machines = endpoints.map {
-            MachineState(endpoint: $0, displayName: $0.id)
+            MachineState(endpoint: $0.publicConfiguration, displayName: $0.displayAddress)
+        }
+        for endpoint in endpoints {
+            if let secret = endpoint.relayPairingSecret {
+                pendingRelayIDs.insert(endpoint.id)
+                relayPairingContexts[endpoint.publicConfiguration] = (secret, endpoint.relayPairingExpiresAt)
+            }
         }
     }
 
@@ -217,6 +232,8 @@ public final class MachineStore {
 
     public func stop() {
         let activeConnections = Array(connections.values)
+        connectionGenerations.removeAll()
+        relayPairingContexts.removeAll()
         connections.removeAll()
         parentByConnection.removeAll()
         for task in resumeTimeoutTasks.values { task.cancel() }
@@ -242,12 +259,18 @@ public final class MachineStore {
         if let existing = machines.first(where: { $0.id == endpoint.id }) {
             removeMachine(existing.endpoint)
         }
-        machines.append(MachineState(endpoint: endpoint, displayName: displayName ?? endpoint.id))
-        connect(endpoint, parent: endpoint)
+        let publicEndpoint = endpoint.publicConfiguration
+        if let secret = endpoint.relayPairingSecret {
+            pendingRelayIDs.insert(publicEndpoint.id)
+            relayPairingContexts[publicEndpoint] = (secret, endpoint.relayPairingExpiresAt)
+        }
+        machines.append(MachineState(endpoint: publicEndpoint, displayName: displayName ?? endpoint.displayAddress))
+        connect(publicEndpoint, parent: publicEndpoint)
     }
 
     public func removeMachine(_ endpoint: MachineEndpoint) {
-        confirmedRelayIDs.remove(endpoint.id)
+        pendingRelayIDs.remove(endpoint.id)
+        relayPairingContexts.removeValue(forKey: endpoint)
         let answerIDs = pendingAnswers.compactMap { id, answer in
             parentByConnection[routeBySession[answer.sessionId] ?? endpoint] == endpoint ? id : nil
         }
@@ -278,6 +301,7 @@ public final class MachineStore {
             parent == endpoint ? connection : nil
         }
         for child in endpoints {
+            connectionGenerations.removeValue(forKey: child)
             if let connection = connections.removeValue(forKey: child) {
                 Task { await connection.stop() }
             }
@@ -394,6 +418,12 @@ public final class MachineStore {
     }
 
     public func resumeSession(on endpoint: MachineEndpoint, sessionId: String) {
+        guard endpoint.relayPin == nil else {
+            let reason = "Resume is unavailable over the relay. Resume this session on the machine."
+            latestOperationError = reason
+            resumeErrorsBySession[ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)] = reason
+            return
+        }
         guard let connection = connections[endpoint] else {
             latestOperationError = "Cannot resume session: its machine is unavailable."
             return
@@ -471,6 +501,15 @@ public final class MachineStore {
 
     private func connect(_ endpoint: MachineEndpoint, parent: MachineEndpoint) {
         guard connections[endpoint] == nil, let url = endpoint.webSocketURL else { return }
+        let pairing = relayPairingContexts.removeValue(forKey: endpoint)
+        if pendingRelayIDs.contains(endpoint.id), pairing == nil {
+            if let index = machines.firstIndex(where: { $0.endpoint == endpoint }) {
+                machines[index].status = .unavailable(reason: "Pair again with a new relay token.")
+            }
+            return
+        }
+        let generation = UUID()
+        connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
         let connection = RemiConnection(
             configuration: RemiConnectionConfiguration(
@@ -485,16 +524,16 @@ public final class MachineStore {
                 relayPin: endpoint.relayPin
             ),
             identity: identity,
-            relayPairingSecret: endpoint.relayPairingSecret,
-            relayPairingExpiresAt: endpoint.relayPairingExpiresAt,
+            relayPairingSecret: pairing?.0,
+            relayPairingExpiresAt: pairing?.1,
             stateHandler: { [weak self] state in
                 Task { @MainActor [weak self] in
-                    self?.receive(state, from: endpoint)
+                    self?.receive(state, from: endpoint, generation: generation)
                 }
             },
             eventHandler: { [weak self] event in
                 Task { @MainActor [weak self] in
-                    self?.receive(event, from: endpoint)
+                    self?.receive(event, from: endpoint, generation: generation)
                 }
             }
         )
@@ -502,8 +541,8 @@ public final class MachineStore {
         Task { await connection.start() }
     }
 
-    private func receive(_ state: RemiConnectionState, from endpoint: MachineEndpoint) {
-        guard let parent = parentByConnection[endpoint],
+    func receive(_ state: RemiConnectionState, from endpoint: MachineEndpoint, generation: UUID) {
+        guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machines.firstIndex(where: { $0.endpoint == parent })
         else { return }
 
@@ -523,8 +562,8 @@ public final class MachineStore {
         }
     }
 
-    private func receive(_ event: RemiInboundEvent, from endpoint: MachineEndpoint) {
-        guard let parent = parentByConnection[endpoint],
+    func receive(_ event: RemiInboundEvent, from endpoint: MachineEndpoint, generation: UUID) {
+        guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machines.firstIndex(where: { $0.endpoint == parent })
         else { return }
 
@@ -532,7 +571,7 @@ public final class MachineStore {
         case .relayStreamEnded(let clean):
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
-            confirmedRelayIDs.insert(parent.id)
+            pendingRelayIDs.remove(parent.id)
         case .answerResult(let result):
             guard let pending = pendingAnswers[result.requestId],
                   routeBySession[pending.sessionId] == endpoint,
@@ -684,7 +723,8 @@ public final class MachineStore {
         let sessionID = response.sessionId ?? attempt.requestedSessionID
         attempt.resolvedSessionID = sessionID
         resumeAttemptsByRequest[response.requestId] = attempt
-        guard let port = response.port, parent.relayPin == nil else {
+        requestSessions(from: parent)
+        guard let port = response.port else {
             routeBySession[sessionID] = endpoint
             completeResume(requestID: response.requestId, sessionID: sessionID)
             return
@@ -697,7 +737,6 @@ public final class MachineStore {
         } else {
             requestSessions(from: child)
         }
-        requestSessions(from: parent)
     }
 
     private func completeResume(requestID: String, sessionID: String) {

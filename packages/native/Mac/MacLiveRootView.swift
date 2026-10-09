@@ -321,13 +321,15 @@ struct MacLiveRootView: View {
                 lastMessage: session.lastMessage,
                 openQuestionCount: questionCount,
                 canTerminate: session.source == "daemon",
-                canResume: session.source != "daemon" && session.canResume == true,
+                canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                 isResuming: store.resumingSessions.contains(ResumeSessionKey(
                     machineID: machine.id,
                     sessionID: session.sessionId
                 )),
                 resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
-                resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                resumeError: machine.endpoint.relayPin != nil && session.source != "daemon"
+                    ? "Resume this session on the machine. Relay Resume is unavailable."
+                    : store.resumeErrorsBySession[ResumeSessionKey(
                     machineID: machine.id,
                     sessionID: session.sessionId
                 )]

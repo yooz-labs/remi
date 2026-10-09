@@ -1,9 +1,19 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 import Security
 
 enum RelayFailure: Error, Sendable, Equatable {
-    case malformed, version, type, mode, signature, expired, state, decrypt, counter, ended, closed, oversize, io
+    case malformed, version, type, mode, modeMismatch, signature, expired, state, decrypt, counter, counterLimit, ended, closed, oversize, io, token
+
+    var wireCode: String {
+        switch self {
+        case .signature: "BAD_SIGNATURE"
+        case .counterLimit: "COUNTER_LIMIT"
+        case .modeMismatch: "MODE_MISMATCH"
+        default: String(describing: self).uppercased()
+        }
+    }
 }
 
 /// ADR 0034 byte encodings. Only CryptoKit implements the cryptographic primitives.
@@ -89,8 +99,10 @@ enum RelayCrypto {
         guard let object = try? JSONSerialization.jsonObject(with: text(frame)) as? [String: Any] else {
             throw RelayFailure.malformed
         }
-        guard let version = object["v"] as? Int else { throw RelayFailure.malformed }
-        guard version == 2 else { throw RelayFailure.version }
+        guard let number = object["v"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, number.doubleValue.rounded(.towardZero) == number.doubleValue
+        else { throw RelayFailure.malformed }
+        guard number.doubleValue == 2 else { throw RelayFailure.version }
         guard object["t"] as? String == type else { throw RelayFailure.type }
         let values = try fields.map { name, range in
             let bytes = try unb64(try field(object, name))
