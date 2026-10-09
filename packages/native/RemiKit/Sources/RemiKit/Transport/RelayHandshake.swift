@@ -54,7 +54,7 @@ final class RelayHandshake {
                 ephemeral.publicKey.x963Representation, nonce, ack[0], ack[1]))
             guard RelayCrypto.verify(ack[2], input: try RelayCrypto.tuple(RelayCrypto.text("remi-relay-v2 host"), h1), key: machine)
             else { throw RelayFailure.signature }
-            let host = try P256.KeyAgreement.PublicKey(x963Representation: ack[0])
+            let host = try RelayCrypto.p256(ack[0])
             let shared = try ephemeral.sharedSecretFromKeyAgreement(with: host)
             let input = shared.withUnsafeBytes { Data($0) } + (secret ?? Data())
             let c2h = RelayCrypto.derive(input, salt: h1, label: "remi-relay-v2 c2h")
@@ -116,7 +116,8 @@ final class RelayChannel {
         guard bye || !plaintext.isEmpty else { throw RelayFailure.malformed }
         guard !bye || plaintext.isEmpty else { throw RelayFailure.malformed }
         guard plaintext.count <= RelayCrypto.maxPlaintext else { throw RelayFailure.oversize }
-        guard nextSend < RelayCrypto.maxCounter || (bye && nextSend == RelayCrypto.maxCounter) else { throw RelayFailure.counter }
+        guard nextSend <= RelayCrypto.maxCounter else { fail(); throw RelayFailure.counterLimit }
+        guard nextSend < RelayCrypto.maxCounter || (bye && nextSend == RelayCrypto.maxCounter) else { throw RelayFailure.counterLimit }
         do {
             let type: UInt8 = bye ? 4 : 3
             let sealed = try RelayCrypto.seal(plaintext, key: sendKey, type: type, direction: sendDirection, counter: nextSend)

@@ -18,6 +18,11 @@ enum RelayFailure: Error, Sendable, Equatable {
 
 /// ADR 0034 byte encodings. Only CryptoKit implements the cryptographic primitives.
 enum RelayCrypto {
+    static func p256(_ bytes: Data) throws -> P256.KeyAgreement.PublicKey {
+        guard bytes.count == 65, bytes.first == 4 else { throw RelayFailure.malformed }
+        do { return try P256.KeyAgreement.PublicKey(x963Representation: bytes) }
+        catch { throw RelayFailure.malformed }
+    }
     static let maxCounter: UInt64 = 1 << 40
     static let maxPlaintext = 524_288
     static let maxFrame = maxPlaintext + 25

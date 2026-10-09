@@ -24,7 +24,7 @@ public struct RelayMachinePin: Codable, Sendable, Hashable {
     static func validRoute(_ text: String) -> Bool {
         guard text.utf8.count <= 512,
               text.range(of: #"^(wss://[a-z0-9.-]+|ws://(localhost|127\.0\.0\.1))(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$"#,
-                         options: .regularExpression) != nil,
+                         options: .regularExpression) == text.startIndex..<text.endIndex,
               let url = URLComponents(string: text), let host = url.host, !host.isEmpty,
               url.port == nil || (1...65535).contains(url.port ?? 0)
         else { return false }
@@ -57,7 +57,7 @@ struct RelayPairingToken {
         guard expiresAt > now else { throw RelayFailure.expired }
         guard expiresAt - now <= 660 else { throw RelayFailure.token }
         if bytes[1] == 1 {
-            guard (try? P256.KeyAgreement.PublicKey(x963Representation: bytes.dropFirst(74).prefix(65))) != nil else { throw RelayFailure.token }
+            guard (try? RelayCrypto.p256(bytes.dropFirst(74).prefix(65))) != nil else { throw RelayFailure.token }
         }
         self.pin = pin
         secret = bytes.dropFirst(42).prefix(32)

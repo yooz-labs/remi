@@ -164,13 +164,17 @@ struct RelayClientTests {
         let keys = try #require(session["keys"] as? [String: Any])
         let channel = RelayChannel(send: SymmetricKey(data: try RelayOracle.bytes(keys, "c2h")),
             receive: SymmetricKey(data: try RelayOracle.bytes(keys, "h2c")), nextSend: RelayCrypto.maxCounter)
-        #expect(throws: RelayFailure.counter) { try channel.seal(Data([1])) }
+        #expect(throws: RelayFailure.counterLimit) { try channel.seal(Data([1])) }
         #expect(!channel.closed)
         #expect(throws: RelayFailure.malformed) { try channel.seal(Data()) }
         #expect(throws: RelayFailure.oversize) { try channel.seal(Data(count: RelayCrypto.maxPlaintext + 1)) }
         #expect(!channel.closed)
         #expect(try channel.seal(Data(), bye: true).count == 25)
         #expect(channel.streamEnd == "unclean")
+        let exhausted = RelayChannel(send: SymmetricKey(data: try RelayOracle.bytes(keys, "c2h")),
+            receive: SymmetricKey(data: try RelayOracle.bytes(keys, "h2c")), nextSend: RelayCrypto.maxCounter + 1)
+        #expect(throws: RelayFailure.counterLimit) { try exhausted.seal(Data(), bye: true) }
+        #expect(exhausted.failed && exhausted.closed)
     }
 
     @Test func realP256ImportsAndFrameHeaderBoundaryVectors() throws {
@@ -182,19 +186,32 @@ struct RelayClientTests {
             guard kind == "ec_point" || kind == "frame_length" else { continue }
             checked += 1
             var accepted = false
+            var code: String?
             do {
                 if kind == "ec_point" {
-                    _ = try P256.KeyAgreement.PublicKey(x963Representation: RelayOracle.bytes(item, "publicKey"))
+                    _ = try RelayCrypto.p256(RelayOracle.bytes(item, "publicKey"))
                 } else {
                     let length = try #require(item["length"] as? NSNumber).intValue
                     var bytes = Data(count: length)
                     if !bytes.isEmpty { bytes[0] = try #require(item["type"] as? NSNumber).uint8Value }
+                    if bytes.count >= 9 { bytes.replaceSubrange(1..<9, with: RelayCrypto.be64(1)) }
                     _ = try RelayChannel.header(bytes)
                 }
                 accepted = true
-            } catch {}
+            } catch { code = (error as? RelayFailure)?.wireCode }
             #expect(accepted == (item["expect"] as? String == "accept"), "\(item["name"] ?? "")")
+            #expect(code == item["code"] as? String, "\(item["name"] ?? "")")
         }
         #expect(checked == 17)
+    }
+
+    @Test func restoredPinsRejectTrailingTextAndNoncanonicalRoutes() throws {
+        let oracle = try RelayOracle.load()
+        let identities = try #require(oracle["identities"] as? [String: [String: Any]])
+        let key = RelayCrypto.b64(try RelayOracle.bytes(#require(identities["machine"]), "publicKey"))
+        for route in ["wss://relay.example.test\n", "wss://relay.example.test\r\n", "wss://relay.example.test?query=1", "wss://user@relay.example.test", "wss://relay.example.test#fragment"] {
+            let bytes = try JSONSerialization.data(withJSONObject: ["relayURL": route, "machinePublicKey": key])
+            #expect(throws: RelayFailure.malformed) { try JSONDecoder().decode(RelayMachinePin.self, from: bytes) }
+        }
     }
 }
