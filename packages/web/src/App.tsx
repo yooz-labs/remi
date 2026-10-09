@@ -1846,7 +1846,7 @@ function App() {
       // d2c per MESSAGE_DIRECTION, but createAgentOutput (protocol.ts) has no
       // live caller on the WebSocket/relay path today: AdapterRegistry.
       // sendMessage, the only thing that would invoke
-      // WebSocketAdapter.sendMessage/RelayAdapter.sendMessage, is never
+      // WebSocketAdapter.sendMessage, is never
       // called anywhere in packages/daemon/src (verified by grep) outside
       // TelegramAdapter's unrelated same-named internal helper. Chat delivery
       // to the web client goes through structured_agent_output and
@@ -2262,7 +2262,7 @@ function App() {
         notifyFailure();
         return;
       }
-      // relay.kind === 'unreachable' (network / WebRTC-relay-only daemon) or
+      // relay.kind === 'unreachable' (daemon unreachable directly) or
       // 'auth-failed' (HTTP 401 — no/invalid detached signature, but the WS
       // challenge-response may still succeed). Both fall back to the WebSocket
       // reconnect path.
@@ -2965,12 +2965,6 @@ function App() {
   // never hang this UI action: on timeout (or an immediate send failure),
   // proceed with the re-registers anyway -- the same race as before this
   // fix, which self-heals on the sibling's next connection cycle either way.
-  // Known gap: the relay (WebRTC) transport does not send acks for this
-  // message type at all (packages/daemon/src/remote/relay-adapter.ts never
-  // calls sendAck), so removing a relay-connected server always takes the
-  // full timeout before re-registering siblings -- same bounded, self-healing
-  // fallback, just always on that path rather than only when the daemon is
-  // slow.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
       const finish = (): void => {

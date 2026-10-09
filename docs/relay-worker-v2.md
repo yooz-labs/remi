@@ -9,9 +9,9 @@ This document is the layer below it: the Worker's own routes, messages, limits a
 
 - The Worker is **not deployed by this change**.
   No agent holds Cloudflare credentials and none contacted a Cloudflare account; the owner deploys, from [the runbook](relay-worker-deploy-runbook.md).
-- **No shipped client speaks it.**
-  The daemon's `RelayAdapter` still speaks the v1 protocol that this Worker no longer serves (its `/connect/<code>` route is gone), and the relay is off by default.
-  R3 (daemon) and R4 (client) are the first real endpoints; until then the only endpoints are the fake host and fake client of `packages/signaling/tests/e2e`, which use the real relay library from `packages/shared`.
+- **The daemon and web client implement v2 in source.**
+  `cli.ts` starts the hub-owned `HubRelay`, and the web client's `RelayMachineChannel` uses the v2 handshake and encrypted channel.
+  Local integration tests compose those endpoints with the real Worker and child session daemons; the relay remains off by default, and deployed-Worker and signed-device acceptance remain unverified.
 - Everything below was exercised against the real Durable Object running in workerd through the Miniflare library, from `bun test`.
   That is the open-source runtime, locally; it is not the deployed Cloudflare fleet.
 
@@ -29,7 +29,8 @@ Nothing in the end-to-end protocol depends on the Worker behaving (ADR 0034 sect
 
 One Durable Object per machine, named by the **room id**: the first 16 bytes of SHA-256 of the machine's Ed25519 public key, as 32 lowercase hex digits in the path.
 The room has no time-to-live and no code.
-It lives while the host's control socket does, and a room with no sockets costs nothing but its stored enrolled keys.
+Stored enrolled keys remain when no sockets are open.
+Production Durable Object costs are unmeasured; the owner's measurements are listed in the [deploy runbook](relay-worker-deploy-runbook.md#measurements-to-take-nothing-here-is-measured).
 
 | Route (WebSocket upgrade) | Who | How many |
 |---|---|---|
