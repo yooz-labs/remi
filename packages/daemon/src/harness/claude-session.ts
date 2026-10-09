@@ -39,7 +39,7 @@
  */
 
 import { errorToString } from '@remi/shared';
-import type { ResolvedBy, UUID } from '@remi/shared';
+import type { Question, ResolvedBy, UUID } from '@remi/shared';
 
 import { hasLiveQuestionOnScreen } from '../api/live-questions.ts';
 import { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
@@ -69,7 +69,7 @@ import type {
   SessionStore,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
+import type { AnswerCommit, AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 import type {
   DecisionChannel,
   DecisionScreen,
@@ -126,7 +126,15 @@ export interface ClaudeLaunchDeps {
  * answer, chat and Stop handlers already read a session whose gate was never
  * registered (the hook server failed to start).
  */
-const NO_GATE: Omit<DecisionChannel, 'screen'> = {
+type ClaudeGate = Omit<DecisionChannel, 'screen' | 'answerValidity' | 'answerHeld'> &
+  // The bridge handle's own `answerHeld`, so `ClaudeDecisions.answerHeld` below is checked
+  // against the parameters the gate really takes, `commit` included (#1201).
+  Pick<SessionGateHandle, 'answerHeld'> & {
+    answerValidity(questionId: UUID): AnswerValidity | null;
+  };
+
+const NO_GATE: ClaudeGate = {
+  answerValidity: () => null,
   answerHeld: () => 'unknown',
   retireQuestion: () => {},
   isHeld: () => false,
@@ -145,14 +153,28 @@ const NO_GATE: Omit<DecisionChannel, 'screen'> = {
  */
 class ClaudeDecisions implements DecisionChannel {
   screen: DecisionScreen | undefined;
-  private gate: Omit<DecisionChannel, 'screen'> = NO_GATE;
+  private gate: ClaudeGate = NO_GATE;
+
+  constructor(private readonly questionFor: (questionId: UUID) => Question | null) {}
+
+  answerValidity(questionId: UUID): AnswerValidity {
+    const question = this.questionFor(questionId);
+    if (!question || question.isAnswered || question.terminalOnly) return { kind: 'closed' };
+    const held = this.gate.answerValidity(questionId);
+    if (held !== null) return held;
+    // A formerly held card cannot regain authority after bounded closed-id
+    // memory expires. A never-held card needs its actual current screen (#1200).
+    if (question.held || !this.screen?.isPromptCurrent(questionId, question.text))
+      return { kind: 'closed' };
+    return { kind: 'current-prompt' };
+  }
 
   attach(gate: SessionGateHandle): void {
     this.gate = gate;
   }
 
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
-    return this.gate.answerHeld(questionId, answer);
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
+    return this.gate.answerHeld(questionId, answer, commit);
   }
 
   retireQuestion(questionId: UUID): void {
@@ -223,7 +245,10 @@ export function createClaudeSession(
   // The gate attaches once the hook bridge exists (below); the tracker's
   // closures read it through `decisions` lazily, so until then nothing is held
   // and nothing needs retiring.
-  const decisions = new ClaudeDecisions();
+  let disposed = false;
+  const decisions = new ClaudeDecisions((questionId) =>
+    disposed ? null : sessionRegistry.getQuestion(sessionId, questionId),
+  );
   let closeBinder: (() => void) | null = null;
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
@@ -430,7 +455,6 @@ export function createClaudeSession(
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
 
-  let disposed = false;
   return {
     pty: ptySession,
     decisions,

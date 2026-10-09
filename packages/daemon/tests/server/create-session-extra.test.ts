@@ -1,6 +1,7 @@
 /**
- * `createSessionExtra` is what both transports (`connection.ts`, `relay-adapter.ts`) hand the
- * create handler, so a field it drops is dropped on every path: the workspace (#1236) is forwarded
+ * `createSessionExtra` is what `connection.ts` hands the create handler, for a direct WebSocket
+ * and for the relay hub's virtual connection alike (the v1 `relay-adapter.ts` is gone on the relay
+ * epic), so a field it drops is dropped on every path: the workspace (#1236) is forwarded
  * with the harness and arguments (#1179), as the peer sent it, and a plain request still reads as
  * undefined.
  */

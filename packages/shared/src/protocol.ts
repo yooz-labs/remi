@@ -13,6 +13,25 @@
 import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
+  AnswerResultMessage,
+  RelayDeviceRevokeRequestMessage,
+  RelayDeviceRevokeResponseMessage,
+  RelayDevicesRequestMessage,
+  RelayDevicesResponseMessage,
+} from './relay-messages.ts';
+import {
+  type NativeAnswer,
+  decodeNativeAnswer,
+  encodeNativeAnswer,
+} from './relay/native-answer.ts';
+import {
+  type SecurePushRegisterRequestMessage,
+  type SecurePushRegisterResponseMessage,
+  type SecurePushUnregisterRequestMessage,
+  type SecurePushUnregisterResponseMessage,
+  isValidSecurePushResponse,
+} from './secure-push-messages.ts';
+import type {
   Acknowledgment,
   AgentStatus,
   DiscoverableSession,
@@ -73,6 +92,11 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  native_answer: NativeAnswerMessage;
+  secure_push_register_request: SecurePushRegisterRequestMessage;
+  secure_push_register_response: SecurePushRegisterResponseMessage;
+  secure_push_unregister_request: SecurePushUnregisterRequestMessage;
+  secure_push_unregister_response: SecurePushUnregisterResponseMessage;
   hello: HelloMessage;
   hello_ack: HelloAckMessage;
   agent_output: AgentOutputMessage;
@@ -82,6 +106,11 @@ export interface ProtocolMessageMap {
   edit: EditMessage;
   question: QuestionMessage;
   answer: AnswerMessage;
+  answer_result: AnswerResultMessage;
+  relay_devices_request: RelayDevicesRequestMessage;
+  relay_devices_response: RelayDevicesResponseMessage;
+  relay_device_revoke_request: RelayDeviceRevokeRequestMessage;
+  relay_device_revoke_response: RelayDeviceRevokeResponseMessage;
   session_update: SessionUpdateMessage;
   ping: PingMessage;
   pong: PongMessage;
@@ -156,6 +185,9 @@ void _discriminantsMatch;
  */
 export type ProtocolMessage = ProtocolMessageMap[keyof ProtocolMessageMap];
 
+/** The signed tuple is the complete wire message; there is no outer choice (#1201). */
+export type NativeAnswerMessage = NativeAnswer;
+
 /** The message interface registered for wire discriminant `K`. */
 export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
 
@@ -181,6 +213,11 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  native_answer: 'c2d',
+  secure_push_register_request: 'c2d',
+  secure_push_register_response: 'd2c',
+  secure_push_unregister_request: 'c2d',
+  secure_push_unregister_response: 'd2c',
   hello: 'c2d',
   hello_ack: 'd2c',
   agent_output: 'd2c',
@@ -196,6 +233,11 @@ export const MESSAGE_DIRECTION = {
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
+  answer_result: 'd2c',
+  relay_devices_request: 'c2d',
+  relay_devices_response: 'd2c',
+  relay_device_revoke_request: 'c2d',
+  relay_device_revoke_response: 'd2c',
   session_update: 'd2c',
   ping: 'both',
   pong: 'both',
@@ -1136,22 +1178,15 @@ export interface AuthChallengeMessage {
   /** Base64-encoded server Ed25519 public key */
   readonly serverPublicKey: string;
   /**
-   * Relay end-to-end encryption (#543). Present ONLY on the relay transport;
-   * the direct WebSocket path leaves both absent and is unchanged by this.
-   *
-   * The daemon's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, thisKey, null)` made with the identity key in
-   * `serverPublicKey`. The signature is what stops the worker substituting its
-   * own key: it forwards these fields and can replace them, but cannot forge a
-   * signature the client will accept.
+   * Retired v1 relay key-exchange fields (#1202, ADR 0034 section 14).
+   * Retained only for additive wire/read compatibility at PROTOCOL_VERSION 1.
+   * Current direct auth never emits them; relay v2 uses its own signed handshake.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
   /**
-   * The daemon's long-lived P-256 answer key, base64 (#875). Phones pin this
-   * alongside the fingerprint so a lock-screen answer can be sealed with no
-   * live connection to negotiate over. Absent on a daemon that has none, in
-   * which case a client must refuse to send rather than send in the clear.
+   * Retired v1 answer-key announcement, retained only for historical wire reads.
+   * Current daemon startup neither creates the old key file nor advertises this field.
    */
   readonly answerEncryptionKey?: string;
 }
@@ -1168,15 +1203,8 @@ export interface AuthResponseMessage {
   /** Client's fingerprint for display */
   readonly clientFingerprint: string;
   /**
-   * Relay end-to-end encryption (#543), relay transport only.
-   *
-   * The client's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, daemonKey, thisKey)` made with the identity in
-   * `clientPublicKey`. Binding BOTH keys means neither side's contribution can
-   * be swapped after the fact.
-   *
-   * `signature` above is unchanged and still covers the challenge alone, so the
-   * direct path's verification is untouched.
+   * Retired v1 relay key-exchange fields: decode/additive compatibility only.
+   * They grant no authority and are not used by direct Ed25519 verification.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
@@ -1477,6 +1505,16 @@ export function serialize(message: ProtocolMessage): string {
 export function deserialize(data: string): ProtocolMessage | null {
   try {
     const parsed: unknown = JSON.parse(data);
+    // Inspect the original spelling before choosing a protocol. JSON.parse's
+    // last-key-wins behavior must not hide native_answer under legacy answer.
+    if (!hasUniqueRootType(data)) return null;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)['type'] === 'native_answer'
+    ) {
+      return decodeNativeAnswer(data);
+    }
     if (!isValidMessage(parsed)) {
       return null;
     }
@@ -1484,6 +1522,39 @@ export function deserialize(data: string): ProtocolMessage | null {
   } catch {
     return null;
   }
+}
+
+/** Grammar was validated by JSON.parse; scan only root member names, iteratively.
+ * Native size/depth limits must not restrict legacy transcripts (#1201). */
+function hasUniqueRootType(data: string): boolean {
+  let depth = 0;
+  let rootKey = false;
+  let typeSeen = false;
+  for (let i = 0; i < data.length; i++) {
+    const character = data[i];
+    if (character === '"') {
+      const start = i;
+      for (i++; i < data.length; i++) {
+        if (data[i] === '\\') i++;
+        else if (data[i] === '"') break;
+      }
+      if (depth === 1 && rootKey) {
+        if (JSON.parse(data.slice(start, i + 1)) === 'type') {
+          if (typeSeen) return false;
+          typeSeen = true;
+        }
+        rootKey = false;
+      }
+    } else if (character === '{' || character === '[') {
+      depth++;
+      if (depth === 1 && character === '{') rootKey = true;
+    } else if (character === '}' || character === ']') {
+      depth--;
+    } else if (character === ',' && depth === 1) {
+      rootKey = true;
+    }
+  }
+  return true;
 }
 
 /**
@@ -1516,6 +1587,22 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['type'] !== 'string') return false;
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
+
+  if (obj['type'] === 'native_answer') {
+    try {
+      decodeNativeAnswer(encodeNativeAnswer(obj as unknown as NativeAnswer));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // The subscription responses have no other validator on their way to a client (#1200).
+  if (
+    obj['type'] === 'secure_push_register_response' ||
+    obj['type'] === 'secure_push_unregister_response'
+  )
+    return isValidSecurePushResponse(obj);
 
   return VALID_TYPES.has(obj['type']);
 }
@@ -2203,7 +2290,8 @@ export function createTerminalResize(cols: number, rows: number): TerminalResize
 }
 
 /**
- * Create an auth challenge message.
+ * Create an auth challenge message. Optional legacy arguments retain their wire positions
+ * for additive compatibility only; they do not implement key exchange or answer sealing.
  */
 export function createAuthChallenge(
   challenge: string,
@@ -2228,7 +2316,8 @@ export function createAuthChallenge(
 }
 
 /**
- * Create an auth response message.
+ * Create an auth response message. The optional legacy relayKex position is retained
+ * for additive compatibility only; direct verification still signs only the challenge.
  */
 export function createAuthResponse(
   clientPublicKey: string,

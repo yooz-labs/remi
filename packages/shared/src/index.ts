@@ -78,6 +78,7 @@ export type {
   EditMessage,
   QuestionMessage,
   AnswerMessage,
+  NativeAnswerMessage,
   AnswerSelection,
   AnswerExtras,
   SessionUpdateMessage,
@@ -208,8 +209,8 @@ export { dispatchMessage, assertNever } from './dispatch.ts';
 
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
-export * from './relay-crypto.ts';
-export * from './sealed-answer.ts';
+// Relay protocol v2 (ADR 0034); namespaced so no name collides with the v1 modules above.
+export * as relayV2 from './relay/index.ts';
 export {
   PBKDF2_ITERATIONS,
   SALT_SIZE,
@@ -283,3 +284,6 @@ export { hubSupport, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from './protocol-
 
 // Ed25519 admission defense shared by direct auth and relay (#873).
 export { isSmallOrderPublicKey } from './ed25519-public-key.ts';
+export * from './relay-messages.ts';
+
+export * from './secure-push-messages.ts';

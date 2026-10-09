@@ -239,7 +239,7 @@ browserTest(
   async () => {
     // Read the actual single reviewed TS table, never maintain another TS list.
     const source = readFileSync(
-      resolve(import.meta.dir, '../../../shared/src/ed25519-public-key.ts'),
+      resolve(import.meta.dir, '../../../shared/src/relay/small-order.ts'),
       'utf8',
     );
     const encodings = [...source.matchAll(/'([0-9a-f]{64})'/g)].map((match) => match[1] ?? '');

@@ -20,8 +20,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { createIdentity, generateId, relayV2, unlockIdentity } from '@remi/shared';
+import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
+import { IdentityStore } from '../../src/auth/identity-store.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { createMessageApiForSession } from '../../src/cli/session-phases/message-api-setup.ts';
@@ -32,11 +34,28 @@ import {
   setWrapperDetached,
 } from '../../src/cli/wrapper-state.ts';
 import type { ClaudeLaunchDeps } from '../../src/harness/claude-session.ts';
+import type { AnswerCommit } from '../../src/harness/decision.ts';
 import { ClaudeHarness } from '../../src/harness/index.ts';
 import type { HarnessSession } from '../../src/harness/index.ts';
+import type { StopHookInput } from '../../src/hooks/hook-types.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
+import { createClaudeTurnStop } from '../../src/notifications/claude-turn-stop.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
+import {
+  NotificationDispatcher as ActualNotificationDispatcher,
+  buildPushText,
+} from '../../src/notifications/notification-dispatcher.ts';
+import { sendPushTrigger } from '../../src/notifications/push-client.ts';
+import type { SecurePushEvent } from '../../src/notifications/secure-push-contexts.ts';
+import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
+import { SecurePushService } from '../../src/notifications/secure-push-service.ts';
+import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
+import { SecurePushTransport } from '../../src/notifications/secure-push-transport.ts';
+import { createTurnEventSink } from '../../src/notifications/turn-events.ts';
+import { TurnTimer } from '../../src/notifications/turn-timer.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
+import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -44,6 +63,7 @@ import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/index.ts';
 import type { TranscriptWatcher } from '../../src/transcript/index.ts';
 import { stripComments } from '../helpers/strip-comments.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from '../parser/fixtures/claude-dialogs.ts';
 
 const SRC = path.resolve(import.meta.dir, '..', '..', 'src');
 
@@ -211,7 +231,7 @@ describe('ClaudeHarness.createSession', () => {
     if (opts.register) {
       sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
     }
-    return { session, sessionId };
+    return { session, sessionId, messageApi };
   }
 
   function claudeSessionIdOf(sessionId: UUID): string {
@@ -230,7 +250,12 @@ describe('ClaudeHarness.createSession', () => {
   }
 
   /** POST a PermissionRequest the way Claude Code does; the response waits on the hold. */
-  function postPermissionRequest(server: HookServer, claudeSessionId: string): Promise<Response> {
+  function postPermissionRequest(
+    server: HookServer,
+    claudeSessionId: string,
+    toolName = 'Bash',
+    toolInput: Record<string, unknown> = { command: 'ls' },
+  ): Promise<Response> {
     return fetch(`http://127.0.0.1:${server.port}/hooks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -239,8 +264,8 @@ describe('ClaudeHarness.createSession', () => {
         session_id: claudeSessionId,
         cwd: tmpDir,
         permission_mode: 'default',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
+        tool_name: toolName,
+        tool_input: toolInput,
         permission_suggestions: [],
       }),
     }).catch(() => new Response(null, { status: 499 }));
@@ -251,17 +276,1150 @@ describe('ClaudeHarness.createSession', () => {
    * PermissionRequest, and wait until the session holds it. Returns the held
    * card and the pending hook response.
    */
-  async function holdPrompt(passThrough: boolean) {
+  async function holdPrompt(
+    passThrough: boolean,
+    toolName = 'Bash',
+    toolInput: Record<string, unknown> = { command: 'ls' },
+  ) {
     hookServer = newHookServer();
     hookServer.start();
     freshRegistry();
-    const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
-    const response = postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
+    const { session, sessionId, messageApi } = launch(newHarness(), {
+      passThrough,
+      register: true,
+    });
+    const response = postPermissionRequest(
+      hookServer,
+      claudeSessionIdOf(sessionId),
+      toolName,
+      toolInput,
+    );
     await until(() => session.decisions.hasMainHold(), 'the prompt to be held');
     const card = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])][0];
     if (!card) throw new Error('the held prompt did not reach the registry as a card');
-    return { decisions: session.decisions, card, response };
+    return { decisions: session.decisions, card, response, sessionId, messageApi };
   }
+
+  /** Feed a captured real permission dialog into the session's real tracker. */
+  function visiblePrompt(terminalOnly = false) {
+    const launched = launch(newHarness(), { register: true });
+    const tracker = launched.session.decisions.screen;
+    if (!(tracker instanceof QuestionPresenceTracker)) throw new Error('no real screen tracker');
+    const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!parsed) throw new Error('the captured permission dialog did not parse');
+    const question = { ...parsed, terminalOnly };
+    tracker.onPTYPromptVisible(question);
+    expect(sessionRegistry.getQuestion(launched.sessionId, question.id)).not.toBeNull();
+    return { ...launched, tracker, question };
+  }
+
+  async function pushRecipient() {
+    const dir = path.join(tmpDir, generateId());
+    const trust = new IdentityStore(dir);
+    await trust.generate();
+    const device = await unlockIdentity(await createIdentity());
+    await trust.addAuthorizedKey(device.publicKeyRaw, 'owned context recipient');
+    await new RelayDeviceStore(dir, trust).add(device.publicKeyRaw, 'owned context recipient');
+    const pair = await relayV2.generateEcPair();
+    const store = new SecurePushStore(dir, trust);
+    const authority = store.captureAuthority(device.publicKeyRaw);
+    if (!authority) throw new Error('context recipient authority missing');
+    const result = await store.register(authority, {
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey: relayV2.b64u(pair.publicKey),
+      keyVersion: 1,
+    });
+    if (!result.success) throw new Error('context recipient registration missing');
+    const snapshot = store.listCurrent()[0];
+    if (!snapshot) throw new Error('context recipient snapshot missing');
+    return { snapshot, store, trust, pair };
+  }
+
+  // Causal pins over the actual registry, harness and recipient; no policy substitute.
+  test('secure push context audit replacement releases capacity and finish invalidates its exact launch', async () => {
+    const { session, sessionId, question } = visiblePrompt();
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      },
+      1,
+      1,
+    );
+    const { snapshot } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const oldRuntime = contexts.begin(sessionId);
+    const first = contexts.capture(oldRuntime, snapshot, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    const freshRuntime = contexts.begin(sessionId);
+    expect(contexts.isCurrent(first)).toBe(false);
+    const second = contexts.capture(freshRuntime, snapshot, event);
+    expect(second).not.toBeNull();
+    if (!second) return;
+    expect(contexts.isCurrent(second)).toBe(true);
+    contexts.finish(freshRuntime);
+    expect(contexts.isCurrent(second)).toBe(false);
+    expect(contexts.capture(freshRuntime, snapshot, event)).toBeNull();
+    const third = contexts.capture(contexts.begin(sessionId), snapshot, event);
+    expect(third).not.toBeNull();
+  });
+
+  test('secure push context audit digest binds exact current content once and latest action cannot alias', async () => {
+    const { decisions, sessionId, card, response } = await holdPrompt(false);
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const { snapshot } = await pushRecipient();
+      const event = {
+        kind: 'question' as const,
+        logicalId: card.id,
+        question: card,
+        title: 'Remi',
+        body: card.text,
+      };
+      const first = contexts.capture(runtime, snapshot, event);
+      expect(first).not.toBeNull();
+      if (!first) return;
+      expect(contexts.bindDigest(first, 'invalid')).toBe(false);
+      expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(true);
+      expect(contexts.bindDigest(first, 'cd'.repeat(32))).toBe(false);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
+        'ab'.repeat(32),
+      );
+      expect(contexts.latestAction(runtime, card.id, 'unrelated-public-key')).toBeNull();
+      const second = contexts.capture(runtime, snapshot, {
+        ...event,
+        body: `${event.body} updated`,
+      });
+      expect(second).not.toBeNull();
+      if (!second) return;
+      expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(false);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toBeNull();
+      expect(contexts.bindDigest(second, 'cd'.repeat(32))).toBe(true);
+      expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toEqual({
+        context: second,
+        contentDigest: 'cd'.repeat(32),
+      });
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+    }
+  });
+
+  test('secure push context audit informational card still requires actual registry presence', async () => {
+    const { decisions, sessionId, card, response } = await holdPrompt(false);
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const { snapshot } = await pushRecipient();
+      const first = contexts.capture(runtime, snapshot, {
+        kind: 'question',
+        logicalId: card.id,
+        question: card,
+        title: 'Remi',
+        body: '😀'.repeat(140),
+      });
+      expect(first).not.toBeNull();
+      if (!first) return;
+      expect(first.payload.actionable).toBe(false);
+      expect(contexts.isCurrent(first)).toBe(true);
+      sessionRegistry.removeQuestion(sessionId, card.id, 'owned-private-audit');
+      expect(decisions.isHeld(card.id)).toBe(true);
+      expect(contexts.isCurrent(first)).toBe(false);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+    }
+  });
+
+  test('the final authority commit reaches the real gate through the launched session (#1201)', async () => {
+    const { decisions, card, response, sessionId } = await holdPrompt(false);
+    let refusals = 0;
+    const refusing: AnswerCommit = () => {
+      refusals++;
+      return { kind: 'refused' };
+    };
+    // The production chain: decisions (what `gateAnswerDeps` reads) -> the bridge's gate handle -> the gate.
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' }, refusing)).toBe('authority-refused');
+    expect(refusals).toBe(1);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(sessionRegistry.getQuestion(sessionId, card.id)).not.toBeNull();
+    let commits = 0;
+    const committing: AnswerCommit = <T>(effect: () => T) => {
+      commits++;
+      return { kind: 'committed', value: effect() };
+    };
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' }, committing)).toBe('resolved');
+    expect(commits).toBe(1);
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
+  });
+
+  test('secure push context floors the actual held deadline, keeps identical event authority and never settles its hook', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const { snapshot } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const context = contexts.capture(runtime, snapshot, event);
+    expect(context).not.toBeNull();
+    if (!context) return;
+    const validity = decisions.answerValidity(card.id);
+    expect(validity.kind).toBe('deadline');
+    if (validity.kind !== 'deadline') return;
+    expect(context.content.expiresAt).toBe(Math.floor(validity.expiresAtMs / 1000));
+    expect(context.payload.actionable).toBe(true);
+    expect(context.content.collapseId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(context.content.collapseId).not.toContain(card.id);
+    expect(contexts.capture(runtime, snapshot, event)).toBe(context);
+    expect(contexts.isCurrent(context)).toBe(true);
+    expect(contexts.bindDigest(context, 'ab'.repeat(32))).toBe(true);
+    expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)).toEqual({
+      context,
+      contentDigest: 'ab'.repeat(32),
+    });
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+    expect(contexts.isCurrent(context)).toBe(false);
+  });
+
+  test('secure push context cannot retain action after actual option meaning changes, registry removal or launch replacement', async () => {
+    const { decisions, sessionId, card: question, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const { snapshot } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const first = contexts.capture(runtime, snapshot, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    expect(first.payload.actionable).toBe(true);
+    expect(contexts.bindDigest(first, 'ab'.repeat(32))).toBe(true);
+    expect(contexts.latestAction(runtime, question.id, snapshot.publicKey)?.context).toBe(first);
+    const changed = {
+      ...question,
+      options: question.options.map((o, i) =>
+        i === 0 ? { ...o, description: 'changed meaning' } : o,
+      ),
+    };
+    sessionRegistry.addQuestion(sessionId, changed);
+    expect(contexts.isCurrent(first)).toBe(false);
+    expect(contexts.latestAction(runtime, question.id, snapshot.publicKey)).toBeNull();
+    const next = contexts.capture(runtime, snapshot, { ...event, question: changed });
+    expect(next).not.toBeNull();
+    if (!next) return;
+    expect(next.content.collapseId).toBe(first.content.collapseId);
+    expect(next.content.revision).toBe(first.content.revision + 1);
+    sessionRegistry.removeQuestion(sessionId, question.id);
+    expect(contexts.isCurrent(next)).toBe(false);
+    const replacement = contexts.begin(sessionId);
+    expect(replacement.instance).not.toBe(runtime.instance);
+    expect(relayV2.fromB64u(replacement.instance)).toHaveLength(32);
+    expect(contexts.capture(runtime, snapshot, event)).toBeNull();
+    expect(decisions.answerHeld(question.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+  });
+
+  test('secure push context capacity refuses another current recipient without evicting the first', async () => {
+    const { session, sessionId, question } = visiblePrompt();
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      },
+      1,
+      1,
+    );
+    const runtime = contexts.begin(sessionId);
+    const { snapshot: firstRecipient } = await pushRecipient();
+    const { snapshot: secondRecipient } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: question.id,
+      question,
+      title: 'Remi',
+      body: question.text,
+    };
+    const first = contexts.capture(runtime, firstRecipient, event);
+    expect(first).not.toBeNull();
+    if (!first) return;
+    expect(contexts.capture(runtime, secondRecipient, event)).toBeNull();
+    expect(contexts.isCurrent(first)).toBe(true);
+    contexts.finish(runtime);
+    expect(contexts.isCurrent(first)).toBe(false);
+  });
+
+  for (const deliveryPath of [
+    'service',
+    'dispatcher',
+    'terminal-notice',
+    'turn-failed',
+    'turn-failed-recovery',
+    'dismiss',
+    'runtime-finished-during-sign',
+    'question-removed-during-sign',
+    'options-changed-during-sign',
+    'reauthorized-during-sign',
+    'subscription-rotated-during-sign',
+    'held-deadline-during-sign',
+  ] as const) {
+    test(`secure-only ${deliveryPath} enforces delivery authority through the real Worker and owned APNs`, async () => {
+      const retiring = deliveryPath.endsWith('-during-sign');
+      if (deliveryPath === 'held-deadline-during-sign')
+        prompts = { hold_seconds: 5, daemon_hold_seconds: 5 };
+      const { decisions, card, sessionId, response } = await holdPrompt(false);
+      const { snapshot, store, trust, pair } = await pushRecipient();
+      const { createServer } = await import('node:http');
+      const { startWorker } = await import('../../../signaling/tests/e2e/harness.ts');
+      const bodies: string[] = [];
+      const apns = createServer(async (request, reply) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        bodies.push(Buffer.concat(chunks).toString('utf8'));
+        reply.writeHead(200);
+        reply.end();
+      });
+      await new Promise<void>((resolve) => apns.listen(0, '127.0.0.1', resolve));
+      const address = apns.address();
+      if (!address || typeof address === 'string') throw new Error('owned APNs listener missing');
+      const signing = await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify'],
+      );
+      const der = Buffer.from(await crypto.subtle.exportKey('pkcs8', signing.privateKey));
+      const pem = `-----BEGIN PRIVATE KEY-----\n${der
+        .toString('base64')
+        .match(/.{1,64}/g)
+        ?.join('\n')}\n-----END PRIVATE KEY-----`;
+      let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
+      try {
+        worker = await startWorker(
+          {
+            APNS_KEY_ID: 'OWNEDTEST1',
+            APNS_TEAM_ID: 'OWNEDTEAM1',
+            APNS_PRIVATE_KEY: pem,
+            APNS_BUNDLE_ID: 'owned.synthetic.topic',
+            TEST_APNS_ENDPOINT: `http://127.0.0.1:${address.port}`,
+            PUSH_SECRET: 'owned-cross-track-push-secret',
+          },
+          true,
+        );
+        const machine = await trust.unlock();
+        const signer = await relayV2.signerFromKey(
+          machine.privateKey,
+          new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+        );
+        const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+        const { FakeHost } = await import('../../../signaling/tests/e2e/endpoints.ts');
+        const host = await FakeHost.start(worker, {
+          signer,
+          publicKey: signer.publicKey,
+          rid: await relayV2.ridOf(signer.publicKey),
+          ridHex: rid,
+        });
+        try {
+          expect(
+            (await host.enroll(new Uint8Array(Buffer.from(snapshot.publicKey, 'base64'))))['ok'],
+          ).toBe(true);
+          const signalingUrl = worker.url;
+          const contexts = new SecurePushContexts({
+            questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+            validityFor: (_sid, qid) => decisions.answerValidity(qid),
+          });
+          const runtime = contexts.begin(sessionId);
+          let signingPaused = false;
+          let signingReached = false;
+          let releaseSigning: () => void = () => {};
+          const signingGate = new Promise<void>((resolve) => {
+            releaseSigning = resolve;
+          });
+          // The engine's real signature completes unchanged; only returning it is delayed.
+          const observedSigner: relayV2.Signer = {
+            publicKey: signer.publicKey,
+            async sign(input) {
+              const signed = await signer.sign(input);
+              if (retiring && !signingPaused) {
+                signingPaused = true;
+                signingReached = true;
+                await signingGate;
+              }
+              return signed;
+            },
+          };
+          const service = new SecurePushService({
+            store,
+            contexts,
+            transport: SecurePushTransport.forOwnedLoopbackTest({
+              store,
+              signer: observedSigner,
+              audience: worker.url,
+              ownedOrigin: worker.url,
+              pushSecret: 'owned-cross-track-push-secret',
+            }),
+            machinePublicKey: relayV2.b64u(signer.publicKey),
+            rid,
+            log: () => {},
+          });
+          const secure = service.forRuntime(runtime);
+          const dispatcher = new ActualNotificationDispatcher(
+            {
+              sessionRegistry,
+              deviceTokens: new Map(),
+              pushConfig: () => ({ signalingUrl }),
+              getPrimarySessionId: () => sessionId,
+              securePush: secure,
+            },
+            sessionId,
+          );
+          const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
+          if (retiring) {
+            const pending = dispatcher.maybePush(sessionId, card, { held: true });
+            try {
+              await until(() => signingReached, 'actual content signature to complete');
+              if (deliveryPath === 'runtime-finished-during-sign') contexts.finish(runtime);
+              else if (deliveryPath === 'question-removed-during-sign')
+                sessionRegistry.removeQuestion(sessionId, card.id, 'owned-retirement');
+              else if (deliveryPath === 'options-changed-during-sign')
+                sessionRegistry.addQuestion(sessionId, {
+                  ...card,
+                  options: card.options.map((option) => ({
+                    ...option,
+                    description: 'changed meaning',
+                  })),
+                });
+              else if (deliveryPath === 'reauthorized-during-sign') {
+                trust.removeAuthorizedKey(snapshot.fingerprint);
+                await trust.addAuthorizedKey(snapshot.publicKey, 'owned reauthorization');
+              } else if (deliveryPath === 'subscription-rotated-during-sign') {
+                const authority = store.captureAuthority(snapshot.publicKey);
+                if (!authority) throw new Error('owned authority missing');
+                const replacement = await relayV2.generateEcPair();
+                expect(
+                  await store.register(authority, {
+                    token: snapshot.token,
+                    environment: snapshot.environment,
+                    pushPublicKey: relayV2.b64u(replacement.publicKey),
+                    keyVersion: snapshot.keyVersion + 1,
+                  }),
+                ).toEqual({ success: true, keyVersion: snapshot.keyVersion + 1 });
+              } else await until(() => !decisions.isHeld(card.id), 'real held deadline');
+            } finally {
+              releaseSigning();
+            }
+            await expect(pending).resolves.toBe('failed');
+            expect(bodies).toHaveLength(0);
+            if (decisions.isHeld(card.id))
+              expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+            await response;
+            return;
+          }
+          const expectedCount =
+            deliveryPath === 'dismiss' ? 2 : deliveryPath === 'turn-failed-recovery' ? 3 : 1;
+          if (deliveryPath === 'dismiss')
+            await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe(
+              'pushed',
+            );
+          const deliver = async () => {
+            if (deliveryPath === 'service')
+              return secure.send({ kind: 'question', logicalId: card.id, question: card, ...text });
+            if (deliveryPath === 'dispatcher')
+              return dispatcher.maybePush(sessionId, card, { held: true });
+            if (deliveryPath === 'turn-failed')
+              return dispatcher.pushTurnFailed({ error: 'rate_limit' });
+            if (deliveryPath === 'turn-failed-recovery') {
+              if (bodies.length === expectedCount)
+                return dispatcher.pushTurnFailed({ error: 'authentication' });
+              await expect(dispatcher.pushTurnFailed({ error: 'rate_limit' })).resolves.toBe(
+                'pushed',
+              );
+              dispatcher.dismissTurnFailed();
+              const deadline = Date.now() + 3000;
+              while (bodies.length < 2 && Date.now() < deadline) await Bun.sleep(10);
+              expect(bodies).toHaveLength(2);
+              return dispatcher.pushTurnFailed({ error: 'authentication' });
+            }
+            if (deliveryPath === 'terminal-notice')
+              dispatcher.pushTerminalNotice(sessionId, card, 'released_no_terminal');
+            else dispatcher.dismiss(sessionId, card.id);
+            const deadline = Date.now() + 3000;
+            while (bodies.length < expectedCount && Date.now() < deadline) await Bun.sleep(10);
+            return bodies.length === expectedCount ? 'pushed' : 'failed';
+          };
+          await expect(deliver()).resolves.toBe('pushed');
+          expect(bodies).toHaveLength(expectedCount);
+          const raw = bodies[expectedCount - 1];
+          const outer = JSON.parse(raw ?? '');
+          expect(outer.aps.category ?? '').toBe('');
+          expect(raw).not.toContain(card.text);
+          expect(raw).not.toContain(sessionId);
+          expect(raw).not.toContain(card.id);
+          const opened = await relayV2.openPushContent(
+            pair,
+            outer.remiPush,
+            {
+              machinePublicKey: relayV2.b64u(signer.publicKey),
+              devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+              pushPublicKey: snapshot.pushPublicKey,
+              keyVersion: snapshot.keyVersion,
+            },
+            Math.floor(Date.now() / 1000),
+          );
+          if (deliveryPath === 'service' || deliveryPath === 'dispatcher') {
+            expect(opened.payload).toMatchObject({
+              type: 'question',
+              actionable: true,
+              sessionId,
+              questionId: card.id,
+              runtimeInstance: runtime.instance,
+            });
+            expect(contexts.latestAction(runtime, card.id, snapshot.publicKey)?.contentDigest).toBe(
+              opened.contentDigest,
+            );
+          } else {
+            expect(opened.payload).toMatchObject({
+              type: deliveryPath === 'dismiss' ? 'dismiss' : 'informational',
+              actionable: false,
+            });
+          }
+          // A repeated notice is a later occurrence and pushes again (#1200, B2). A repeated failed
+          // turn for the same reason alerts once until the notice is cleared, on the secure channel
+          // as on the legacy one (#1226). A repeated dismissal or question is the same event and
+          // does not push again either.
+          const repeats = deliveryPath === 'terminal-notice';
+          const repeated = await deliver();
+          if (deliveryPath === 'turn-failed' || deliveryPath === 'turn-failed-recovery')
+            expect(repeated).toBe('deduped');
+          if (repeats) await until(() => bodies.length === expectedCount + 1, 'the repeated push');
+          expect(bodies).toHaveLength(repeats ? expectedCount + 1 : expectedCount);
+        } finally {
+          host.control.close();
+          await host.control.closed;
+        }
+        expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+        await response;
+      } finally {
+        await worker?.stop();
+        apns.closeAllConnections();
+        await new Promise<void>((resolve) => apns.close(() => resolve()));
+      }
+    }, 15000);
+  }
+  for (const path of ['service', 'dispatcher'] as const) {
+    test(`secure-only ${path} preserves real socket-loss uncertainty without resend or hook settlement`, async () => {
+      const { decisions, card, sessionId, response } = await holdPrompt(false);
+      const { store, trust } = await pushRecipient();
+      const { createServer } = await import('node:http');
+      let effects = 0;
+      const receiver = createServer(async (request) => {
+        for await (const _chunk of request) {
+          /* Consume the actual submitted request. */
+        }
+        effects++;
+        request.socket.destroy();
+      });
+      await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+      const address = receiver.address();
+      if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+      try {
+        const machine = await trust.unlock();
+        const signer = await relayV2.signerFromKey(
+          machine.privateKey,
+          new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+        );
+        const contexts = new SecurePushContexts({
+          questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+          validityFor: (_sid, qid) => decisions.answerValidity(qid),
+        });
+        const runtime = contexts.begin(sessionId);
+        const origin = `http://127.0.0.1:${address.port}`;
+        const logs: string[] = [];
+        const service = new SecurePushService({
+          store,
+          contexts,
+          transport: SecurePushTransport.forOwnedLoopbackTest({
+            store,
+            signer,
+            audience: origin,
+            ownedOrigin: origin,
+          }),
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+          log: (outcome) => logs.push(outcome),
+        });
+        const secure = service.forRuntime(runtime);
+        const dispatcher = new ActualNotificationDispatcher(
+          {
+            sessionRegistry,
+            deviceTokens: new Map(),
+            pushConfig: () => ({ signalingUrl: origin }),
+            getPrimarySessionId: () => sessionId,
+            securePush: secure,
+          },
+          sessionId,
+        );
+        const text = buildPushText(sessionRegistry.getSession(sessionId)?.name || 'Agent', card);
+        const deliver = () =>
+          path === 'service'
+            ? secure.send({ kind: 'question', logicalId: card.id, question: card, ...text })
+            : dispatcher.maybePush(sessionId, card, { held: true });
+        const first = await deliver();
+        const duplicate = await deliver();
+        expect(effects).toBe(1);
+        expect(logs).toEqual(['uncertain']);
+        expect(decisions.isHeld(card.id)).toBe(true);
+        expect(duplicate).toBe(first);
+        expect(first).toBe('uncertain');
+      } finally {
+        decisions.answerHeld(card.id, { kind: 'cancel' });
+        await response;
+        receiver.closeAllConnections();
+        await new Promise<void>((resolve) => receiver.close(() => resolve()));
+      }
+    }, 10000);
+  }
+
+  test('secure-only dispatcher actions require the complete actual held Read ask', async () => {
+    const meaningfulTail = 'ACTUAL_TARGET_AT_END.txt';
+    const file = path.join(
+      tmpDir,
+      'owned-directory-'.repeat(5),
+      'another-directory-'.repeat(5),
+      meaningfulTail,
+    );
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'owned private fixture');
+    const { decisions, card, sessionId, response } = await holdPrompt(false, 'Read', {
+      file_path: file,
+    });
+    const { store, trust, pair, snapshot } = await pushRecipient();
+    const { createServer } = await import('node:http');
+    let opened: Awaited<ReturnType<typeof relayV2.openPushContent>> | undefined;
+    let effects = 0;
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      opened = await relayV2.openPushContent(
+        pair,
+        {
+          v: 2,
+          rid,
+          collapseId: submit.collapseId,
+          sealed: submit.sealed,
+        },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      effects++;
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const secure = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const dispatcher = new ActualNotificationDispatcher(
+        {
+          sessionRegistry,
+          deviceTokens: new Map(),
+          pushConfig: () => ({ signalingUrl: origin }),
+          getPrimarySessionId: () => sessionId,
+          securePush: secure,
+        },
+        sessionId,
+      );
+      expect(card.text).toContain(meaningfulTail);
+      expect(new TextEncoder().encode(card.text).length).toBeGreaterThan(200);
+      expect(new TextEncoder().encode(card.text).length).toBeLessThanOrEqual(512);
+      expect(card.detail).toBeUndefined();
+      await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe('pushed');
+      expect(effects).toBe(1);
+      expect(decisions.isHeld(card.id)).toBe(true);
+      if (!opened || opened.payload.type === 'dismiss')
+        throw new Error('missing question delivery');
+      expect(buildPushText('Agent', card).body).not.toContain(meaningfulTail);
+      expect(
+        !opened.payload.actionable ||
+          opened.payload.body.includes(card.text.replace(/\s+/g, ' ').trim()),
+      ).toBe(true);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
+
+  test('secure-only dispatcher actions require the complete actual held Bash command', async () => {
+    const fullCommand = `printf '%s' '${'OWNED_LITERAL_TEXT_'.repeat(18)} ACTUAL_MIDDLE_ARGUMENT OWNED_END'`;
+    const { decisions, card, sessionId, response } = await holdPrompt(false, 'Bash', {
+      command: fullCommand,
+    });
+    const { store, trust, pair, snapshot } = await pushRecipient();
+    const { createServer } = await import('node:http');
+    let opened: Awaited<ReturnType<typeof relayV2.openPushContent>> | undefined;
+    let effects = 0;
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      opened = await relayV2.openPushContent(
+        pair,
+        {
+          v: 2,
+          rid,
+          collapseId: submit.collapseId,
+          sealed: submit.sealed,
+        },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      effects++;
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const secure = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const dispatcher = new ActualNotificationDispatcher(
+        {
+          sessionRegistry,
+          deviceTokens: new Map(),
+          pushConfig: () => ({ signalingUrl: origin }),
+          getPrimarySessionId: () => sessionId,
+          securePush: secure,
+        },
+        sessionId,
+      );
+      expect(card.text).not.toContain(fullCommand);
+      expect(new TextEncoder().encode(card.text).length).toBeLessThanOrEqual(512);
+      await expect(dispatcher.maybePush(sessionId, card, { held: true })).resolves.toBe('pushed');
+      expect(effects).toBe(1);
+      expect(decisions.isHeld(card.id)).toBe(true);
+      if (!opened || opened.payload.type === 'dismiss')
+        throw new Error('missing question delivery');
+      expect(buildPushText('Agent', card).body).not.toContain(fullCommand);
+      expect(!opened.payload.actionable || opened.payload.body.includes(fullCommand)).toBe(true);
+    } finally {
+      decisions.answerHeld(card.id, { kind: 'cancel' });
+      await response;
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
+
+  test('secure-only actual Claude turn IDs distinguish repeated final text while an exact event stays immutable', async () => {
+    hookServer = newHookServer();
+    hookServer.start();
+    const harness = newHarness();
+    const { sessionId, session } = launch(harness, { register: true });
+    const { store, trust, snapshot, pair } = await pushRecipient();
+    const machine = await trust.unlock();
+    const signer = await relayV2.signerFromKey(
+      machine.privateKey,
+      new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+    );
+    const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+    const { createServer } = await import('node:http');
+    // The revision is sealed (#1200): read it from the opened content, not the cleartext submit.
+    const submitted: (ReturnType<typeof relayV2.decodePushSubmit> & { revision: number })[] = [];
+    const receiver = createServer(async (request, reply) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const submit = relayV2.decodePushSubmit(Buffer.concat(chunks).toString('utf8'));
+      const origin = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+      const proof = await relayV2.verifyPushSubmit(
+        submit,
+        { rid, audience: origin },
+        Math.floor(Date.now() / 1000),
+      );
+      const content = await relayV2.openPushContent(
+        pair,
+        { v: 2, rid, collapseId: submit.collapseId, sealed: submit.sealed },
+        {
+          machinePublicKey: relayV2.b64u(signer.publicKey),
+          devicePublicKey: Buffer.from(snapshot.publicKey, 'base64').toString('base64url'),
+          pushPublicKey: snapshot.pushPublicKey,
+          keyVersion: snapshot.keyVersion,
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      submitted.push({ ...submit, revision: content.content.revision });
+      reply.end(
+        relayV2.encodePushSubmitResult({
+          v: 2,
+          outcome: 'accepted',
+          requestDigest: proof.requestDigest,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
+    const address = receiver.address();
+    if (!address || typeof address === 'string') throw new Error('owned receiver missing');
+    try {
+      const contexts = new SecurePushContexts({
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => session.decisions.answerValidity(qid),
+      });
+      const runtime = contexts.begin(sessionId);
+      const origin = `http://127.0.0.1:${address.port}`;
+      const actual = new SecurePushService({
+        store,
+        contexts,
+        transport: SecurePushTransport.forOwnedLoopbackTest({
+          store,
+          signer,
+          audience: origin,
+          ownedOrigin: origin,
+        }),
+        machinePublicKey: relayV2.b64u(signer.publicKey),
+        rid,
+        log: () => {},
+      }).forRuntime(runtime);
+      const events: SecurePushEvent[] = [];
+      const tasks: Promise<unknown>[] = [];
+      // Observation only: forward every actual event to the actual service unchanged.
+      const secure = {
+        hasRecipients: (kind: relayV2.SecurePushKind) => actual.hasRecipients(kind),
+        send(event: SecurePushEvent) {
+          events.push(event);
+          const task = actual.send(event);
+          tasks.push(task);
+          return task;
+        },
+      };
+      const sink = createTurnEventSink({
+        config: () => ({ onTurnComplete: true, turnCompleteMinSeconds: 0 }),
+        deviceTokens: () => [],
+        sessionName: () => 'owned',
+        notifiers: new Map(),
+        signalingUrl: () => origin,
+        pushSecret: () => undefined,
+        securePush: () => secure,
+        send: sendPushTrigger,
+        log: () => {},
+        onError: () => {},
+      });
+      const timer = new TurnTimer();
+      const stop = createClaudeTurnStop({
+        admits: (input) => harness.admitsAnySession(input),
+        timer,
+        primarySessionId: () => sessionId,
+        sink,
+      });
+      const first = {
+        ...stopEventFor(sessionId),
+        prompt_id: generateId(),
+        stop_hook_active: false,
+        last_assistant_message: 'Same actual final text',
+      } as StopHookInput;
+      expect(harness.admitsAnySession(first)).toBe(true);
+      timer.observe(first.prompt_id);
+      await Bun.sleep(5);
+      stop(first);
+      await Promise.all(tasks);
+      expect(submitted).toHaveLength(1);
+      expect(events).toHaveLength(1);
+      const event = events[0];
+      if (!event) throw new Error('actual completion event missing');
+      await actual.send(event);
+      expect(submitted).toHaveLength(1);
+      const second = { ...first, prompt_id: generateId() };
+      timer.observe(second.prompt_id);
+      await Bun.sleep(5);
+      stop(second);
+      await Promise.all(tasks);
+      expect(events).toHaveLength(2);
+      expect(submitted).toHaveLength(2);
+      // Legacy stacked every turn-complete push (no collapse key); each turn keeps its own slot.
+      expect(submitted[1]?.collapseId).not.toBe(submitted[0]?.collapseId);
+      expect(submitted[1]?.revision).toBe(submitted[0]?.revision);
+      expect(submitted[1]?.nonce).not.toBe(submitted[0]?.nonce);
+    } finally {
+      receiver.closeAllConnections();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  }, 10000);
+
+  test('secure push context real held slot fans out without eviction and dismissal remains absorbing', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts(
+      {
+        questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+        validityFor: (_sid, qid) => decisions.answerValidity(qid),
+      },
+      4,
+      1,
+    );
+    const runtime = contexts.begin(sessionId);
+    const { snapshot: firstRecipient } = await pushRecipient();
+    const { snapshot: secondRecipient } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const first = contexts.capture(runtime, firstRecipient, event);
+    const second = contexts.capture(runtime, secondRecipient, event);
+    if (!first || !second) throw new Error('missing held recipient context');
+    expect(first?.payload.actionable).toBe(true);
+    expect(second?.payload.actionable).toBe(true);
+    expect(
+      contexts.capture(runtime, firstRecipient, { kind: 'turn_complete', logicalId: generateId() }),
+    ).toBeNull();
+    expect(contexts.isCurrent(first)).toBe(true);
+    const host = await relayV2.generateIdentity();
+    const metadata = {
+      ...first.content,
+      machinePublicKey: relayV2.b64u(host.signer.publicKey),
+      rid: Buffer.from(await relayV2.ridOf(host.signer.publicKey)).toString('hex'),
+    };
+    const payload = relayV2.buildPushPayload(first.payload);
+    const signature = await host.signer.sign(
+      await relayV2.buildPushContentSigningInput(metadata, payload),
+    );
+    expect(
+      relayV2.encodeSignedPushContent(metadata, payload, signature).length - payload.length,
+    ).toBe(324);
+    const dismiss = contexts.capture(runtime, firstRecipient, {
+      kind: 'dismiss',
+      logicalId: card.id,
+    });
+    expect(dismiss?.payload).toEqual({ type: 'dismiss', actionable: false });
+    expect(dismiss?.content.collapseId).toBe(first.content.collapseId);
+    expect(contexts.isCurrent(first)).toBe(false);
+    expect(contexts.capture(runtime, firstRecipient, event)).toBeNull();
+    expect(contexts.capture(runtime, firstRecipient, { kind: 'dismiss', logicalId: card.id })).toBe(
+      dismiss,
+    );
+    expect(contexts.isCurrent(second)).toBe(true);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+  });
+
+  test('secure push context real held cards refuse action for truncated and structured content', async () => {
+    const { decisions, card, sessionId, response } = await holdPrompt(false);
+    const contexts = new SecurePushContexts({
+      questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
+      validityFor: (_sid, qid) => decisions.answerValidity(qid),
+    });
+    const runtime = contexts.begin(sessionId);
+    const { snapshot: recipient } = await pushRecipient();
+    const event = {
+      kind: 'question' as const,
+      logicalId: card.id,
+      question: card,
+      title: 'Remi',
+      body: card.text,
+    };
+    const truncated = contexts.capture(runtime, recipient, { ...event, body: '😀'.repeat(140) });
+    expect(truncated?.payload.type).toBe('informational');
+    expect(truncated?.payload.actionable).toBe(false);
+    if (truncated?.payload.type !== 'informational') throw new Error('no informational fallback');
+    expect(new TextEncoder().encode(truncated.payload.body).length).toBeLessThanOrEqual(512);
+    const structured = { ...card, kind: 'multi_question' as const, questions: [] };
+    sessionRegistry.addQuestion(sessionId, structured);
+    const noActions = contexts.capture(runtime, recipient, { ...event, question: structured });
+    expect(noActions?.payload.type).toBe('informational');
+    expect(noActions?.payload.actionable).toBe(false);
+    expect(contexts.isCurrent(truncated)).toBe(false);
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    await response;
+  });
+
+  test('push validity: an actual held hook keeps its captured deadline after configuration changes and closes on answer', async () => {
+    const { decisions, card, response } = await holdPrompt(false);
+    const captured = decisions.answerValidity(card.id);
+    expect(captured.kind).toBe('deadline');
+    if (captured.kind !== 'deadline') throw new Error('no held deadline');
+    expect(captured.expiresAtMs).toBeGreaterThan(Date.now());
+    prompts = { hold_seconds: 5, daemon_hold_seconds: 5 };
+    await Bun.sleep(5);
+    expect(decisions.answerValidity(card.id)).toEqual(captured);
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
+    expect(decisions.answerValidity(card.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: removing the actual registered card closes authority while its hook is still held', async () => {
+    const { decisions, card, response, sessionId } = await holdPrompt(false);
+    expect(decisions.answerValidity(card.id).kind).toBe('deadline');
+    sessionRegistry.removeQuestion(sessionId, card.id, 'push-validity-test');
+    expect(decisions.isHeld(card.id)).toBe(true);
+    expect(decisions.answerValidity(card.id)).toEqual({ kind: 'closed' });
+    // Reading validity did not decide the pending hook.
+    expect(decisions.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+    expect(JSON.stringify(await (await response).json())).toContain('"deny"');
+  });
+
+  test('push validity: a real hookless prompt requires both its registry entry and current screen, including an unchanged redraw', () => {
+    const { session, sessionId, tracker, question } = visiblePrompt();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    const redraw = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!redraw) throw new Error('the captured redraw did not parse');
+    expect(redraw.id).not.toBe(question.id);
+    tracker.onPTYPromptVisible(redraw);
+    // Actual content dedup retains the first card while the same dialog redraws.
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    tracker.clearPending();
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    tracker.onPTYPromptVisible(question);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    sessionRegistry.removeQuestion(sessionId, question.id, 'push-validity-test');
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: a held-stamped card with no gate never gains authority from a matching real screen', () => {
+    const { session, sessionId, messageApi, tracker, question } = visiblePrompt();
+    messageApi.handleQuestion(question, { held: true });
+    expect(sessionRegistry.getQuestion(sessionId, question.id)?.held).toBe(true);
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.isHeld(question.id)).toBe(false);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+  });
+
+  test('push validity: a terminal-only or answered registry card and a disposed session have no action authority', () => {
+    const terminal = visiblePrompt(true);
+    expect(terminal.session.decisions.answerValidity(terminal.question.id)).toEqual({
+      kind: 'closed',
+    });
+    freshRegistry();
+    const { session, sessionId, tracker, question } = visiblePrompt();
+    const current = sessionRegistry.getQuestion(sessionId, question.id);
+    if (!current) throw new Error('no current card');
+    current.isAnswered = true;
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    current.isAnswered = false;
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
+    session.dispose();
+    // Neither lingering registry state nor the prior observed dialog revives a closed launch.
+    expect(sessionRegistry.getQuestion(sessionId, question.id)).not.toBeNull();
+    expect(tracker.isPromptCurrent(question.id)).toBe(true);
+    expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
+    expect(session.decisions.answerValidity(generateId())).toEqual({ kind: 'closed' });
+  });
 
   test('a harness built without launch dependencies refuses to create a session', () => {
     const harness = new ClaudeHarness(new TranscriptDiscovery({ projectsDir: tmpDir }));
@@ -569,12 +1727,17 @@ describe('what cli.ts hands the harness (#1164)', () => {
       'onSessionClosed: (sessionId, reason, pendingQuestionIds) => {',
       'sessionNotifiers.delete(sessionId);',
     );
-    const disposed = closed.indexOf('harnessSessions.get(sessionId)?.dispose();');
+    const disposed = closed.indexOf('dispose: () => harnessSessions.get(sessionId)?.dispose()');
     const dismissed = closed.indexOf('onQuestionResolved(sessionId, questionId,');
     const dropped = closed.indexOf('harnessSessions.delete(sessionId);');
     expect(disposed).toBeGreaterThan(0);
-    // The cards the session held are dismissed after the harness's teardown
-    // and while its dispatcher is still registered (#1223).
+    // The cards the session held are dismissed after the harness's teardown (the order inside
+    // `disposeAndDismiss` is its own test's) and while the dispatcher is still registered (#1223).
+    expect(closed).toContain('disposeAndDismiss({');
+    // One Set: `onQuestionResolved` fills `closingResolved` while the disposal runs, and the
+    // helper reads the same Set, so a card the teardown dismissed (Codex's) is not sent twice.
+    expect(closed).toContain('closingResolved = resolvedAtClose;');
+    expect(closed).toContain('alreadyResolved: resolvedAtClose,');
     expect(dismissed).toBeGreaterThan(disposed);
     expect(dropped).toBeGreaterThan(dismissed);
   });

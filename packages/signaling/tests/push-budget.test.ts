@@ -5,7 +5,7 @@
  * and fetch, which we stub for the Apple call). Confirms:
  *   - authenticated callers are NOT throttled at the old 5/60s per-IP limit
  *     (a power user's many daemons behind one NAT no longer 429);
- *   - unauthenticated callers keep the tight per-IP fallback;
+ *   - explicit legacy callers without the required secret are refused;
  *   - dismiss pushes draw from a SEPARATE budget so they can't starve alerts;
  *   - a permanent token rejection is surfaced as a structured `tokenInvalid`.
  *
@@ -29,6 +29,7 @@ async function generateTestP8(): Promise<string> {
 }
 
 interface TestEnv {
+  LEGACY_PUSH_ENABLED: string;
   CONNECTIONS: unknown;
   MAX_CONNECTIONS_PER_ROOM: string;
   CONNECTION_TIMEOUT_MS: string;
@@ -45,11 +46,13 @@ describe('/push budget (#603 Phase 2)', () => {
   // Configurable Apple response so a token-rejection case can be simulated.
   let appleStatus = 200;
   let appleBody = '';
+  let appleCalls = 0;
   let secretCounter = 0;
   let ipCounter = 0;
 
   beforeEach(async () => {
     baseEnv = {
+      LEGACY_PUSH_ENABLED: 'true',
       CONNECTIONS: {},
       MAX_CONNECTIONS_PER_ROOM: '10',
       CONNECTION_TIMEOUT_MS: '60000',
@@ -60,10 +63,12 @@ describe('/push budget (#603 Phase 2)', () => {
     };
     appleStatus = 200;
     appleBody = '';
+    appleCalls = 0;
     realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('push.apple.com')) {
+        appleCalls++;
         return new Response(appleBody, { status: appleStatus });
       }
       throw new Error(`unexpected fetch to ${url}`);
@@ -119,7 +124,7 @@ describe('/push budget (#603 Phase 2)', () => {
     expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
   });
 
-  test('unauthenticated push keeps the tight per-IP fallback (6th is 429)', async () => {
+  test('explicit legacy alert refuses every missing-secret request before Apple', async () => {
     const env = { ...baseEnv } as TestEnv; // no PUSH_SECRET
     ipCounter += 1;
     const ip = `198.51.100.${100 + ipCounter}`;
@@ -128,8 +133,9 @@ describe('/push budget (#603 Phase 2)', () => {
       const res = await worker.fetch(alertReq({ ip }), env as never);
       statuses.push(res.status);
     }
-    expect(statuses.slice(0, 5)).toEqual([200, 200, 200, 200, 200]);
-    expect(statuses[5]).toBe(429);
+    expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect(statuses[5]).toBe(401);
+    expect(appleCalls).toBe(0);
   });
 
   test('dismiss pushes draw from a separate budget and are not starved by alerts', async () => {
@@ -163,7 +169,7 @@ describe('/push budget (#603 Phase 2)', () => {
     expect(limited.status).toBe(429);
   });
 
-  test('unauthenticated dismiss uses the tight per-IP fallback, not the raised budget', async () => {
+  test('explicit legacy dismissal refuses every missing-secret request before Apple', async () => {
     const env = { ...baseEnv } as TestEnv; // no PUSH_SECRET
     ipCounter += 1;
     const ip = `198.51.100.${200 + ipCounter}`;
@@ -177,9 +183,10 @@ describe('/push budget (#603 Phase 2)', () => {
       const res = await worker.fetch(req, env as never);
       statuses.push(res.status);
     }
-    // The tight 5/60s fallback applies to unauthenticated dismisses too.
-    expect(statuses.slice(0, 5)).toEqual([200, 200, 200, 200, 200]);
-    expect(statuses[5]).toBe(429);
+    // R5 has no anonymous fallback, including a quiet legacy dismissal.
+    expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect(statuses[5]).toBe(401);
+    expect(appleCalls).toBe(0);
   });
 
   test('a permanent token rejection is surfaced as tokenInvalid:true (502)', async () => {
@@ -192,7 +199,7 @@ describe('/push budget (#603 Phase 2)', () => {
     const json = (await res.json()) as { success: boolean; error?: string; tokenInvalid?: boolean };
     expect(json.success).toBe(false);
     expect(json.tokenInvalid).toBe(true);
-    expect(json.error).toContain('BadDeviceToken'); // reason kept for the Phase 1 classifier
+    expect(json.error).toBe('APNS_REJECTED'); // only fixed outcome; tokenInvalid remains explicit
   });
 
   test('a transient APNS failure is NOT flagged tokenInvalid', async () => {
@@ -209,6 +216,7 @@ describe('/push budget (#603 Phase 2)', () => {
 
 describe('/push APNS_SANDBOX env routing', () => {
   let baseEnv: {
+    LEGACY_PUSH_ENABLED: string;
     CONNECTIONS: unknown;
     MAX_CONNECTIONS_PER_ROOM: string;
     CONNECTION_TIMEOUT_MS: string;
@@ -223,6 +231,7 @@ describe('/push APNS_SANDBOX env routing', () => {
 
   beforeEach(async () => {
     baseEnv = {
+      LEGACY_PUSH_ENABLED: 'true',
       CONNECTIONS: {},
       MAX_CONNECTIONS_PER_ROOM: '10',
       CONNECTION_TIMEOUT_MS: '60000',
@@ -251,11 +260,16 @@ describe('/push APNS_SANDBOX env routing', () => {
     ip += 1;
     const env = {
       ...baseEnv,
+      PUSH_SECRET: 'owned-legacy-sandbox-test',
       ...(sandboxValue !== undefined ? { APNS_SANDBOX: sandboxValue } : {}),
     };
     const req = new Request('https://signaling.example/push', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `203.0.114.${ip}` },
+      headers: {
+        Authorization: 'Bearer owned-legacy-sandbox-test',
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': `203.0.114.${ip}`,
+      },
       body: JSON.stringify({ token: 'device-abc', title: 'T', body: 'B' }),
     });
     await worker.fetch(req, env as never);

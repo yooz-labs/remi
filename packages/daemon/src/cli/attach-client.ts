@@ -395,11 +395,22 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       // no-op); the entries are now explicit and greppable (#898). Full
       // per-type rationale is in the PR description.
       hello: 'ignore',
+      answer_result: 'ignore',
+      relay_devices_request: 'ignore',
+      relay_devices_response: 'ignore',
+      relay_device_revoke_request: 'ignore',
+      relay_device_revoke_response: 'ignore',
+      // Secure push belongs to an enrolled native relay client, not terminal attach (#1200).
+      secure_push_register_request: 'ignore',
+      secure_push_register_response: 'ignore',
+      secure_push_unregister_request: 'ignore',
+      secure_push_unregister_response: 'ignore',
       hello_ack: 'ignore',
       user_input: 'ignore',
       ack: 'ignore',
       edit: 'ignore',
       answer: 'ignore',
+      native_answer: 'ignore',
       ping: 'ignore',
       pong: 'ignore',
       bullet_expand_request: 'ignore',

@@ -359,6 +359,39 @@ describe('terminal config (#513)', () => {
 });
 
 describe('notifications config (#914)', () => {
+  test('plaintext legacy push is ON for missing and generated configs until the R7 gate (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(true);
+    expect(DEFAULT_CONFIG.notifications.legacy_push_enabled).toBe(true);
+    expect(generateDefaultConfig()).toContain('legacy_push_enabled = true');
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain(
+      'legacy_push_enabled = true',
+    );
+  });
+
+  test('an explicit legacy_push_enabled = false still disables plaintext legacy push (#1200)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = true\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(true);
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nlegacy_push_enabled = false\n');
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+    expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain(
+      'legacy_push_enabled = false',
+    );
+    // A config written by `remi config init` and edited to false keeps it false.
+    fs.writeFileSync(
+      TEST_CONFIG,
+      generateDefaultConfig().replace('legacy_push_enabled = true', 'legacy_push_enabled = false'),
+    );
+    expect(loadConfig(TEST_CONFIG).notifications.legacy_push_enabled).toBe(false);
+  });
+
+  test('plaintext legacy push refuses malformed compatibility settings (#1200)', () => {
+    for (const invalid of ['"true"', '1', '[]']) {
+      fs.writeFileSync(TEST_CONFIG, `[notifications]\nlegacy_push_enabled = ${invalid}\n`);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.legacy_push_enabled/);
+    }
+  });
+
   test('defaults: on_turn_complete true, 60s threshold', () => {
     expect(DEFAULT_CONFIG.notifications.on_turn_complete).toBe(true);
     expect(DEFAULT_CONFIG.notifications.turn_complete_min_seconds).toBe(60);
@@ -678,7 +711,7 @@ describe('#880 the shipped defaults do not expose an unauthenticated daemon', ()
 });
 
 // #1193: the relay registered a room with the signaling Worker on every
-// install, and no shipped client can use it. These pin the loader and the
+// install. R3 now supplies an opt-in hub daemon. These pin the loader and the
 // defaults, not just the constant, so a default that is overridden somewhere
 // between the file and the daemon would show up here.
 describe('network.relay is off by default (#1193)', () => {
@@ -706,13 +739,13 @@ describe('network.relay is off by default (#1193)', () => {
     expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);
   });
 
-  test('`remi config` shows the configured value, and says --permanent-code turns the relay on regardless', () => {
-    // formatConfig prints what the FILE says; the command line is not in
-    // scope, so `--permanent-code` can start a relay while this says `false`.
-    // The honest output names that instead of claiming an effective state.
+  test('`remi config` shows the configured value and current hub opt-in precedence', () => {
+    // File values remain truthful without pretending to include CLI overrides.
     const stock = formatConfig(loadConfig(missing()), missing());
     expect(stock).toContain('relay = false');
-    expect(stock).toContain('--permanent-code turns the relay on');
+    expect(stock).toContain('hub-only: --relay opts in; --no-relay wins');
+    expect(stock).toContain('permanent codes are retired');
+    expect(stock).not.toContain('--permanent-code turns the relay on');
     fs.writeFileSync(TEST_CONFIG, '[network]\nrelay = true\n');
     expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain('relay = true');
   });
@@ -720,7 +753,7 @@ describe('network.relay is off by default (#1193)', () => {
   test('`remi config init` writes the off value for a new install', () => {
     // It materializes the default into the file, and a value on disk beats a
     // changed default; an install that ran it before this change keeps `relay =
-    // true`, which now only prints a notice at boot (integration/relay-registration.test.ts).
+    // true`, which now opts an authenticated hub into v2; no TOML rewrite occurs.
     initConfigFile(TEST_CONFIG);
     expect(fs.readFileSync(TEST_CONFIG, 'utf-8')).toContain('relay = false');
     expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);
