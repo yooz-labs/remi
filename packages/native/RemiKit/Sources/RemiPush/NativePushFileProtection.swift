@@ -4,6 +4,12 @@ import Foundation
 /// This is availability, not permission to sign: current private Dpk policy
 /// and verified capsule authority remain mandatory at each answer effect.
 enum NativePushFileProtection {
+    static func prepareDirectory(_ url: URL) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        try directory(url)
+    }
+
     static func directory(_ url: URL) throws {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attributes[.type] as? FileAttributeType == .typeDirectory else {

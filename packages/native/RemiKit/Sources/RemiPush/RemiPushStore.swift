@@ -128,9 +128,7 @@ public final class RemiPushStore: @unchecked Sendable {
         // Resolve declared sharing before opening state or writing any credential.
         let group = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
         let directory = container.appendingPathComponent(namespace, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700])
-        try NativePushFileProtection.directory(directory)
+        try NativePushFileProtection.prepareDirectory(directory)
         return try RemiPushStore(state: NativePushState(file: directory.appendingPathComponent("secure-push.sqlite")),
             keys: NativePushKeyStore(service: "live.yooz.remi.native.secure-push.\(namespace)",
                 account: "p256-seal-key-v2.\(namespace)", accessGroup: group),
