@@ -1,20 +1,36 @@
 import CryptoKit
 import Foundation
 import Security
+import RemiPush
 
 /// Remi's persistent Ed25519 client identity.
 ///
 /// Wire values are raw bytes encoded as base64. Challenges are decoded from base64 before
 /// signing. The private key never leaves the Keychain-backed value held by this type.
 public struct ClientIdentity: Sendable {
-    private let privateKey: Curve25519.Signing.PrivateKey
+    let privateKey: Curve25519.Signing.PrivateKey
+    public let revision: String
+    public let requiresAppUnlock: Bool
+    private let validateDurable: (@Sendable () throws -> Void)?
 
     public init() {
         privateKey = Curve25519.Signing.PrivateKey()
+        revision = UUID().uuidString; requiresAppUnlock = false; validateDurable = nil
     }
 
     init(rawPrivateKey: Data) throws {
         privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: rawPrivateKey)
+        revision = UUID().uuidString; requiresAppUnlock = false; validateDurable = nil
+    }
+
+    init(privateKey: Curve25519.Signing.PrivateKey, revision: String = UUID().uuidString,
+         requiresAppUnlock: Bool = false, validateDurable: (@Sendable () throws -> Void)? = nil) {
+        self.privateKey = privateKey; self.revision = revision
+        self.requiresAppUnlock = requiresAppUnlock; self.validateDurable = validateDurable
+    }
+
+    public var pushAuthority: PushDeviceAuthority {
+        .init(publicKey: publicKeyRaw, revision: revision, requiresAppUnlock: requiresAppUnlock)
     }
 
     var rawPrivateKey: Data { privateKey.rawRepresentation }
@@ -36,7 +52,21 @@ public struct ClientIdentity: Sendable {
     }
 
     public func signature(for challenge: Data) throws -> Data {
-        try privateKey.signature(for: challenge)
+        try validateForSigning()
+        return try privateKey.signature(for: challenge)
+    }
+
+    func validateForSigning() throws {
+        // No native foreground passphrase unlock exists. Protected records never sign.
+        guard !requiresAppUnlock else { throw NativeIdentityError.protected }
+        try validateDurable?()
+    }
+
+    /// A restricted connection still uses the real durable provider, adding its
+    /// original-capsule checks to EVERY admission/H2/final signature.
+    func restrictingSignatures(_ restriction: @escaping @Sendable () throws -> Void) -> ClientIdentity {
+        ClientIdentity(privateKey: privateKey, revision: revision, requiresAppUnlock: requiresAppUnlock,
+            validateDurable: { try self.validateForSigning(); try restriction() })
     }
 
     public func signatureBase64(for challenge: Data) throws -> String {
@@ -92,79 +122,59 @@ public struct PublicClientIdentity: Sendable, Equatable {
     }
 }
 
-public enum ClientIdentityStoreError: Error, Equatable {
-    case keychainRead(OSStatus)
-    case keychainWrite(OSStatus)
-}
-
-/// Persists one device identity in the app's default Keychain access group.
-/// No key-sharing entitlement is required or used.
+/// The app-exclusive Dpk item preserves the legacy version2 format and its protection policy.
+/// Every persisted identity signs only after a fresh no-UI durable revision check.
 public struct ClientIdentityStore: Sendable {
-    public static let shared = ClientIdentityStore(
-        service: "live.yooz.remi.client-identity",
-        account: "ed25519-private-key"
-    )
-
+    public static let shared = ClientIdentityStore(service: NativeIdentityRecordStore.defaultService,
+        account: NativeIdentityRecordStore.defaultAccount)
     private let service: String
     private let account: String
+    private let suppliedPushStore: RemiPushStore?
+    private let suppliedAccessGroup: String?
 
-    public init(service: String, account: String) {
-        self.service = service
-        self.account = account
+    public init(service: String, account: String, pushStore: RemiPushStore? = nil, accessGroup: String? = nil) {
+        self.service = service; self.account = account
+        suppliedPushStore = pushStore; suppliedAccessGroup = accessGroup
     }
-
+    #if DEBUG
+    public func isOwnedTestIdentity(for push: RemiPushStore) -> Bool {
+        push.isOwnedTestStore && suppliedPushStore === push && suppliedAccessGroup == nil &&
+            service.hasPrefix("live.yooz.remi.tests.") && UUID(uuidString: account) != nil
+    }
+    #endif
+    private func context() throws -> (RemiPushStore, String?) {
+        if let suppliedPushStore {
+            #if DEBUG
+            if service.hasPrefix("live.yooz.remi.tests.") { return (suppliedPushStore, suppliedAccessGroup) }
+            #endif
+            return (suppliedPushStore, try suppliedAccessGroup ?? RemiPushStore.configuredAccessGroup("RemiIdentityAccessGroup"))
+        }
+        return (try RemiPushStore.configured(), try RemiPushStore.configuredAccessGroup("RemiIdentityAccessGroup"))
+    }
     public func loadOrCreate() throws -> ClientIdentity {
-        switch read() {
-        case .success(let data):
-            if let data, let identity = try? ClientIdentity(rawPrivateKey: data) {
-                return identity
-            }
-        case .failure(let error):
-            throw error
-        }
-
-        let identity = ClientIdentity()
-        try replace(with: identity.rawPrivateKey)
-        return identity
+        let (push, group) = try context()
+        let value = try NativeIdentityRecordStore.loadOrCreate(authority: NativePushAuthorityAdapter(push),
+            accessGroup: group, service: service, account: account)
+        return validated(value, push: push, group: group)
     }
-
-    private func query() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+    public func load() throws -> ClientIdentity? {
+        let (push, group) = try context()
+        return try NativeIdentityRecordStore.load(authority: NativePushAuthorityAdapter(push),
+            accessGroup: group, service: service, account: account).map { validated($0, push: push, group: group) }
     }
-
-    private func read() -> Result<Data?, ClientIdentityStoreError> {
-        var attributes = query()
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        switch status {
-        case errSecSuccess:
-            return .success(result as? Data)
-        case errSecItemNotFound:
-            return .success(nil)
-        default:
-            return .failure(.keychainRead(status))
-        }
+    /// Cold background launch/load-only path. It never migrates or creates Dpk.
+    public func loadCurrent() throws -> ClientIdentity? {
+        let (push, group) = try context()
+        return try NativeIdentityRecordStore.currentRecord(accessGroup: group, service: service, account: account)
+            .map { validated($0, push: push, group: group) }
     }
-
-    private func replace(with data: Data) throws {
-        let deleteStatus = SecItemDelete(query() as CFDictionary)
-        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
-            throw ClientIdentityStoreError.keychainWrite(deleteStatus)
-        }
-
-        var attributes = query()
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw ClientIdentityStoreError.keychainWrite(addStatus)
-        }
+    private func validated(_ value: ClientIdentity, push: RemiPushStore, group: String?) -> ClientIdentity {
+        let expected = value.pushAuthority
+        return ClientIdentity(privateKey: value.privateKey, revision: value.revision,
+            requiresAppUnlock: value.requiresAppUnlock, validateDurable: {
+                guard let current = try NativeIdentityRecordStore.currentRecord(
+                    accessGroup: group, service: self.service, account: self.account),
+                    current.pushAuthority == expected, !current.requiresAppUnlock else { throw NativeIdentityError.changed }
+            })
     }
 }

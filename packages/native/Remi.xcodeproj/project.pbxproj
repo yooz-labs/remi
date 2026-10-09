@@ -7,26 +7,109 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		373C61A1EA8FB431B6C04316 /* RemiPush in Frameworks */ = {isa = PBXBuildFile; productRef = AC7724949A227A368401CCD4 /* RemiPush */; };
+		5010EEC21F1EC0FB04C6A5B7 /* PhonePushService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 01723072C65F16D5766C7948 /* PhonePushService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		618DE0A07F66CD408EC53802 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4919523DB31771C1186008 /* NotificationService.swift */; };
 		72D21CACD81A5E8950CCA00E /* RemiKit in Frameworks */ = {isa = PBXBuildFile; productRef = BB708A2A45D1F89045A65325 /* RemiKit */; };
 		9F591B03B2A4376D77B1F3FE /* RemiUI in Frameworks */ = {isa = PBXBuildFile; productRef = 9B924D35B7CA636C7B987DA0 /* RemiUI */; };
 		A50198D690D98F679DB444FE /* RemiUI in Frameworks */ = {isa = PBXBuildFile; productRef = A335845D89C1596541625516 /* RemiUI */; };
+		A7522223AA5AFEAECCA4E6E5 /* MacPushService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0FB5425E9E270AB643F04BBC /* MacPushService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B753128871C57D36C175E78E /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E67DD4D87F951DA96ECFD553 /* Foundation.framework */; };
 		BC51E88D381F216EF7D8E572 /* RemiKit in Frameworks */ = {isa = PBXBuildFile; productRef = D43F410520A8E6580AA66A4C /* RemiKit */; };
+		C57F673B724CD8EB783C4342 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17119D57061A5623E2A75EC /* NotificationService.swift */; };
+		DFA9F6A37C915D73506B8DDA /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C07EC1D27B6231C486E32285 /* Cocoa.framework */; };
+		E6CA2F447DA76150557BC58E /* RemiPush in Frameworks */ = {isa = PBXBuildFile; productRef = 26C6D8AF7C9A4EC118461F6A /* RemiPush */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		45B382F2C4F1FFEEC9A491C2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7897341F649EDB7595E3B052 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CCD2C0B17BC5B377F32F911A;
+			remoteInfo = MacPushService;
+		};
+		9C3C11D741EAD65B4B884354 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7897341F649EDB7595E3B052 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BFC74B0B52A6949E2CD60AD4;
+			remoteInfo = PhonePushService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		4EA5326300CCECB18525B561 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				5010EEC21F1EC0FB04C6A5B7 /* PhonePushService.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FAE0303A14606D8F64B8DC11 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A7522223AA5AFEAECCA4E6E5 /* MacPushService.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		01723072C65F16D5766C7948 /* PhonePushService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PhonePushService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		04312C646CEAB6468D4770F2 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0FB5425E9E270AB643F04BBC /* MacPushService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MacPushService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0FE03CCAC72DA613AEBA6372 /* RemiMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = RemiMac.app; path = Remi.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		58CC02BA51C486076ABAC3CE /* Remi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Remi.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A53226C1DB9381A4ABDFC8D /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		78890260A27DA5777893A7FF /* RemiPush.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = RemiPush.entitlements; sourceTree = "<group>"; };
 		BD47B94479B0B5F3125EFD46 /* RemiKit */ = {isa = PBXFileReference; lastKnownFileType = folder; path = RemiKit; sourceTree = SOURCE_ROOT; };
+		C07EC1D27B6231C486E32285 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		C17119D57061A5623E2A75EC /* NotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		CE291721449F25F61FB6CE45 /* RemiPush.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = RemiPush.entitlements; sourceTree = "<group>"; };
+		DD4919523DB31771C1186008 /* NotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		E67DD4D87F951DA96ECFD553 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FA1242000000000000000001 /* Exceptions for Mac Info.plist */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 88C5CBB57676D62F2DD2B239 /* RemiMac */;
+		};
+		FA1242000000000000000002 /* Exceptions for iPhone Info.plist */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F6D4032392CCFAF32994B96F /* RemiPhone */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		2C263E6018E8520B878C3CBC /* Mac */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FA1242000000000000000001 /* Exceptions for Mac Info.plist */,
+			);
 			path = Mac;
 			sourceTree = "<group>";
 		};
 		C4A1F0B80C1772222AE9ED3A /* iPhone */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FA1242000000000000000002 /* Exceptions for iPhone Info.plist */,
+			);
 			path = iPhone;
 			sourceTree = "<group>";
 		};
@@ -42,6 +125,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4BE3FE53DCAD23508FBC3718 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B753128871C57D36C175E78E /* Foundation.framework in Frameworks */,
+				373C61A1EA8FB431B6C04316 /* RemiPush in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74AA3C5EBE13707FC0A1B6D5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DFA9F6A37C915D73506B8DDA /* Cocoa.framework in Frameworks */,
+				E6CA2F447DA76150557BC58E /* RemiPush in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D82A93E2A026FF72218256F0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -54,6 +155,26 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		1A95F992E014D3FB2680FCBB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				632E9279CE1697F1572AAA6F /* OS X */,
+				BA6FAA4FE9E42711CF8EDD41 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		2CA4C780879DAA77261742E3 /* MacPushService */ = {
+			isa = PBXGroup;
+			children = (
+				DD4919523DB31771C1186008 /* NotificationService.swift */,
+				04312C646CEAB6468D4770F2 /* Info.plist */,
+				CE291721449F25F61FB6CE45 /* RemiPush.entitlements */,
+			);
+			name = MacPushService;
+			path = MacPushService;
+			sourceTree = "<group>";
+		};
 		342C4179824F4FC9BEBB70B0 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -69,7 +190,37 @@
 				2C263E6018E8520B878C3CBC /* Mac */,
 				342C4179824F4FC9BEBB70B0 /* Packages */,
 				DB291654E0C27C18415F3098 /* Products */,
+				1A95F992E014D3FB2680FCBB /* Frameworks */,
+				2CA4C780879DAA77261742E3 /* MacPushService */,
+				84FBB40180824C845ECA0F1A /* PhonePushService */,
 			);
+			sourceTree = "<group>";
+		};
+		632E9279CE1697F1572AAA6F /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				C07EC1D27B6231C486E32285 /* Cocoa.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+		84FBB40180824C845ECA0F1A /* PhonePushService */ = {
+			isa = PBXGroup;
+			children = (
+				C17119D57061A5623E2A75EC /* NotificationService.swift */,
+				5A53226C1DB9381A4ABDFC8D /* Info.plist */,
+				78890260A27DA5777893A7FF /* RemiPush.entitlements */,
+			);
+			name = PhonePushService;
+			path = PhonePushService;
+			sourceTree = "<group>";
+		};
+		BA6FAA4FE9E42711CF8EDD41 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				E67DD4D87F951DA96ECFD553 /* Foundation.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 		DB291654E0C27C18415F3098 /* Products */ = {
@@ -77,6 +228,8 @@
 			children = (
 				0FE03CCAC72DA613AEBA6372 /* RemiMac.app */,
 				58CC02BA51C486076ABAC3CE /* Remi.app */,
+				0FB5425E9E270AB643F04BBC /* MacPushService.appex */,
+				01723072C65F16D5766C7948 /* PhonePushService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -91,10 +244,12 @@
 				2D9C171254176FD171DA5E3A /* Sources */,
 				ABB0502F9D063388AEB4C0BF /* Resources */,
 				05F2B329E214FD4C8DE1D87B /* Frameworks */,
+				FAE0303A14606D8F64B8DC11 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				472E7D71D72548E5701B6A53 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				2C263E6018E8520B878C3CBC /* Mac */,
@@ -108,6 +263,46 @@
 			productReference = 0FE03CCAC72DA613AEBA6372 /* RemiMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		BFC74B0B52A6949E2CD60AD4 /* PhonePushService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F5B6EE3CE4305FA76C4CABAB /* Build configuration list for PBXNativeTarget "PhonePushService" */;
+			buildPhases = (
+				9ABC964F34B2938600EDBC06 /* Sources */,
+				4BE3FE53DCAD23508FBC3718 /* Frameworks */,
+				C6FCC0346ECC4ADBBE08963D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PhonePushService;
+			packageProductDependencies = (
+				AC7724949A227A368401CCD4 /* RemiPush */,
+			);
+			productName = PhonePushService;
+			productReference = 01723072C65F16D5766C7948 /* PhonePushService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		CCD2C0B17BC5B377F32F911A /* MacPushService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 56D252DCC8DD32E78DAA10DC /* Build configuration list for PBXNativeTarget "MacPushService" */;
+			buildPhases = (
+				F406297D614D1B386A4CB25B /* Sources */,
+				74AA3C5EBE13707FC0A1B6D5 /* Frameworks */,
+				3C1DA8DE6263B1D6E9DC5F43 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacPushService;
+			packageProductDependencies = (
+				26C6D8AF7C9A4EC118461F6A /* RemiPush */,
+			);
+			productName = MacPushService;
+			productReference = 0FB5425E9E270AB643F04BBC /* MacPushService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		F6D4032392CCFAF32994B96F /* RemiPhone */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B916C86DB2863983BAF54511 /* Build configuration list for PBXNativeTarget "RemiPhone" */;
@@ -115,10 +310,12 @@
 				C8C25A14A685C0A54C71C9DB /* Sources */,
 				ADD4F19E061A136DDC509AE9 /* Resources */,
 				D82A93E2A026FF72218256F0 /* Frameworks */,
+				4EA5326300CCECB18525B561 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E6927F0894941A6613DDA574 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				C4A1F0B80C1772222AE9ED3A /* iPhone */,
@@ -170,11 +367,20 @@
 			targets = (
 				88C5CBB57676D62F2DD2B239 /* RemiMac */,
 				F6D4032392CCFAF32994B96F /* RemiPhone */,
+				CCD2C0B17BC5B377F32F911A /* MacPushService */,
+				BFC74B0B52A6949E2CD60AD4 /* PhonePushService */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		3C1DA8DE6263B1D6E9DC5F43 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ABB0502F9D063388AEB4C0BF /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -183,6 +389,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		ADD4F19E061A136DDC509AE9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C6FCC0346ECC4ADBBE08963D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -199,6 +412,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9ABC964F34B2938600EDBC06 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C57F673B724CD8EB783C4342 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C8C25A14A685C0A54C71C9DB /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -206,9 +427,56 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F406297D614D1B386A4CB25B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				618DE0A07F66CD408EC53802 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		472E7D71D72548E5701B6A53 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacPushService;
+			target = CCD2C0B17BC5B377F32F911A /* MacPushService */;
+			targetProxy = 45B382F2C4F1FFEEC9A491C2 /* PBXContainerItemProxy */;
+		};
+		E6927F0894941A6613DDA574 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = PhonePushService;
+			target = BFC74B0B52A6949E2CD60AD4 /* PhonePushService */;
+			targetProxy = 9C3C11D741EAD65B4B884354 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		564E23BBDB74D0951FB71CA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APNS_ENVIRONMENT = production;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = PhonePushService/RemiPush.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9DQ459HAZB;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PhonePushService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "live.yooz.remi.native-push-service";
+				REMI_PUSH_NAMESPACE = "native-release";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		5DC2A7FF7F7818A0669B4A99 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -267,6 +535,28 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		5EA7E338EE25063513C8F875 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APNS_ENVIRONMENT = production;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = MacPushService/RemiPush.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9DQ459HAZB;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacPushService/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "live.yooz.remi.native-push-service";
+				REMI_PUSH_NAMESPACE = "native-release";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 			};
@@ -345,9 +635,11 @@
 		8A88B749DCF7DFA62D63C157 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
+				INFOPLIST_FILE = Mac/Info.plist;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -359,15 +651,45 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi.dev;
 				PRODUCT_NAME = Remi;
+				REMI_PUSH_NAMESPACE = "native-debug";
 				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		8B2E7C39FD7979C24292BA19 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APNS_ENVIRONMENT = development;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = PhonePushService/RemiPush.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9DQ459HAZB;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PhonePushService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "live.yooz.remi.dev.native-push-service";
+				REMI_PUSH_NAMESPACE = "native-debug";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
 		933D7E3062636941DF62FDC5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iPhone/Remi.entitlements;
+				INFOPLIST_FILE = iPhone/Info.plist;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a pairing code shown by Remi on your computer.";
@@ -380,7 +702,10 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi;
 				PRODUCT_NAME = Remi;
+				REMI_PUSH_NAMESPACE = "native-release";
 				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
@@ -388,8 +713,11 @@
 		B5D029BB176C21B8EDCA4198 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iPhone/Remi.entitlements;
+				INFOPLIST_FILE = iPhone/Info.plist;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a pairing code shown by Remi on your computer.";
@@ -402,17 +730,45 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi.dev;
 				PRODUCT_NAME = Remi;
+				REMI_PUSH_NAMESPACE = "native-debug";
 				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B8E5E3207407F96B622D624A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APNS_ENVIRONMENT = development;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = MacPushService/RemiPush.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9DQ459HAZB;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacPushService/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "live.yooz.remi.dev.native-push-service";
+				REMI_PUSH_NAMESPACE = "native-debug";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
 		BBC861F8071C6F832546E4DC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
+				INFOPLIST_FILE = Mac/Info.plist;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -423,7 +779,10 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi;
 				PRODUCT_NAME = Remi;
+				REMI_PUSH_NAMESPACE = "native-release";
 				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -438,6 +797,15 @@
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
+		};
+		56D252DCC8DD32E78DAA10DC /* Build configuration list for PBXNativeTarget "MacPushService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EA7E338EE25063513C8F875 /* Release */,
+				B8E5E3207407F96B622D624A /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 		B916C86DB2863983BAF54511 /* Build configuration list for PBXNativeTarget "RemiPhone" */ = {
 			isa = XCConfigurationList;
@@ -457,6 +825,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		F5B6EE3CE4305FA76C4CABAB /* Build configuration list for PBXNativeTarget "PhonePushService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				564E23BBDB74D0951FB71CA1 /* Release */,
+				8B2E7C39FD7979C24292BA19 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -467,6 +844,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		26C6D8AF7C9A4EC118461F6A /* RemiPush */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RemiPush;
+		};
 		9B924D35B7CA636C7B987DA0 /* RemiUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RemiUI;
@@ -474,6 +855,10 @@
 		A335845D89C1596541625516 /* RemiUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RemiUI;
+		};
+		AC7724949A227A368401CCD4 /* RemiPush */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RemiPush;
 		};
 		BB708A2A45D1F89045A65325 /* RemiKit */ = {
 			isa = XCSwiftPackageProductDependency;

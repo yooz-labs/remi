@@ -13,6 +13,7 @@ struct MacLiveRootView: View {
     @State private var notificationRouter = MacNotificationRouter.shared
     @State private var notificationDestination: RemiNavigationDestination?
     @State private var pendingResume: ResumeSessionKey?
+    @State private var relayNotifications = NativeRelayNotifications.shared
 
     var body: some View {
         Group {
@@ -27,6 +28,12 @@ struct MacLiveRootView: View {
                         }
                         .tag(machine.id)
                         .contextMenu {
+                            if machine.endpoint.relayPin != nil {
+                                Button("Enable relay notifications", systemImage: "bell.badge") {
+                                    relayNotifications.enable(on: machine.endpoint)
+                                }
+                                .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
+                            }
                             Button("Remove machine", systemImage: "trash", role: .destructive) {
                                 pendingMachineRemoval = machine
                             }
@@ -163,11 +170,17 @@ struct MacLiveRootView: View {
                 MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
             } else if let message = store.latestOperationNotice {
                 MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
+            } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
+                Text(message).font(.callout).padding(RemiTheme.Spacing.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .task {
             reconcileNavigation()
-            store.start()
+        }
+        .onChange(of: store.persistableEndpoints) { _, endpoints in
+            MachineConfigurationStore.shared.save(endpoints)
+            relayNotifications.reconcileEndpoints()
         }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
             reconcileNavigation()
@@ -196,10 +209,19 @@ struct MacLiveRootView: View {
             store.consumeResumedSessionDestination(id: destination.id)
         }
         .sheet(isPresented: $showingAddMachine) {
-            MacAddMachineSheet { host, port in
-                store.addMachine(MachineEndpoint(host: host, port: port))
-                MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+            MacAddMachineSheet { endpoint in
+                relayNotifications.machineWillChange(endpoint)
+                if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
+                    guard store.removeMachine(existing.endpoint) else { return }
+                    relayNotifications.didForget(existing.endpoint)
+                }
+                store.addMachine(endpoint)
+                MachineConfigurationStore.shared.save(store.persistableEndpoints)
             }
+        }
+        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+                .frame(minWidth: 440, minHeight: 320)
         }
         .sheet(isPresented: $showingNewSession) {
             MacLiveNewSessionSheet(
@@ -225,8 +247,10 @@ struct MacLiveRootView: View {
         ) {
             Button("Remove machine", role: .destructive) {
                 guard let machine = pendingMachineRemoval else { return }
-                store.removeMachine(machine.endpoint)
-                MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+                relayNotifications.machineWillChange(machine.endpoint)
+                if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
+                relayNotifications.reconcileEndpoints()
+                MachineConfigurationStore.shared.save(store.persistableEndpoints)
                 pendingMachineRemoval = nil
                 reconcileNavigation()
             }
@@ -318,13 +342,15 @@ struct MacLiveRootView: View {
                 lastMessage: session.lastMessage,
                 openQuestionCount: questionCount,
                 canTerminate: session.source == "daemon",
-                canResume: session.source != "daemon" && session.canResume == true,
+                canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                 isResuming: store.resumingSessions.contains(ResumeSessionKey(
                     machineID: machine.id,
                     sessionID: session.sessionId
                 )),
                 resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
-                resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                resumeError: machine.endpoint.relayPin != nil && session.source != "daemon"
+                    ? "Resume this session on the machine. Relay Resume is unavailable."
+                    : store.resumeErrorsBySession[ResumeSessionKey(
                     machineID: machine.id,
                     sessionID: session.sessionId
                 )]
@@ -473,6 +499,7 @@ struct MacLiveRootView: View {
         case .connecting: "Connecting"
         case .connected: "Connected"
         case .waitingForApproval(let fingerprint): "Approve \(fingerprint) locally"
+        case .waitingForRelayConfirmation(let fingerprint): "Compare \(fingerprint) in the terminal"
         case .unavailable(let reason): reason ?? "Unavailable"
         }
     }
@@ -505,21 +532,40 @@ private struct MacAddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var host = "127.0.0.1"
     @State private var port = 18765
-    let onAdd: (String, Int) -> Void
+    @State private var relayMode = false
+    @State private var relayToken = ""
+    @State private var relayError: String?
+    let onAdd: (MachineEndpoint) -> Void
 
     var body: some View {
         Form {
-            TextField("Host or IP address", text: $host)
-            TextField("Port", value: $port, format: .number)
+            Toggle("Connect over the relay", isOn: $relayMode)
+            if relayMode {
+                SecureField("Relay pairing token", text: $relayToken)
+                Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let relayError { Text(relayError).foregroundStyle(.red) }
+            } else {
+                TextField("Host or IP address", text: $host)
+                TextField("Port", value: $port, format: .number)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Add") {
-                    onAdd(host.trimmingCharacters(in: .whitespacesAndNewlines), port)
-                    dismiss()
+                    do {
+                        let endpoint = relayMode ? try MachineEndpoint.pairingOverRelay(relayToken) :
+                            MachineEndpoint(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
+                        relayToken = ""
+                        onAdd(endpoint)
+                        dismiss()
+                    } catch {
+                        relayError = "The relay token is invalid or expired. Create a new token on the machine."
+                    }
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+                .disabled(relayMode ? relayToken.isEmpty :
+                    host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
             }
         }
         .padding(24)

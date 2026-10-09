@@ -30,6 +30,8 @@ struct HomeScreen: View {
     let onAddMachine: (MachineEndpoint) -> Void
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
+    let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let enablingRelayNotifications: Bool
     let onDismissError: () -> Void
 
     init(
@@ -56,6 +58,8 @@ struct HomeScreen: View {
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
+        onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
+        enablingRelayNotifications: Bool = false,
         onDismissError: @escaping () -> Void = {}
     ) {
         self.questions = questions
@@ -81,6 +85,8 @@ struct HomeScreen: View {
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
         self.onRetryApproval = onRetryApproval
+        self.onEnableRelayNotifications = onEnableRelayNotifications
+        self.enablingRelayNotifications = enablingRelayNotifications
         self.onDismissError = onDismissError
     }
 
@@ -135,7 +141,9 @@ struct HomeScreen: View {
                         states: sessionMachines,
                         publicIdentity: publicIdentity,
                         onRemove: onRemoveMachine,
-                        onRetryApproval: onRetryApproval
+                        onRetryApproval: onRetryApproval,
+                        onEnableRelayNotifications: onEnableRelayNotifications,
+                        enablingRelayNotifications: enablingRelayNotifications
                     )
                 }
             }
@@ -418,6 +426,8 @@ private struct MachinesSection: View {
     let publicIdentity: PublicClientIdentity?
     let onRemove: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
+    let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let enablingRelayNotifications: Bool
     @State private var pendingRemoval: RemiMachineSummary?
 
     var body: some View {
@@ -427,6 +437,12 @@ private struct MachinesSection: View {
                 HStack(spacing: RemiTheme.Spacing.s) {
                     RemiMachineRow(machine: machine)
                     Menu {
+                        if let state = states.first(where: { $0.id == machine.id }), state.endpoint.relayPin != nil {
+                            Button("Enable relay notifications", systemImage: "bell.badge") {
+                                onEnableRelayNotifications(state.endpoint)
+                            }
+                            .disabled(enablingRelayNotifications || state.status != .connected)
+                        }
                         Button("Remove machine", systemImage: "trash", role: .destructive) {
                             pendingRemoval = machine
                         }
@@ -449,6 +465,11 @@ private struct MachinesSection: View {
                         command: publicIdentity?.authorizeCommand(label: UIDevice.current.name),
                         onRetry: { onRetryApproval(state.endpoint) }
                     )
+                }
+                if let state = states.first(where: { $0.id == machine.id }),
+                   case .waitingForRelayConfirmation(let fingerprint) = state.status {
+                    Text("Compare \(fingerprint) in the machine's terminal before approving.")
+                        .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
                 }
                 if machine.id != machines.last?.id { Divider() }
             }

@@ -2,6 +2,7 @@ import UIKit
 import UserNotifications
 import Observation
 import RemiKit
+import RemiPush
 
 @MainActor
 @Observable
@@ -19,10 +20,39 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         return true
     }
 
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        NativeRelayNotifications.shared.activate()
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NativeRelayNotifications.shared.acceptPushToken(deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        NativeRelayNotifications.shared.pushRegistrationFailed()
+    }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard userInfo["remiPush"] != nil else { completionHandler(.noData); return }
+        let carrier = NativeRelayNotifications.carrier(from: userInfo)
+        let completion = PhoneBackgroundFetchCompletion(completionHandler)
+        NativeRelayNotifications.receiveDismiss(carrier: carrier) { result in
+            // RemiPush bounds the delivered-notification callback at two seconds.
+            Task { @MainActor in completion.finish(result) }
+        }
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        if RemiPushStore.isSecureNotification(content: notification.request.content) {
+            guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
+        }
         guard UserDefaults.standard.object(
             forKey: PhonePreferenceKey.questionNotifications
         ) as? Bool ?? true else { return [] }
@@ -36,10 +66,34 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
+                await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+            } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                let delivery = NativeRelayActionDelivery(content: response.notification.request.content,
+                    identifier: response.actionIdentifier)
+                _ = await NativeRelayNotifications.shared.receiveAction(delivery)
+            }
+            return
+        }
         guard let destination = PhoneNotificationCoordinator.destination(
             from: response.notification.request.content.userInfo
         ) else { return }
         await MainActor.run { PhoneNotificationRouter.shared.destination = destination }
+    }
+}
+
+/// UIKit supplies a non-Sendable callback. Keep it on the main actor and invoke
+/// it at most once after the bounded RemiPush operation returns.
+@MainActor
+private final class PhoneBackgroundFetchCompletion {
+    private var handler: ((UIBackgroundFetchResult) -> Void)?
+    init(_ handler: @escaping (UIBackgroundFetchResult) -> Void) { self.handler = handler }
+    func finish(_ result: Bool?) {
+        guard let handler else { return }
+        self.handler = nil
+        handler(result == true ? .newData : result == false ? .noData : .failed)
     }
 }
 

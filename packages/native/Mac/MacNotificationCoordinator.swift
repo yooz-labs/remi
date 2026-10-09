@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import RemiKit
+import RemiPush
 import SwiftUI
 import UserNotifications
 
@@ -56,17 +57,51 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
         UNUserNotificationCenter.current().delegate = self
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        NativeRelayNotifications.shared.activate()
+    }
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        NativeRelayNotifications.shared.acceptPushToken(deviceToken)
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        NativeRelayNotifications.shared.pushRegistrationFailed()
+    }
+
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        guard userInfo["remiPush"] != nil else { return }
+        NativeRelayNotifications.receiveDismiss(carrier: NativeRelayNotifications.carrier(from: userInfo)) { _ in }
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        if RemiPushStore.isSecureNotification(content: notification.request.content) {
+            guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
+        }
+        return [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
+                await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+            } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                let delivery = NativeRelayActionDelivery(content: response.notification.request.content,
+                    identifier: response.actionIdentifier)
+                _ = await NativeRelayNotifications.shared.receiveAction(delivery)
+            }
+            return
+        }
         guard let destination = MacNotificationCoordinator.destination(
             from: response.notification.request.content.userInfo
         ) else { return }
@@ -132,6 +167,7 @@ struct MacMenuBarLabel: View {
     let store: MachineStore?
     @Environment(\.openWindow) private var openWindow
     @State private var notificationRouter = MacNotificationRouter.shared
+    @State private var relayNotifications = NativeRelayNotifications.shared
 
     var body: some View {
         Image(systemName: "questionmark.bubble")
@@ -143,6 +179,11 @@ struct MacMenuBarLabel: View {
             .accessibilityLabel("Remi")
             .onChange(of: notificationRouter.destination, initial: true) { _, destination in
                 guard destination != nil else { return }
+                openWindow(id: "main")
+                NSApp.activate()
+            }
+            .onChange(of: relayNotifications.notificationPresentationID, initial: true) { _, presentation in
+                guard presentation != nil else { return }
                 openWindow(id: "main")
                 NSApp.activate()
             }

@@ -12,6 +12,7 @@ struct PhoneLiveRootView: View {
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var notificationPath: [RemiNavigationDestination] = []
     @State private var pendingResume: ResumeSessionKey?
+    @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
@@ -25,7 +26,7 @@ struct PhoneLiveRootView: View {
                 publicIdentity: store.publicIdentity,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
-                noticeMessage: store.latestOperationNotice,
+                noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
                 viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
@@ -40,13 +41,21 @@ struct PhoneLiveRootView: View {
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
+                onEnableRelayNotifications: relayNotifications.enable,
+                enablingRelayNotifications: relayNotifications.enabling,
                 onDismissError: store.clearLatestError
             )
             .navigationDestination(for: RemiNavigationDestination.self) { destination in
                 notificationDestination(destination)
             }
         }
-        .task { store.start() }
+        .onChange(of: store.persistableEndpoints) { _, endpoints in
+            MachineConfigurationStore.shared.save(endpoints)
+            relayNotifications.reconcileEndpoints()
+        }
+        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+        }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
             hapticsEnabled
@@ -106,9 +115,10 @@ struct PhoneLiveRootView: View {
             RemiMachineSummary(
                 id: machine.id,
                 name: machine.displayName,
-                address: machine.endpoint.id,
+                address: machine.endpoint.displayAddress,
                 reachability: reachability(machine.status),
-                transport: machine.endpoint.host == "127.0.0.1" ? .local : .direct,
+                transport: machine.endpoint.relayPin != nil ? .relay :
+                    machine.endpoint.host == "127.0.0.1" ? .local : .direct,
                 sessionCount: machine.activeSessions.count
             )
         }
@@ -131,13 +141,15 @@ struct PhoneLiveRootView: View {
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
                     canTerminate: session.source == "daemon",
-                    canResume: session.source != "daemon" && session.canResume == true,
+                    canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                     isResuming: store.resumingSessions.contains(ResumeSessionKey(
                         machineID: machine.id,
                         sessionID: session.sessionId
                     )),
                     resumeIdentity: session.source == "daemon" ? nil : String(session.sessionId.prefix(8)),
-                    resumeError: store.resumeErrorsBySession[ResumeSessionKey(
+                    resumeError: machine.endpoint.relayPin != nil && session.source != "daemon"
+                        ? "Resume this session on the machine. Relay Resume is unavailable."
+                        : store.resumeErrorsBySession[ResumeSessionKey(
                         machineID: machine.id,
                         sessionID: session.sessionId
                     )]
@@ -340,14 +352,20 @@ struct PhoneLiveRootView: View {
     }
 
     private func addMachine(_ endpoint: MachineEndpoint) {
+        relayNotifications.machineWillChange(endpoint)
+        if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
+            guard store.removeMachine(existing.endpoint) else { return }
+            relayNotifications.didForget(existing.endpoint)
+        }
         store.addMachine(endpoint)
-        MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+        MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 
     private func removeMachine(_ machineID: String) {
         guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
-        store.removeMachine(machine.endpoint)
-        MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+        relayNotifications.machineWillChange(machine.endpoint)
+        if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
+        MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 
     private func createSession(
@@ -444,7 +462,7 @@ struct PhoneLiveRootView: View {
         switch status {
         case .connected: .connected
         case .connecting: .connecting
-        case .waitingForApproval: .waitingForApproval
+        case .waitingForApproval, .waitingForRelayConfirmation: .waitingForApproval
         case .disconnected, .unavailable: .unreachable
         }
     }

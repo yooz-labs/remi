@@ -101,7 +101,7 @@ struct FixtureConformanceTests {
     }
 
     @Test(arguments: [
-        "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result",
+        "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result", "ping",
         "question_resolved", "question_snapshot", "transcript_content",
         "transcript_load_complete", "session_views", "create_session_response",
         "resume_session_response", "resume_session_response_child",
@@ -116,6 +116,9 @@ struct FixtureConformanceTests {
             _ = try JSONDecoder().decode(AuthChallengeMessage.self, from: data)
         case "auth_result":
             _ = try JSONDecoder().decode(AuthResultMessage.self, from: data)
+        case "ping":
+            let message = try JSONDecoder().decode(PingMessage.self, from: data)
+            #expect(message.id == "8fbe8fe0-81fd-480f-ba8b-813d63c9254e")
         case "question_resolved":
             _ = try JSONDecoder().decode(QuestionResolvedMessage.self, from: data)
         case "question_snapshot":
@@ -150,7 +153,7 @@ struct FixtureConformanceTests {
     @Test(arguments: [
         "hello", "auth_response", "auth_response_pairing", "answer", "transcript_load_request", "session_list_request",
         "create_session_request", "create_session_request_plain", "resume_session_request",
-        "kill_session_request", "user_input"
+        "kill_session_request", "user_input", "pong"
     ])
     func outboundLiveMessageRoundTrips(_ name: String) throws {
         let data = try Self.fixture(name)
@@ -186,6 +189,23 @@ struct FixtureConformanceTests {
         case "user_input":
             let decoded = try decoder.decode(UserInputMessage.self, from: data)
             _ = try decoder.decode(UserInputMessage.self, from: encoder.encode(decoded))
+        case "pong":
+            let fixture = try decoder.decode(PongMessage.self, from: data)
+            #expect(fixture.pingId == "fixture-ping-id")
+            let reply = PongMessage(
+                id: "reply-id",
+                timestamp: "2026-10-09T00:00:00Z",
+                pingId: "source-ping"
+            )
+            let object = try #require(
+                JSONSerialization.jsonObject(with: encoder.encode(reply)) as? [String: String]
+            )
+            #expect(object == [
+                "type": "pong",
+                "id": "reply-id",
+                "timestamp": "2026-10-09T00:00:00Z",
+                "pingId": "source-ping",
+            ])
         default:
             Issue.record("Unhandled fixture \(name)")
         }
