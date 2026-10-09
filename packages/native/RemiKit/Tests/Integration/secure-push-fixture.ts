@@ -64,6 +64,12 @@ const faultPath = join(own, 'transport-control.json');
 const receiptPath = join(own, 'transport-receipts.json');
 const out = (message: object) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const tunnels = new Set<Duplex>();
+// Owned transport fault only: discard upstream bytes after the real client
+// reaches READY. No protocol/business result is decoded, minted or substituted.
+const clients = new Set<{ discard: boolean }>();
+let clientConnections = 0;
+let clientConnectionsAtStall = 0;
+let discardedClientBytes = 0;
 type ProcessProof = { pid: number; description: string; marker: string; parent: number };
 type LiveEntry = {
   pid: number;
@@ -431,11 +437,31 @@ gateway.on('upgrade', (request, socket, head) => {
   }
   const upstream = new URL(worker.url);
   const target = connectTcp(Number(upstream.port), upstream.hostname);
+  const client = /^\/v2\/client\/[0-9a-f]{32}$/.test(request.url ?? '')
+    ? { discard: false }
+    : undefined;
+  if (client) {
+    clients.add(client);
+    clientConnections++;
+  }
   tunnels.add(socket);
   tunnels.add(target);
   socket.on('error', () => target.destroy());
   target.on('error', () => socket.destroy());
+  // Propagate half-close on upgraded TLS streams. Without this, the owned
+  // proxy retains ended client tunnels and cannot prove one-shot retirement.
+  socket.on('end', () => {
+    if (client) clients.delete(client);
+    target.destroy();
+    socket.destroy();
+  });
+  target.on('end', () => {
+    if (client) clients.delete(client);
+    socket.destroy();
+    target.destroy();
+  });
   socket.on('close', () => {
+    if (client) clients.delete(client);
     tunnels.delete(socket);
     target.destroy();
   });
@@ -453,6 +479,10 @@ gateway.on('upgrade', (request, socket, head) => {
     });
     target.on('drain', () => socket.resume());
     target.on('data', (bytes) => {
+      if (client?.discard) {
+        discardedClientBytes += bytes.length;
+        return;
+      }
       if (!socket.write(bytes)) target.pause();
     });
     socket.on('drain', () => target.resume());
@@ -721,12 +751,28 @@ try {
           { mode: 0o600 },
         );
         out({ kind: 'lost-result-armed' });
+      } else if (command['kind'] === 'stall_client_result') {
+        await until(() => clients.size === 1, 'owned-prior-client-retired', 2000);
+        if (clients.size !== 1 || clientConnectionsAtStall !== 0)
+          throw new Error('owned-single-ready-client-required');
+        for (const client of clients) client.discard = true;
+        clientConnectionsAtStall = clientConnections;
+        out({ kind: 'client-result-stall-armed' });
       } else if (command['kind'] === 'receipts') {
         const transport = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as {
           nativeForwards: number;
           lostResults: number;
         };
-        out({ kind: 'receipts', ...transport, apnsCount, gatewayFailures });
+        out({
+          kind: 'receipts',
+          ...transport,
+          apnsCount,
+          gatewayFailures,
+          clientConnections,
+          clientConnectionsAtStall,
+          activeClients: clients.size,
+          discardedClientBytes,
+        });
       } else if (command['kind'] === 'stop') {
         await cleanup();
         process.exit(failed ? 1 : 0);

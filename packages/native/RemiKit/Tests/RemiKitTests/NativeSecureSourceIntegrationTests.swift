@@ -86,6 +86,11 @@ private final class OwnedRelayCA: NSObject, URLSessionDelegate, @unchecked Senda
         let response = try await message()
         #expect(response["kind"] as? String == "lost-result-armed")
     }
+    func armClientResultStall() async throws {
+        try send(["kind": "stall_client_result"])
+        let response = try await message()
+        try #require(response["kind"] as? String == "client-result-stall-armed", "Owned client stall control must acknowledge before sending")
+    }
     func stop() async throws {
         if process.isRunning { try? send(["kind": "stop"]) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(12))
@@ -175,6 +180,34 @@ struct NativeSecureSourceIntegrationTests {
             #expect(settledReceipt["lostResults"] as? Int == 1)
             client.ownedBeforeNativeSend = nil
 
+            // Distinct fault: the real hook applies No, while the owned TLS
+            // proxy discards all hub-to-Swift bytes after actual READY. This
+            // measures the client's own monotonic waiter and total cleanup.
+            client.stop()
+            try fixture.send(["kind": "question"])
+            let timeoutCarrier = try await question(fixture, push: context.push)
+            client.openRelayNotification(carrier: timeoutCarrier)
+            let timeoutNo = try #require(client.relayNotificationChoices.first { $0.isNo })
+            client.ownedBeforeNativeSend = { _ in try await fixture.armClientResultStall() }
+            let timeoutBegan = ContinuousClock.now
+            await client.answerRelayNotification(choice: timeoutNo.value)
+            let elapsed = timeoutBegan.duration(to: .now)
+            #expect(elapsed >= .seconds(23), "No correlated client receipt arrived before its own deadline")
+            #expect(elapsed < .seconds(25), "Handshake, result wait and socket retirement stay under the total bound")
+            #expect(client.lastRelayAnswerOutcome == "uncertain")
+            #expect(!client.relayNotificationBusy && client.connectionGenerations.isEmpty)
+            try await denyEffect(fixture, push: context.push)
+            try fixture.send(["kind": "receipts"])
+            let timeoutReceipt = try await receipts(fixture, push: context.push)
+            #expect((timeoutReceipt["discardedClientBytes"] as? Int ?? 0) > 0)
+            #expect(timeoutReceipt["activeClients"] as? Int == 0, "The actual one-shot socket has retired")
+            #expect(timeoutReceipt["clientConnections"] as? Int == timeoutReceipt["clientConnectionsAtStall"] as? Int)
+            try await Task.sleep(for: .seconds(1))
+            try fixture.send(["kind": "receipts"])
+            let timeoutSettled = try await receipts(fixture, push: context.push)
+            #expect(timeoutSettled["clientConnections"] as? Int == timeoutReceipt["clientConnections"] as? Int, "No one-shot reconnect or late automatic resend")
+            client.ownedBeforeNativeSend = nil
+            client.start()
             try await until("foreground restored after uncertainty") { client.machines.first?.status == .connected }
             try fixture.send(["kind": "question"])
             let staleCarrier = try await question(fixture, push: context.push)

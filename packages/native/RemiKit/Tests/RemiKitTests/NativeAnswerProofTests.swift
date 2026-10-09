@@ -30,5 +30,37 @@ struct NativeAnswerProofTests {
         #expect(try RelayPushResponse.decode(JSONSerialization.data(withJSONObject: register)).keyVersion == 1)
         var extra = base; extra["keyVersion"] = 1
         #expect(throws: (any Error).self) { try RelayPushResponse.decode(JSONSerialization.data(withJSONObject: extra)) }
+        #expect(throws: (any Error).self) {
+            try RelayPushResponse.decode(Data(#"{"type":"secure_push_unregister_response","id":"own","requestId":"own","timestamp":"own","success":false,"success":true}"#.utf8))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func signedOptionValuesUseExactBytesDespiteCanonicalEquivalence(bothOffered: Bool) throws {
+        let composed = "\u{00e9}", decomposed = "e\u{0301}"
+        #expect(composed == decomposed && Data(composed.utf8) != Data(decomposed.utf8))
+        let oracle = try NativePushOracle.load("push-vectors.json")
+        let vector = try #require((oracle["cases"] as? [[String: Any]])?.first)
+        let context = try OwnedPushContext(vector: vector, oracle: oracle)
+        defer { try? context.cleanup() }
+        let originalPayload = try RelayOracle.hex(#require(vector["payloadHex"] as? String))
+        var payload = try #require(JSONSerialization.jsonObject(with: originalPayload) as? [String: Any])
+        payload["category"] = "REMI_YN"
+        payload["options"] = [
+            ["value": bothOffered ? composed : "allow", "label": "Yes", "isYes": true, "isNo": false, "description": NSNull(), "standingGrant": NSNull()],
+            ["value": bothOffered ? decomposed : composed, "label": "No", "isYes": false, "isNo": true, "description": NSNull(), "standingGrant": NSNull()]
+        ]
+        let carrier = try OwnedPushContext.resealed(vector, oracle: oracle, payload: JSONSerialization.data(withJSONObject: payload))
+        let opened = try context.store.open(carrier: carrier, now: 1_700_000_001)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: RelayOracle.hex(#require(oracle["deviceSeedHex"] as? String)))
+        let identity = ClientIdentity(privateKey: key, revision: context.authority.revision)
+        if bothOffered {
+            let proof = try NativeAnswerProof.make(opened, choice: decomposed, identity: identity, now: 1_700_000_001)
+            #expect(Data(proof.answer.utf8) == Data(decomposed.utf8), "No's exact signed value cannot select the canonically equivalent Yes")
+        } else {
+            #expect(throws: (any Error).self) { try NativeAnswerProof.make(opened, choice: decomposed, identity: identity, now: 1_700_000_001) }
+            let proof = try NativeAnswerProof.make(opened, choice: composed, identity: identity, now: 1_700_000_001)
+            #expect(Data(proof.answer.utf8) == Data(composed.utf8))
+        }
     }
 }

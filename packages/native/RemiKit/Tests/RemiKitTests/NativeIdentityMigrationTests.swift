@@ -41,6 +41,26 @@ struct OwnedIdentityContext {
 }
 
 struct NativeIdentityMigrationTests {
+    @Test(arguments: ["missing", "raw", "corrupt"])
+    func coldLoadDoesNotCreateMigrateOrReconcile(kind: String) throws {
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let bytes: Data?
+        if kind == "raw" { bytes = ClientIdentity().rawPrivateKey }
+        else if kind == "corrupt" { bytes = Data("{\"version\":2}".utf8) }
+        else { bytes = nil }
+        if let bytes { try context.write(bytes) }
+        let generation = try context.push.generation()
+        if bytes == nil { #expect(try context.store.loadCurrent() == nil) }
+        else { #expect(throws: (any Error).self) { try context.store.loadCurrent() } }
+        if let bytes { #expect(try context.bytes() == bytes) }
+        else {
+            var query = context.query; query[kSecReturnData as String] = true
+            var result: CFTypeRef?
+            #expect(SecItemCopyMatching(query as CFDictionary, &result) == errSecItemNotFound)
+        }
+        #expect(try context.push.authority() == nil && context.push.generation() == generation)
+    }
+
     @Test func legacyVersionTwoBytesRevisionAndProtectionSurviveRead() throws {
         let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
         let original = ClientIdentity(); let revision = UUID().uuidString
