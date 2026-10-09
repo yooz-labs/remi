@@ -71,7 +71,14 @@ test('the same real hub and child connections survive 93 seconds without applica
     // transport Pong replies may keep them alive during this silent interval.
     await Promise.race([
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 93_000);
+        // Bun's timer can fire fractionally early (Linux CI measured 92,999.788423 ms).
+        // Keep the actual 93-second gate: check the monotonic deadline before resolving.
+        const waitUntilDeadline = () => {
+          const remaining = 93_000 - (performance.now() - started);
+          if (remaining <= 0) resolve();
+          else timer = setTimeout(waitUntilDeadline, Math.max(1, Math.ceil(remaining)));
+        };
+        waitUntilDeadline();
       }),
       failed,
     ]);
