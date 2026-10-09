@@ -9,10 +9,12 @@ This separate follow-up does not establish or block relay backend release accept
 
 ## Current code and reuse
 
-Initial check: `origin/develop` at `1d800273` and the existing relay epic at `8fb5b88b`; follow-up caller review: source composite `1e96c688`.
+Current source check: develop `1d478e07`, after the relay backend landed through [#1331](https://github.com/yooz-labs/remi/pull/1331) at `b1168126`.
+That merge has the same tree as tested backend `2858e4bd`; `1d478e07` changes only the development version.
+The initial checks against develop `1d800273`, relay epic `8fb5b88b` and source composite `1e96c688` remain historical provenance.
 No upload, file-fetch or forwarded-browser implementation was found in the daemon, shared protocol or web client.
-In the composite, `websocket-adapter.ts:116` passes the server-derived fingerprint, `identity-store.ts:304` supplies a grant-incarnation transaction, and `pty-session.ts:216` queues raw writes without a prompt callback.
-Current chat checks `promptUp` before enqueue (`input-events.ts:1392`) and then appends Enter (`:1418`); neither operation is an attachment insertion implementation.
+`WebSocketAdapter`'s `onClientConnect` callback passes the server-derived fingerprint, `IdentityStore.withAuthorizationEpoch` supplies a grant-incarnation transaction, and `PTYSession.write` queues raw writes without a prompt callback.
+Current chat checks `promptUp` before enqueue and then calls `PTYSession.submitInput`, which appends Enter; neither operation is an attachment insertion implementation.
 
 | Existing implementation | Reuse and constraint |
 |---|---|
@@ -21,11 +23,11 @@ Current chat checks `promptUp` before enqueue (`input-events.ts:1392`) and then 
 | [`harness/types.ts`](../packages/daemon/src/harness/types.ts), ADRs 0032 and 0033 | Keep upload storage neutral and put harness delivery behind the seam. Codex sets `acceptsTypedChat = false`; it has no shipped attachment-delivery operation. Do not send a file reference as raw Codex keystrokes. |
 | [`pty/child-env.ts`](../packages/daemon/src/pty/child-env.ts) | Preserve removal of remi's secret environment variables when installing a browser shim. This does not isolate processes running as the daemon's user. |
 | [`storage/interprocess-file-lock.ts`](../packages/daemon/src/storage/interprocess-file-lock.ts) | Serialize a durable per-home transfer reservation ledger across hubs, child daemons and manually started wrappers. In-memory per-process counters cannot enforce a per-home budget. |
-| Relay epic: `shared/src/relay/channel.ts`, `constants.ts`, `remote/hub-relay.ts`, `remote/child-proxy.ts`, ADR 0034 | Reuse the authenticated, counter-checked channel and session routing. Its maximum plaintext is 524,288 bytes, its frame overhead is 25 bytes, and its pending-send bound is 64. These are channel limits, not a transfer budget. Relay v2 is absent from the cited develop head and remains opt-in. |
-| Relay epic: `auth/identity-store.ts`, `notifications/secure-push-store.ts` | `withAuthorizationEpoch` and the captured/current authority pattern distinguish a removed and replaced grant. Reuse the grant-incarnation helper when it is integrated; do not activate secure push or require relay enrollment for a direct tunnel. Develop's `isAuthorized` checks current membership only. |
+| `shared/src/relay/channel.ts`, `constants.ts`, `remote/hub-relay.ts`, `remote/child-proxy.ts`, ADR 0034 | Reuse the authenticated, counter-checked channel and session routing now in develop. Its maximum plaintext is 524,288 bytes, its frame overhead is 25 bytes, and its pending-send bound is 64. These are channel limits, not a transfer budget. Relay v2 remains opt-in. |
+| `auth/identity-store.ts`, `notifications/secure-push-store.ts` | `withAuthorizationEpoch` and the captured/current authority pattern distinguish a removed and replaced grant. Reuse the integrated grant-incarnation helper; do not activate secure push or require relay enrollment for a direct tunnel. `isAuthorized` alone checks current membership, not the captured grant incarnation. |
 
 Issue #1170's older plaintext-relay description predates the rebuild.
-At the cited develop head, the relay is off by default and fail-closed without authentication; the epic implements v2 separately.
+The v2 backend is now in develop, off by default and fail-closed without authentication; deployed-Worker and signed-device acceptance remain separate gates.
 No attachment bytes may use a legacy relay route, a Worker HTTP answer route, APNs or notification payloads.
 
 ## Assets, actors and boundaries
