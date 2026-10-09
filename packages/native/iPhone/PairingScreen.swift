@@ -69,7 +69,7 @@ struct PairingScreen: View {
             Section("Relay pairing") {
                 SecureField("Relay pairing token", text: $relayToken)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Paste the machine's remi-pair2 token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("Pair over the relay") {
                     do {

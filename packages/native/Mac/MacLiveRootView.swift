@@ -521,7 +521,7 @@ private struct MacAddMachineSheet: View {
             Toggle("Connect over the relay", isOn: $relayMode)
             if relayMode {
                 SecureField("Relay pairing token", text: $relayToken)
-                Text("Paste the machine's remi-pair2 token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let relayError { Text(relayError).foregroundStyle(.red) }
             } else {
