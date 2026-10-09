@@ -1,11 +1,13 @@
 # V2 relay daemon (R3, #1198)
 
 This source implements the machine-owned relay daemon. It is off by default and
-runs only in the session-less hub. R4 web/native client integration, R5/R6 push
-privacy, deployment and owner hardware acceptance are separate gates. This is
-not a claim that a released phone app or the deployed Worker supports this path.
-R5 adds signed, sealed push content through `/v2/push/<rid>`; native verification
-and the background answer path still have separate acceptance gates. The daemon
+runs only in the session-less hub. This relay branch includes the web relay
+client, sealed secure-push sender and signed native-answer daemon contracts.
+Swift background and Watch answers (#1242/#1201), deployment, signed-device
+acceptance and the R7 gate remain unfinished. This describes source behavior,
+without claiming support in a released phone app or the deployed Worker.
+The daemon sends signed, sealed push content through `/v2/push/<rid>`; native
+verification and background answers still have separate acceptance gates. The daemon
 builds the sealed-push sender only with a push secret (`--push-secret` or
 `REMI_PUSH_SECRET`; a hub hands it to the session daemons it spawns through their
 environment), which it sends as the Worker's bearer; without one the hub answers
