@@ -7,6 +7,7 @@ import {
   type ProtocolMessage,
   type SessionListResponseMessage,
   createHello,
+  createPong,
   createSessionListRequest,
   deserialize,
   relayV2,
@@ -226,6 +227,18 @@ export class ChildProxy {
             resolve();
           }
           if (incoming.type === 'hello_ack') return;
+          if (incoming.type === 'ping') {
+            // The hub is this child's peer. A sessionless remote Pong would
+            // reach the machine Connection, not this verified socket (#1202).
+            try {
+              if (ws.readyState !== WebSocket.OPEN) throw new Error('CHILD_UNAVAILABLE');
+              ws.send(serialize(createPong(incoming.id)));
+            } catch {
+              reject(new Error('CHILD_UNAVAILABLE'));
+              ws.close();
+            }
+            return;
+          }
           if (incoming.type === 'session_list_response') {
             const list = this.lists.get(incoming.requestId);
             if (list?.sessionId === sessionId && list.ws === ws) list.resolve(incoming);

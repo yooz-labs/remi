@@ -1,4 +1,4 @@
-import { type ProtocolMessage, deserialize, relayV2, serialize } from '@remi/shared';
+import { type ProtocolMessage, createPong, deserialize, relayV2, serialize } from '@remi/shared';
 
 export interface RelayMachinePin {
   readonly relayUrl: string;
@@ -222,6 +222,9 @@ export class RelayMachineChannel {
       ) {
         throw new Error('Unsupported relay application message.');
       }
+      // Match the direct transport: the machine Connection's heartbeat is
+      // answered here, even when application reads are routed elsewhere (#1202).
+      if (message.type === 'ping') this.send(createPong(message.id));
       this.events.onMessage?.(message);
       return;
     }
