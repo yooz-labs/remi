@@ -102,6 +102,7 @@ public actor RemiConnection {
     private var socket: URLSessionWebSocketTask?
     private var runTask: Task<Void, Never>?
     private var pendingAuthentication: PendingAuthentication?
+    private var initialDirectHelloPending = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
     private var relayChannel: RelayChannel?
@@ -299,6 +300,7 @@ public actor RemiConnection {
         let task = session.webSocketTask(with: configuration.url)
         socket = task
         task.resume()
+        initialDirectHelloPending = true
         try await sendHello(on: task)
 
         while shouldRun && !Task.isCancelled {
@@ -373,6 +375,7 @@ public actor RemiConnection {
             pendingAuthentication = nil
             try await sendHello(on: task)
         case "hello_ack":
+            initialDirectHelloPending = false
             let message = try decoder.decode(HelloAckMessage.self, from: data)
             transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message))
@@ -418,7 +421,15 @@ public actor RemiConnection {
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
         case "error":
-            eventHandler(.error(try decoder.decode(ErrorMessage.self, from: data)))
+            let message = try decoder.decode(ErrorMessage.self, from: data)
+            // Direct Hello also supports auth-disabled hubs. An authenticated hub
+            // refuses that first Hello during its challenge; keep real errors visible (#1242).
+            if initialDirectHelloPending, message.code == "AUTH_REQUIRED",
+               pendingAuthentication != nil, configuration.relayPin == nil {
+                initialDirectHelloPending = false
+                return
+            }
+            eventHandler(.error(message))
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
             guard ["delivered", "stale", "conflict", "busy", "uncertain"].contains(result.outcome) else { throw RelayFailure.malformed }
@@ -457,6 +468,7 @@ public actor RemiConnection {
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }
         for id in Array(rpcWaiters.keys) { finishRPC(id, result: .failure(RelayFailure.closed)) }
         pendingAuthentication = nil
+        initialDirectHelloPending = false
         relayDeadline?.cancel()
         relayDeadline = nil
         relayHandshake?.abort()

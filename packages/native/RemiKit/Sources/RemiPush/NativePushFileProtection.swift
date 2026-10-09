@@ -4,6 +4,17 @@ import Foundation
 /// This is availability, not permission to sign: current private Dpk policy
 /// and verified capsule authority remain mandatory at each answer effect.
 enum NativePushFileProtection {
+    static func prepareDirectory(_ url: URL) throws {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            // Reopening existing App Group state is normal (#1242). The check below
+            // still refuses a regular file or symlink, and preserves other failures.
+        }
+        try directory(url)
+    }
+
     static func directory(_ url: URL) throws {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attributes[.type] as? FileAttributeType == .typeDirectory else {
