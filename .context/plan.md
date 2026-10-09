@@ -1,26 +1,28 @@
 # Plan: the roadmap
 
-Updated 2026-10-06.
+Updated 2026-10-09.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
 ## Where things stand
 
-- **Released:** 0.7.15 (stable on npm and Homebrew).
-- **On develop (0.7.16-dev), not released yet:**
+- **Released on GitHub:** [0.7.16](https://github.com/yooz-labs/remi/releases/tag/v0.7.16), published 2026-10-07.
+- **On develop (0.7.17-dev), ahead of the stable release:**
   - no local judge: Claude Code decides permissions, remi relays them (#1125, ADR 0030);
   - held-hook answers (#1126, #1127, ADR 0031);
   - the Codex adapter (epic #1175, ADR 0033);
   - first-connect approval: every client key is approved once with `remi authorize` (#873);
   - the relay off by default and fail-closed (#1193);
   - one `turn_failed` alert per failure until the agent works again (#1153, #1226).
-- **On the relay epic branch** (`feature/issue-1195-epic-relay`): relay v2 R1 to R5 and the daemon side of R6 (#1205, #1214, #1219, #1220, #1222), always-on end-to-end encryption, sealed push. Not in develop yet.
+- **Relay backend landed in develop:** [#1331](https://github.com/yooz-labs/remi/pull/1331), merge `b1168126`, includes the existing R1-R5 and daemon R6 contracts, the authority-contention correction, v1 retirement and heartbeat replies. Relay remains off by default. Both full Bun suites and the actual [61-minute Linux relay gate](https://github.com/yooz-labs/remi/actions/runs/37905906897) passed at backend `2858e4bd`, whose tree equals the merge. Signed-device and deployed-Worker acceptance remain open; #1195/#1202 are not closed by the source landing.
+- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the threat model and candidate staging contract. It is a proposal, with no accepted freeze or runtime attachment capability. Platform-storage, bounded-decoder and harness-lifetime work precede native attachment UI.
 - **Apps today:**
   - a sandboxed macOS menu-bar app that hosts the web UI;
   - the Capacitor iPhone app with a Notification Service Extension;
   - the web client.
 
-  Native SwiftUI apps are planned: [native-apps-plan-2026-10.md](native-apps-plan-2026-10.md).
+  Native SwiftUI source lives in `packages/native`: [native-apps-plan-2026-10.md](native-apps-plan-2026-10.md).
+  Relay and secure native answers continue in existing [#1330](https://github.com/yooz-labs/remi/pull/1330), against the landed backend; its handoff lists the foreground Ping/Pong fix, source-test refresh and remaining signed/device gates.
 
 ## Milestones, in order
 
@@ -40,15 +42,24 @@ The native apps (milestones 4 and 5) run in parallel too: Codex builds them in X
 They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 
-## Current backend continuation: recent repositories (#1284)
+## Completed backend continuation: recent repositories (#1284)
 
 The owner selected #1284 on 2026-10-09 while the native developer continues X2 separately.
 The wire stays unchanged; only successful hub starts write history, capped at 20 with no age expiry.
+Landed through [#1332](https://github.com/yooz-labs/remi/pull/1332) at `ef84b4c6`, with the same tree as tested `28ea5daf`.
+Both full Bun suites passed 7,942 tests with no failures; Linux CI and the actual 61-minute relay gate passed.
+The existing native caller needs no new Swift model or wire field for this persistence behavior.
 
 1. Pin the removed-worktree and expired-session regressions against the original source, plus ordinary creates and hub resumes (`tests/integration/hub-create-session.test.ts`, `hub-resume.test.ts`).
 2. Add restricted atomic history (`workspace/recent-store.ts`), merge it into `workspace/recent.ts`, and wire the successful shared starter and recent-repositories handler in `cli.ts`; async lock waiting reuses the existing ownership and stale recovery rules.
 3. Verify canonical main repositories, latest-use deduplication, cap, permissions, damaged-source fallback, simultaneous writers and responsive bounded lock waiting; update ADR 0036's source and disclosure descriptions.
 4. Review, mutation-check each behavior, run fresh full suites on Bun 1.4.2 and 1.3.11 and the existing CI gates, then land through a PR to develop.
+
+## Next work while native acceptance proceeds
+
+1. Continue existing [#1330](https://github.com/yooz-labs/remi/pull/1330), now ready for review. The owner has an iPhone and Watch available; signed app/extension, provider configuration, actual delivery, locked-device actions and two-machine Mac acceptance still need measured results. Source and unsigned receipts do not close those gates. Generic #1141 categories follow the accepted X2 answer path.
+2. Land the existing file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) after its refreshed source passes normal CI. Keep #1170 open: this is preparation, with no accepted freeze or implemented attachment capability.
+3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): prove standalone storage and bounded-decoder packaging, accept the staging ADR/fixtures, implement durable reservations and direct staging, then add one production client caller. Claude insertion, links, outbound files and relay/native depth each have separate gates. The existing decoder's compiled runtime failed to load; resolve that before upload implementation. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
 
 ## Tracks (work outside the milestones)
 
