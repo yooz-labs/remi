@@ -158,8 +158,10 @@ struct HomeScreen: View {
         .toolbar {
             if #available(iOS 27.0, *) {
                 ToolbarOverflowMenu {
-                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                        showingPairing = true
+                    if !availableSessionMachines.isEmpty {
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
                     }
                     Button("Preferences", systemImage: "gearshape") {
                         showingPreferences = true
@@ -167,10 +169,15 @@ struct HomeScreen: View {
                 }
 
                 ToolbarItem(placement: .topBarPinnedTrailing) {
-                    Button("New session", systemImage: "plus.rectangle.on.folder") {
-                        showingNewSession = true
+                    if availableSessionMachines.isEmpty {
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
+                    } else {
+                        Button("New session", systemImage: "plus.rectangle.on.folder") {
+                            showingNewSession = true
+                        }
                     }
-                    .disabled(availableSessionMachines.isEmpty)
                 }
             } else {
                 ToolbarItem(placement: .topBarTrailing) {
