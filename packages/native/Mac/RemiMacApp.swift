@@ -21,7 +21,7 @@ struct RemiMacApp: App {
                     )
                 }
             }
-            .frame(minWidth: 980, minHeight: 640)
+            .frame(minWidth: 760, minHeight: 560)
             .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
@@ -29,6 +29,8 @@ struct RemiMacApp: App {
                 else if phase == .background { notifications.background() }
             }
         }
+        .defaultSize(width: 1180, height: 760)
+        .keyboardShortcut(nil)
 
         MenuBarExtra {
             if let store = notifications.store {
