@@ -102,7 +102,7 @@ describe('hook-less card from the parser (#1140)', () => {
     const errors = errorsOf(sent);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.code).toBe('STALE_ANSWER');
-    expect(logs.some((m) => m.includes('free text (21 chars) into the option menu'))).toBe(true);
+    expect(logs.some((m) => m.includes('free-text-into-menu; 21 characters'))).toBe(true);
   });
 
   test('an option answered on that card still types its digit', async () => {

@@ -24,14 +24,16 @@
  * (`remi codex resume <thread id>`); resuming one through a hub is not built.
  *
  * Hub mode (`remi serve`, #1124, #1129): the hub is a session-less supervisor and must never run
- * Claude itself, but both transports (`server/connection.ts`, `remote/relay-adapter.ts`) dispatch
- * resume requests to this handler unconditionally. With `childSessions` set, the stored session is
+ * Claude itself. A direct `Connection` dispatches resume requests to this handler. With
+ * `childSessions` set, the stored session is
  * resolved as in path 2 and then, instead of spawning a PTY, a CHILD session daemon is started with
  * `--resume <id>` through the same path a create request uses (`startSession`: the remote-argument
  * allowlist, the held-session check, a port, the spawn). The response carries the child's port; the
  * hub attaches nobody and sends no `hello_ack`, because the session belongs to another process and
  * the client reaches it through the session list and a direct connection. Until #1129 every such
  * request was refused with `UNSUPPORTED`.
+ * The current HubRelay routes session-targeted resumes to live child proxies; it cannot resume an
+ * exited stored session through this hub starter. That relay resume path remains unsupported.
  */
 
 import * as path from 'node:path';

@@ -195,7 +195,7 @@ export interface SubagentAlert {
 
 /** How much of a matched command to carry into the notification. A push body
  *  is truncated by the OS anyway, and the whole point is recognition, not a
- *  full audit record (the daemon log keeps that). */
+ *  full audit record. Personal command text is omitted from daemon logs (#1200). */
 const DETAIL_MAX = 160;
 
 export interface SubagentAlerterDeps {

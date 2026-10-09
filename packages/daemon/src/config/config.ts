@@ -66,6 +66,11 @@ export interface DisplayConfig {
  * DURATION so it only fires when the user plausibly walked away.
  */
 export interface NotificationsConfig {
+  /** Plaintext legacy push through the signaling Worker; it also needs a push secret.
+   * ON by default until secure push ships end to end; the default flips at the R7 gate
+   * (#1200). `false` disables it. Independent of this flag, the machine-wide activation
+   * latch refuses it for good once any device enrolls over the relay. */
+  readonly legacy_push_enabled: boolean;
   /** Master on/off for the turn-complete push. */
   readonly on_turn_complete: boolean;
   /**
@@ -201,16 +206,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   network: {
     mdns: true,
-    // Off by default (#1193). Every install used to register a room with the
-    // signaling Worker, and no shipped client can join one, so the relay gave a
-    // default install no remote capability and an inbound path gated only by
-    // the room code. `relay = true` (or `--permanent-code`) still turns it on,
-    // and without `--auth --permanent-code` the daemon prints a notice and
-    // starts no relay at all (and the adapter would refuse every peer anyway).
-    // A config.toml that already holds `relay = true` (from `remi config init`
-    // before this change) keeps the setting and gets that notice at boot.
+    // Off by default (#1193/#1198). Only the authenticated hub opts into v2
+    // with --relay or this setting; --no-relay wins. Session daemons never
+    // register a relay. Permanent-code mode is retired. R4 client and R7
+    // deployed/hardware acceptance remain pending.
     relay: false,
-    signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
+    signaling_url: 'wss://remi-signaling.yooz.workers.dev',
   },
   auth: {
     enabled: 'auto',
@@ -241,6 +242,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     transcript_binder_enabled: true,
   },
   notifications: {
+    legacy_push_enabled: true,
     on_turn_complete: true,
     // 60s: long enough that a normal interactive turn (seconds) never fires
     // it, short enough to still be useful for "went to get coffee" absences.
@@ -335,19 +337,6 @@ export interface LoadedConfig {
   /** True when `[notifications] subagent_alert` was absent and the legacy
    *  `auto_approve.subagent_alert` list was used in its place. */
   readonly subagentAlertFromLegacy: boolean;
-}
-
-/**
- * Whether this process registers with the signaling relay (#1193): off unless
- * `network.relay = true` or `--permanent-code` asks for it, and `--no-relay`
- * beats both. `--permanent-code` counts because a fixed relay code means
- * nothing without a relay, and it is what the authenticated mode is started by.
- */
-export function relayRequested(
-  configRelay: boolean,
-  cli: { readonly noRelay: boolean; readonly permanentCode: boolean },
-): boolean {
-  return !cli.noRelay && (configRelay || cli.permanentCode);
 }
 
 /**
@@ -488,6 +477,11 @@ function validateDaemon(cfg: DaemonConfig, configPath: string): void {
 
 /** Validate `[notifications]` has correct runtime types (#914). */
 function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (typeof cfg.legacy_push_enabled !== 'boolean') {
+    throw new Error(
+      `Invalid notifications.legacy_push_enabled in ${configPath}: must be a boolean (true/false).`,
+    );
+  }
   if (
     !Array.isArray(cfg.subagent_alert) ||
     !cfg.subagent_alert.every((p: unknown) => typeof p === 'string')
@@ -675,8 +669,8 @@ allowed_origins = []
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
-# Off by default: no shipped client connects through the relay yet (#1193).
-# With it on, no relay starts unless the daemon runs with --auth --permanent-code.
+# Opt-in authenticated hub relay (#1198); client/deployed acceptance pending.
+# remi serve --relay opts in; --no-relay wins. Pair locally with remi pair --relay.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
@@ -698,6 +692,11 @@ authorized_chat_ids = []
 authorized_user_ids = []
 
 [notifications]
+# Plaintext legacy push is on by default until secure push ships end to end
+# (the default flips at the R7 gate, #1200); it also needs a push secret.
+# Set false to disable it. Once any device enrolls over the relay, this
+# machine never sends plaintext push again, whatever this setting says.
+legacy_push_enabled = ${DEFAULT_CONFIG.notifications.legacy_push_enabled}
 # Push "<session>: turn complete" with Claude's actual last message when a
 # turn runs long (#914). Stop fires on EVERY turn, including two-second
 # interactive ones, so this is gated on duration: below the threshold you are
@@ -772,7 +771,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
   lines.push(`  relay = ${config.network.relay}`);
-  lines.push('  # --permanent-code turns the relay on, whatever relay says');
+  lines.push('  # hub-only: --relay opts in; --no-relay wins; permanent codes are retired');
   lines.push(`  signaling_url = "${config.network.signaling_url}"`);
   lines.push('');
   lines.push('[auth]');
@@ -797,6 +796,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
   lines.push('');
   lines.push('[notifications]');
+  lines.push(`  legacy_push_enabled = ${config.notifications.legacy_push_enabled}`);
   lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
   lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
   lines.push(`  push_lease_hours = ${config.notifications.push_lease_hours}`);

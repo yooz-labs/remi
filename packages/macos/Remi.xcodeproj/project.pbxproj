@@ -9,74 +9,139 @@
 /* Begin PBXBuildFile section */
 		0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */; };
 		0624CA493FEF2D140B88CFF7 /* HubSetupCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */; };
+		083F3614CE0C365F80DDAEBD /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3209D664359B4C906615F6 /* NativePushEffect.swift */; };
+		0846658B855042B415C6D122 /* NativePushRegistrationIngressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18968B763E8784DE2DE652AD /* NativePushRegistrationIngressTests.swift */; };
 		0C46ABF54A97FA1F17BE04B0 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
+		0CAD2A8839264469DE5F2855 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5759ABEDF991EEDF822F274 /* NativePushState.swift */; };
+		1322F73903659E564FB1EDEE /* NativePushNotificationConsumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B02F25D2956C2FC92A713A /* NativePushNotificationConsumer.swift */; };
+		1A996F89FD9E880248770384 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 612EE864F40275712BB31593 /* NativeIdentityBridge.swift */; };
+		1B7B8CA531822DEF831742F9 /* NativePushPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C396E0444F030C0B1DE0175 /* NativePushPermissionTests.swift */; };
+		1F8112393A0D9B366AF3E331 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = D4CE94E0B3EA1C60ED4D2C46 /* NativeAPNsEnvironmentQuery.m */; };
+		256D5642574FA317B27FAC10 /* NativeIdentityAuthorityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9473E4EEDCDCD54F6FA9F9DC /* NativeIdentityAuthorityTests.swift */; };
 		2626DA9FECF5CE594406FCF2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */; };
 		2FB66887F1ABC6C53CA40C06 /* ActivationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */; };
+		3331E6CDBD1EA15AA9BC0FC2 /* NativePushStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47222EC6DFC0594D05DAB166 /* NativePushStateTests.swift */; };
+		449AB7A13BB4A6BCCB6C9306 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C6477F46294B55F936D2DFC /* NativePushKeyStore.swift */; };
 		465626B53BA0E06EC5B555C0 /* ActivationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */; };
 		477C35A4907835166E4AECF6 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CA6F64B5FFA6B90233A956 /* HubClient.swift */; };
+		4CC4B37C1B4403BB8AB4C079 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78A18C09D1FCB4A05CF764A6 /* NativePushRegistration.swift */; };
 		4DDC81BB89C55D2F2E819002 /* HubSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 286C0F48CEB5BC01CC53529D /* HubSetupView.swift */; };
 		5470D493544A6D03CE17E9B3 /* IconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7875E7E74CA980AD4B502F /* IconState.swift */; };
 		55BD09EFD7CB8CA48CCE0840 /* ClientIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7568FF36CA5C521240F3E18B /* ClientIdentity.swift */; };
 		56A2EE338C23F3064E056B31 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DD72A5787EF3FFBF772C89F /* Assets.xcassets */; };
 		5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */; };
+		5EB2ADDF29E6B3FC7618E821 /* NativeAPNsEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E606E56BDD080AA2D1C309 /* NativeAPNsEnvironmentTests.swift */; };
 		61C341D2ECBBE9C35A242AF0 /* HubProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */; };
 		6769D18A40238978D0A1A802 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A55AC9AACFAC1CAC46522A8 /* NotificationManager.swift */; };
+		6B60FE3AFA38545AE924AC92 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 166F69BE73C7BFF28BFC7122 /* NativePushCodec.swift */; };
 		7099815B76AC17566B2A96C5 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */; };
 		7366DDF55B2871EA5704D8B8 /* HubClientIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */; };
+		749502E3E4857157C566DD1E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */; };
 		779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CA6F64B5FFA6B90233A956 /* HubClient.swift */; };
+		7865B2C5181F9610D42DAC3A /* NativePushEffectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C55BC37EDA4437555C19A496 /* NativePushEffectTests.swift */; };
 		787301FFD777594190359E77 /* DistSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */; };
 		868C031D66195475FDA1A60E /* IconStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */; };
 		89CA0A413FB87001E796F276 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DD72A5787EF3FFBF772C89F /* Assets.xcassets */; };
 		8A7968BC43F4E4D7069E3FD9 /* RemiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4E747A3D65101EAE2331D4 /* RemiApp.swift */; };
 		8BCCB2E79DA278B7FCC0EFC5 /* HubFixtureConformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE5BC89AD3E7A9A6DEE5A00C /* HubFixtureConformanceTests.swift */; };
 		954D114FF37A81A590B7D7B4 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */; };
+		99574AA653C6149F274734C7 /* NativePushRegistrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7A481255530862320F2B76 /* NativePushRegistrationTests.swift */; };
+		A21858FBA2B2804F500C1A33 /* NativePushCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2158409A29EE0D1D9CA681D4 /* NativePushCodecTests.swift */; };
+		A30D25A929E0C8B89541A995 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C6477F46294B55F936D2DFC /* NativePushKeyStore.swift */; };
+		A44AC5470EF752AD982EB28D /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = B403577F1F61435061FD4A6A /* NativeEd25519PublicKey.swift */; };
+		A50C3DB5A5C4D55988F2A429 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5759ABEDF991EEDF822F274 /* NativePushState.swift */; };
 		A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */; };
+		A72E03197F6AF9CC795CBD5F /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63EE93688C1BCA969CE7C1E1 /* NotificationService.swift */; };
+		A868C179E5BCA6C9302DB870 /* NativePushNotificationConsumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B02F25D2956C2FC92A713A /* NativePushNotificationConsumer.swift */; };
 		AACDBAC70B24E6FD163F22C8 /* IconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7875E7E74CA980AD4B502F /* IconState.swift */; };
 		AD7C394E7D732D8388D54353 /* ClientIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7568FF36CA5C521240F3E18B /* ClientIdentity.swift */; };
 		B02F8C5F4512A48DA88A1311 /* HubSetupCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */; };
+		B1181EA447A0098D0B26BCC1 /* NativePushPublicationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE437EE5413016CD36C375B /* NativePushPublicationTests.swift */; };
 		B2EF1C7D36471D46EACF2DD6 /* DistSchemeHandlerServingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */; };
 		B380134DB301B91E8FB492B1 /* web in Resources */ = {isa = PBXBuildFile; fileRef = 5DB62EAF2230D75844C2E431 /* web */; };
 		B624FF6190079DE8CEC1ED90 /* HubProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */; };
+		B9E186D1522482A77DE75FA6 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = B403577F1F61435061FD4A6A /* NativeEd25519PublicKey.swift */; };
 		C06956DFD17992CEB0E8F1F7 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */; };
+		C140DDD79B1F2A4464973CAE /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836CD0DCB3C60BB653778A26 /* NativeAPNsEnvironment.swift */; };
 		D5175153D73E308F27F71B07 /* HubProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */; };
+		D757068E787CBE42E94F306F /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5062781BE7F52AF76952851 /* NativePushConfiguration.swift */; };
+		D8EE019D43AC80AE30F406D8 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5062781BE7F52AF76952851 /* NativePushConfiguration.swift */; };
 		D914DD758D12BA0F2F2192AA /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A55AC9AACFAC1CAC46522A8 /* NotificationManager.swift */; };
+		DA1DF30193A8C98E88D694BE /* NativePushPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F6734122D7534F713EE35F7 /* NativePushPresentationTests.swift */; };
 		DCB33A9FC9A43C32D55F1C86 /* HubSetupCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C385A2B0E9B3668B8E04A46E /* HubSetupCommandsTests.swift */; };
 		E2A47A3FEF612AA225168AB6 /* HubSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 286C0F48CEB5BC01CC53529D /* HubSetupView.swift */; };
 		E930A603D1AABF15D2F6197D /* ClientIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D0D50141E60616E472B2C5 /* ClientIdentityTests.swift */; };
+		EC3514D9EB2E3A3B7DDCF706 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 026E35381E86D8F6C352FD64 /* NativeKeychainOperations.swift */; };
+		F01DE26AC73429B29135A3F1 /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836CD0DCB3C60BB653778A26 /* NativeAPNsEnvironment.swift */; };
 		F1F060E53A0E11347B560DD6 /* NotificationDiffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AEF3BCD8B2F7017165A715A /* NotificationDiffTests.swift */; };
+		F256F3320100CB28F5DCC6E2 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = D4CE94E0B3EA1C60ED4D2C46 /* NativeAPNsEnvironmentQuery.m */; };
+		F6C5D5E58D85F8B5CE9C6FC1 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 026E35381E86D8F6C352FD64 /* NativeKeychainOperations.swift */; };
+		F7DC163718BFE0D86A7CF5A5 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 166F69BE73C7BFF28BFC7122 /* NativePushCodec.swift */; };
+		F85C60830E91EB32D56441BD /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 612EE864F40275712BB31593 /* NativeIdentityBridge.swift */; };
+		FAABA6A4B8E020D8E43F263F /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3209D664359B4C906615F6 /* NativePushEffect.swift */; };
+		FB4A2931CF345805A2FAAD72 /* NativePushNotificationConsumerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07D91D4BFDB5199118DE0692 /* NativePushNotificationConsumerTests.swift */; };
+		FBB289CE02C640E03F36513B /* NativePushKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1940A6ACAB5D27868759FC /* NativePushKeyStoreTests.swift */; };
 		FDB4E6B066502FF40FE283A5 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */; };
 		FDD33CD09342E7459B3AD7E1 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
+		FF01AD40597B1291433AC80A /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78A18C09D1FCB4A05CF764A6 /* NativePushRegistration.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		026E35381E86D8F6C352FD64 /* NativeKeychainOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKeychainOperations.swift; sourceTree = "<group>"; };
 		03E03C1A89AE93F94D40EA16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		07D91D4BFDB5199118DE0692 /* NativePushNotificationConsumerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushNotificationConsumerTests.swift; sourceTree = "<group>"; };
+		0C396E0444F030C0B1DE0175 /* NativePushPermissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushPermissionTests.swift; sourceTree = "<group>"; };
+		13AE27BA8CFCF52E78601A3D /* NativePush-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NativePush-Bridging-Header.h"; sourceTree = "<group>"; };
+		166F69BE73C7BFF28BFC7122 /* NativePushCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushCodec.swift; sourceTree = "<group>"; };
+		18968B763E8784DE2DE652AD /* NativePushRegistrationIngressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushRegistrationIngressTests.swift; sourceTree = "<group>"; };
 		1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupCommands.swift; sourceTree = "<group>"; };
 		1F4E747A3D65101EAE2331D4 /* RemiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemiApp.swift; sourceTree = "<group>"; };
+		1F6734122D7534F713EE35F7 /* NativePushPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushPresentationTests.swift; sourceTree = "<group>"; };
+		2158409A29EE0D1D9CA681D4 /* NativePushCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushCodecTests.swift; sourceTree = "<group>"; };
+		21E75F42EFAA3C95CE47895B /* NativeAPNsEnvironmentQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NativeAPNsEnvironmentQuery.h; sourceTree = "<group>"; };
 		286C0F48CEB5BC01CC53529D /* HubSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupView.swift; sourceTree = "<group>"; };
 		355697014B8A803D93F9E3EA /* WebViewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewWindow.swift; sourceTree = "<group>"; };
 		385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubProtocolTests.swift; sourceTree = "<group>"; };
 		3C92562123ECC39FB269FB4A /* Remi.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Remi.entitlements; sourceTree = "<group>"; };
+		42B02F25D2956C2FC92A713A /* NativePushNotificationConsumer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushNotificationConsumer.swift; sourceTree = "<group>"; };
+		47222EC6DFC0594D05DAB166 /* NativePushStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushStateTests.swift; sourceTree = "<group>"; };
 		4DD72A5787EF3FFBF772C89F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandlerTests.swift; sourceTree = "<group>"; };
 		5012C3ED6BF23506A3E5406C /* Remi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Remi.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		55D0D50141E60616E472B2C5 /* ClientIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientIdentityTests.swift; sourceTree = "<group>"; };
 		5A7875E7E74CA980AD4B502F /* IconState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconState.swift; sourceTree = "<group>"; };
 		5DB62EAF2230D75844C2E431 /* web */ = {isa = PBXFileReference; lastKnownFileType = folder; name = web; path = Remi/Resources/web; sourceTree = SOURCE_ROOT; };
+		5EE437EE5413016CD36C375B /* NativePushPublicationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushPublicationTests.swift; sourceTree = "<group>"; };
+		612EE864F40275712BB31593 /* NativeIdentityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIdentityBridge.swift; sourceTree = "<group>"; };
+		63EE93688C1BCA969CE7C1E1 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClientIntegrationTests.swift; sourceTree = "<group>"; };
 		6AEF3BCD8B2F7017165A715A /* NotificationDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiffTests.swift; sourceTree = "<group>"; };
+		6F1940A6ACAB5D27868759FC /* NativePushKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushKeyStoreTests.swift; sourceTree = "<group>"; };
 		6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconStateTests.swift; sourceTree = "<group>"; };
 		734962FBB7BBAF23FEFB57BC /* RemiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RemiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7568FF36CA5C521240F3E18B /* ClientIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClientIdentity.swift; sourceTree = "<group>"; };
 		76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivationPolicy.swift; sourceTree = "<group>"; };
+		78A18C09D1FCB4A05CF764A6 /* NativePushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushRegistration.swift; sourceTree = "<group>"; };
 		7A55AC9AACFAC1CAC46522A8 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivationPolicyTests.swift; sourceTree = "<group>"; };
 		7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandlerServingTests.swift; sourceTree = "<group>"; };
 		81CA6F64B5FFA6B90233A956 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
+		82E606E56BDD080AA2D1C309 /* NativeAPNsEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAPNsEnvironmentTests.swift; sourceTree = "<group>"; };
+		836CD0DCB3C60BB653778A26 /* NativeAPNsEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAPNsEnvironment.swift; sourceTree = "<group>"; };
+		8C6477F46294B55F936D2DFC /* NativePushKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushKeyStore.swift; sourceTree = "<group>"; };
+		9473E4EEDCDCD54F6FA9F9DC /* NativeIdentityAuthorityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeIdentityAuthorityTests.swift; sourceTree = "<group>"; };
+		A5062781BE7F52AF76952851 /* NativePushConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushConfiguration.swift; sourceTree = "<group>"; };
+		B403577F1F61435061FD4A6A /* NativeEd25519PublicKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEd25519PublicKey.swift; sourceTree = "<group>"; };
 		B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandler.swift; sourceTree = "<group>"; };
+		B5759ABEDF991EEDF822F274 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushState.swift; sourceTree = "<group>"; };
+		BF3209D664359B4C906615F6 /* NativePushEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushEffect.swift; sourceTree = "<group>"; };
 		C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubProtocol.swift; sourceTree = "<group>"; };
 		C385A2B0E9B3668B8E04A46E /* HubSetupCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupCommandsTests.swift; sourceTree = "<group>"; };
+		C55BC37EDA4437555C19A496 /* NativePushEffectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushEffectTests.swift; sourceTree = "<group>"; };
 		CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		D4CE94E0B3EA1C60ED4D2C46 /* NativeAPNsEnvironmentQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = NativeAPNsEnvironmentQuery.m; sourceTree = "<group>"; };
+		DE7A481255530862320F2B76 /* NativePushRegistrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePushRegistrationTests.swift; sourceTree = "<group>"; };
 		E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLogin.swift; sourceTree = "<group>"; };
 		EE5BC89AD3E7A9A6DEE5A00C /* HubFixtureConformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubFixtureConformanceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -85,10 +150,56 @@
 		364BBE56F2F49E1C3A22A22B = {
 			isa = PBXGroup;
 			children = (
+				AAE28E1595E7E5ED4909A48E /* packages */,
 				AB3D9F531B6A4A622EDC05D1 /* Remi */,
 				C7F38A4D8AF6DC703EE13673 /* RemiTests */,
 				DB291654E0C27C18415F3098 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		7506634D7F276751BF71ECC6 /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				FADF0DC0C87332EAB14FD98D /* App */,
+			);
+			path = ios;
+			sourceTree = "<group>";
+		};
+		9ABF9FB48D48DAD17E867372 /* RemiNotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				63EE93688C1BCA969CE7C1E1 /* NotificationService.swift */,
+			);
+			path = RemiNotificationService;
+			sourceTree = "<group>";
+		};
+		9DE81021956617E76DE279CE /* NativePush */ = {
+			isa = PBXGroup;
+			children = (
+				836CD0DCB3C60BB653778A26 /* NativeAPNsEnvironment.swift */,
+				21E75F42EFAA3C95CE47895B /* NativeAPNsEnvironmentQuery.h */,
+				D4CE94E0B3EA1C60ED4D2C46 /* NativeAPNsEnvironmentQuery.m */,
+				B403577F1F61435061FD4A6A /* NativeEd25519PublicKey.swift */,
+				026E35381E86D8F6C352FD64 /* NativeKeychainOperations.swift */,
+				13AE27BA8CFCF52E78601A3D /* NativePush-Bridging-Header.h */,
+				166F69BE73C7BFF28BFC7122 /* NativePushCodec.swift */,
+				A5062781BE7F52AF76952851 /* NativePushConfiguration.swift */,
+				BF3209D664359B4C906615F6 /* NativePushEffect.swift */,
+				8C6477F46294B55F936D2DFC /* NativePushKeyStore.swift */,
+				42B02F25D2956C2FC92A713A /* NativePushNotificationConsumer.swift */,
+				78A18C09D1FCB4A05CF764A6 /* NativePushRegistration.swift */,
+				B5759ABEDF991EEDF822F274 /* NativePushState.swift */,
+			);
+			path = NativePush;
+			sourceTree = "<group>";
+		};
+		AAE28E1595E7E5ED4909A48E /* packages */ = {
+			isa = PBXGroup;
+			children = (
+				CF8B27FAB1B9C8A4A931C70E /* web */,
+			);
+			name = packages;
+			path = ..;
 			sourceTree = "<group>";
 		};
 		AB3D9F531B6A4A622EDC05D1 /* Remi */ = {
@@ -106,11 +217,13 @@
 				5A7875E7E74CA980AD4B502F /* IconState.swift */,
 				03E03C1A89AE93F94D40EA16 /* Info.plist */,
 				E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */,
+				612EE864F40275712BB31593 /* NativeIdentityBridge.swift */,
 				7A55AC9AACFAC1CAC46522A8 /* NotificationManager.swift */,
 				3C92562123ECC39FB269FB4A /* Remi.entitlements */,
 				1F4E747A3D65101EAE2331D4 /* RemiApp.swift */,
 				CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */,
 				355697014B8A803D93F9E3EA /* WebViewWindow.swift */,
+				9DE81021956617E76DE279CE /* NativePush */,
 				ECC1B78C2B42CFA4F799B774 /* Resources */,
 			);
 			path = Remi;
@@ -128,9 +241,29 @@
 				385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */,
 				C385A2B0E9B3668B8E04A46E /* HubSetupCommandsTests.swift */,
 				6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */,
+				82E606E56BDD080AA2D1C309 /* NativeAPNsEnvironmentTests.swift */,
+				9473E4EEDCDCD54F6FA9F9DC /* NativeIdentityAuthorityTests.swift */,
+				2158409A29EE0D1D9CA681D4 /* NativePushCodecTests.swift */,
+				C55BC37EDA4437555C19A496 /* NativePushEffectTests.swift */,
+				6F1940A6ACAB5D27868759FC /* NativePushKeyStoreTests.swift */,
+				07D91D4BFDB5199118DE0692 /* NativePushNotificationConsumerTests.swift */,
+				0C396E0444F030C0B1DE0175 /* NativePushPermissionTests.swift */,
+				1F6734122D7534F713EE35F7 /* NativePushPresentationTests.swift */,
+				5EE437EE5413016CD36C375B /* NativePushPublicationTests.swift */,
+				18968B763E8784DE2DE652AD /* NativePushRegistrationIngressTests.swift */,
+				DE7A481255530862320F2B76 /* NativePushRegistrationTests.swift */,
+				47222EC6DFC0594D05DAB166 /* NativePushStateTests.swift */,
 				6AEF3BCD8B2F7017165A715A /* NotificationDiffTests.swift */,
 			);
 			path = RemiTests;
+			sourceTree = "<group>";
+		};
+		CF8B27FAB1B9C8A4A931C70E /* web */ = {
+			isa = PBXGroup;
+			children = (
+				7506634D7F276751BF71ECC6 /* ios */,
+			);
+			path = web;
 			sourceTree = "<group>";
 		};
 		DB291654E0C27C18415F3098 /* Products */ = {
@@ -148,6 +281,14 @@
 				5DB62EAF2230D75844C2E431 /* web */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		FADF0DC0C87332EAB14FD98D /* App */ = {
+			isa = PBXGroup;
+			children = (
+				9ABF9FB48D48DAD17E867372 /* RemiNotificationService */,
+			);
+			path = App;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -284,6 +425,18 @@
 				E2A47A3FEF612AA225168AB6 /* HubSetupView.swift in Sources */,
 				AACDBAC70B24E6FD163F22C8 /* IconState.swift in Sources */,
 				FDB4E6B066502FF40FE283A5 /* LaunchAtLogin.swift in Sources */,
+				F01DE26AC73429B29135A3F1 /* NativeAPNsEnvironment.swift in Sources */,
+				1F8112393A0D9B366AF3E331 /* NativeAPNsEnvironmentQuery.m in Sources */,
+				A44AC5470EF752AD982EB28D /* NativeEd25519PublicKey.swift in Sources */,
+				F85C60830E91EB32D56441BD /* NativeIdentityBridge.swift in Sources */,
+				F6C5D5E58D85F8B5CE9C6FC1 /* NativeKeychainOperations.swift in Sources */,
+				F7DC163718BFE0D86A7CF5A5 /* NativePushCodec.swift in Sources */,
+				D757068E787CBE42E94F306F /* NativePushConfiguration.swift in Sources */,
+				083F3614CE0C365F80DDAEBD /* NativePushEffect.swift in Sources */,
+				A30D25A929E0C8B89541A995 /* NativePushKeyStore.swift in Sources */,
+				1322F73903659E564FB1EDEE /* NativePushNotificationConsumer.swift in Sources */,
+				4CC4B37C1B4403BB8AB4C079 /* NativePushRegistration.swift in Sources */,
+				0CAD2A8839264469DE5F2855 /* NativePushState.swift in Sources */,
 				6769D18A40238978D0A1A802 /* NotificationManager.swift in Sources */,
 				8A7968BC43F4E4D7069E3FD9 /* RemiApp.swift in Sources */,
 				2626DA9FECF5CE594406FCF2 /* SettingsView.swift in Sources */,
@@ -297,6 +450,7 @@
 			files = (
 				2FB66887F1ABC6C53CA40C06 /* ActivationPolicy.swift in Sources */,
 				0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */,
+				749502E3E4857157C566DD1E /* AppDelegate.swift in Sources */,
 				55BD09EFD7CB8CA48CCE0840 /* ClientIdentity.swift in Sources */,
 				E930A603D1AABF15D2F6197D /* ClientIdentityTests.swift in Sources */,
 				5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */,
@@ -313,8 +467,33 @@
 				5470D493544A6D03CE17E9B3 /* IconState.swift in Sources */,
 				868C031D66195475FDA1A60E /* IconStateTests.swift in Sources */,
 				C06956DFD17992CEB0E8F1F7 /* LaunchAtLogin.swift in Sources */,
+				C140DDD79B1F2A4464973CAE /* NativeAPNsEnvironment.swift in Sources */,
+				F256F3320100CB28F5DCC6E2 /* NativeAPNsEnvironmentQuery.m in Sources */,
+				5EB2ADDF29E6B3FC7618E821 /* NativeAPNsEnvironmentTests.swift in Sources */,
+				B9E186D1522482A77DE75FA6 /* NativeEd25519PublicKey.swift in Sources */,
+				256D5642574FA317B27FAC10 /* NativeIdentityAuthorityTests.swift in Sources */,
+				1A996F89FD9E880248770384 /* NativeIdentityBridge.swift in Sources */,
+				EC3514D9EB2E3A3B7DDCF706 /* NativeKeychainOperations.swift in Sources */,
+				6B60FE3AFA38545AE924AC92 /* NativePushCodec.swift in Sources */,
+				A21858FBA2B2804F500C1A33 /* NativePushCodecTests.swift in Sources */,
+				D8EE019D43AC80AE30F406D8 /* NativePushConfiguration.swift in Sources */,
+				FAABA6A4B8E020D8E43F263F /* NativePushEffect.swift in Sources */,
+				7865B2C5181F9610D42DAC3A /* NativePushEffectTests.swift in Sources */,
+				449AB7A13BB4A6BCCB6C9306 /* NativePushKeyStore.swift in Sources */,
+				FBB289CE02C640E03F36513B /* NativePushKeyStoreTests.swift in Sources */,
+				A868C179E5BCA6C9302DB870 /* NativePushNotificationConsumer.swift in Sources */,
+				FB4A2931CF345805A2FAAD72 /* NativePushNotificationConsumerTests.swift in Sources */,
+				1B7B8CA531822DEF831742F9 /* NativePushPermissionTests.swift in Sources */,
+				DA1DF30193A8C98E88D694BE /* NativePushPresentationTests.swift in Sources */,
+				B1181EA447A0098D0B26BCC1 /* NativePushPublicationTests.swift in Sources */,
+				FF01AD40597B1291433AC80A /* NativePushRegistration.swift in Sources */,
+				0846658B855042B415C6D122 /* NativePushRegistrationIngressTests.swift in Sources */,
+				99574AA653C6149F274734C7 /* NativePushRegistrationTests.swift in Sources */,
+				A50C3DB5A5C4D55988F2A429 /* NativePushState.swift in Sources */,
+				3331E6CDBD1EA15AA9BC0FC2 /* NativePushStateTests.swift in Sources */,
 				F1F060E53A0E11347B560DD6 /* NotificationDiffTests.swift in Sources */,
 				D914DD758D12BA0F2F2192AA /* NotificationManager.swift in Sources */,
+				A72E03197F6AF9CC795CBD5F /* NotificationService.swift in Sources */,
 				7099815B76AC17566B2A96C5 /* SettingsView.swift in Sources */,
 				FDD33CD09342E7459B3AD7E1 /* WebViewWindow.swift in Sources */,
 			);
@@ -409,6 +588,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OBJC_BRIDGING_HEADER = "Remi/NativePush/NativePush-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.9;
 			};
@@ -473,6 +653,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OBJC_BRIDGING_HEADER = "Remi/NativePush/NativePush-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.9;
 			};
@@ -481,6 +662,7 @@
 		E0C991C711F983BD70198873 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Remi/Remi.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -503,6 +685,7 @@
 		E54506BA894C2E53100F1B95 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Remi/Remi.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;

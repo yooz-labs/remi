@@ -12,7 +12,8 @@
  * endpoint that records what it is sent, and a phone (a WebSocket client) with a device
  * registered. The hooks are POSTed to the hook port as Claude's own hook scripts do. Every
  * assertion reads what the daemon sent to the endpoint or wrote to its log, so it holds for any
- * implementation of the hand-off. It passed unchanged on the code before Phase 6.
+ * implementation of the hand-off. Positive cases explicitly opt into pre-secure legacy
+ * compatibility (#1200); the explicit-off case verifies that a secret alone sends nothing.
  *
  * Time: `turn_complete_min_seconds` is 0.3 here, and a "long" turn waits 450 ms between its
  * `UserPromptSubmit` and its `Stop`. A timer is never early, so a long turn is long however busy
@@ -32,6 +33,7 @@ import {
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
+  waitForRegisteredDeviceToken,
 } from './hub-test-utils.ts';
 
 const PUSH_SECRET = 'claude-stop-push-secret';
@@ -100,6 +102,7 @@ interface Session {
   workName: string;
   ws: WebSocket;
   submit(promptId: string, sessionId?: string): Promise<void>;
+  failure(error: string): Promise<{ status: number; body: unknown }>;
   stop(
     promptId: string,
     message: string,
@@ -109,12 +112,13 @@ interface Session {
   longTurn(promptId: string, message: string): Promise<void>;
 }
 
-async function startSession(): Promise<Session> {
+/** `'default'` writes no `legacy_push_enabled` key, so the shipped default applies (#1200). */
+async function startSession(legacy: boolean | 'default'): Promise<Session> {
   const { home, work } = makeIsolatedDirs();
   fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
   fs.writeFileSync(
     path.join(home, '.remi', 'config.toml'),
-    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n`,
+    `[notifications]\nturn_complete_min_seconds = ${MIN_SECONDS}\n${legacy === 'default' ? '' : `legacy_push_enabled = ${legacy}\n`}`,
   );
   const fakeDir = path.join(home, 'fake-claude');
   const fakeBin = path.join(home, 'fake-bin');
@@ -122,6 +126,9 @@ async function startSession(): Promise<Session> {
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
   fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+  const fakeShell = path.join(fakeBin, 'sh-path');
+  fs.writeFileSync(fakeShell, '#!/bin/sh\necho "$PATH"\n');
+  fs.chmodSync(fakeShell, 0o755);
 
   const pushes: Push[] = [];
   const stub = Bun.serve({
@@ -140,7 +147,12 @@ async function startSession(): Promise<Session> {
   const spawned = await spawnDaemon(
     home,
     work,
-    { PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`, FAKE_CLAUDE_DIR: fakeDir },
+    {
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      SHELL: fakeShell,
+      FAKE_CLAUDE_DIR: fakeDir,
+      REMI_HOME: path.join(home, '.remi'),
+    },
     ['--signaling-url', `http://127.0.0.1:${stub.port}`, '--push-secret', PUSH_SECRET],
   );
   const output = { text: '' };
@@ -182,11 +194,7 @@ async function startSession(): Promise<Session> {
     throw new Error('no hello_ack received');
   }
   ws.send(serialize(createRegisterDeviceToken('claude-stop-device', 'ios')));
-  await pollUntil(
-    () => output.text.includes('Device token registered'),
-    10000,
-    'the device token to register',
-  );
+  await waitForRegisteredDeviceToken(home, 'claude-stop-device', 10000);
 
   const post = async (body: Record<string, unknown>): Promise<void> => {
     const response = await fetch(`http://127.0.0.1:${hookPort}/hooks`, {
@@ -208,6 +216,21 @@ async function startSession(): Promise<Session> {
     claudeSessionId,
     workName: path.basename(fs.realpathSync(work)),
     ws,
+    failure: async (error) => {
+      const response = await fetch(`http://127.0.0.1:${hookPort}/hooks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'StopFailure',
+          session_id: claudeSessionId,
+          cwd: fs.realpathSync(work),
+          transcript_path: '/x.jsonl',
+          permission_mode: 'default',
+          error,
+        }),
+      });
+      return { status: response.status, body: await response.json() };
+    },
     submit: (promptId, sessionId = claudeSessionId) =>
       post({
         hook_event_name: 'UserPromptSubmit',
@@ -233,8 +256,71 @@ async function startSession(): Promise<Session> {
 }
 
 describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180)', () => {
+  test('legacy push is ON by default: a long turn pushes with no legacy_push_enabled key (#1200)', async () => {
+    const s = await startSession('default');
+    try {
+      const directory = path.join(s.daemon.home, '.remi');
+      expect(fs.readFileSync(path.join(directory, 'config.toml'), 'utf8')).not.toContain(
+        'legacy_push_enabled',
+      );
+      await s.longTurn('p-default-on', 'DEFAULT-ON-ANSWER');
+      await pollUntil(() => s.pushes.length >= 1, 10000, 'the default-on turn_complete push');
+      expect(s.pushes.map((p) => [p.kind, p.body])).toEqual([
+        ['turn_complete', 'DEFAULT-ON-ANSWER'],
+      ]);
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
+  test('explicit-off legacy push makes no network request despite a registered token and secret', async () => {
+    const s = await startSession(false);
+    try {
+      const directory = path.join(s.daemon.home, '.remi');
+      expect(fs.readFileSync(path.join(directory, 'config.toml'), 'utf8')).toContain(
+        'legacy_push_enabled = false',
+      );
+      expect(fs.existsSync(path.join(directory, 'relay_devices.json'))).toBe(false);
+      expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(false);
+      await s.longTurn('p-explicit-off', 'EXPLICIT-OFF-ANSWER');
+      // The real Stop reached the shipping sink; silence cannot be a missing hook or token.
+      // With no legacy recipient the sink logs nothing, so the hook bridge's own line proves the
+      // real Stop arrived; silence cannot be a missing hook or token.
+      await pollUntil(
+        () => s.daemon.output.text.includes('[Hooks] Turn complete'),
+        10000,
+        'the hook bridge to receive the real Stop',
+      );
+      await sleep(SETTLE_MS);
+      expect(s.pushes).toEqual([]);
+      expect(s.daemon.output.text).not.toContain('EXPLICIT-OFF-ANSWER');
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
+  test('a valid StopFailure reaches the sink without logging its unknown private error', async () => {
+    const s = await startSession(false);
+    try {
+      const sentinel = 'PRIVATE-STOP-FAILURE-SENTINEL';
+      const response = await s.failure(sentinel);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({});
+      await pollUntil(
+        () => s.daemon.output.text.includes('[TurnFailedPush] no recipient'),
+        10000,
+        'the actual turn-failed dispatcher to find no legacy recipient',
+      );
+      await sleep(SETTLE_MS);
+      expect(s.pushes).toEqual([]);
+      expect(s.daemon.output.text).not.toContain(sentinel);
+    } finally {
+      s.ws.close();
+    }
+  }, 60000);
+
   test('a long turn of the session pushes turn_complete with the secret, the session name and its message; a sibling session’s Stop pushes nothing', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       // A sibling session's long turn first (another Claude in the same directory sends its
       // hooks to this port too): the daemon only reports the turns of its own session.
@@ -256,7 +342,7 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
   }, 60000);
 
   test('a Stop that is a re-entry pushes nothing, and the later real Stop still measures the whole turn', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       await s.submit('p-turn');
       await sleep(LONG_TURN_MS);
@@ -277,7 +363,7 @@ describe('a Claude Stop hook becomes a push through the daemon (black-box, #1180
   }, 60000);
 
   test('an empty message, a prompt the daemon never saw and a second Stop of a finished prompt push nothing', async () => {
-    const s = await startSession();
+    const s = await startSession(true);
     try {
       // An empty message: nothing to show.
       await s.submit('p-empty');

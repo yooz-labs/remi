@@ -156,6 +156,7 @@ export function createCodexTurns(deps: CodexTurnsDeps): CodexTurns {
           guarded('turnCompleted', () =>
             sink.turnCompleted({
               sessionId,
+              ...(turn.turnId === null ? {} : { eventId: `codex:${turn.turnId}` }),
               elapsedMs: turn.durationMs ?? undefined,
               lastAssistantMessage: message,
               reentry: false,

@@ -7,6 +7,26 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        120000090000000000000002 /* NativePushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000090000000000000001; };
+        120000080000000000000006 /* NativePushNotificationConsumer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000080000000000000001; };
+        120000010000000000000134 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
+        120000010000000000000131 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
+        120000010000000000000125 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000025; };
+        120000040000000000000003 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000040000000000000001; };
+        120000060000000000000003 /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000001; };
+        120000010000000000000123 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000023; };
+        120000010000000000000121 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000021; };
+        120000010000000000000035 /* NativeKeychainOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000034; };
+        120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000031; };
+        120000010000000000000026 /* NativePushKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000025; };
+        120000040000000000000002 /* NativePushCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000040000000000000001; };
+        120000060000000000000002 /* NativePushEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000060000000000000001; };
+        120000010000000000000024 /* NativePushConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000023; };
+        120000010000000000000022 /* NativePushState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000010000000000000021; };
+		120000030000000000000011 /* NativeAPNsEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000010 /* NativeAPNsEnvironment.swift */; };
+		120000030000000000000013 /* NativeAPNsEnvironmentQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = 120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */; };
+		119900020000000000000002 /* NativeIdentityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900020000000000000001 /* NativeIdentityBridge.swift */; };
+		119900010000000000000002 /* ClientIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119900010000000000000001 /* ClientIdentity.swift */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		416D7EE8D263A59980B72F80 /* RemiAnswerRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7624428F4554B48AC7C71AC4 /* RemiAnswerRelay.swift */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
@@ -19,6 +39,19 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        120000090000000000000001 /* NativePushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushRegistration.swift; sourceTree = SOURCE_ROOT; };
+        120000080000000000000001 /* NativePushNotificationConsumer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushNotificationConsumer.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000034 /* NativeKeychainOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeKeychainOperations.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000031 /* NativeEd25519PublicKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeEd25519PublicKey.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000025 /* NativePushKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushKeyStore.swift; sourceTree = SOURCE_ROOT; };
+        120000040000000000000001 /* NativePushCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushCodec.swift; sourceTree = SOURCE_ROOT; };
+        120000060000000000000001 /* NativePushEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushEffect.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000023 /* NativePushConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushConfiguration.swift; sourceTree = SOURCE_ROOT; };
+        120000010000000000000021 /* NativePushState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativePushState.swift; sourceTree = SOURCE_ROOT; };
+		120000030000000000000010 /* NativeAPNsEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../../../macos/Remi/NativePush/NativeAPNsEnvironment.swift; sourceTree = SOURCE_ROOT; };
+		120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ../../../macos/Remi/NativePush/NativeAPNsEnvironmentQuery.m; sourceTree = SOURCE_ROOT; };
+		119900020000000000000001 /* NativeIdentityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativeIdentityBridge.swift; path = ../../../../macos/Remi/NativeIdentityBridge.swift; sourceTree = "<group>"; };
+		119900010000000000000001 /* ClientIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientIdentity.swift; path = ../../../../macos/Remi/ClientIdentity.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -104,6 +137,19 @@
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
 				7624428F4554B48AC7C71AC4 /* RemiAnswerRelay.swift */,
+				119900010000000000000001 /* ClientIdentity.swift */,
+				119900020000000000000001 /* NativeIdentityBridge.swift */,
+				120000030000000000000010 /* NativeAPNsEnvironment.swift */,
+                120000010000000000000034 /* NativeKeychainOperations.swift */,
+                120000010000000000000031 /* NativeEd25519PublicKey.swift */,
+                120000010000000000000025 /* NativePushKeyStore.swift */,
+                120000040000000000000001 /* NativePushCodec.swift */,
+                120000060000000000000001 /* NativePushEffect.swift */,
+                120000080000000000000001 /* NativePushNotificationConsumer.swift */,
+                120000090000000000000001 /* NativePushRegistration.swift */,
+                120000010000000000000023 /* NativePushConfiguration.swift */,
+                120000010000000000000021 /* NativePushState.swift */,
+				120000030000000000000012 /* NativeAPNsEnvironmentQuery.m */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -219,6 +265,19 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				416D7EE8D263A59980B72F80 /* RemiAnswerRelay.swift in Sources */,
+				119900010000000000000002 /* ClientIdentity.swift in Sources */,
+				119900020000000000000002 /* NativeIdentityBridge.swift in Sources */,
+				120000030000000000000011 /* NativeAPNsEnvironment.swift in Sources */,
+                120000010000000000000035 /* NativeKeychainOperations.swift in Sources */,
+                120000010000000000000032 /* NativeEd25519PublicKey.swift in Sources */,
+                120000010000000000000026 /* NativePushKeyStore.swift in Sources */,
+                120000040000000000000002 /* NativePushCodec.swift in Sources */,
+                120000060000000000000002 /* NativePushEffect.swift in Sources */,
+                120000080000000000000006 /* NativePushNotificationConsumer.swift in Sources */,
+                120000090000000000000002 /* NativePushRegistration.swift in Sources */,
+                120000010000000000000024 /* NativePushConfiguration.swift in Sources */,
+                120000010000000000000022 /* NativePushState.swift in Sources */,
+				120000030000000000000013 /* NativeAPNsEnvironmentQuery.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -226,6 +285,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                120000010000000000000134 /* NativeKeychainOperations.swift in Sources */,
+                120000010000000000000131 /* NativeEd25519PublicKey.swift in Sources */,
+                120000010000000000000125 /* NativePushKeyStore.swift in Sources */,
+                120000040000000000000003 /* NativePushCodec.swift in Sources */,
+                120000060000000000000003 /* NativePushEffect.swift in Sources */,
+                120000010000000000000123 /* NativePushConfiguration.swift in Sources */,
+                120000010000000000000121 /* NativePushState.swift in Sources */,
 				719E2CB655107FC68F199158 /* NotificationService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -380,6 +446,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OBJC_BRIDGING_HEADER = "../../../macos/Remi/NativePush/NativePush-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -403,6 +470,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.yooz.remi;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_OBJC_BRIDGING_HEADER = "../../../macos/Remi/NativePush/NativePush-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -414,7 +482,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 10;
 				DEVELOPMENT_TEAM = 9DQ459HAZB;
-				INFOPLIST_FILE = RemiNotificationService/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = RemiNotificationService/RemiNotificationService.entitlements;
+                INFOPLIST_FILE = RemiNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -437,7 +506,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 10;
 				DEVELOPMENT_TEAM = 9DQ459HAZB;
-				INFOPLIST_FILE = RemiNotificationService/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = RemiNotificationService/RemiNotificationService.entitlements;
+                INFOPLIST_FILE = RemiNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

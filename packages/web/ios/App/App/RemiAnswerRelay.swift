@@ -4,12 +4,16 @@ import CryptoKit
 import UIKit
 import Capacitor
 
-/// #591 P2 — native silent lock-screen answer relay (Duo-style).
+/// #1200: a v2 notification offers no answer actions until R6 supplies its sole
+/// native submission owner, so every response to one (the default tap, which the
+/// OS opens the app for, or a stale action) is consumed here without running the
+/// legacy relay or the wrapped Capacitor handler. #591's direct signed relay
+/// remains only for explicitly legacy notifications.
 ///
-/// Wraps Capacitor's push `NotificationHandlerProtocol` (the handler the router
-/// invokes on a notification action) so a lock-screen Yes/No/Always tap is signed
+/// For legacy notifications, wraps Capacitor's push `NotificationHandlerProtocol`
+/// so a direct lock-screen Yes/No/Always tap is signed
 /// and POSTed to the daemon's direct `/answer` endpoint WITHOUT opening the app.
-/// The captured Capacitor handler is still invoked, so the JS path keeps working
+/// Only the legacy branch invokes the captured Capacitor handler, so its JS path keeps working
 /// when the app is alive (foreground).
 ///
 /// Gotchas handled (from Capacitor/NotificationRouter.swift):
@@ -20,11 +24,11 @@ import Capacitor
 ///  - install runs AFTER the push plugin's load() (called from a deferred hook).
 ///
 /// Inputs are bridged from JS via Capacitor Preferences (UserDefaults
-/// `CapacitorStorage.*`): the Ed25519 seed/pubkey/fingerprint and a per-session
+/// `CapacitorStorage.*`): public routes and (for pre-R4 migration only) the legacy seed/public key, plus a per-session
 /// route {wsUrl} — the daemon URL the session is connected on, which the web app
 /// pins on hello_ack (the same URL its cold-start push-answer routing uses). The
 /// answer POSTs to that daemon's direct `/answer` endpoint (the same one
-/// `relayAnswerDirect` uses in-app), signed with the bridged seed. Crypto compat
+/// `relayAnswerDirect` uses in-app), signed by the durable native identity. Crypto compat
 /// is proven in packages/shared/tests/native-bridge.test.ts.
 final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     static let shared = RemiAnswerRelay()
@@ -42,13 +46,19 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         wrapped = existing
         router.pushNotificationHandler = self
         installed = true
-        NSLog("[remi] RemiAnswerRelay installed (wrapped=\(existing.map { String(describing: type(of: $0)) } ?? "nil"))")
+        NSLog("[remi] answer relay installed")
     }
 
     // MARK: NotificationHandlerProtocol
 
     func willPresent(notification: UNNotification) -> UNNotificationPresentationOptions {
-        // #734: while the app is FOREGROUNDED, iOS presents a push only with
+        let content = notification.request.content
+        if content.userInfo["remiPush"] != nil {
+            guard NativePushNotificationConsumer.isGenericFallback(content) ||
+                    (try? NativePushNotificationConsumer.configured().allowsPresentation(content)) == true else { return [] }
+            return [.banner, .list, .sound]
+        }
+        // Legacy direct behavior (#734): while FOREGROUNDED, iOS presents only with
         // the options returned here — and `wrapped ?? []` meant every Remi
         // push showed NOTHING (no banner, no sound) whenever the app happened
         // to be open (session list, another session, or the phone driven via
@@ -68,9 +78,14 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     }
 
     func didReceive(response: UNNotificationResponse) {
-        relay(response: response)
-        // Keep Capacitor's JS path alive for the foreground/app-open case.
-        wrapped?.didReceive(response: response)
+        // The v2 router runs before ANY outer IDs/options are read. Its legacy
+        // closure is never called for v2, including malformed or unavailable.
+        NativePushNotificationConsumer.routeResponse(
+            userInfo: response.notification.request.content.userInfo,
+            legacy: { [self] in
+                relay(response: response)
+                wrapped?.didReceive(response: response)
+            })
     }
 
     // MARK: Relay
@@ -114,7 +129,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             answer = nil  // tap / dismiss -> let Capacitor's JS handler open the app
         }
         guard let answerValue = answer, !answerValue.isEmpty else {
-            NSLog("[remi] relay: no actionable answer (action=\(response.actionIdentifier)); deferring to app")
+            NSLog("[remi] legacy answer action deferred to app")
             endTask()
             return
         }
@@ -126,7 +141,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         // daemon URL is a Tailscale/public host; a LAN-only daemon is not, the
         // same limit the in-app reconnect has.
         guard let route = RemiNativeStore.route(forSession: sessionId), !route.wsUrl.isEmpty else {
-            NSLog("[remi] relay: no stored daemon URL for session \(sessionId); cannot relay")
+            NSLog("[remi] legacy answer route unavailable")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -134,7 +149,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
 
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
-        guard let auth = RemiNativeStore.sign(message: message) else {
+        guard let accessGroup = try? NativePushConfiguration.identityAccessGroup(),
+              let auth = RemiNativeStore.sign(message: message, accessGroup: accessGroup) else {
             NSLog("[remi] relay: no signing identity stored; cannot relay")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
@@ -154,7 +170,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             .replacingOccurrences(of: "wss://", with: "https://")
             .replacingOccurrences(of: "ws://", with: "http://")
         guard var comps = URLComponents(string: base) else {
-            NSLog("[remi] relay: bad daemon URL \(base)")
+            NSLog("[remi] legacy answer route refused")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -163,7 +179,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         comps.query = nil
         comps.fragment = nil
         guard let url = comps.url else {
-            NSLog("[remi] relay: cannot build /answer URL from \(base)")
+            NSLog("[remi] legacy answer route refused")
             notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
@@ -193,18 +209,17 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         req.httpBody = payload
         req.timeoutInterval = 20
 
-        NSLog("[remi] relay: POST \(url.absoluteString) answer=\(answer)")
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+        NSLog("[remi] legacy answer submission started")
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, err in
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            let result = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            if let err = err {
-                NSLog("[remi] relay: POST failed: \(err.localizedDescription)")
+            if err != nil {
+                NSLog("[remi] legacy answer submission unavailable")
                 self?.notifyDeliveryFailure(questionId: questionId)
             } else if !(200...299).contains(status) {
-                NSLog("[remi] relay: POST status=\(status) result=\(result)")
+                NSLog("[remi] legacy answer submission status=\(status)")
                 self?.notifyDeliveryFailure(questionId: questionId)
             } else {
-                NSLog("[remi] relay: POST status=\(status) result=\(result)")
+                NSLog("[remi] legacy answer submission status=\(status)")
             }
             endTask()
         }.resume()
@@ -229,61 +244,9 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let identifier = "remi-answer-failure-\(questionId ?? "unknown")"
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                NSLog("[remi] relay: failed to schedule delivery-failure notification: \(error.localizedDescription)")
+            if error != nil {
+                NSLog("[remi] legacy answer failure notice unavailable")
             }
         }
-    }
-}
-
-/// Reads the JS-bridged identity + routes from Capacitor Preferences
-/// (UserDefaults `CapacitorStorage.<key>`) and signs with CryptoKit.
-enum RemiNativeStore {
-    struct Auth { let signature: String; let publicKey: String; let fingerprint: String }
-    struct Route { let wsUrl: String; let claudeSessionId: String? }
-
-    private static let identityKey = "CapacitorStorage.remi-native-identity"
-    private static let routesKey = "CapacitorStorage.remi-native-routes"
-
-    /// Sign `message` with the bridged Ed25519 seed. Returns the base64 signature
-    /// + the public key (raw, base64) + fingerprint for the daemon's auth block.
-    /// Distinguishes "never set up" (silent nil, expected pre-onboarding) from a
-    /// corrupt blob / invalid key / signing failure (logged) — mirrors `route()`
-    /// below, so a previously-working device suddenly failing to answer isn't
-    /// indistinguishable from one that was simply never configured.
-    static func sign(message: String) -> Auth? {
-        guard let raw = UserDefaults.standard.string(forKey: identityKey) else { return nil }
-        guard let data = raw.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
-              let seedB64 = obj["seed"], let pub = obj["publicKey"], let fp = obj["fingerprint"],
-              let seed = Data(base64Encoded: seedB64)
-        else {
-            NSLog("[remi] RemiNativeStore: identity blob is corrupt or unreadable")
-            return nil
-        }
-        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
-            NSLog("[remi] RemiNativeStore: identity seed is not a valid Curve25519 key")
-            return nil
-        }
-        guard let sig = try? key.signature(for: Data(message.utf8)) else {
-            NSLog("[remi] RemiNativeStore: failed to sign with stored identity")
-            return nil
-        }
-        return Auth(signature: sig.base64EncodedString(), publicKey: pub, fingerprint: fp)
-    }
-
-    /// Look up the daemon ws URL pinned for a session (written by the web app).
-    /// Distinguishes "never set up" (silent nil) from a corrupt blob (logged) so
-    /// the two failure modes aren't indistinguishable in the device log.
-    static func route(forSession sessionId: String) -> Route? {
-        guard let raw = UserDefaults.standard.string(forKey: routesKey) else { return nil }
-        guard let data = raw.data(using: .utf8),
-              let map = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String: String]]
-        else {
-            NSLog("[remi] RemiNativeStore: routes blob is corrupt or unreadable")
-            return nil
-        }
-        guard let r = map[sessionId], let wsUrl = r["wsUrl"] else { return nil }
-        return Route(wsUrl: wsUrl, claudeSessionId: r["claudeSessionId"])
     }
 }

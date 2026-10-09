@@ -24,6 +24,8 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  // Explicit R6 signed-proof event, added to the original 13 (#1201).
+  'onNativeAnswer',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
@@ -41,9 +43,9 @@ const GOLDEN_KEYS = [
 ];
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 14 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(14);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(14);
+  test('has exactly 15 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(15);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(15);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {
@@ -92,7 +94,7 @@ describe('pickClientMessageEvents', () => {
     expect(Object.keys(result).sort()).toEqual(['onUserInput']);
   });
 
-  test('round-trips every one of the 13 keys with connectionId-prefixed args intact', () => {
+  test('round-trips every one of the 14 keys with connectionId-prefixed args intact', () => {
     for (const key of CLIENT_MESSAGE_EVENT_KEYS) {
       const calls: unknown[][] = [];
       const source: Partial<ClientMessageEventsWithConnectionId> = {
@@ -107,7 +109,7 @@ describe('pickClientMessageEvents', () => {
 
       const connId = generateId();
       const sentinel = `sentinel-${key}`;
-      // biome-ignore lint/suspicious/noExplicitAny: exercising the forwarder generically across all 13 differently-shaped handlers.
+      // biome-ignore lint/suspicious/noExplicitAny: exercising the forwarder generically across all 14 differently-shaped handlers.
       (handler as any)(connId, sentinel);
 
       expect(calls).toEqual([[connId, sentinel]]);
@@ -143,7 +145,7 @@ describe('bindConnectionId', () => {
     }
   });
 
-  test('binds every one of the 13 keys to the SAME connectionId', () => {
+  test('binds every one of the 14 keys to the SAME connectionId', () => {
     for (const key of CLIENT_MESSAGE_EVENT_KEYS) {
       const calls: unknown[][] = [];
       const sink: Partial<ClientMessageEventsWithConnectionId> = {
@@ -158,7 +160,7 @@ describe('bindConnectionId', () => {
       expect(handler).toBeDefined();
 
       const sentinel = `sentinel-${key}`;
-      // biome-ignore lint/suspicious/noExplicitAny: exercising the binder generically across all 13 differently-shaped handlers.
+      // biome-ignore lint/suspicious/noExplicitAny: exercising the binder generically across all 14 differently-shaped handlers.
       (handler as any)(sentinel);
 
       expect(calls).toEqual([[connId, sentinel]]);

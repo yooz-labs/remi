@@ -18,6 +18,18 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowObservers: [NSObjectProtocol] = []
+    private let pushTokens: NativePushTokenOwner
+    override init() { pushTokens = .shared; super.init() }
+    init(pushTokens: NativePushTokenOwner) { self.pushTokens = pushTokens; super.init() }
+
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+        pushTokens.recordFromOS(token)
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
+    }
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        pushTokens.clearFromOS()
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // LSUIElement in Info.plist already makes this an accessory app

@@ -93,6 +93,41 @@ describe('remi pair in a terminal (#1275)', () => {
     procs.push(proc);
     expect(await proc.exited).toBe(2);
     expect(await new Response(proc.stdout).text()).not.toContain('remi://pair#');
+    expect(await new Response(proc.stderr).text()).toContain(
+      'remi pair needs an interactive terminal',
+    );
+  });
+
+  test('--relay reaches relay pairing rather than direct QR pairing', async () => {
+    const { env } = await setup();
+    const proc = Bun.spawn([process.execPath, CLI, 'pair', '--relay'], {
+      env,
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    procs.push(proc);
+    expect(await proc.exited).toBe(1);
+    expect(await new Response(proc.stderr).text()).toContain(
+      'Run remi pair --relay in an interactive terminal to compare fingerprints and confirm.',
+    );
+    expect(await new Response(proc.stdout).text()).not.toContain('remi://pair#');
+  });
+
+  test('contradictory relay selectors are refused before either pairing flow', async () => {
+    const { env } = await setup();
+    const proc = Bun.spawn([process.execPath, CLI, 'pair', '--relay', '--no-relay'], {
+      env,
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    procs.push(proc);
+    expect(await proc.exited).toBe(1);
+    expect(await new Response(proc.stderr).text()).toContain(
+      'do not combine --relay and --no-relay',
+    );
+    expect(await new Response(proc.stdout).text()).not.toContain('remi://pair#');
   });
 
   test('an answer typed after the question approves the phone that claimed the code', async () => {

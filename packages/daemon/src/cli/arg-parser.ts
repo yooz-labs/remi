@@ -14,6 +14,8 @@ const SUBCOMMAND_LIST = [
   'ls',
   'attach',
   'code',
+  'pair',
+  'devices',
   'config',
   'keygen',
   'export-key',
@@ -57,7 +59,10 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
  *  rather than the single positional every other subcommand takes. Their words
  *  are collected into `subcommandArgs` instead of falling through to
  *  `claudeArgs` -- a stray `pull` reaching Claude would be nonsense. #819 */
-const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>(['model']);
+const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>([
+  'model',
+  'devices',
+]);
 
 /** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
 const REMOVED_SWITCH_FLAGS: ReadonlySet<string> = new Set(['--auto-approve', '--no-auto-approve']);
@@ -97,6 +102,7 @@ export interface ParsedArgs {
   readonly daemonMode: boolean;
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
+  readonly relay: boolean;
   readonly resume: string | true | undefined;
   readonly showSessions: 'running' | 'all' | 'exited' | false;
   readonly install: boolean;
@@ -178,6 +184,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let daemonMode = false;
   let signalingUrl: string | undefined;
   let noRelay = false;
+  let relay = false;
   let resume: string | true | undefined;
   let showSessions: 'running' | 'all' | 'exited' | false = false;
   let install = false;
@@ -291,6 +298,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       noTelegram = true;
     } else if (arg === '--no-relay') {
       noRelay = true;
+    } else if (arg === '--relay') {
+      relay = true;
     } else if (arg === '--permanent-code') {
       permanentCode = true;
     } else if (arg === '--signaling-url') {
@@ -485,6 +494,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     daemonMode,
     signalingUrl,
     noRelay,
+    relay,
     resume,
     showSessions,
     install,

@@ -31,7 +31,7 @@ export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
  */
 export type UIMessageState = MessageState | 'failed';
 
-/** Peer role in WebRTC connection */
+/** @deprecated Unused v1 code-room role; v2 roles belong to relayV2 (#1202). */
 export type PeerRole = 'host' | 'client';
 
 /** Connection status for the daemon */
@@ -53,6 +53,8 @@ export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
 /** Per-connection state tracked by the connection manager */
 export interface ConnectionState {
   /** Own public identity after manual-approval refusal (#873). */
+  readonly relayPin?: import('@/lib/relay-machine-channel').RelayMachinePin;
+  readonly relayConfirmation?: string;
   readonly approval?: import('@/lib/connection-approval').ClientApproval | null;
   readonly connectionId: ConnectionId;
   readonly url: string;
@@ -261,6 +263,9 @@ export interface UIQuestion {
   /** #627: the answer was submitted and is being applied ("Answering…"). Set on
    *  submit, cleared when the question resolves or fails. */
   readonly submitting?: boolean;
+  readonly awaitingRelayOutcome?: boolean;
+  readonly submittedAnswer?: string;
+  readonly deliveryOutcome?: import('@remi/shared').AnswerResultOutcome;
   /** #627: a daemon older than #1127 could not auto-answer; the card invites
    *  Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
@@ -298,11 +303,11 @@ export interface AppSettings {
   readonly showTimestamps: boolean;
 }
 
-/** Connection configuration */
+/** @deprecated Unused v1 code-room configuration (#1202). */
 export interface ConnectionConfig {
   /** Direct connection URL (local daemon) */
   readonly directUrl?: string;
-  /** Signaling server URL for WebRTC */
+  /** Legacy v1 signaling URL */
   readonly signalingUrl?: string;
   /** Connection code for remote access */
   readonly connectionCode?: string;

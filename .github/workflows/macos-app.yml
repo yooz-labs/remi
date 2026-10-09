@@ -9,7 +9,8 @@ on:
   pull_request:
     paths:
       - "packages/macos/**"
-      - "packages/web/src/lib/native-host.ts"
+      - "packages/web/src/lib/native-*.ts"
+      - "packages/web/tests/browser/*native-provider-harness.ts"
       - "scripts/stage-macos-web.sh"
       - ".github/workflows/macos-app.yml"
 
@@ -32,6 +33,9 @@ jobs:
       - name: Stage web bundle
         run: bun run build:macos-web
 
+      - name: Build real web provider test fixture
+        run: bun packages/web/tests/browser/build-native-provider-harness.ts "$RUNNER_TEMP/remi-native-provider.js"
+
       - name: Build daemon binary (for integration tests)
         run: bun run build:binary
 
@@ -41,6 +45,7 @@ jobs:
           # TEST_RUNNER_ prefix: xcodebuild strips it and passes the variable
           # into the xctest process (plain env vars never reach the runner).
           TEST_RUNNER_REMI_TEST_BINARY: ${{ github.workspace }}/dist/remi
+          TEST_RUNNER_REMI_TEST_NATIVE_PROVIDER_BUNDLE: ${{ runner.temp }}/remi-native-provider.js
         run: |
           xcodebuild test \
             -project Remi.xcodeproj \

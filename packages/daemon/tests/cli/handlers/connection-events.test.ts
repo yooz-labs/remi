@@ -596,8 +596,8 @@ describe('createConnectionHandlers', () => {
 /**
  * Hub census wiring (#650): the REAL createConnectionHandlers feeding a REAL
  * HubClientTracker via onPeerConnect/onPeerDisconnect — exactly how cli.ts
- * wires a hub. The relay metadata literal matches what RelayAdapter actually
- * emits on peer-connected/auth-success (remote/relay-adapter.ts).
+ * wires a hub. The relay metadata literal matches what HubRelay emits after encrypted
+ * ready (remote/hub-relay.ts).
  */
 describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
   const RELAY_CID = 'conn0000-relay-0000-0000-000000000001' as UUID;

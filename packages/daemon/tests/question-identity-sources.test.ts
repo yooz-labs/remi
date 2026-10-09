@@ -20,7 +20,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { WebSocketAdapter } from '../src/adapters/websocket-adapter.ts';
-import { RelayAdapter } from '../src/remote/relay-adapter.ts';
+import { HubRelay } from '../src/remote/hub-relay.ts';
 import { callArguments } from './helpers/call-arguments.ts';
 import { stripComments } from './helpers/strip-comments.ts';
 
@@ -106,7 +106,7 @@ describe('every createQuestion in the daemon passes an identity (G15, P8)', () =
 
   test('no transport adapter offers a way to send a question that names no identity', () => {
     expect('sendQuestion' in WebSocketAdapter.prototype).toBe(false);
-    expect('sendQuestion' in RelayAdapter.prototype).toBe(false);
+    expect('sendQuestion' in HubRelay.prototype).toBe(false);
   });
 });
 

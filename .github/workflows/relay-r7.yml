@@ -1,0 +1,60 @@
+name: Relay R7 local gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '.github/workflows/relay-r7.yml'
+      - 'bun.lock'
+      - 'package.json'
+      - 'packages/shared/**'
+      - 'packages/signaling/**'
+      - 'packages/daemon/**'
+      - 'packages/web/src/**'
+      - 'packages/web/tests/relay-*.test.ts'
+      - 'packages/web/tests/helpers/relay-hub.ts'
+      - 'tests/integration/relay-*.ts'
+      - 'docs/relay-r7-gates.md'
+
+permissions:
+  contents: read
+
+jobs:
+  local-relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      BUN_VERSION: 1.3.11
+      E2E_BUNDLER: esbuild
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Existing actual wire and authority controls
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p r7-receipts
+          git rev-parse HEAD | tee r7-receipts/head.txt
+          bun --version | tee r7-receipts/bun.txt
+          bun test packages/signaling/tests/e2e \
+            packages/web/tests/relay-machine-channel.test.ts \
+            packages/web/tests/relay-client-outcomes.test.ts \
+            tests/integration/relay-r3*.test.ts \
+            tests/integration/relay-r6-ingress.test.ts \
+            tests/integration/relay-r7*.test.ts 2>&1 | tee r7-receipts/controls.log
+      - name: Same attached session for 61 actual minutes
+        shell: bash
+        env:
+          REMI_RELAY_R7_SOAK: '1'
+        run: |
+          set -o pipefail
+          bun test --timeout 4500000 packages/web/tests/relay-r7-soak.test.ts 2>&1 | tee r7-receipts/soak.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relay-r7-local-${{ github.run_id }}
+          path: r7-receipts/

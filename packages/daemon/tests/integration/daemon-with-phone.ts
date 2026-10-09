@@ -120,6 +120,9 @@ export async function startWithPhone(opts: StartOptions = {}): Promise<Running> 
       '--no-auth',
       '--signaling-url',
       `http://127.0.0.1:${signaling.port}`,
+      // The legacy path pushes only with a push secret (#1200); these tests characterize it.
+      '--push-secret',
+      'daemon-with-phone-test-secret',
     ],
     {
       cwd: work,
@@ -190,7 +193,8 @@ export async function startWithPhone(opts: StartOptions = {}): Promise<Running> 
     socket.send(serialize(createRegisterDeviceToken(token, 'ios', pushPrefs)));
   }
   await pollUntil(
-    () => output.text.split('Device token registered').length - 1 >= tokens.length,
+    // The registration's log line names no token (#1200).
+    () => output.text.split('[DeviceTokens] registration requested').length - 1 >= tokens.length,
     8000,
     'the device tokens to be registered',
   );

@@ -30,7 +30,7 @@ describe('cli.ts wires the question resolver (#1235)', () => {
   });
 
   test("a session's close names the cause its reason gives", () => {
-    const loop = block('for (const questionId of pendingQuestionIds) {', '\n        }\n');
+    const loop = block('disposeAndDismiss({', '\n        });');
     expect(loop).toContain(
       "onQuestionResolved(sessionId, questionId, 'cancelled', causeOfSessionClose(reason))",
     );

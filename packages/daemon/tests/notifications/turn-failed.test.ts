@@ -17,6 +17,7 @@ import {
   NotificationDispatcher,
   type PushFn,
 } from '../../src/notifications/notification-dispatcher.ts';
+import { LegacyPushError } from '../../src/notifications/push-client.ts';
 import {
   buildTurnFailedText,
   createTurnFailedRoutes,
@@ -279,7 +280,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
   let refreshes: number;
 
   const pushFn: PushFn = async (_url, token, opts) => {
-    if (failFor.has(token)) throw new Error('BadDeviceToken');
+    if (failFor.has(token)) throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     sent.push({ token, opts: opts as unknown as Record<string, unknown> });
   };
 
@@ -309,7 +310,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret' }),
+        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret', legacyEnabled: true }),
         refreshDeviceTokens: () => {
           refreshes += 1;
         },
@@ -521,6 +522,48 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
 
       failFor.clear();
       expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+    });
+
+    describe('on the secure channel (#1226 with #1200)', () => {
+      /** The secure fan-out as the dispatcher sees it: what it reports per send. Delivery itself
+       *  is covered through the real Worker in claude-session.test.ts; this pins only which
+       *  outcomes count as alerted. */
+      function secureOnly(outcomes: string[]): NotificationDispatcher {
+        const sends: string[] = [];
+        return new NotificationDispatcher(
+          {
+            sessionRegistry: registry,
+            deviceTokens,
+            pushConfig: () => ({ signalingUrl: 'ws://x', legacyEnabled: false }),
+            getPrimarySessionId: () => null,
+            pushFn,
+            securePush: {
+              hasRecipients: () => true,
+              send: (event) => {
+                sends.push(event.kind);
+                return Promise.resolve((outcomes.shift() ?? 'pushed') as never);
+              },
+            },
+          },
+          SID,
+        );
+      }
+
+      test('an uncertain secure send may have alerted, so the repeat is not sent', async () => {
+        register(false);
+        const dispatcher = secureOnly(['uncertain']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('uncertain');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
+
+      test('a failed or refused secure send does not count: the next failure tries again', async () => {
+        register(false);
+        const dispatcher = secureOnly(['failed', 'no_channel', 'pushed']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('failed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('no_channel');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
     });
 
     test('a successful turn ends the streak: the same failure alerts again after it', async () => {
@@ -764,7 +807,11 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
         {
           sessionRegistry: registry,
           deviceTokens,
-          pushConfig: () => ({ signalingUrl: 'ws://x' }),
+          pushConfig: () => ({
+            signalingUrl: 'ws://x',
+            legacyEnabled: true,
+            pushSecret: 'owned-test-secret',
+          }),
           getPrimarySessionId: () => null,
           pushFn,
         },

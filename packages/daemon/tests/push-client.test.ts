@@ -5,7 +5,30 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { sendPushTrigger } from '../src/notifications/push-client.ts';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  type PushTriggerOptions,
+  sendPushTrigger as rawSendPushTrigger,
+} from '../src/notifications/push-client.ts';
+
+let authorityDirectory: string;
+beforeEach(() => {
+  authorityDirectory = mkdtempSync(join(tmpdir(), 'remi-legacy-client-'));
+  chmodSync(authorityDirectory, 0o700);
+});
+afterEach(() => {
+  rmSync(authorityDirectory, { recursive: true, force: true });
+});
+// These payload tests deliberately opt into plaintext compatibility using private test state.
+const sendPushTrigger = (url: string | undefined, token: string, opts: PushTriggerOptions) =>
+  rawSendPushTrigger(url, token, {
+    legacyEnabled: true,
+    pushSecret: 'owned-test-secret',
+    ...opts,
+    authorityDirectory,
+  });
 
 describe('sendPushTrigger', () => {
   let server: ReturnType<typeof Bun.serve>;
@@ -83,11 +106,16 @@ describe('sendPushTrigger', () => {
     expect(lastRequest.headers['authorization']).toBe('Bearer my-secret');
   });
 
-  test('omits Authorization header when pushSecret not provided', async () => {
-    await sendPushTrigger(serverUrl, 'tok', { title: 'T', body: 'B' });
-
-    if (!lastRequest) throw new Error('no request captured');
-    expect(lastRequest.headers['authorization']).toBeUndefined();
+  test('refuses missing secret before any owned request', async () => {
+    await expect(
+      rawSendPushTrigger(serverUrl, 'tok', {
+        title: 'T',
+        body: 'B',
+        legacyEnabled: true,
+        authorityDirectory,
+      }),
+    ).rejects.toThrow('LEGACY_PUSH_SECRET_REQUIRED');
+    expect(lastRequest).toBeNull();
   });
 
   test('throws on non-OK response', async () => {
@@ -101,15 +129,15 @@ describe('sendPushTrigger', () => {
     serverUrl = `http://localhost:${server.port}`;
 
     await expect(sendPushTrigger(serverUrl, 'tok', { title: 'T', body: 'B' })).rejects.toThrow(
-      'Push trigger failed: 400',
+      'LEGACY_PUSH_REJECTED',
     );
   });
 
-  test('uses default signaling URL when signalingUrl is undefined', async () => {
-    // We cannot reach the real signaling server in tests, so just verify
-    // that passing undefined does not crash before the network call
-    // (it will throw a network error, not a URL construction error).
-    await expect(sendPushTrigger(undefined, 'tok', { title: 'T', body: 'B' })).rejects.toThrow(); // network error expected; not a URL parse error
+  test('default URL path remains disabled before dialing any endpoint', async () => {
+    await expect(
+      rawSendPushTrigger(undefined, 'tok', { title: 'T', body: 'B', authorityDirectory }),
+    ).rejects.toThrow('LEGACY_PUSH_DISABLED');
+    expect(lastRequest).toBeNull();
   });
 
   test('normalizes ws:// signaling URL to http:// for the push endpoint', async () => {

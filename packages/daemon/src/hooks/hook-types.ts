@@ -46,9 +46,9 @@ export interface HookCommonInput {
   /** UUID identifying the current user turn (binary: `prompt_id:gAt()??void 0`,
    *  i.e. `Mt.promptId`). Per the docs page, absent until the first user input
    *  and requires Claude Code >= 2.1.196 — this file's version stamp (2.1.220)
-   *  postdates that, but older installs will not send it. remi does not
-   *  currently read this field anywhere; it is the turn-scoped correlation key
-   *  Q9 (#885) wants for authoritative UserPromptSubmit-based routing. */
+   *  postdates that, but older installs will not send it. remi
+   *  uses it in TurnTimer and the turn-complete occurrence identity (#1200),
+   *  independently of permission decisions. */
   prompt_id?: string;
   /** Reasoning-effort override active for this turn, when the model in use
    *  supports effort levels (binary: `effort:a` where

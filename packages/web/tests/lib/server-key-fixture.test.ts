@@ -6,7 +6,7 @@ import { fingerprint, fromBase64, isSmallOrderPublicKey } from '@remi/shared';
 
 test('Swift fixture matches the single reviewed shared small-order key table', async () => {
   const source = readFileSync(
-    resolve(import.meta.dir, '../../../shared/src/ed25519-public-key.ts'),
+    resolve(import.meta.dir, '../../../shared/src/relay/small-order.ts'),
     'utf8',
   );
   const reviewed = [...source.matchAll(/'([0-9a-f]{64})'/g)].map((match) => match[1] ?? '').sort();

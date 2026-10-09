@@ -1,14 +1,21 @@
-# Remi Signaling Worker
-# Handles WebRTC signaling for NAT traversal
+# Remi relay Worker (R2, ADR 0034): a courier for end-to-end encrypted frames
+# between a machine and its enrolled devices, plus the sealed /v2/push route (R5, #1200) and the
+# legacy plaintext /push route.
+# Deploy it only from the runbook in docs/relay-worker-deploy-runbook.md.
 
 name = "remi-signaling"
 main = "src/index.ts"
 compatibility_date = "2025-01-10"
 
-# Use Durable Objects for connection state
+# One ConnectionRoom per machine (named by the room id), one GlobalLimiter for
+# every rate limit.
 [[durable_objects.bindings]]
 name = "CONNECTIONS"
 class_name = "ConnectionRoom"
+
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "GlobalLimiter"
 
 [[migrations]]
 tag = "v1"
@@ -21,18 +28,38 @@ tag = "v2"
 tag = "v3"
 deleted_classes = ["DeviceRoom"]
 
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["GlobalLimiter"]
+
 # Development settings
 [dev]
 port = 8787
 local_protocol = "http"
 
 # Environment variables
+# The rooms have no time-to-live, so the old code and timeout variables are gone.
+# The abuse limits (src/limits.ts) are unmeasured defaults; set a variable of the
+# same name here to change one, for example LIMIT_IP_CLIENT = "10".
 [vars]
-MAX_CONNECTIONS_PER_ROOM = "2"
-CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
-CODE_LENGTH = "8"
 APNS_BUNDLE_ID = "live.yooz.remi"
-# APNS_KEY_ID, APNS_TEAM_ID, and APNS_PRIVATE_KEY must be set as secrets:
+# APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY and PUSH_SECRET must be set as secrets:
 #   wrangler secret put APNS_KEY_ID
 #   wrangler secret put APNS_TEAM_ID
 #   wrangler secret put APNS_PRIVATE_KEY
+#   wrangler secret put PUSH_SECRET
+# PUSH_SECRET is the bearer both push routes require (#1200): POST /v2/push/<rid> and the legacy
+# POST /push. Unset or blank, they refuse every request. The Worker trims it. The daemon sends
+# its own --push-secret / REMI_PUSH_SECRET value.
+#
+# PUSH_AUDIENCE is REQUIRED for POST /v2/push: the Worker's own canonical HTTPS origin, exactly the
+# root the daemon's signaling URL names, with no path, query, fragment or credentials. It is never
+# inferred from the request host, and while it is unset or invalid every v2 push answers
+# WRONG_AUDIENCE. There is no safe default, so it is not set here; add your deployed origin:
+# PUSH_AUDIENCE = "https://<your-worker-host>"
+#
+# LEGACY_PUSH_ENABLED controls the legacy plaintext POST /push. It is ON when the variable is unset
+# or anything but an explicit false value (false, 0, no or off; trimmed, any case), until the R7
+# gate flips this default and removes the route (docs/relay-worker-deploy-runbook.md, "Retiring
+# the legacy route"). To turn it off now:
+# LEGACY_PUSH_ENABLED = "false"

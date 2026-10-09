@@ -836,7 +836,7 @@ describe('createInputHandlers', () => {
         expect(errors).toHaveLength(1);
         expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
         expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
-        expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
+        expect(logs.some((m) => m.includes('option-not-on-screen'))).toBe(true);
       });
 
       test('the relay reports the same refusal as stale, with no error frame', async () => {
@@ -924,9 +924,7 @@ describe('createInputHandlers', () => {
         expect(errors).toHaveLength(1);
         expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
         expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
-        expect(logs.some((m) => m.includes('free text (21 chars) into the option menu'))).toBe(
-          true,
-        );
+        expect(logs.some((m) => m.includes('free-text-into-menu'))).toBe(true);
       });
 
       test('the relay refuses free text into a menu the same way', async () => {
@@ -1033,7 +1031,7 @@ describe('createInputHandlers', () => {
         test('probe B: a hook-numbered "No" (2) over the screen\'s standing allow is refused', async () => {
           const { submits, logs } = await answerOver(fallbackCard, claudeThree, 'No');
           expect(submits).toEqual([]);
-          expect(logs.some((m) => m.includes('"2" means a different option on screen'))).toBe(true);
+          expect(logs.some((m) => m.includes('option-mismatch'))).toBe(true);
           const errors = sendCalls.filter((c) => c.message.type === 'error');
           expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
         });
@@ -1062,7 +1060,7 @@ describe('createInputHandlers', () => {
           ];
           const { submits, logs } = await answerOver(exitPlanCard, screen, 'No, keep planning');
           expect(submits).toEqual([]);
-          expect(logs.some((m) => m.includes('"3" means a different option on screen'))).toBe(true);
+          expect(logs.some((m) => m.includes('option-mismatch'))).toBe(true);
         });
 
         test('probe A, matching numbering: the same typed pick types 3', async () => {
@@ -1121,7 +1119,7 @@ describe('createInputHandlers', () => {
           const screen = [opt('1', screenLabel), opt('2', 'Something else')];
           const { submits, logs } = await answerOver(card, screen, '1');
           expect(submits).toEqual([]);
-          expect(logs.some((m) => m.includes('"1" means a different option on screen'))).toBe(true);
+          expect(logs.some((m) => m.includes('option-mismatch'))).toBe(true);
         });
 
         test("the e4-echo-classic held-card shape: the hook's mode switch is not the screen's", async () => {
@@ -1183,7 +1181,7 @@ describe('createInputHandlers', () => {
         expect(ptyCapture.submits).toEqual([]);
         const errors = sendCalls.filter((c) => c.message.type === 'error');
         expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
-        expect(logs.some((m) => m.includes('free text (10 chars) on a held card'))).toBe(true);
+        expect(logs.some((m) => m.includes('free-text-on-held-card'))).toBe(true);
         expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
       });
 
@@ -1694,9 +1692,10 @@ describe('createInputHandlers', () => {
         send,
       });
 
-      // Label resolves to a different value -> logged as a translation.
+      // Label resolves to a different value; logs record only metadata.
       await handlers.onAnswer(CID, sessionId, QID, 'No');
-      expect(logs.some((m) => m.includes('[Answer] resolved "No" -> "3"'))).toBe(true);
+      expect(logs.some((m) => m.includes('[Answer] resolved option'))).toBe(true);
+      expect(logs.join('\n')).not.toContain('"No"');
 
       // A label that matches no option (options present) is free text: still
       // logged as unmatched, but no longer submitted verbatim. Lead decision on
@@ -1706,9 +1705,12 @@ describe('createInputHandlers', () => {
       addYesNoAlwaysQuestion(sessionId);
       logs.length = 0;
       await handlers.onAnswer(CID, sessionId, QID, 'Maybe');
-      expect(logs.some((m) => m.includes('[Answer] "Maybe" matched no option (3)'))).toBe(true);
-      expect(logs.some((m) => m.includes('free text (5 chars) into the option menu'))).toBe(true);
+      expect(logs.some((m) => m.includes('[Answer] 5 characters matched no option (3)'))).toBe(
+        true,
+      );
+      expect(logs.some((m) => m.includes('free-text-into-menu'))).toBe(true);
       expect(ptyCapture.submits).not.toContain('Maybe');
+      expect(logs.join('\n')).not.toContain('Maybe');
     });
   });
 
@@ -2850,7 +2852,7 @@ describe('createInputHandlers', () => {
 
       // The answer still delivers and the question is still consumed despite the
       // throwing broadcast (it is guarded in the finally).
-      await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).resolves.toBe(undefined);
+      await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).resolves.toBe('delivered');
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
   });
