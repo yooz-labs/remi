@@ -187,8 +187,8 @@ export function trustHost(
     publicKey,
     firstSeen: hosts[key]?.firstSeen ?? now,
     lastSeen: now,
-    // Keep the previously pinned key when a daemon stops publishing one, rather
-    // than silently dropping the ability to seal (#875).
+    // Preserve historical v1 metadata for additive compatibility (#1202).
+    // The retired code-room answer sender no longer seals with this key.
     ...(answerEncryptionKey !== undefined
       ? { answerEncryptionKey }
       : hosts[key]?.answerEncryptionKey !== undefined
@@ -198,7 +198,7 @@ export function trustHost(
   saveKnownHosts(hosts);
 }
 
-/** The pinned answer key for a host, or null when there is none to seal with (#875). */
+/** @deprecated Historical v1 metadata only; secure v2 answers do not use it (#1202). */
 export function getAnswerEncryptionKey(serverUrl: string): string | null {
   const hosts = loadKnownHosts();
   return hosts[normalizeHostKey(serverUrl)]?.answerEncryptionKey ?? null;

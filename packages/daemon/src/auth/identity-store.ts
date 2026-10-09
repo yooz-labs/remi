@@ -28,7 +28,12 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
-import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import { isAuthorityEpoch, newAuthorityEpoch } from '../storage/authority-epoch.ts';
+import {
+  withInterprocessFileLock,
+  withInterprocessFileLockNonblocking,
+} from '../storage/interprocess-file-lock.ts';
+import { purgeSecurePushSubscriptionsLocked } from '../storage/secure-push-subscriptions.ts';
 
 export class DuplicateKeyError extends Error {
   constructor(fingerprint: string) {
@@ -49,6 +54,7 @@ export interface PendingKey {
 }
 const PENDING_TTL_MS = 600_000;
 const MAX_PENDING_KEYS = 32;
+type StoredAuthorizedKey = AuthorizedKey & { readonly authorizationEpoch?: string };
 /**
  * Pending slots only a pairing claim may take (#1275 review): a flood of unknown keys cannot keep a
  * phone the person is pairing out of the queue. Ordinary first connections get the other 28.
@@ -275,6 +281,7 @@ export class IdentityStore {
         typeof key['label'] !== 'string' ||
         !validDate(key['addedAt']) ||
         (key['lastUsedAt'] !== null && !validDate(key['lastUsedAt'])) ||
+        ('authorizationEpoch' in key && !isAuthorityEpoch(key['authorizationEpoch'])) ||
         seen.has(key['fingerprint'] as string)
       )
         throw new Error('Authorized keys file has invalid records');
@@ -284,6 +291,55 @@ export class IdentityStore {
   }
   private writeAuthorizedKeys(file: AuthorizedKeysFile): void {
     this.atomicWrite(this.authorizedKeysPath, JSON.stringify(file, null, 2));
+  }
+
+  /** Capture a durable generation only for a currently present grant, migrating old records lazily. */
+  captureAuthorizationEpoch(publicKey: string): string | null {
+    return this.withAuthorizationEpoch(publicKey, (epoch) => epoch, true);
+  }
+
+  /**
+   * Read the current grant generation and invoke one synchronous decision in
+   * the authorization lock. A network invocation may return its promise, but
+   * all preparation/awaits belong outside this callback; the lock then releases.
+   * Callers must compare their captured generation before performing an effect.
+   */
+  withAuthorizationEpoch<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+    migrate = false,
+  ): T {
+    return this.transaction(() => this.decideAuthorizationEpoch(publicKey, operation, migrate));
+  }
+  /** Current generation read under one ownership attempt; no grant-record migration (#1224). */
+  withAuthorizationEpochNonblocking<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+  ): T {
+    this.ensureDir();
+    return withInterprocessFileLockNonblocking(this.authorizedKeysPath, () =>
+      this.decideAuthorizationEpoch(publicKey, operation, false),
+    );
+  }
+  private decideAuthorizationEpoch<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+    migrate: boolean,
+  ): T {
+    const file = this.loadAuthorizedKeys();
+    const key = file.keys.find((candidate) => candidate.publicKey === publicKey) as
+      | StoredAuthorizedKey
+      | undefined;
+    let epoch = key?.authorizationEpoch;
+    if (key && epoch === undefined && migrate) {
+      epoch = newAuthorityEpoch();
+      const updated: StoredAuthorizedKey = { ...key, authorizationEpoch: epoch };
+      this.writeAuthorizedKeys({
+        ...file,
+        keys: file.keys.map((candidate) => (candidate === key ? updated : candidate)),
+      });
+    }
+    return operation(epoch ?? null);
   }
   private readPendingKeys(): PendingKey[] {
     const parsed = this.readJson(this.pendingKeysPath);
@@ -392,19 +448,28 @@ export class IdentityStore {
     const file = this.loadAuthorizedKeys();
     if (file.keys.some((key) => key.fingerprint === fingerprint))
       throw new DuplicateKeyError(fingerprint);
-    this.writeAuthorizedKeys({ ...file, keys: [...file.keys, grant] });
+    const stored: StoredAuthorizedKey = { ...grant, authorizationEpoch: newAuthorityEpoch() };
+    this.writeAuthorizedKeys({ ...file, keys: [...file.keys, stored] });
     // Grant is durable FIRST. A crash leaves only an ignored stale candidate.
     this.writePendingKeys(keys.filter((key) => key.fingerprint !== fingerprint));
     return grant;
   }
-  async addAuthorizedKey(publicKey: string, label: string): Promise<AuthorizedKey> {
+  async addAuthorizedKey(
+    publicKey: string,
+    label: string,
+    mayCommit: () => boolean = () => true,
+  ): Promise<AuthorizedKey> {
     await validatePublicKey(publicKey);
     const key = await createAuthorizedKey(publicKey, label);
     return this.transaction(() => {
+      // Relay approval can be cancelled while async crypto prepares the key.
+      // The final authority decision and write share this synchronous lock.
+      if (!mayCommit()) throw new Error('AUTHORIZATION_CANCELLED');
       const file = this.loadAuthorizedKeys();
       if (file.keys.some((existing) => existing.fingerprint === key.fingerprint))
         throw new DuplicateKeyError(key.fingerprint);
-      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, key] });
+      const stored: StoredAuthorizedKey = { ...key, authorizationEpoch: newAuthorityEpoch() };
+      this.writeAuthorizedKeys({ ...file, keys: [...file.keys, stored] });
       return key;
     });
   }
@@ -416,6 +481,10 @@ export class IdentityStore {
       // Purge stale candidates while this key is still authorized, so revoke cannot resurrect one.
       this.pendingInsideTransaction();
       this.writeAuthorizedKeys({ ...file, keys });
+      purgeSecurePushSubscriptionsLocked(
+        this.dir,
+        file.keys.filter((key) => key.fingerprint === fp).map((key) => key.publicKey),
+      );
       return true;
     });
   }

@@ -24,6 +24,7 @@ export interface StartDaemonOptions {
   readonly auth?: boolean;
   readonly noMdns?: boolean;
   readonly noRelay?: boolean;
+  readonly relay?: boolean;
   readonly noTelegram?: boolean;
   readonly permanentCode?: boolean;
   readonly signalingUrl?: string;
@@ -50,6 +51,7 @@ export function buildStartDaemonArgs(opts: Omit<StartDaemonOptions, 'resolvedBin
   if (opts.auth === false) extraArgs.push('--no-auth');
   if (opts.noMdns) extraArgs.push('--no-mdns');
   if (opts.noRelay) extraArgs.push('--no-relay');
+  if (opts.relay) extraArgs.push('--relay');
   if (opts.noTelegram) extraArgs.push('--no-telegram');
   if (opts.permanentCode) extraArgs.push('--permanent-code');
   if (opts.signalingUrl) extraArgs.push('--signaling-url', opts.signalingUrl);

@@ -884,6 +884,53 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(resolved).toEqual([qid]);
   });
 
+  test('push answer validity keeps the captured hold deadline and never extends it', async () => {
+    const g = gate({ holdMs: 60_000 });
+    const before = Date.now();
+    const hook = g.resolvePermission(pr());
+    const after = Date.now();
+    const qid = ids[0] as UUID;
+    const first = g.answerValidity(qid);
+    expect(first?.kind).toBe('deadline');
+    if (first?.kind !== 'deadline') throw new Error('Expected the actual held-hook deadline');
+    expect(first.expiresAtMs).toBeGreaterThanOrEqual(before + 60_000);
+    expect(first.expiresAtMs).toBeLessThanOrEqual(after + 60_000);
+    await Bun.sleep(5);
+    expect(g.answerValidity(qid)).toEqual(first);
+    expect(g.answerHeld(qid, { kind: 'option', option: NO })).toBe('resolved');
+    expect(await hook).toBe('deny');
+    expect(g.answerValidity(qid)).toEqual({ kind: 'closed' });
+  });
+
+  test('push answer validity is closed after the real deadline even before its timer callback', async () => {
+    const g = gate({ holdMs: 30 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    // Block only this test's event loop: real wall time advances while the real
+    // hold callback cannot run. No clock or permission logic is substituted.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    expect(g.isHeld(qid)).toBe(true);
+    expect(deadlines).toHaveLength(0);
+    expect(g.answerValidity(qid)).toEqual({ kind: 'closed' });
+    // Reading validity must not settle the hook; its own timer still owns it.
+    expect(g.isHeld(qid)).toBe(true);
+    expect(await hook).toBe('passthrough');
+    expect(g.answerValidity(qid)).toEqual({ kind: 'closed' });
+  });
+
+  test('push answer validity distinguishes never-held cards from ended holds', async () => {
+    const g = gate();
+    expect(g.answerValidity(generateId() as UUID)).toBeNull();
+    await g.resolvePermission(pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }));
+    expect(g.answerValidity(ids[0] as UUID)).toBeNull();
+    const abort = new AbortController();
+    const hook = g.resolvePermission(pr({ tool_input: { command: 'other' } }), abort.signal);
+    const qid = ids[1] as UUID;
+    abort.abort();
+    expect(await hook).toBe('passthrough');
+    expect(g.answerValidity(qid)).toEqual({ kind: 'closed' });
+  });
+
   test('a prompt released at its deadline is not retired by a late answer path (its dialog is still up)', async () => {
     const g = gate({ holdMs: 20 });
     const hook = g.resolvePermission(pr());

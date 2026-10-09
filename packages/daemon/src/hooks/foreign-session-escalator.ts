@@ -62,13 +62,18 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
-import { errorToString } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
-import type { PushConfig, PushFn } from '../notifications/notification-dispatcher.ts';
-import { sendPushTrigger } from '../notifications/push-client.ts';
+import { legacyChannelOpen, legacyPushFields } from '../notifications/legacy-push-policy.ts';
+import type {
+  DeliveryOutcome,
+  PushConfig,
+  PushFn,
+} from '../notifications/notification-dispatcher.ts';
+import { isLegacyPushRetired, sendPushTrigger } from '../notifications/push-client.ts';
 import { tokensWanting } from '../notifications/push-preferences.ts';
+import type { SecureSessionPush } from '../notifications/secure-push-service.ts';
 import type { SessionBindingStore } from '../session/index.ts';
 import {
   type SessionRegistryFile,
@@ -101,6 +106,8 @@ export interface ForeignSessionEscalatorDeps {
    *  Absent => no refresh (tests). Must be synchronous and non-throwing. */
   refreshDeviceTokens?: () => void;
   pushConfig: () => PushConfig;
+  /** The detecting session's secure fan-out; never the foreign session's answer authority. */
+  securePush?: (sessionId: UUID) => SecureSessionPush | undefined;
   currentPort: () => number;
   /** Test override for the push transport; defaults to the real sendPushTrigger. */
   pushFn?: PushFn;
@@ -141,35 +148,26 @@ export class ForeignSessionEscalator {
     let ownership: Ownership;
     try {
       ownership = this.classifyOwnership(input);
-    } catch (err) {
-      logError(
-        `[ForeignSession] Could not determine ownership of ${input.session_id.slice(0, 8)} ` +
-          `(registry read failed); staying quiet to avoid an escalation storm: ${errorToString(err)}`,
-      );
+    } catch {
+      logError('[ForeignSession] ownership read failed; push suppressed');
       return;
     }
     if (ownership === 'sibling') {
-      log(
-        `[ForeignSession] ${input.session_id.slice(0, 8)} (tool=${input.tool_name}) claimed by a live sibling daemon; staying silent`,
-      );
+      log('[ForeignSession] sibling ownership; push suppressed');
       return;
     }
     if (ownership === 'undetermined') {
-      logError(
-        `[ForeignSession] Ownership of ${input.session_id.slice(0, 8)} (tool=${input.tool_name}) could not be proven yet (marker unreadable on a still-recent transcript -- possibly our own in-flight rotation); staying quiet rather than risk a false-alarm push`,
-      );
+      logError('[ForeignSession] ownership undetermined; push suppressed');
       return;
     }
     if (!this.shouldEscalate(input.session_id)) {
-      log(
-        `[ForeignSession] Suppressing repeat escalation for ${input.session_id.slice(0, 8)} (rate-limited)`,
-      );
+      log('[ForeignSession] rate limited; push suppressed');
       return;
     }
     // Fire-and-forget: the caller (a synchronous hook resolver) must not wait
     // on a network push before returning its own decision.
-    void this.pushInformational(input, callerSessionId).catch((err) => {
-      logError(`[ForeignSession] Informational push threw: ${errorToString(err)}`);
+    void this.pushInformational(input, callerSessionId).catch(() => {
+      logError('[ForeignSession] informational push failed');
     });
   }
 
@@ -279,38 +277,54 @@ export class ForeignSessionEscalator {
     // A permission request in a session remi does not manage is still a
     // question-class push (#968) — it buzzes, and it says the agent is blocked
     // on someone — so a device muted for questions does not get it.
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
-    if (wanting.length === 0) {
-      log(
-        deviceTokens.size === 0
-          ? `[ForeignSession] No device tokens registered; cannot notify about unbound session ${shortId}`
-          : `[ForeignSession] All ${deviceTokens.size} device token(s) muted question pushes; not notifying about unbound session ${shortId}`,
-      );
+    const cfg = pushConfig();
+    const wanting = legacyChannelOpen(cfg) ? tokensWanting(deviceTokens.values(), 'question') : [];
+    const secure = this.deps.securePush?.(callerSessionId);
+    const secureRecipients = secure?.hasRecipients('question') === true;
+    if (wanting.length === 0 && !secureRecipients) {
+      log('[ForeignSession] no recipients; push suppressed');
       return;
     }
-    const cfg = pushConfig();
     const cwdHint = input.cwd ? path.basename(input.cwd) : undefined;
     const title = `Unbound Claude session (${shortId})`;
     const body = `${input.tool_name} requested permission in a Claude session Remi does not manage${cwdHint ? ` (${cwdHint})` : ''}. Not connected to Remi; answer it in that terminal directly.`;
 
-    const results = await Promise.allSettled(
-      wanting.map((dt) =>
+    const tasks: Promise<boolean | DeliveryOutcome>[] = [];
+    if (secureRecipients) {
+      tasks.push(
+        secure.send({
+          kind: 'question',
+          logicalId: `foreign-session-${input.session_id}`,
+          title,
+          body,
+        }),
+      );
+    }
+    tasks.push(
+      ...wanting.map((dt) =>
         this.pushFn(cfg.signalingUrl, dt.token, {
           title,
           body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          ...legacyPushFields(cfg),
           sessionId: callerSessionId,
           // Deliberately no `category` / `options`: dismiss-only, no action
           // buttons (see module doc). Also no `questionId` -- there is no
           // Question backing this push for an answer to resolve against.
           kind: 'question' as const,
-        }),
+        }).then(() => true),
       ),
     );
-    if (!results.some((r) => r.status === 'fulfilled')) {
-      logError(
-        `[ForeignSession] Escalation push failed for all device tokens (session ${shortId})`,
-      );
-    }
+    const results = await Promise.allSettled(tasks);
+    if (results.some((r) => r.status === 'fulfilled' && (r.value === true || r.value === 'pushed')))
+      return;
+    // A send the activation latch refused is the retired plaintext channel of a relay-paired
+    // machine, and a secure `no_channel` is no subscription: neither is a failure (#1200).
+    const failures = results.filter((r) =>
+      r.status === 'rejected' ? !isLegacyPushRetired(r.reason) : r.value !== 'no_channel',
+    );
+    if (failures.length === 0) return;
+    // A lost delivery result is not evidence that the receiver saw nothing (#1200).
+    const uncertain = failures.some((r) => r.status === 'fulfilled' && r.value === 'uncertain');
+    logError(`[ForeignSession] informational push ${uncertain ? 'uncertain' : 'failed'}`);
   }
 }

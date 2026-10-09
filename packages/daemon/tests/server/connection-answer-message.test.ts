@@ -27,35 +27,45 @@ class MockWebSocket {
 const SID = 'aaaaaaaa-0000-0000-0000-000000000001' as UUID;
 const QID = 'bbbbbbbb-0000-0000-0000-000000000001' as UUID;
 
-function connected(calls: Array<{ answer: string; extra: AnswerExtras | undefined }>): Connection {
+function connected(calls: Array<{ answer: string; extra: AnswerExtras | undefined }>): {
+  conn: Connection;
+  answered: Promise<void>;
+} {
+  let delivered!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    delivered = resolve;
+  });
   const ws = new MockWebSocket();
   const conn = new Connection(
     ws as unknown as WebSocket,
     {
       onAnswer: (_sessionId, _questionId, answer, _claudeSessionId, extra) => {
         calls.push({ answer, extra });
+        delivered();
       },
     },
     {},
   );
   conn.handleMessage(serialize(createHello('client-1' as UUID, '1.0.0')));
-  return conn;
+  return { conn, answered };
 }
 
-describe('Connection answer: the deny message reaches onAnswer (#1126)', () => {
-  test('a No with a message forwards it as extra.message', () => {
+describe('Connection answer: the deny message reaches onAnswer (#1126)', async () => {
+  test('a No with a message forwards it as extra.message', async () => {
     const calls: Array<{ answer: string; extra: AnswerExtras | undefined }> = [];
-    const conn = connected(calls);
+    const { conn, answered } = connected(calls);
     conn.handleMessage(serialize(createAnswer(SID, QID, 'No', undefined, 'run the tests first')));
+    await answered;
     expect(calls).toHaveLength(1);
     expect(calls[0]?.answer).toBe('No');
     expect(calls[0]?.extra?.message).toBe('run the tests first');
   });
 
-  test('an answer without a message carries no extra', () => {
+  test('an answer without a message carries no extra', async () => {
     const calls: Array<{ answer: string; extra: AnswerExtras | undefined }> = [];
-    const conn = connected(calls);
+    const { conn, answered } = connected(calls);
     conn.handleMessage(serialize(createAnswer(SID, QID, 'Yes')));
+    await answered;
     expect(calls).toHaveLength(1);
     expect(calls[0]?.extra).toBeUndefined();
   });

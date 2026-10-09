@@ -1,0 +1,240 @@
+{
+  "version": 1,
+  "machineSeedHex": "4f99ae4b4b6fdba33346ae39da7d73493ee95455aff043315f7fd6287847b1a2",
+  "deviceSeedHex": "2711c40847f8db00cdc20ca66b32c93219700376d64475b77c4a39b3d1db2892",
+  "cases": [
+    {
+      "name": "absent-optionals",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "1",
+        "signature": "rZQZ3nmtmVdWX9T5hUzlnO-Ci8qEWc_3SzeNXYQAy4Qt5Qg34sWmzU8EMfRndlXOB3Y67Ak5a1RuHR-nFMwLBA"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000131000100000100000100000100",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e737765720020272030cb03ec36f65a60b10343126cca7f2ae301b8481e5c9e7579cdac22183e",
+      "requestDigest": "272030cb03ec36f65a60b10343126cca7f2ae301b8481e5c9e7579cdac22183e"
+    },
+    {
+      "name": "empty-message",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "1",
+        "message": "",
+        "signature": "05Orva_g-bKK3fTM_hJz1ahLYbvBRkmKTnGVwf-Sy4oKwVRNGPxT0gkDnbEyBSwMO4CQ9xqPCszRgX1BArIJCw"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000131000100000100000100000101",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e737765720020df5108dc58bd97b9b8a23175ecbe3a8fb759bed6c2432fd210cacbf2cd8212bb",
+      "requestDigest": "df5108dc58bd97b9b8a23175ecbe3a8fb759bed6c2432fd210cacbf2cd8212bb"
+    },
+    {
+      "name": "explicit-false",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "1",
+        "cancel": false,
+        "signature": "NtaIczn8lCbZ-v3UlrTl_ckjhCNBan5VO827mXEACqW1NDADgkIFTKKhtJ8WaIqavMMF4YBRpI7JTQE21s-cCg"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e00013100010000010000020100000100",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e7377657200204cda31bc85baa971c2a1e9968a5b6b8f23e91dc7b9a95921f889518439b9423f",
+      "requestDigest": "4cda31bc85baa971c2a1e9968a5b6b8f23e91dc7b9a95921f889518439b9423f"
+    },
+    {
+      "name": "cancel",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "",
+        "cancel": true,
+        "signature": "7Iyff92CYtoquSvrMu959XlcarxWBV-pOU3r4tpMCADDFPky0ZOdn8SV_DYOTRXoomRCi_RjEh4a-z6nqHJyAg"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000000010000010000020101000100",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e737765720020a6fec3da27339fde70f71bf2219c55ca42e652bee3f360977f04c2db12ea6230",
+      "requestDigest": "a6fec3da27339fde70f71bf2219c55ca42e652bee3f360977f04c2db12ea6230"
+    },
+    {
+      "name": "legacy-binding",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "1",
+        "claudeSessionId": "synthetic-harness-instance",
+        "signature": "pR1A2-N7VHdFtFjLMqgAB-8btFhamKIyQoLeNlWNMjGC8p4DLlD93Yc9id-gl7zJ0T059MOD6bNPwdENG2YWDg"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000131001b0173796e7468657469632d6861726e6573732d696e7374616e6365000100000100000100",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e737765720020ca0a02cef9f00217c9276a0a673b62e37b48dd58b93341899893c8eccc9b4221",
+      "requestDigest": "ca0a02cef9f00217c9276a0a673b62e37b48dd58b93341899893c8eccc9b4221"
+    },
+    {
+      "name": "unicode-exact",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "﻿ é 🦉 ",
+        "message": "é\r\nline\u0000",
+        "signature": "X4Q0ItSlKuhWv_zFBXnIw9uLj7tblSIbFB0O941_8QN5a-wmQaijKtEpe7GmDnP2VyDPspM1HoRAP9ViBJfEAg"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000defbbbf2065cc8120f09fa68920000100000100000100000a01c3a90d0a6c696e6500",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e7377657200208e8d105bbfee2dc1e4edae1675ef54fe808c20207adcf3ffeb53cdb21b9bd38c",
+      "requestDigest": "8e8d105bbfee2dc1e4edae1675ef54fe808c20207adcf3ffeb53cdb21b9bd38c"
+    },
+    {
+      "name": "structured-indices",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "",
+        "selections": [
+          {
+            "questionIndex": 0,
+            "optionIndices": [0, 1, 256, 65535]
+          },
+          {
+            "questionIndex": 65535,
+            "optionIndices": [],
+            "text": "exact free text"
+          }
+        ],
+        "signature": "49ZZVN5A7FKfiHm1hCrG7BHTB6XBArop41hsqv3M3vWN3x0bwlNQ06CY8T4tZKOPJnFW15wD-lgO6tAoeHIqAg"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e000000010000420100020002001d000200000014000200040002000000020001000201000002ffff000100001c0002ffff000400020000001001657861637420667265652074657874000100000100",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e7377657200209e2ac68a32b00dd7c367c89e16400cf6e36b34d509b2b3ea7978f020ec87091c",
+      "requestDigest": "9e2ac68a32b00dd7c367c89e16400cf6e36b34d509b2b3ea7978f020ec87091c"
+    },
+    {
+      "name": "all-compatible-optionals",
+      "message": {
+        "type": "native_answer",
+        "v": 2,
+        "id": "synthetic-native-request",
+        "timestamp": "2023-11-14T22:13:20.000Z",
+        "rid": "da506541b7065b971eb8dc5b1d8d361c",
+        "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+        "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+        "sessionId": "synthetic-session",
+        "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+        "questionId": "synthetic-question",
+        "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+        "revision": 7,
+        "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+        "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+        "issuedAt": 1700000000,
+        "expiresAt": 1700000030,
+        "answer": "",
+        "claudeSessionId": "owned-harness",
+        "selections": [
+          {
+            "questionIndex": 258,
+            "optionIndices": [257, 4096]
+          }
+        ],
+        "cancel": false,
+        "message": "Keep this exact message.",
+        "signature": "tgV02rQM4WgZFbKhTXcR0Olr9StdG9oJnSj6ZGDvjPPGgusqboWKBH9yiJR22IeMqJt2Y6CpDsfnQzTvFkbFDQ"
+      },
+      "bodyHex": "0010da506541b7065b971eb8dc5b1d8d361c0020e577f99338f267e8a919471b2cdbea5ec0da250ad947d8ae1d47af4d7604e67c00204086dd210b083af4e741dcedff467daf24bf974654784ee8ca70f80a2b1c0be9001873796e7468657469632d6e61746976652d72657175657374001173796e7468657469632d73657373696f6e0020ac19f11e6bd5ee6d981ce4e06110dafc7b94e23dfee87e361c1a9a0c7ee2ac30001273796e7468657469632d7175657374696f6e00166d757561456a706f426473592d35734c563666576467000800000000000000070020da71b53402b42b8fc2c3c9683a55e0228e92fe40c6137df00414c40711d3475f0020d87e11fa189419f30951f34b721e5c5f318c43af3e13446b6b7abfe818b4775c0008000000006553f1000008000000006553f11e0000000e016f776e65642d6861726e657373001c0100020001001500020102000c000200020002010100021000000100000201000019014b6565702074686973206578616374206d6573736167652e",
+      "signingInputHex": "001b72656d692d72656c61792d7632206e617469766520616e737765720020ee71626e62e67038de846668b63fb17f02fba0a4e8ff109af56733c5982b2669",
+      "requestDigest": "ee71626e62e67038de846668b63fb17f02fba0a4e8ff109af56733c5982b2669"
+    }
+  ]
+}

@@ -104,7 +104,13 @@
 import type { ResolvedBy, UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from '../harness/decision.ts';
+import {
+  type AnswerCommit,
+  type AnswerValidity,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../harness/decision.ts';
 import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import {
@@ -151,6 +157,8 @@ interface Hold {
   readonly toolInput: Readonly<Record<string, unknown>>;
   readonly detachAbort: () => void;
   readonly startedAt: number;
+  /** Captured with startedAt, before the timer is installed; never extended (#1200). */
+  readonly deadlineAtMs: number;
 }
 
 /** Why a live hold was released to the terminal with no answer (#1126):
@@ -587,6 +595,22 @@ export class AutoApproveGate {
   }
 
   /**
+   * A live hook's finite answer window (#1200). Reading it decides nothing:
+   * even if the event loop delayed the timer, an elapsed deadline is closed.
+   * `null` means this gate never held the card; the Claude adapter must still
+   * require its actual registry entry and current screen before a fallback.
+   */
+  answerValidity(questionId: UUID): AnswerValidity | null {
+    const hold = this.holds.get(questionId);
+    if (hold) {
+      return Number.isFinite(hold.deadlineAtMs) && Date.now() < hold.deadlineAtMs
+        ? { kind: 'deadline', expiresAtMs: hold.deadlineAtMs }
+        : { kind: 'closed' };
+    }
+    return this.closedHoldIds.has(questionId) ? { kind: 'closed' } : null;
+  }
+
+  /**
    * True while a MAIN-agent prompt's hook is held (#1126): its dialog is on
    * screen (it renders during the hold), so text typed into the PTY would
    * land in it and the Enter after it would confirm the highlighted option.
@@ -616,7 +640,7 @@ export class AutoApproveGate {
    * For an AskUserQuestion or ExitPlanMode (#1127), see `askDecision` and
    * `planDecision`. Anything else is refused and the hold stays.
    */
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
     const hold = this.holds.get(questionId);
     if (!hold) return this.closedHoldIds.has(questionId) ? 'closed' : 'unknown';
     const decision = this.decisionFor(hold, answer);
@@ -626,8 +650,11 @@ export class AutoApproveGate {
       );
       return 'refused';
     }
-    this.openQuestionSignatures.delete(questionId);
-    this.endHold(questionId, decision);
+    const committed = applyAnswerCommit(() => {
+      this.openQuestionSignatures.delete(questionId);
+      this.endHold(questionId, decision);
+    }, commit);
+    if (committed.kind === 'refused') return 'authority-refused';
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} answered from the phone: ${describeDecision(decision)}`,
     );
@@ -698,8 +725,11 @@ export class AutoApproveGate {
       );
       return Promise.resolve('passthrough');
     }
+    const startedAt = Date.now();
+    const holdMs = this.deps.holdMs;
+    const deadlineAtMs = startedAt + holdMs;
     const decision = new Promise<PermissionDecision>((resolve) => {
-      const timer = setTimeout(() => this.releaseAtDeadline(qid), this.deps.holdMs);
+      const timer = setTimeout(() => this.releaseAtDeadline(qid), holdMs);
       // A hold is human-paced; it must never keep the daemon alive.
       timer.unref?.();
       const onAbort = (): void => this.onHoldAborted(qid);
@@ -712,7 +742,8 @@ export class AutoApproveGate {
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
         toolInput: input.tool_input,
         detachAbort: () => signal?.removeEventListener('abort', onAbort),
-        startedAt: Date.now(),
+        startedAt,
+        deadlineAtMs,
       });
     });
     this.cueHeldEscalate(qid, 'structured');

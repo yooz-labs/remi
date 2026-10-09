@@ -208,74 +208,84 @@ function reclaimStaleLock(lockPath: string, expected: SessionStoreLockOwner): bo
   }
 }
 
-/** Acquire the bounded cross-process lock used by the durable JSON stores. */
-function acquireInterprocessFileLock(filePath: string): SessionStoreLockHandle {
+/** Prepare one owner token; publication, never preparation, grants ownership. */
+function prepareLock(filePath: string): SessionStoreLockHandle {
   ensureLockDirectory(filePath);
-  const lockPath = `${filePath}${LOCK_SUFFIX}`;
-  const owner: SessionStoreLockOwner = {
-    version: 1,
-    ownerId: randomUUID(),
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: Date.now(),
+  return {
+    lockPath: `${filePath}${LOCK_SUFFIX}`,
+    owner: {
+      version: 1,
+      ownerId: randomUUID(),
+      pid: process.pid,
+      host: os.hostname(),
+      acquiredAt: Date.now(),
+    },
   };
-  const deadline = performance.now() + LOCK_WAIT_TIMEOUT_MS;
+}
 
-  while (performance.now() < deadline) {
-    const candidatePath = `${lockPath}.${owner.ownerId}.tmp`;
+/** One complete metadata publication attempt, shared by waiting and nonwaiting callers. */
+function publishLock({ lockPath, owner }: SessionStoreLockHandle): boolean {
+  const candidatePath = `${lockPath}.${owner.ownerId}.tmp`;
+  try {
+    // Write the complete metadata to a unique sibling first. Linking that
+    // file into the well-known path is the ownership decision: contenders
+    // cannot observe a partially-written JSON document between O_EXCL
+    // creation and the metadata write.
+    fs.writeFileSync(candidatePath, JSON.stringify(owner), {
+      encoding: 'utf-8',
+      flag: 'wx',
+      mode: 0o600,
+    });
     try {
-      // Write the complete metadata to a unique sibling first. Linking that
-      // file into the well-known path is the ownership decision: contenders
-      // cannot observe a partially-written JSON document between O_EXCL
-      // creation and the metadata write.
-      fs.writeFileSync(candidatePath, JSON.stringify(owner), {
-        encoding: 'utf-8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      try {
-        fs.linkSync(candidatePath, lockPath);
-        return { lockPath, owner };
-      } catch (err) {
-        if (errorCode(err) !== 'EEXIST') {
-          throw new InterprocessFileLockError(
-            lockPath,
-            `cannot publish owner metadata: ${errorToString(err)}`,
-          );
-        }
-      } finally {
-        // The hard link (when successful) keeps the published copy alive;
-        // when another writer won, this candidate was never visible as the
-        // lock. Either way it must not survive the attempt.
-        try {
-          fs.unlinkSync(candidatePath);
-        } catch (err) {
-          if (errorCode(err) !== 'ENOENT') {
-            console.warn(
-              `[sessions] Could not remove lock candidate ${candidatePath}: ${errorToString(err)}`,
-            );
-          }
-        }
-      }
+      fs.linkSync(candidatePath, lockPath);
+      return true;
     } catch (err) {
       if (errorCode(err) !== 'EEXIST') {
         throw new InterprocessFileLockError(
           lockPath,
-          `cannot create lock candidate: ${errorToString(err)}`,
+          `cannot publish owner metadata: ${errorToString(err)}`,
         );
       }
+    } finally {
+      // The hard link (when successful) keeps the published copy alive;
+      // when another writer won, this candidate was never visible as the
+      // lock. Either way it must not survive the attempt.
+      try {
+        fs.unlinkSync(candidatePath);
+      } catch (err) {
+        if (errorCode(err) !== 'ENOENT') {
+          console.warn(
+            `[sessions] Could not remove lock candidate ${candidatePath}: ${errorToString(err)}`,
+          );
+        }
+      }
     }
+  } catch (err) {
+    if (errorCode(err) !== 'EEXIST') {
+      throw new InterprocessFileLockError(
+        lockPath,
+        `cannot create lock candidate: ${errorToString(err)}`,
+      );
+    }
+  }
+  return false;
+}
 
+/** Acquire the bounded cross-process lock used by the durable JSON stores. */
+function acquireInterprocessFileLock(filePath: string): SessionStoreLockHandle {
+  const lock = prepareLock(filePath);
+  const { lockPath } = lock;
+  const deadline = performance.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (performance.now() < deadline) {
+    if (publishLock(lock)) return lock;
     const snapshot = readLockSnapshot(lockPath);
     if (snapshot && isStaleLock(snapshot)) {
       if (reclaimStaleLock(lockPath, snapshot.owner)) continue;
     }
-
     const remaining = deadline - performance.now();
     if (remaining <= 0) break;
     sleepSync(Math.min(LOCK_RETRY_DELAY_MS, remaining));
   }
-
   throw new InterprocessFileLockError(lockPath, `timed out after ${LOCK_WAIT_TIMEOUT_MS}ms`, {
     retryable: true,
   });
@@ -303,7 +313,21 @@ function releaseInterprocessFileLock(handle: SessionStoreLockHandle): void {
 
 /** Serialize one complete read-modify-write transaction across processes. */
 export function withInterprocessFileLock<T>(filePath: string, operation: () => T): T {
-  const lock = acquireInterprocessFileLock(filePath);
+  return withOwnedLock(acquireInterprocessFileLock(filePath), operation);
+}
+
+/**
+ * Exactly one ownership attempt (#1224). Busy, stale and unknown locks all refuse;
+ * only the waiting writer path performs stale recovery. Filesystem I/O remains synchronous.
+ */
+export function withInterprocessFileLockNonblocking<T>(filePath: string, operation: () => T): T {
+  const lock = prepareLock(filePath);
+  if (!publishLock(lock))
+    throw new InterprocessFileLockError(lock.lockPath, 'lock busy', { retryable: true });
+  return withOwnedLock(lock, operation);
+}
+
+function withOwnedLock<T>(lock: SessionStoreLockHandle, operation: () => T): T {
   try {
     return operation();
   } finally {

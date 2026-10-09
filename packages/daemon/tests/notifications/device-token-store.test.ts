@@ -42,6 +42,33 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test('actual rotation, pruning, removal and failed persistence never log token or private selectors (#1200)', () => {
+    const lines: string[] = [];
+    configureLogger({ writeLog: (line) => lines.push(line) });
+    const store = new DeviceTokenStore(file);
+    const oldToken = '1234567890abcdef'.repeat(4);
+    const newToken = 'abcdef1234567890'.repeat(4);
+    const privateConnection = 'private-device-connection';
+    store.register(oldToken, 'ios', privateConnection);
+    store.register(newToken, 'ios', privateConnection);
+    store.prune(newToken, 'private-worker-response');
+    store.register(oldToken, 'ios', privateConnection);
+    store.unregister(oldToken);
+    const privatePath = path.join(tmpDir, 'private-token-registry-parent', 'tokens.json');
+    new DeviceTokenStore(privatePath).register(newToken, 'ios', privateConnection);
+    expect(lines.length).toBeGreaterThanOrEqual(4);
+    const output = lines.join('\n');
+    for (const sensitive of [
+      oldToken.slice(0, 20),
+      newToken.slice(0, 20),
+      privateConnection,
+      'private-worker-response',
+      'private-token-registry-parent',
+    ]) {
+      expect(output).not.toContain(sensitive);
+    }
+  });
+
   test('register stores a token in the map and persists it to disk', () => {
     const s = new DeviceTokenStore(file);
     s.register('tok-a', 'ios', CID);

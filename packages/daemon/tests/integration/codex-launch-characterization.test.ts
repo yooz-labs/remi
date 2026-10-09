@@ -73,6 +73,7 @@ import {
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
+  waitForRegisteredDeviceToken,
 } from './hub-test-utils.ts';
 
 let turnCounter = 0;
@@ -186,12 +187,24 @@ function makeFakes(
 /** `cli.ts --daemon --harness codex`, with the fake `codex` and a fake app-server; `extraArgs` follow `--harness codex`. */
 async function startDaemon(
   extraArgs: readonly string[] = [],
-  extraEnv: Readonly<Record<string, string>> = {},
+  opts: { legacyPush?: boolean; env?: Readonly<Record<string, string>> } = {},
 ): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
+  if (opts.legacyPush === true) {
+    fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.remi', 'config.toml'),
+      '[notifications]\nlegacy_push_enabled = true\n',
+    );
+  }
   const { fakeDir, env } = makeFakes(home);
   const server = FakeAppServer.start();
-  const overrides = { ...env, CODEX_HOME: server.codexHome, ...extraEnv };
+  const overrides = {
+    ...env,
+    CODEX_HOME: server.codexHome,
+    REMI_HOME: path.join(home, '.remi'),
+    ...opts.env,
+  };
   const spawned = await spawnDaemon(home, work, overrides, ['--harness', 'codex', ...extraArgs]);
   const output = { text: '' };
   collect(spawned.proc.stdout, output);
@@ -322,7 +335,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       REMI_PUSH_SECRET: 'push-secret-sentinel-1249',
       TELEGRAM_BOT_TOKEN: 'bot-token-sentinel-1249',
     };
-    const r = await startDaemon([], secrets);
+    const r = await startDaemon([], { env: secrets });
     await waitForFakeCodex(r);
 
     const childEnv = read(path.join(r.fakeDir, 'env'));
@@ -1275,11 +1288,16 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       },
     });
     stubs.push(stub);
-    const r = await startDaemon([
-      '--signaling-url',
-      `http://127.0.0.1:${stub.port}`,
-      ...(opts.pushSecret === undefined ? [] : ['--push-secret', opts.pushSecret]),
-    ]);
+    // This helper characterizes explicit pre-secure legacy compatibility (#1200).
+    const r = await startDaemon(
+      [
+        '--signaling-url',
+        `http://127.0.0.1:${stub.port}`,
+        '--push-secret',
+        opts.pushSecret ?? 'e2e-compatibility-secret',
+      ],
+      { legacyPush: true },
+    );
     if (opts.list !== undefined) r.server.onRequest('thread/items/list', opts.list);
     await waitForFakeCodex(r);
     await waitForAppServerClient(r);
@@ -1310,11 +1328,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
     ).sessionId as string;
     ws.send(serialize(createRegisterDeviceToken('e2e-device-token', 'ios')));
-    await pollUntil(
-      () => r.output.text.includes('Device token registered'),
-      10000,
-      'the device token to register',
-    );
+    await waitForRegisteredDeviceToken(r.home, 'e2e-device-token', 10000);
     return { r, tuiId, ws, received, sessionId, pushes };
   }
 
@@ -1358,8 +1372,9 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       expect(done.body).toBe('E2E-ANSWER-TEXT');
       // The daemon's push secret goes with the push, as a bearer token, for both classes.
       expect(done.authorization).toBe('Bearer e2e-push-secret');
-      // The sink logs what it pushed (the title only, never the answer).
-      expect(a.r.output.text).toContain(`[TurnComplete] ${done.title}`);
+      // Diagnostics identify the operation without submitted title or content (#1200).
+      expect(a.r.output.text).toContain('[TurnComplete] push requested');
+      expect(a.r.output.text).not.toContain(done.title as string);
       // Dismiss-only, like Claude's: nothing to answer, no card.
       expect(done.questionId).toBeUndefined();
 

@@ -16,6 +16,7 @@
  *   checked-in JSON fixtures from these same builders)
  */
 
+import { readFileSync } from 'node:fs';
 import { identityFromClaudeId } from '../../../src/harness.ts';
 import {
   createAck,
@@ -75,6 +76,13 @@ import type {
   SessionViewMeta,
   TranscriptContentBlock,
 } from '../../../src/protocol.ts';
+import { decodeNativeAnswer } from '../../../src/relay/native-answer.ts';
+import {
+  createSecurePushRegisterRequest,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterRequest,
+  createSecurePushUnregisterResponse,
+} from '../../../src/secure-push-messages.ts';
 import type {
   Acknowledgment,
   Bullet,
@@ -245,6 +253,65 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * `MessageHandlers` totality property from #896).
  */
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  // Signed native answers have no unsigned create* factory. Parse the
+  // independently signed codec vector through the shipping strict decoder.
+  native_answer: () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL('../relay-v2/native-answer-vectors.json', import.meta.url), 'utf8'),
+    ) as { cases: { message: unknown }[] };
+    return decodeNativeAnswer(JSON.stringify(vectors.cases[0]?.message));
+  },
+  secure_push_register_request: () =>
+    createSecurePushRegisterRequest({
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey:
+        'BI5TO2-gv3tGJbswZnwB-2B--fi4qsDCdnpguoDXWXsjc-sdgUMxZGXmpOplO6BcUwjUEIEVV3tDyhqEwxthALQ',
+      keyVersion: 3,
+      pushPrefs: { questions: true },
+    }),
+  secure_push_register_response: () =>
+    createSecurePushRegisterResponse(REQUEST_ID, { success: true, keyVersion: 3 }),
+  secure_push_unregister_request: () => createSecurePushUnregisterRequest(),
+  secure_push_unregister_response: () =>
+    createSecurePushUnregisterResponse(REQUEST_ID, { success: true }),
+  answer_result: () => ({
+    type: 'answer_result',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    sessionId: SESSION_ID,
+    questionId: QUESTION_ID,
+    outcome: 'stale',
+  }),
+  relay_devices_request: () => ({
+    type: 'relay_devices_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+  }),
+  relay_devices_response: () => ({
+    type: 'relay_devices_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    devices: [],
+  }),
+  relay_device_revoke_request: () => ({
+    type: 'relay_device_revoke_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    fingerprint: '0123456789abcdef',
+  }),
+  relay_device_revoke_response: () => ({
+    type: 'relay_device_revoke_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    fingerprint: '0123456789abcdef',
+    success: true,
+    edgeAcknowledged: false,
+    error: 'EDGE_UNVERIFIED',
+  }),
   hello: () =>
     createHello(CLIENT_ID, '1.0.0', {
       directory: '/Users/fixture/project',

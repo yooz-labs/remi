@@ -12,7 +12,8 @@ import {
   isIdentityEncrypted,
   removeIdentity,
 } from '@/lib/identity-client';
-import { syncNativeIdentity } from '@/lib/native-bridge';
+import { NativeIdentityPanel } from './NativeIdentityPanel';
+import { usesNativeIdentity } from '@/lib/native-identity';
 import { checkNotificationPermission, openNotificationSettings } from '@/lib/notifications';
 import { isNative } from '@/lib/platform';
 import type { AppSettings } from '@/types';
@@ -26,6 +27,7 @@ interface SettingsPanelProps {
   readonly settings: AppSettings;
   readonly onClose: () => void;
   readonly onChange: (settings: AppSettings) => void;
+  readonly onEnableSecurePush?: () => Promise<void>;
 }
 
 function ThemeButton({
@@ -130,9 +132,7 @@ function IdentitySection() {
     try {
       await generateIdentity(usePassphrase ? passphrase : undefined);
       refresh();
-      // Re-bridge the new signer to native storage (#591 P2) so a lock-screen
-      // answer signs with the current key, not the rotated-out one.
-      void syncNativeIdentity();
+
       setShowGenerate(false);
       setPassphrase('');
       setConfirmPassphrase('');
@@ -150,7 +150,6 @@ function IdentitySection() {
     try {
       importIdentity(importJson);
       refresh();
-      void syncNativeIdentity();
       setShowImport(false);
       setImportJson('');
       setFeedback('Identity imported successfully.');
@@ -189,8 +188,7 @@ function IdentitySection() {
     }
     removeIdentity();
     refresh();
-    // Clears the native seed too (deriveNativeIdentity -> null -> Preferences.remove).
-    void syncNativeIdentity();
+
     setConfirmRemove(false);
     setFeedback('Identity removed.');
   };
@@ -364,7 +362,47 @@ function IdentitySection() {
   );
 }
 
-export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPanelProps) {
+/**
+ * Explicit native secure-push enable (#1200). Asking is the only effect: the OS
+ * permission prompt and APNs registration happen natively, and a relay
+ * subscription is sent only after the OS delivers a token.
+ */
+function SecurePushSection({ onEnable }: { readonly onEnable: () => Promise<void> }) {
+  const [state, setState] = useState<'idle' | 'pending' | 'requested'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const enable = async () => {
+    setState('pending');
+    setError(null);
+    try {
+      await onEnable();
+      setState('requested');
+    } catch (err) {
+      setState('idle');
+      setError(err instanceof Error ? err.message : 'Secure notifications are unavailable.');
+    }
+  };
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
+        Relay notifications
+      </h3>
+      <button
+        type="button"
+        onClick={() => void enable()}
+        disabled={state === 'pending'}
+        className="w-full rounded-lg bg-[var(--color-surface-light)] py-2 text-sm text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-elevated)] disabled:opacity-50"
+      >
+        Enable secure relay notifications
+      </button>
+      {state === 'requested' && (
+        <p className="mt-2 text-xs text-[var(--color-text-muted)]">Notifications requested.</p>
+      )}
+      {error && <p className="mt-2 text-xs text-[var(--color-error)]">{error}</p>}
+    </section>
+  );
+}
+
+export function SettingsPanel({ open, settings, onClose, onChange, onEnableSecurePush }: SettingsPanelProps) {
   // Close on Escape key
   useEffect(() => {
     if (!open) return;
@@ -428,7 +466,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
         <div className="overflow-y-auto p-4 space-y-6 safe-area-bottom">
           {/* Identity & Security */}
-          <IdentitySection />
+          {usesNativeIdentity() ? <NativeIdentityPanel /> : <IdentitySection />}
 
           {/* Theme */}
           <section>
@@ -521,6 +559,8 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
               />
             </div>
           </section>
+
+          {onEnableSecurePush && <SecurePushSection onEnable={onEnableSecurePush} />}
 
           {/* About */}
           <section>

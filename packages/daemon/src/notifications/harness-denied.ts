@@ -14,8 +14,14 @@
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import type { PermissionDeniedHookInput } from '../hooks/hook-types.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
-import type { PushTriggerOptions } from './push-client.ts';
+import {
+  type LegacyPushPolicy,
+  legacyChannelOpen,
+  legacyPushFields,
+} from './legacy-push-policy.ts';
+import { type PushTriggerOptions, isLegacyPushRetired } from './push-client.ts';
 import { tokensWanting } from './push-preferences.ts';
+import type { SecureSessionPush } from './secure-push-service.ts';
 
 /** Same caps as the question push (`notification-dispatcher.ts`). */
 const TITLE_MAX = 120;
@@ -54,7 +60,7 @@ export function harnessDeniedCollapseId(sessionId: string): string {
   return `harness-denied-${sessionId}`;
 }
 
-export interface HarnessDeniedPushDeps {
+export interface HarnessDeniedPushDeps extends LegacyPushPolicy {
   readonly deviceTokens: Iterable<DeviceTokenEntry>;
   /** The remi session the blocked call belongs to (its collapse key). */
   readonly sessionId: string;
@@ -63,6 +69,7 @@ export interface HarnessDeniedPushDeps {
   readonly sessionName: string;
   readonly send: (signalingUrl: string, token: string, opts: PushTriggerOptions) => Promise<void>;
   readonly onError: (err: unknown) => void;
+  readonly securePush?: SecureSessionPush;
 }
 
 /**
@@ -70,25 +77,41 @@ export interface HarnessDeniedPushDeps {
  * `category` or `options`: nothing answers it. Its `questionId` is the
  * session's collapse key (`harnessDeniedCollapseId`), never a card's id.
  * Fire-and-forget; a failed push is reported to `onError` and never thrown.
- * Returns how many devices it was sent to.
+ * Returns the legacy-device request count; secure fan-out completes asynchronously (#1200).
  */
 export function pushHarnessDenied(
   deps: HarnessDeniedPushDeps,
   input: Pick<PermissionDeniedHookInput, 'tool_name' | 'tool_input' | 'reason' | 'agent_type'>,
 ): number {
-  const wanting = tokensWanting(deps.deviceTokens, 'harness_denied');
-  if (wanting.length === 0) return 0;
+  const wanting = legacyChannelOpen(deps) ? tokensWanting(deps.deviceTokens, 'harness_denied') : [];
+  const secureRecipients = deps.securePush?.hasRecipients('harness_denied') === true;
+  if (wanting.length === 0 && !secureRecipients) return 0;
   const { title, body } = buildHarnessDeniedText(deps.sessionName, input);
+  if (secureRecipients) {
+    void deps.securePush
+      ?.send({
+        kind: 'harness_denied',
+        logicalId: harnessDeniedCollapseId(deps.sessionId),
+        title,
+        body,
+      })
+      .then((outcome) => {
+        if (outcome === 'failed') deps.onError(new Error('HARNESS_DENIED_PUSH_FAILED'));
+      })
+      .catch(() => deps.onError(new Error('HARNESS_DENIED_PUSH_FAILED')));
+  }
   for (const dt of wanting) {
     void deps
       .send(deps.signalingUrl, dt.token, {
         title,
         body,
-        ...(deps.pushSecret !== undefined ? { pushSecret: deps.pushSecret } : {}),
+        ...legacyPushFields(deps),
         questionId: harnessDeniedCollapseId(deps.sessionId),
         kind: 'harness_denied',
       })
-      .catch(deps.onError);
+      .catch((error) => {
+        if (!isLegacyPushRetired(error)) deps.onError(new Error('HARNESS_DENIED_PUSH_FAILED'));
+      });
   }
   return wanting.length;
 }
