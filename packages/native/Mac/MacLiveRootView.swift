@@ -41,10 +41,23 @@ struct MacLiveRootView: View {
                     }
                     .navigationTitle("Remi")
                     .toolbar {
-                        Button {
-                            showingAddMachine = true
-                        } label: {
-                            Label("Add machine", systemImage: "plus")
+                        if #available(macOS 26.1, *) {
+                            ToolbarItem {
+                                Button {
+                                    showingAddMachine = true
+                                } label: {
+                                    Label("Add machine", systemImage: "plus")
+                                }
+                            }
+                            .visibilityPriority(.high)
+                        } else {
+                            ToolbarItem {
+                                Button {
+                                    showingAddMachine = true
+                                } label: {
+                                    Label("Add machine", systemImage: "plus")
+                                }
+                            }
                         }
                     }
                 } content: {
@@ -74,12 +87,26 @@ struct MacLiveRootView: View {
                     }
                     .navigationTitle("Sessions")
                     .toolbar {
-                        Button {
-                            showingNewSession = true
-                        } label: {
-                            Label("New session", systemImage: "plus")
+                        if #available(macOS 26.1, *) {
+                            ToolbarItem {
+                                Button {
+                                    showingNewSession = true
+                                } label: {
+                                    Label("New session", systemImage: "plus")
+                                }
+                                .disabled(sessionCreationMachines.isEmpty)
+                            }
+                            .visibilityPriority(.high)
+                        } else {
+                            ToolbarItem {
+                                Button {
+                                    showingNewSession = true
+                                } label: {
+                                    Label("New session", systemImage: "plus")
+                                }
+                                .disabled(sessionCreationMachines.isEmpty)
+                            }
                         }
-                        .disabled(sessionCreationMachines.isEmpty)
                     }
                 } detail: {
                     if let session = visibleSessions.first(where: { $0.id == selectedSessionID }),

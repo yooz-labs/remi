@@ -156,26 +156,54 @@ struct HomeScreen: View {
         }
         .navigationTitle("Remi")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("New session", systemImage: "plus.rectangle.on.folder") {
-                        showingNewSession = true
+            if #available(iOS 27.0, *) {
+                ToolbarOverflowMenu {
+                    if !availableSessionMachines.isEmpty {
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
                     }
-                    .disabled(availableSessionMachines.isEmpty)
-
-                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                        showingPairing = true
-                    }
-
-                    Divider()
-
                     Button("Preferences", systemImage: "gearshape") {
                         showingPreferences = true
                     }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                        .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
-                        .contentShape(.rect)
+                }
+
+                ToolbarItem(placement: .topBarPinnedTrailing) {
+                    if availableSessionMachines.isEmpty {
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
+                    } else {
+                        Button("New session", systemImage: "plus.rectangle.on.folder") {
+                            showingNewSession = true
+                        }
+                    }
+                }
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New session", systemImage: "plus.rectangle.on.folder") {
+                            showingNewSession = true
+                        }
+                        .disabled(availableSessionMachines.isEmpty)
+
+                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
+                            showingPairing = true
+                        }
+
+                        Divider()
+
+                        Button("Preferences", systemImage: "gearshape") {
+                            showingPreferences = true
+                        }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .frame(
+                                minWidth: RemiTheme.Size.minimumTapTarget,
+                                minHeight: RemiTheme.Size.minimumTapTarget
+                            )
+                            .contentShape(.rect)
+                    }
                 }
             }
         }
