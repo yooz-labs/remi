@@ -64,7 +64,7 @@ Applicable golden cases exercised by `RelayClientTests`:
 
 That is 122 of the 206 negative/boundary cases. The remaining 84 are explicitly
 deferred: 36 host-side Hello decode cases, six host auth-open cases, 21 host
-auth-policy cases, 11 sealed-attachment cases, and ten admission-verification
+auth-policy cases, 11 sealed push opening cases, and ten admission-verification
 cases for the Worker. Native client admission is exercised positively against
 the actual Worker; this milestone does not implement a host or a Worker.
 Secure-push and native-answer vector files are not imported or claimed.
