@@ -12,6 +12,7 @@ struct PhoneLiveRootView: View {
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var notificationPath: [RemiNavigationDestination] = []
     @State private var pendingResume: ResumeSessionKey?
+    @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
@@ -25,7 +26,7 @@ struct PhoneLiveRootView: View {
                 publicIdentity: store.publicIdentity,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
-                noticeMessage: store.latestOperationNotice,
+                noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
                 transcriptForSession: transcript,
                 questionsForSession: questions,
                 viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
@@ -40,15 +41,20 @@ struct PhoneLiveRootView: View {
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
+                onEnableRelayNotifications: relayNotifications.enable,
+                enablingRelayNotifications: relayNotifications.enabling,
                 onDismissError: store.clearLatestError
             )
             .navigationDestination(for: RemiNavigationDestination.self) { destination in
                 notificationDestination(destination)
             }
         }
-        .task { store.start() }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
             MachineConfigurationStore.shared.save(endpoints)
+            relayNotifications.reconcileEndpoints()
+        }
+        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
         }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
@@ -346,13 +352,19 @@ struct PhoneLiveRootView: View {
     }
 
     private func addMachine(_ endpoint: MachineEndpoint) {
+        relayNotifications.machineWillChange(endpoint)
+        if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
+            guard store.removeMachine(existing.endpoint) else { return }
+            relayNotifications.didForget(existing.endpoint)
+        }
         store.addMachine(endpoint)
         MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 
     private func removeMachine(_ machineID: String) {
         guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
-        store.removeMachine(machine.endpoint)
+        relayNotifications.machineWillChange(machine.endpoint)
+        if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
         MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 

@@ -13,6 +13,7 @@ struct MacLiveRootView: View {
     @State private var notificationRouter = MacNotificationRouter.shared
     @State private var notificationDestination: RemiNavigationDestination?
     @State private var pendingResume: ResumeSessionKey?
+    @State private var relayNotifications = NativeRelayNotifications.shared
 
     var body: some View {
         Group {
@@ -27,6 +28,12 @@ struct MacLiveRootView: View {
                         }
                         .tag(machine.id)
                         .contextMenu {
+                            if machine.endpoint.relayPin != nil {
+                                Button("Enable relay notifications", systemImage: "bell.badge") {
+                                    relayNotifications.enable(on: machine.endpoint)
+                                }
+                                .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
+                            }
                             Button("Remove machine", systemImage: "trash", role: .destructive) {
                                 pendingMachineRemoval = machine
                             }
@@ -163,14 +170,17 @@ struct MacLiveRootView: View {
                 MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
             } else if let message = store.latestOperationNotice {
                 MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
+            } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
+                Text(message).font(.callout).padding(RemiTheme.Spacing.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .task {
             reconcileNavigation()
-            store.start()
         }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
             MachineConfigurationStore.shared.save(endpoints)
+            relayNotifications.reconcileEndpoints()
         }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
             reconcileNavigation()
@@ -200,9 +210,18 @@ struct MacLiveRootView: View {
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet { endpoint in
+                relayNotifications.machineWillChange(endpoint)
+                if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
+                    guard store.removeMachine(existing.endpoint) else { return }
+                    relayNotifications.didForget(existing.endpoint)
+                }
                 store.addMachine(endpoint)
                 MachineConfigurationStore.shared.save(store.persistableEndpoints)
             }
+        }
+        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+                .frame(minWidth: 440, minHeight: 320)
         }
         .sheet(isPresented: $showingNewSession) {
             MacLiveNewSessionSheet(
@@ -228,7 +247,9 @@ struct MacLiveRootView: View {
         ) {
             Button("Remove machine", role: .destructive) {
                 guard let machine = pendingMachineRemoval else { return }
-                store.removeMachine(machine.endpoint)
+                relayNotifications.machineWillChange(machine.endpoint)
+                if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
+                relayNotifications.reconcileEndpoints()
                 MachineConfigurationStore.shared.save(store.persistableEndpoints)
                 pendingMachineRemoval = nil
                 reconcileNavigation()
