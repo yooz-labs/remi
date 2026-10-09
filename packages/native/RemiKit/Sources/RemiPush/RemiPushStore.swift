@@ -120,11 +120,16 @@ public final class RemiPushStore: @unchecked Sendable {
         #endif
     }
 
+    static func configuredApplicationGroup(bundle: Bundle) throws -> String {
+        "group.live.yooz.remi"
+    }
+
     public static func configured(bundle: Bundle = .main) throws -> RemiPushStore {
+        let applicationGroup = try configuredApplicationGroup(bundle: bundle)
         guard let namespace = bundle.object(forInfoDictionaryKey: "RemiPushNamespace") as? String,
               ["native-debug", "native-release"].contains(namespace),
               let container = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: "group.live.yooz.remi") else { throw RemiPushError.unavailable }
+                forSecurityApplicationGroupIdentifier: applicationGroup) else { throw RemiPushError.unavailable }
         // Resolve declared sharing before opening state or writing any credential.
         let group = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
         let directory = container.appendingPathComponent(namespace, isDirectory: true)
