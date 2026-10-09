@@ -51,7 +51,7 @@ struct OwnedPushContext: Sendable {
     /// Controlled signed inputs use the oracle's synthetic machine and recipient.
     /// Only payload/signature vary; the real facade still decrypts and verifies.
     static func resealed(_ vector: [String: Any], oracle: [String: Any], payload: Data,
-                         corruptSignature: Bool = false) throws -> Data {
+                         corruptSignature: Bool = false, now: UInt64? = nil) throws -> Data {
         func parts(_ bytes: Data) throws -> [Data] {
             var offset = 0, values: [Data] = []
             while offset < bytes.count {
@@ -65,6 +65,10 @@ struct OwnedPushContext: Sendable {
         let inner = try parts(RelayOracle.hex(#require(vector["innerHex"] as? String)))
         var fields = try parts(#require(inner.first)); try #require(fields.count == 12)
         fields[11] = payload
+        if let now {
+            func u64(_ value: UInt64) -> Data { Data((0..<8).map { UInt8(truncatingIfNeeded: value >> (56 - $0 * 8)) }) }
+            fields[9] = u64(now); fields[10] = u64(now + 300)
+        }
         let body = try RelayCrypto.tuple(fields)
         let machine = try Curve25519.Signing.PrivateKey(rawRepresentation: RelayOracle.hex(#require(oracle["machineSeedHex"] as? String)))
         var signature = try machine.signature(for: RelayCrypto.tuple(Data("remi-relay-v2 push content".utf8), Data(SHA256.hash(data: body))))

@@ -2,6 +2,7 @@ import UIKit
 import UserNotifications
 import Observation
 import RemiKit
+import RemiPush
 
 @MainActor
 @Observable
@@ -49,7 +50,7 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        if notification.request.content.userInfo["remiPush"] != nil {
+        if RemiPushStore.isSecureNotification(content: notification.request.content) {
             guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
         }
         guard UserDefaults.standard.object(
@@ -65,10 +66,14 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        if response.notification.request.content.userInfo["remiPush"] != nil {
+        if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
                 let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
                 await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+            } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                let delivery = NativeRelayActionDelivery(content: response.notification.request.content,
+                    identifier: response.actionIdentifier)
+                _ = await NativeRelayNotifications.shared.receiveAction(delivery)
             }
             return
         }

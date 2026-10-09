@@ -8,6 +8,26 @@ import UIKit
 import AppKit
 #endif
 
+/// Copies untrusted OS delivery fields across the delegate's actor boundary.
+/// Verification still uses the original carrier and every displayed field.
+public struct NativeRelayActionDelivery: Sendable {
+    fileprivate let carrier: Data?
+    fileprivate let title: String
+    fileprivate let subtitle: String
+    fileprivate let body: String
+    fileprivate let categoryIdentifier: String
+    fileprivate let identifier: String
+
+    public init(content: UNNotificationContent, identifier: String) {
+        carrier = NativeRelayNotifications.carrier(from: content.userInfo)
+        title = content.title
+        subtitle = content.subtitle
+        body = content.body
+        categoryIdentifier = content.categoryIdentifier
+        self.identifier = identifier
+    }
+}
+
 /// App-only OS boundary. Preferences retain registration intent, never trust.
 /// The notification extensions link RemiPush without this identity owner (#1242).
 @MainActor
@@ -20,10 +40,19 @@ public final class NativeRelayNotifications {
     public private(set) var notice: String?
     public private(set) var enabling = false
     public private(set) var notificationPresentationID: UUID?
+    public private(set) var lastBackgroundActionOutcome: RelayNotificationAnswerOutcome?
     public var presentsRelayNotification = false
 
     @ObservationIgnored private var pushStore: RemiPushStore?
     @ObservationIgnored private var identityStore: ClientIdentityStore?
+    @ObservationIgnored private let preferences: UserDefaults
+    @ObservationIgnored private var actionInFlight = false
+    @ObservationIgnored private var backgroundStore: MachineStore?
+    #if DEBUG
+    @ObservationIgnored private var ownedTesting = false
+    @ObservationIgnored private var ownedSession: URLSession?
+    @ObservationIgnored public var ownedBeforeActionSend: (@Sendable (String) async throws -> Void)?
+    #endif
     @ObservationIgnored private var foreground = false
     @ObservationIgnored private var lifecycle = UUID()
     @ObservationIgnored private var started = false
@@ -41,6 +70,7 @@ public final class NativeRelayNotifications {
     @ObservationIgnored private var tokenTimeout: Task<Void, Never>?
 
     private init() {
+        preferences = .standard
         do {
             let push = try RemiPushStore.configured()
             pushStore = push
@@ -55,13 +85,39 @@ public final class NativeRelayNotifications {
         if let namespace = Bundle.main.object(forInfoDictionaryKey: "RemiPushNamespace") as? String,
            ["native-debug", "native-release"].contains(namespace) {
             intentKey = "remi.relay.notification-intent.\(namespace)"
-            intents = Set((UserDefaults.standard.stringArray(forKey: intentKey) ?? []).prefix(128))
+            intents = Set((preferences.stringArray(forKey: intentKey) ?? []).prefix(128))
         }
     }
+
+    #if DEBUG
+    /// The actual cold action caller can run against UUID Keychain/SQLite state.
+    /// This entry point never reads configured app groups or standard preferences.
+    public init(ownedPushStore: RemiPushStore, ownedIdentityStore: ClientIdentityStore,
+                defaultsSuite: String, ownedSession: URLSession? = nil) throws {
+        let prefix = "live.yooz.remi.tests.notifications."
+        guard ownedPushStore.isOwnedTestStore,
+              ownedIdentityStore.isOwnedTestIdentity(for: ownedPushStore),
+              defaultsSuite.hasPrefix(prefix),
+              UUID(uuidString: String(defaultsSuite.dropFirst(prefix.count))) != nil,
+              let defaults = UserDefaults(suiteName: defaultsSuite) else { throw RemiPushError.invalid }
+        preferences = defaults
+        pushStore = ownedPushStore
+        identityStore = ownedIdentityStore
+        ownedTesting = true
+        self.ownedSession = ownedSession
+        intentKey = "remi.relay.notification-intent.owned"
+        intents = Set((defaults.stringArray(forKey: intentKey) ?? []).prefix(128))
+        do { _ = try ownedIdentityStore.loadCurrent() }
+        catch { startupError = "The owned device identity is unavailable." }
+    }
+    #endif
 
     /// Called only by an active foreground scene. Existing v2 identities use a
     /// strict read; creation and legacy migration are confined to this boundary.
     public func activate() {
+        #if DEBUG
+        guard !ownedTesting else { return }
+        #endif
         guard !foreground else { return }
         foreground = true
         lifecycle = UUID()
@@ -88,7 +144,7 @@ public final class NativeRelayNotifications {
                     ? [MachineEndpoint(host: "127.0.0.1", port: 18765)] : saved,
                     identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-                    clientId: Self.clientID(), pushStore: pushStore)
+                    clientId: clientID(), pushStore: pushStore)
                 // A preference cannot install missing or revoked SQLite trust.
                 for endpoint in current.persistableEndpoints where intents.contains(endpoint.id) {
                     current.restoreRelayNotificationIntent(on: endpoint)
@@ -100,7 +156,7 @@ public final class NativeRelayNotifications {
             }
         }
         guard let store else { return }
-        if !started { started = true; store.start() }
+        startForegroundStoreIfNeeded()
         if let carrier = pendingCarrier {
             pendingCarrier = nil
             store.openRelayNotification(carrier: carrier)
@@ -235,6 +291,68 @@ public final class NativeRelayNotifications {
         presentsRelayNotification = true
     }
 
+    /// Only the OS delegate's original content and action identifier enter this
+    /// boundary. Shared verification supplies an immutable signed-choice context.
+    /// No UI card, NSE flag, outer route or saved preference grants authority.
+    public func receiveAction(_ delivery: NativeRelayActionDelivery) async -> RelayNotificationAnswerOutcome {
+        guard let carrier = delivery.carrier,
+              let value = try? JSONSerialization.jsonObject(with: carrier) else {
+            lastBackgroundActionOutcome = .refused
+            return .refused
+        }
+        let content = UNMutableNotificationContent()
+        content.userInfo = ["remiPush": value]
+        content.title = delivery.title
+        content.subtitle = delivery.subtitle
+        content.body = delivery.body
+        content.categoryIdentifier = delivery.categoryIdentifier
+        return await receiveAction(content: content, identifier: delivery.identifier)
+    }
+
+    public func receiveAction(content: UNNotificationContent, identifier: String) async -> RelayNotificationAnswerOutcome {
+        guard !actionInFlight else { return .busy }
+        actionInFlight = true
+        defer {
+            backgroundStore = nil
+            actionInFlight = false
+            startForegroundStoreIfNeeded()
+        }
+        do {
+            guard let pushStore, let identityStore, !Task.isCancelled else { throw RemiPushError.unavailable }
+            let verified = try pushStore.verifyAction(content: content, identifier: identifier)
+            let current: MachineStore
+            if let store {
+                current = store
+            } else {
+                // Strict-read only: a cold notification must never create,
+                // migrate or reconcile private/public identity authority.
+                guard let identity = try identityStore.loadCurrent(), !identity.requiresAppUnlock else {
+                    throw RemiPushError.unavailable
+                }
+                current = MachineStore(endpoints: [], identity: identity,
+                    clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
+                    clientId: UUID().uuidString.lowercased(), pushStore: pushStore)
+                #if DEBUG
+                if let ownedSession { current.useOwnedTestSession(ownedSession) }
+                #endif
+                backgroundStore = current
+            }
+            #if DEBUG
+            if ownedTesting, let observer = ownedBeforeActionSend {
+                current.ownedBeforeNativeSend = { proof in try await observer(proof.id) }
+            }
+            #endif
+            try pushStore.recheckAction(verified)
+            guard !Task.isCancelled else { throw RemiPushError.unavailable }
+            let result = await current.answerRelayNotification(action: verified)
+            lastBackgroundActionOutcome = result
+            return result
+        } catch {
+            lastBackgroundActionOutcome = .refused
+            return .refused
+        }
+    }
+
     public func closeNotification() {
         presentsRelayNotification = false
         notificationPresentationID = nil
@@ -275,14 +393,19 @@ public final class NativeRelayNotifications {
     }
     private func saveIntents() {
         guard !intentKey.isEmpty else { return }
-        UserDefaults.standard.set(intents.sorted(), forKey: intentKey)
+        preferences.set(intents.sorted(), forKey: intentKey)
     }
-    private static func clientID() -> String {
+    private func clientID() -> String {
         let key = "remi.native.client-id"
-        if let value = UserDefaults.standard.string(forKey: key) { return value }
+        if let value = preferences.string(forKey: key) { return value }
         let value = UUID().uuidString.lowercased()
-        UserDefaults.standard.set(value, forKey: key)
+        preferences.set(value, forKey: key)
         return value
+    }
+    private func startForegroundStoreIfNeeded() {
+        guard foreground, !actionInFlight, !started, let store else { return }
+        started = true
+        store.start()
     }
     private func registerWithAPNs() {
         #if os(iOS)

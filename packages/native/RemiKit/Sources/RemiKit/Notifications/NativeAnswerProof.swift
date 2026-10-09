@@ -55,25 +55,7 @@ struct NativeAnswerProof: Codable, Sendable {
     /// The source's entire signed YN/YNA semantic shape, including descriptions.
     /// Unsupported forms keep the card readable and require the normal app path.
     static func choices(_ notification: VerifiedPushNotification) -> [VerifiedPushOption] {
-        let options = notification.options
-        func yes(_ option: VerifiedPushOption) -> Bool { option.isYes && !option.isNo && option.standingGrant == nil }
-        func no(_ option: VerifiedPushOption) -> Bool { option.isNo && !option.isYes && option.standingGrant == nil }
-        if notification.category == "REMI_YN" {
-            guard options.count == 2, yes(options[0]), no(options[1]) else { return [] }
-        } else if notification.category == "REMI_YNA" {
-            guard options.count == 3, yes(options[0]), no(options[2]), options[1].isYes, !options[1].isNo,
-                  options[1].standingGrant == "addRules", options[1].description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return [] }
-        } else { return [] }
-        for option in options {
-            let label = option.label + (option.description.map { " \u{2014} " + $0 } ?? "") +
-                (option.standingGrant == "addRules" ? " · This session" : "")
-            guard !option.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  option.description == nil || option.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-                  label.count <= 24, label.unicodeScalars.allSatisfy({
-                      $0.properties.generalCategory != .control && $0.properties.generalCategory != .format
-                  }) else { return [] }
-        }
-        return options
+        notification.nativeAnswerChoices
     }
     func body() throws -> Data {
         func binary(_ text: String, size: Int) throws -> Data {

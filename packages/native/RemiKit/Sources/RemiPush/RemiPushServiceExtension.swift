@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 
 /// Both native NSE targets link this verified-alert owner, never RemiKit/Dpk.
-/// Secure categories remain empty until the native sender has accepted gates.
+/// A category is published only after opening and rechecking its signed capsule.
 open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked Sendable {
     private struct Delivery {
         let id: UUID
@@ -34,12 +34,17 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
             do {
                 let store = try RemiPushStore.configured()
                 let opened = try store.open(carrier: bytes)
-                let content = UNMutableNotificationContent()
-                content.categoryIdentifier = ""
-                content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
-                if opened.kind != .dismiss { content.title = opened.title; content.body = opened.body }
-                try store.recheck(opened)
-                self.complete(id, content: content)
+                store.publishActions(for: opened) { [weak self] actions in
+                    guard let self, self.current(id) else { return }
+                    do {
+                        try store.recheck(opened)
+                        let content = UNMutableNotificationContent()
+                        content.categoryIdentifier = actions?.categoryIdentifier ?? ""
+                        content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
+                        if opened.kind != .dismiss { content.title = opened.title; content.body = opened.body }
+                        self.complete(id, content: content)
+                    } catch { self.complete(id, content: nil) }
+                }
             } catch { self.complete(id, content: nil) }
         }
     }

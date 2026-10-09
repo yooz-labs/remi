@@ -108,7 +108,17 @@ public final class RemiPushStore: @unchecked Sendable {
     private let state: NativePushState
     private let keys: NativePushKeyStore
     private let owner = UUID()
-    private init(state: NativePushState, keys: NativePushKeyStore) { self.state = state; self.keys = keys }
+    let categoryLockURL: URL
+    #if DEBUG
+    public let isOwnedTestStore: Bool
+    #endif
+    private init(state: NativePushState, keys: NativePushKeyStore, file: URL, owned: Bool = false) {
+        self.state = state; self.keys = keys
+        categoryLockURL = file.appendingPathExtension("category-lock")
+        #if DEBUG
+        isOwnedTestStore = owned
+        #endif
+    }
 
     public static func configured(bundle: Bundle = .main) throws -> RemiPushStore {
         guard let namespace = bundle.object(forInfoDictionaryKey: "RemiPushNamespace") as? String,
@@ -123,7 +133,8 @@ public final class RemiPushStore: @unchecked Sendable {
         try NativePushFileProtection.directory(directory)
         return try RemiPushStore(state: NativePushState(file: directory.appendingPathComponent("secure-push.sqlite")),
             keys: NativePushKeyStore(service: "live.yooz.remi.native.secure-push.\(namespace)",
-                account: "p256-seal-key-v2.\(namespace)", accessGroup: group))
+                account: "p256-seal-key-v2.\(namespace)", accessGroup: group),
+            file: directory.appendingPathComponent("secure-push.sqlite"))
     }
 
     public static func configuredAccessGroup(_ name: String, bundle: Bundle = .main) throws -> String {
@@ -143,8 +154,13 @@ public final class RemiPushStore: @unchecked Sendable {
         guard file.isFileURL, service.hasPrefix("live.yooz.remi.tests."), UUID(uuidString: account) != nil else {
             throw RemiPushError.invalid
         }
+        let parent = file.deletingLastPathComponent().resolvingSymlinksInPath()
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        guard parent.path.hasPrefix(temporary.path + "/"), parent.lastPathComponent.hasPrefix("remi-x2-") else {
+            throw RemiPushError.invalid
+        }
         return try RemiPushStore(state: NativePushState(file: file),
-            keys: NativePushKeyStore(service: service, account: account, accessGroup: nil))
+            keys: NativePushKeyStore(service: service, account: account, accessGroup: nil), file: file, owned: true)
     }
     #endif
 
@@ -179,7 +195,18 @@ public final class RemiPushStore: @unchecked Sendable {
         try NativePushEffect(state: state, keys: keys, now: { now }).recheck(notification.prepared)
     }
     public func allowsPresentation(_ content: UNNotificationContent) -> Bool {
-        NativePushNotificationConsumer(state: state, keys: keys).allowsPresentation(content)
+        do {
+            guard let carrier = content.userInfo["remiPush"], JSONSerialization.isValidJSONObject(carrier) else { return false }
+            let opened = try open(carrier: JSONSerialization.data(withJSONObject: carrier))
+            guard opened.kind != .dismiss, Data(content.title.utf8) == Data(opened.title.utf8),
+                  Data(content.body.utf8) == Data(opened.body.utf8), content.subtitle.isEmpty else { return false }
+            try recheck(opened)
+            // Verified alerts can intentionally have no actions when publication
+            // fails or the signed shape/protection policy requires the app.
+            if content.categoryIdentifier.isEmpty { return true }
+            guard let actions = try actionSet(for: opened) else { return false }
+            return Data(content.categoryIdentifier.utf8) == Data(actions.categoryIdentifier.utf8)
+        } catch { return false }
     }
     public func receiveDismiss(carrier: Data, completion: @escaping @Sendable (Bool?) -> Void) {
         do {

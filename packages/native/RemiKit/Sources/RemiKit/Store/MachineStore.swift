@@ -345,17 +345,34 @@ public final class MachineStore {
     }
     public func closeRelayNotification() { presentationEpoch.replace(); verifiedRelayNotification = nil }
 
+    /// This entry uses the foreground presentation chosen by the person.
+    public func answerRelayNotification(choice: String) async {
+        guard let original = verifiedRelayNotification else { return }
+        _ = await answerRelayNotification(original: original, choice: choice, action: nil)
+    }
+
+    /// Background actions enter only through the same facade's opaque verified
+    /// original-content context, without creating or replacing an app card.
+    public func answerRelayNotification(action: VerifiedPushActionContext) async -> RelayNotificationAnswerOutcome {
+        guard let pushStore else { return .refused }
+        do { try pushStore.recheckAction(action) }
+        catch { return .refused }
+        return await answerRelayNotification(original: action.notification, choice: action.action.value, action: action)
+    }
+
     /// One owner per current device authority/room. It suspends and awaits the
     /// foreground channel before a single bounded resume attempt and never retries.
-    public func answerRelayNotification(choice: String) async {
+    private func answerRelayNotification(original: VerifiedPushNotification, choice: String,
+                                         action: VerifiedPushActionContext?) async -> RelayNotificationAnswerOutcome {
         // Reserve two seconds of the 25-second total for the bounded BYE and
         // URLSession cancellation/actor retirement, not only BYE emission.
         let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(23))
-        guard !relayNotificationBusy, let original = verifiedRelayNotification, let pushStore,
-              !suspendedRelayRooms.contains(original.machine.room) else { return }
+        guard let pushStore else { return .refused }
+        guard !relayNotificationBusy, !suspendedRelayRooms.contains(original.machine.room) else { return .busy }
         let brokerKey = RelayChannelBroker.key(device: identity.publicKeyRaw, room: original.machine.room)
         guard let lease = RelayChannelBroker.shared.claim(key: brokerKey) else {
-            relayNotificationNotice = "Another relay answer is still settling."; return
+            if action == nil { relayNotificationNotice = "Another relay answer is still settling." }
+            return .busy
         }
         suspendedRelayRooms.insert(original.machine.room); relayNotificationBusy = true
         let matching = machines.first { state in
@@ -366,8 +383,9 @@ public final class MachineStore {
         let identity = identity, lifetime = answerEpoch.capture(), lifetimeStore = answerEpoch
         let presentation = presentationEpoch.capture(), presentationStore = presentationEpoch
         let validate: @Sendable () throws -> Void = {
-            guard lifetimeStore.matches(lifetime), presentationStore.matches(presentation) else { throw RemiPushError.changed }
+            guard lifetimeStore.matches(lifetime), action != nil || presentationStore.matches(presentation), !Task.isCancelled else { throw RemiPushError.changed }
             try identity.validateForSigning(); try pushStore.recheck(original)
+            if let action { try pushStore.recheckAction(action) }
             let reopened = try pushStore.open(carrier: original.originalCarrier)
             guard reopened.machine == original.machine, reopened.contentDigest == original.contentDigest,
                   reopened.revision == original.revision else { throw RemiPushError.changed }
@@ -392,6 +410,7 @@ public final class MachineStore {
         await lease.retired.value
         var oneShot: RemiConnection?
         var emitted = false
+        var outcome = RelayNotificationAnswerOutcome.refused
         do {
             try validate()
             guard ContinuousClock.now < settlement else { throw RelayFailure.expired }
@@ -425,18 +444,20 @@ public final class MachineStore {
                 expected: .answer(session: proof.sessionId, question: proof.questionId), until: settlement,
                 validate: { try validate(); guard UInt64(Date().timeIntervalSince1970) < proof.expiresAt else { throw RelayFailure.expired } })
             guard case .answer(let response) = result else { throw RelayFailure.malformed }
-            // A delivered answer itself resolves the capsule. Its authenticated,
-            // tuple-correlated receipt remains valid after that terminal transition.
-            lastRelayAnswerOutcome = response.outcome
-            if presentationStore.matches(presentation) {
+            // A signed terminal capsule may arrive before its authenticated,
+            // tuple-correlated receipt. That receipt remains valid after the transition.
+            outcome = RelayNotificationAnswerOutcome(rawValue: response.outcome) ?? .uncertain
+            lastRelayAnswerOutcome = outcome.rawValue
+            if action == nil, presentationStore.matches(presentation) {
                 relayNotificationNotice = response.outcome == "delivered" ? "Answer delivered." :
                     response.outcome == "uncertain" ? "Delivery is uncertain. Check the current session before answering again." :
                     "The answer was not applied (\(response.outcome))."
                 if response.outcome == "delivered" { verifiedRelayNotification = nil }
             }
         } catch {
-            lastRelayAnswerOutcome = emitted ? "uncertain" : "refused"
-            if presentationStore.matches(presentation) {
+            outcome = emitted ? .uncertain : .refused
+            lastRelayAnswerOutcome = outcome.rawValue
+            if action == nil, presentationStore.matches(presentation) {
                 relayNotificationNotice = emitted ? "Delivery is uncertain. Check the current session before answering again." : "The notification could not be answered. Open the current session."
             }
         }
@@ -445,6 +466,7 @@ public final class MachineStore {
         suspendedRelayRooms.remove(original.machine.room); relayNotificationBusy = false
         if restoreForeground, running, answerEpoch.matches(lifetime), let matching,
            machines.contains(where: { $0.endpoint == matching }) { connect(matching, parent: matching) }
+        return outcome
     }
 
     public init(

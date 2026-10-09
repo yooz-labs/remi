@@ -5,8 +5,9 @@ clients. It covers foreground pairing, reconnecting with a saved public machine
 pin, session discovery, semantic session requests, permission cards, and the
 existing `answer` / `answer_result` path. The verified-alert checkpoint adds secure
 alerts and an app-opened notification card whose offered choice uses the signed
-`native_answer` path. Issues #1242 and #1201 remain open; OS action categories and
-lock-screen/Watch answer acceptance are not enabled by this checkpoint.
+`native_answer` path. The secure-action checkpoint extends that caller to native
+YN/YNA notification actions. Issues #1242, #1201 and #1141 remain open; signed
+lock-screen/Watch delivery and answer acceptance remain owner hardware gates.
 
 ## Production callers and trust
 
@@ -161,7 +162,8 @@ The legacy root ledger and legacy P256 service are never opened.
 Both extensions depend only on the `RemiPush` product. They independently open
 the original carrier, verify the machine signature and current recipient/trust,
 apply the reused rollback/replay/collapse rules, and recheck before presenting
-escaped signed title/body. Their secure category remains empty. Extension expiry
+escaped signed title/body. At the verified-alert foundation (`6a71caa1`), their
+secure category remained empty. The action checkpoint below adds publication. Extension expiry
 returns a generic alert rather than an unverified button or destination. The
 extensions never link the app-exclusive Dpk store, signer or relay sender.
 
@@ -310,21 +312,78 @@ The Worker's default `APNS_BUNDLE_ID` is `live.yooz.remi`; a signed Debug app
 (`live.yooz.remi.dev`) needs owner-controlled provider topic configuration matching
 that app before APNs delivery can be tested. No agent changes that deployment.
 
+## Secure native YN/YNA action checkpoint
+
+The shared `RemiPush` action policy preserves the complete signed label and
+optional description. It accepts only the source's semantic YN/YNA shapes with
+full titles at most 24 graphemes and no control or format scalars. Unsupported
+MULTI, setMode, long-title and other forms keep the verified alert readable and
+require the current session. No is the first nondestructive background action,
+including the Watch Double Tap default. A standing addRules choice requires OS
+authentication. Protected public authority publishes no actions; current private
+identity protection is independently checked by the sender.
+
+Category and action identifiers bind the original signed capsule digest, machine,
+room, device authority revision and expiry. They are never reused for a different
+meaning. Both NSEs publish the immutable category before attaching its identifier,
+then recheck the original capsule. Publication preserves categories observed from
+other features, prunes expired native categories and caps the native set at 128
+and the observed registry at 512. A shared file lease serializes cooperating
+native app/extension publishers, with bounded OS reads and readback. The OS
+get/merge/set sequence is not atomic with unrelated writers: a lost category is
+an availability failure, never authority to reinterpret an old action. Publication
+failure falls back to a verified alert with no category.
+
+Both delegates consume the carrier or secure category/action marker, including
+malformed markers, before legacy destination routing. `NativeRelayActionDelivery`
+copies the original carrier and actual title/body/subtitle/category/action ID
+across the actor boundary. The real coordinator independently reopens the capsule,
+checks exact UTF8 displayed text, and recomputes the immutable category and signed
+choice through the same facade that supplies the sender. Every admission, H2,
+final proof and pre-emission check retains that original action context. An
+uncategorized verified fallback can present in the foreground but grants no OS
+action. Cold actions strict-load only the existing unprotected identity, use an
+unstarted endpoint-free Store and never create, migrate or reconcile identity.
+
+The ordinary package currently reports 95 tests: 92 passes and three explicit
+source opt-in skips. `NativePushActionTests` passes nine tests, including 20
+parameter cases for signed shape, exact display and cold identity refusal. Owned
+fixtures refuse OS category publication independently of identifier validation;
+only pure category merge/descriptor decisions and the actual source receiver are
+measured here. No owner notification registry is read or written by these tests.
+The source cold-action test passes against exact `1e96c688` using the shipping
+snapshot entry: actual No delivers a deny, child-result loss returns uncertainty
+with one forward and no automatic retry, a second concurrent action is busy,
+actual signed higher-revision dismissal refuses an OS replay, and actual grant
+revocation refuses fresh authentication. Keychain bytes and ledger generation
+remain unchanged through these actions. A delivered receipt alone is not claimed
+to invalidate the local capsule before a signed terminal update arrives.
+
+Local action receipts are `/private/tmp/remi-x2-phase4-ordinary.log`,
+`/private/tmp/remi-x2-action-cold-boundary.log` and
+`/private/tmp/remi-x2-actual-cold-action-source.log`. Independent review, mutations
+and final unsigned whole-head builds are separate gates recorded after this
+checkpoint; OS publication/delivery on signed devices is not measured here.
+
+The foundation busy/uncertain UI was also rendered from the real source sender's
+silent client-result fault in a private frozen `6a71caa1` clone. The 390-point
+captures have readable progress/disabled buttons and the exact uncertain copy:
+`/private/tmp/remi-x2-notification-render.lMmAW5/mac-actual-busy-390.png` and
+`mac-actual-uncertain-390.png`. The QA-only test instrumentation was confined to
+that clone; its source run passed two tests at 30.118 seconds with the unchanged
+under-25-second sender assertion. These receipts do not replace clean-head gates
+or signed device acceptance.
+
 ## Remaining X2 and #1201 gates
 
-The next tranche must enable action categories only after the signed caller
-review and source gates, preserve full signed titles/meanings and require unlock
-for standing grants. Background actions must independently reopen the capsule,
-compare displayed text and recompute immutable category/action identifiers;
-outer APNs/NSE flags grant no answer authority. Native currently has no protected
-foreground unlock capability, so protected signatures still refuse.
-Foreground question cards do not carry the secure-push runtime instance, content
-digest or collapse authority, so this milestone does not forge those fields.
+Native currently has no protected foreground unlock capability, so protected
+signatures refuse and require opening the app/current session. Foreground
+question cards do not carry secure-push runtime instance, content digest or
+collapse authority; this milestone does not forge those fields.
 
-No new OS relay notification action, background answer, lock-screen category,
-Watch answer, attachment UI or sealed-file transport is enabled.
-Notification categories (#1141) wait for the signed answer path and standing-grant
-protection gates. Image/file tunnel UI (#1170) waits for its threat model and
-protocol freeze. Signed sandboxed Mac, signed Phone, notification-extension,
-locked-device, Watch and physical-hardware acceptance remain owner gates. No
-relay deployment or release acceptance is claimed.
+Generic MULTI two-/three-option categories and the Capacitor REMI_MULTI scope
+of #1141 are not implemented by this native YN/YNA checkpoint. Image/file tunnel
+UI (#1170) waits for its threat model and protocol freeze. Signed sandboxed Mac,
+signed Phone, actual dynamic category/extension delivery, locked-device, Watch
+and physical two-machine acceptance remain owner gates. No attachment UI,
+sealed-file transport, relay deployment or release acceptance is claimed.

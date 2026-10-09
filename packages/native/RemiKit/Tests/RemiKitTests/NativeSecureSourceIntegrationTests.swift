@@ -2,6 +2,7 @@ import Foundation
 import RemiPush
 import Security
 import Testing
+import UserNotifications
 @testable import RemiKit
 
 #if os(macOS)
@@ -128,6 +129,116 @@ private final class OwnedFinalSignatureDismissal: @unchecked Sendable {
 
 @MainActor
 struct NativeSecureSourceIntegrationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"] != nil))
+    func actualColdNotificationActionUsesOriginalCapsuleAndSignedNo() async throws {
+        let reference = try #require(ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"])
+        let fixture = try SecureFixtureIPC(reference: reference)
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        var foreground: MachineStore?
+        do {
+            let offer = try await fixture.message()
+            try #require(offer["kind"] as? String == "offer")
+            #expect(offer["sourceHead"] as? String == "1e96c688f89409043e17177c1914d8eec247de7e")
+            let identity = try context.store.loadOrCreate()
+            let endpoint = try MachineEndpoint.pairingOverRelay(#require(offer["token"] as? String))
+            let ca = try OwnedRelayCA(path: #require(offer["caCertificatePath"] as? String))
+            let session = URLSession(configuration: .ephemeral, delegate: ca, delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let client = MachineStore(endpoints: [], identity: identity, clientVersion: "owned-cold-native",
+                clientId: "owned-device", pushStore: context.push)
+            foreground = client; client.useOwnedTestSession(session); client.addMachine(endpoint)
+            let comparison = try await fixture.message()
+            let fingerprint = try #require(comparison["fingerprint"] as? String)
+            try await until("actual pairing comparison") { client.machines.first?.status == .waitingForRelayConfirmation(fingerprint: fingerprint) }
+            try fixture.send(["kind": "confirm", "fingerprint": fingerprint, "devicePublicKey": identity.publicKeyBase64])
+            try await until("actual native trust commit") { client.machines.first?.status == .connected && (try? context.push.completedMachines().count) == 1 }
+            let saved = try #require(client.persistableEndpoints.first)
+            client.updateRelayPushToken(Data(repeating: 0x18, count: 32), environment: "sandbox")
+            await client.enableRelayNotifications(on: saved)
+            try await until("actual push registration") { client.relayNotificationNotice == "Relay notifications enabled." }
+            client.createSession(on: saved, directory: try #require(offer["directory"] as? String), harness: "claude")
+            try await until("actual held-hook child") { client.machines.first?.activeSessions.count == 1 }
+            client.stop()
+            let coordinator = try NativeRelayNotifications(ownedPushStore: context.push,
+                ownedIdentityStore: context.store, defaultsSuite: suite, ownedSession: session)
+            coordinator.activate() // This owned caller remains cold, without OS bootstrap.
+            #expect(coordinator.store == nil)
+            try fixture.send(["kind": "question"])
+            let carrier = try await question(fixture, push: context.push)
+            let opened = try context.push.open(carrier: carrier)
+            let actions = try #require(try context.push.actionSet(for: opened))
+            let no = try #require(actions.actions.first)
+            #expect(no.value == opened.nativeAnswerChoices.first(where: { $0.isNo })?.value)
+            let displayed = try NativePushActionTests.content(opened, set: actions)
+            let originalBytes = try context.bytes(), generation = try context.push.generation()
+            let forged = try #require(displayed.mutableCopy() as? UNMutableNotificationContent)
+            forged.categoryIdentifier = "REMI_YNA"
+            let forgedDelivery = NativeRelayActionDelivery(content: forged, identifier: no.identifier)
+            #expect(await coordinator.receiveAction(forgedDelivery) == .refused)
+            #expect(try context.bytes() == originalBytes && context.push.generation() == generation)
+            let delivery = NativeRelayActionDelivery(content: displayed, identifier: no.identifier)
+            #expect(await coordinator.receiveAction(delivery) == .delivered)
+            try await denyEffect(fixture, push: context.push)
+            #expect(coordinator.store == nil && !coordinator.presentsRelayNotification)
+            #expect(client.connectionGenerations.isEmpty, "A cold action never restarts a stopped foreground store")
+            #expect(try context.bytes() == originalBytes && context.push.generation() == generation)
+
+            try fixture.send(["kind": "question"])
+            let lostCarrier = try await question(fixture, push: context.push)
+            let lost = try context.push.open(carrier: lostCarrier)
+            let lostSet = try #require(try context.push.actionSet(for: lost))
+            let lostContent = try NativePushActionTests.content(lost, set: lostSet)
+            let lostID = try #require(lostSet.actions.first).identifier
+            let lostDelivery = NativeRelayActionDelivery(content: lostContent, identifier: lostID)
+            coordinator.ownedBeforeActionSend = { id in
+                #expect(await coordinator.receiveAction(lostDelivery) == .busy,
+                    "A second OS action cannot create another proof while the first is settling")
+                try await fixture.armLoss(id: id)
+            }
+            #expect(await coordinator.receiveAction(lostDelivery) == .uncertain)
+            try await denyEffect(fixture, push: context.push)
+            try fixture.send(["kind": "receipts"])
+            let first = try await receipts(fixture, push: context.push)
+            #expect(first["nativeForwards"] as? Int == 1 && first["lostResults"] as? Int == 1 && first["gatewayFailures"] as? Int == 0)
+            try await Task.sleep(for: .seconds(1))
+            try fixture.send(["kind": "receipts"])
+            let settled = try await receipts(fixture, push: context.push)
+            #expect(settled["nativeForwards"] as? Int == 1 && settled["lostResults"] as? Int == 1,
+                "The actual cold coordinator never automatically resends an uncertain answer")
+            coordinator.ownedBeforeActionSend = nil
+
+            try fixture.send(["kind": "question"])
+            let lateCarrier = try await question(fixture, push: context.push)
+            let late = try context.push.open(carrier: lateCarrier)
+            let lateSet = try #require(try context.push.actionSet(for: late))
+            let lateContent = try NativePushActionTests.content(late, set: lateSet)
+            try await Self.cancelAtH2(fixture, push: context.push, original: late)
+            let lateID = try #require(lateSet.actions.first).identifier
+            let lateDelivery = NativeRelayActionDelivery(content: lateContent, identifier: lateID)
+            #expect(await coordinator.receiveAction(lateDelivery) == .refused,
+                "An OS replay cannot revive the actual signed terminal capsule")
+            #expect(throws: (any Error).self) { try context.push.open(carrier: lateCarrier) }
+
+            try fixture.send(["kind": "question"])
+            let revokedCarrier = try await question(fixture, push: context.push)
+            let revoked = try context.push.open(carrier: revokedCarrier)
+            let revokedSet = try #require(try context.push.actionSet(for: revoked))
+            let revokedContent = try NativePushActionTests.content(revoked, set: revokedSet)
+            try fixture.send(["kind": "revoke", "fingerprint": fingerprint])
+            let control = try await fixture.message()
+            try #require(Self.revocationSucceeded(control), "Actual grant revocation and edge acknowledgment precede interpretation")
+            let revokedID = try #require(revokedSet.actions.first).identifier
+            #expect(await coordinator.receiveAction(content: revokedContent, identifier: revokedID) == .refused)
+            #expect(try context.bytes() == originalBytes && context.push.generation() == generation)
+            #expect(coordinator.store == nil)
+            try await fixture.stop()
+        } catch {
+            foreground?.stop(); try await fixture.stop(); throw error
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"] != nil))
     func shippingNativePairRegisterOpenAndSignedNoReachActualHeldHook() async throws {
         let reference = try #require(ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"])

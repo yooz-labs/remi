@@ -136,6 +136,12 @@ public struct ClientIdentityStore: Sendable {
         self.service = service; self.account = account
         suppliedPushStore = pushStore; suppliedAccessGroup = accessGroup
     }
+    #if DEBUG
+    public func isOwnedTestIdentity(for push: RemiPushStore) -> Bool {
+        push.isOwnedTestStore && suppliedPushStore === push && suppliedAccessGroup == nil &&
+            service.hasPrefix("live.yooz.remi.tests.") && UUID(uuidString: account) != nil
+    }
+    #endif
     private func context() throws -> (RemiPushStore, String?) {
         if let suppliedPushStore {
             #if DEBUG
