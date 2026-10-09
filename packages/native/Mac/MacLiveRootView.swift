@@ -169,6 +169,9 @@ struct MacLiveRootView: View {
             reconcileNavigation()
             store.start()
         }
+        .onChange(of: store.persistableEndpoints) { _, endpoints in
+            MachineConfigurationStore.shared.save(endpoints)
+        }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
             reconcileNavigation()
         }
@@ -196,9 +199,9 @@ struct MacLiveRootView: View {
             store.consumeResumedSessionDestination(id: destination.id)
         }
         .sheet(isPresented: $showingAddMachine) {
-            MacAddMachineSheet { host, port in
-                store.addMachine(MachineEndpoint(host: host, port: port))
-                MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+            MacAddMachineSheet { endpoint in
+                store.addMachine(endpoint)
+                MachineConfigurationStore.shared.save(store.persistableEndpoints)
             }
         }
         .sheet(isPresented: $showingNewSession) {
@@ -226,7 +229,7 @@ struct MacLiveRootView: View {
             Button("Remove machine", role: .destructive) {
                 guard let machine = pendingMachineRemoval else { return }
                 store.removeMachine(machine.endpoint)
-                MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+                MachineConfigurationStore.shared.save(store.persistableEndpoints)
                 pendingMachineRemoval = nil
                 reconcileNavigation()
             }
@@ -473,6 +476,7 @@ struct MacLiveRootView: View {
         case .connecting: "Connecting"
         case .connected: "Connected"
         case .waitingForApproval(let fingerprint): "Approve \(fingerprint) locally"
+        case .waitingForRelayConfirmation(let fingerprint): "Compare \(fingerprint) in the terminal"
         case .unavailable(let reason): reason ?? "Unavailable"
         }
     }
@@ -505,21 +509,40 @@ private struct MacAddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var host = "127.0.0.1"
     @State private var port = 18765
-    let onAdd: (String, Int) -> Void
+    @State private var relayMode = false
+    @State private var relayToken = ""
+    @State private var relayError: String?
+    let onAdd: (MachineEndpoint) -> Void
 
     var body: some View {
         Form {
-            TextField("Host or IP address", text: $host)
-            TextField("Port", value: $port, format: .number)
+            Toggle("Connect over the relay", isOn: $relayMode)
+            if relayMode {
+                SecureField("Relay pairing token", text: $relayToken)
+                Text("Paste the machine's remi-pair2 token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let relayError { Text(relayError).foregroundStyle(.red) }
+            } else {
+                TextField("Host or IP address", text: $host)
+                TextField("Port", value: $port, format: .number)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Add") {
-                    onAdd(host.trimmingCharacters(in: .whitespacesAndNewlines), port)
-                    dismiss()
+                    do {
+                        let endpoint = relayMode ? try MachineEndpoint.pairingOverRelay(relayToken) :
+                            MachineEndpoint(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
+                        relayToken = ""
+                        onAdd(endpoint)
+                        dismiss()
+                    } catch {
+                        relayError = "The relay token is invalid or expired. Create a new token on the machine."
+                    }
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+                .disabled(relayMode ? relayToken.isEmpty :
+                    host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
             }
         }
         .padding(24)

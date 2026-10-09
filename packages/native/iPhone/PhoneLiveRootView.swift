@@ -47,6 +47,9 @@ struct PhoneLiveRootView: View {
             }
         }
         .task { store.start() }
+        .onChange(of: store.persistableEndpoints) { _, endpoints in
+            MachineConfigurationStore.shared.save(endpoints)
+        }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
             hapticsEnabled
@@ -108,7 +111,8 @@ struct PhoneLiveRootView: View {
                 name: machine.displayName,
                 address: machine.endpoint.id,
                 reachability: reachability(machine.status),
-                transport: machine.endpoint.host == "127.0.0.1" ? .local : .direct,
+                transport: machine.endpoint.relayPin != nil ? .relay :
+                    machine.endpoint.host == "127.0.0.1" ? .local : .direct,
                 sessionCount: machine.activeSessions.count
             )
         }
@@ -341,13 +345,13 @@ struct PhoneLiveRootView: View {
 
     private func addMachine(_ endpoint: MachineEndpoint) {
         store.addMachine(endpoint)
-        MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+        MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 
     private func removeMachine(_ machineID: String) {
         guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
         store.removeMachine(machine.endpoint)
-        MachineConfigurationStore.shared.save(store.machines.map(\.endpoint))
+        MachineConfigurationStore.shared.save(store.persistableEndpoints)
     }
 
     private func createSession(
@@ -444,7 +448,7 @@ struct PhoneLiveRootView: View {
         switch status {
         case .connected: .connected
         case .connecting: .connecting
-        case .waitingForApproval: .waitingForApproval
+        case .waitingForApproval, .waitingForRelayConfirmation: .waitingForApproval
         case .disconnected, .unavailable: .unreachable
         }
     }

@@ -4,7 +4,10 @@ import Observation
 /// Temporary machine identity until the protocol ships a durable machine object (#1234).
 /// Keeping it behind this value type prevents `host:port` from leaking through app UI APIs.
 public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
-    public var id: String { "\(host):\(port)" }
+    public var id: String {
+        if let relayPin { return "relay:\(relayPin.machinePublicKey)@\(relayPin.relayURL)" }
+        return "\(host):\(port)"
+    }
 
     public let host: String
     public let port: Int
@@ -15,6 +18,9 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
     public let pairingNonce: String?
     /// Ephemeral display label sent with a pairing claim. Deliberately excluded from persistence.
     public let pairingLabel: String?
+    public let relayPin: RelayMachinePin?
+    let relayPairingSecret: Data?
+    let relayPairingExpiresAt: UInt64?
 
     public init(
         host: String,
@@ -22,7 +28,8 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         expectedFingerprint: String? = nil,
         expectedPublicKey: String? = nil,
         pairingNonce: String? = nil,
-        pairingLabel: String? = nil
+        pairingLabel: String? = nil,
+        relayPin: RelayMachinePin? = nil
     ) {
         self.host = host
         self.port = port
@@ -30,6 +37,27 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         self.expectedPublicKey = expectedPublicKey
         self.pairingNonce = pairingNonce
         self.pairingLabel = pairingLabel
+        self.relayPin = relayPin
+        relayPairingSecret = nil
+        relayPairingExpiresAt = nil
+    }
+
+    /// Explicit opt-in token. Its secret is memory-only and never encoded into configuration.
+    public static func pairingOverRelay(_ token: String) throws -> MachineEndpoint {
+        let decoded = try RelayPairingToken(token, now: UInt64(Date().timeIntervalSince1970))
+        return MachineEndpoint(relayToken: decoded)
+    }
+
+    private init(relayToken: RelayPairingToken) {
+        host = URLComponents(string: relayToken.pin.relayURL)?.host ?? "relay"
+        port = URLComponents(string: relayToken.pin.relayURL)?.port ?? 443
+        expectedFingerprint = nil
+        expectedPublicKey = nil
+        pairingNonce = nil
+        pairingLabel = nil
+        relayPin = relayToken.pin
+        relayPairingSecret = relayToken.secret
+        relayPairingExpiresAt = relayToken.expiresAt
     }
 
     public var webSocketURL: URL? {
@@ -45,7 +73,7 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case host, port, expectedFingerprint
+        case host, port, expectedFingerprint, relayPin
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,6 +84,9 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         expectedPublicKey = nil
         pairingNonce = nil
         pairingLabel = nil
+        relayPin = try values.decodeIfPresent(RelayMachinePin.self, forKey: .relayPin)
+        relayPairingSecret = nil
+        relayPairingExpiresAt = nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -63,6 +94,7 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         try values.encode(host, forKey: .host)
         try values.encode(port, forKey: .port)
         try values.encodeIfPresent(expectedFingerprint, forKey: .expectedFingerprint)
+        try values.encodeIfPresent(relayPin, forKey: .relayPin)
     }
 }
 
@@ -71,6 +103,7 @@ public enum MachineConnectionStatus: Sendable, Equatable {
     case connecting
     case connected
     case waitingForApproval(fingerprint: String)
+    case waitingForRelayConfirmation(fingerprint: String)
     case unavailable(reason: String?)
 }
 
@@ -151,6 +184,14 @@ public final class MachineStore {
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var resolvedQuestionRemovalTasks: [String: Task<Void, Never>] = [:]
+    private var confirmedRelayIDs: Set<String> = []
+    @ObservationIgnored private var pendingAnswers: [String: AnswerMessage] = [:]
+    @ObservationIgnored private var answerTimeoutTasks: [String: Task<Void, Never>] = [:]
+
+    /// Pending relay pairings are not durable trust. Both app roots save this list after READY.
+    public var persistableEndpoints: [MachineEndpoint] {
+        machines.map(\.endpoint).filter { $0.relayPairingSecret == nil || confirmedRelayIDs.contains($0.id) }
+    }
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
 
@@ -187,6 +228,9 @@ public final class MachineStore {
         for task in resolvedQuestionRemovalTasks.values { task.cancel() }
         resolvedQuestionRemovalTasks.removeAll()
         recentlyResolvedQuestions.removeAll()
+        for task in answerTimeoutTasks.values { task.cancel() }
+        answerTimeoutTasks.removeAll()
+        pendingAnswers.removeAll()
         Task {
             for connection in activeConnections {
                 await connection.stop()
@@ -203,6 +247,14 @@ public final class MachineStore {
     }
 
     public func removeMachine(_ endpoint: MachineEndpoint) {
+        confirmedRelayIDs.remove(endpoint.id)
+        let answerIDs = pendingAnswers.compactMap { id, answer in
+            parentByConnection[routeBySession[answer.sessionId] ?? endpoint] == endpoint ? id : nil
+        }
+        for id in answerIDs {
+            pendingAnswers.removeValue(forKey: id)
+            answerTimeoutTasks.removeValue(forKey: id)?.cancel()
+        }
         let resumeRequestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
             attempt.parent == endpoint ? requestID : nil
         }
@@ -288,7 +340,22 @@ public final class MachineStore {
             cancel: cancel,
             message: message
         )
-        Task { try? await connection.send(response) }
+        if let route = routeBySession[sessionId], route.relayPin != nil {
+            guard pendingAnswers.count < 64 else {
+                latestOperationError = "Too many answers are awaiting confirmation. Wait before answering."
+                return
+            }
+            guard !pendingAnswers.values.contains(where: { $0.sessionId == sessionId && $0.questionId == questionId }) else { return }
+            pendingAnswers[response.id] = response
+            answerTimeoutTasks[response.id] = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                self?.finishAnswer(response.id, outcome: "uncertain")
+            }
+        }
+        Task {
+            do { try await connection.send(response) }
+            catch { self.finishAnswer(response.id, outcome: "uncertain") }
+        }
     }
 
     public func sendChat(sessionId: String, content: String, claudeSessionId: String? = nil) {
@@ -414,9 +481,12 @@ public final class MachineStore {
                 expectedServerFingerprint: endpoint.expectedFingerprint,
                 expectedServerPublicKey: endpoint.expectedPublicKey,
                 pairingNonce: endpoint.pairingNonce,
-                pairingLabel: endpoint.pairingLabel
+                pairingLabel: endpoint.pairingLabel,
+                relayPin: endpoint.relayPin
             ),
             identity: identity,
+            relayPairingSecret: endpoint.relayPairingSecret,
+            relayPairingExpiresAt: endpoint.relayPairingExpiresAt,
             stateHandler: { [weak self] state in
                 Task { @MainActor [weak self] in
                     self?.receive(state, from: endpoint)
@@ -446,6 +516,8 @@ public final class MachineStore {
             machines[index].status = .connected
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
+        case .awaitingRelayConfirmation(let fingerprint):
+            machines[index].status = .waitingForRelayConfirmation(fingerprint: fingerprint)
         case .rejected(let reason):
             machines[index].status = .unavailable(reason: reason)
         }
@@ -457,6 +529,15 @@ public final class MachineStore {
         else { return }
 
         switch event {
+        case .relayStreamEnded(let clean):
+            if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
+        case .relayReady:
+            confirmedRelayIDs.insert(parent.id)
+        case .answerResult(let result):
+            guard let pending = pendingAnswers[result.requestId],
+                  routeBySession[pending.sessionId] == endpoint,
+                  pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
+            finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment):
             if endpoint == parent {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
@@ -484,7 +565,7 @@ public final class MachineStore {
             if endpoint == parent {
                 machines[index].hasLoadedSessions = true
             }
-            for port in response.daemonPorts ?? [] where port != parent.port {
+            for port in response.daemonPorts ?? [] where port != parent.port && parent.relayPin == nil {
                 connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
             }
             if let requestID = resumeRequestByChild[endpoint],
@@ -533,7 +614,8 @@ public final class MachineStore {
         case .createSessionResponse(let response):
             if response.success {
                 latestOperationNotice = response.notice
-                if let port = response.port {
+                if parent.relayPin != nil { requestSessions(from: parent) }
+                else if let port = response.port {
                     connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
                     requestSessions(from: parent)
                 }
@@ -571,6 +653,18 @@ public final class MachineStore {
         }
     }
 
+    private func finishAnswer(_ requestID: String, outcome: String) {
+        guard pendingAnswers.removeValue(forKey: requestID) != nil else { return }
+        answerTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+        switch outcome {
+        case "delivered": latestOperationNotice = "Answer delivered."
+        case "stale", "stale-binding", "session-not-found":
+            latestOperationError = "The question is no longer available. Refresh before answering."
+        default:
+            latestOperationError = "Answer delivery is uncertain. Check the session before trying again."
+        }
+    }
+
     private func handleResumeResponse(
         _ response: ResumeSessionResponseMessage,
         from endpoint: MachineEndpoint,
@@ -590,7 +684,7 @@ public final class MachineStore {
         let sessionID = response.sessionId ?? attempt.requestedSessionID
         attempt.resolvedSessionID = sessionID
         resumeAttemptsByRequest[response.requestId] = attempt
-        guard let port = response.port else {
+        guard let port = response.port, parent.relayPin == nil else {
             routeBySession[sessionID] = endpoint
             completeResume(requestID: response.requestId, sessionID: sessionID)
             return

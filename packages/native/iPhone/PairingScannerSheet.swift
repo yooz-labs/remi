@@ -213,6 +213,7 @@ private struct PairingApprovalWait: View {
         case .connected: "Pairing approved"
         case .unavailable(let reason): reason ?? "Pairing could not be completed"
         case .waitingForApproval: "Waiting for manual authorization"
+        case .waitingForRelayConfirmation: "Waiting for relay confirmation"
         default: "Waiting for terminal approval"
         }
     }

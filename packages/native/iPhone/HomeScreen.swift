@@ -450,6 +450,11 @@ private struct MachinesSection: View {
                         onRetry: { onRetryApproval(state.endpoint) }
                     )
                 }
+                if let state = states.first(where: { $0.id == machine.id }),
+                   case .waitingForRelayConfirmation(let fingerprint) = state.status {
+                    Text("Compare \(fingerprint) in the machine's terminal before approving.")
+                        .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                }
                 if machine.id != machines.last?.id { Divider() }
             }
         }

@@ -14,6 +14,8 @@ struct PairingScreen: View {
     @State private var port = 18765
     @State private var added = false
     @State private var showingScanner = false
+    @State private var relayToken = ""
+    @State private var relayError: String?
 
     init(
         publicIdentity: PublicClientIdentity? = nil,
@@ -62,6 +64,31 @@ struct PairingScreen: View {
             Section("Approve this phone") {
                 PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand)
                 PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand)
+            }
+
+            Section("Relay pairing") {
+                SecureField("Relay pairing token", text: $relayToken)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Text("Paste the machine's remi-pair2 token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Pair over the relay") {
+                    do {
+                        let endpoint = try MachineEndpoint.pairingOverRelay(relayToken)
+                        relayToken = ""
+                        relayError = nil
+                        onAddMachine(endpoint)
+                    } catch {
+                        relayError = "The relay token is invalid or expired. Create a new token on the machine."
+                    }
+                }
+                .disabled(relayToken.isEmpty)
+                if let relayError { Text(relayError).foregroundStyle(.red) }
+                ForEach(machineStates.filter { $0.endpoint.relayPin != nil }) { machine in
+                    if case .waitingForRelayConfirmation(let fingerprint) = machine.status {
+                        Text("Compare \(fingerprint) in the machine's terminal.")
+                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                    }
+                }
             }
 
             Section {

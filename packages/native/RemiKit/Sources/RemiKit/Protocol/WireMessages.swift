@@ -1,5 +1,16 @@
 import Foundation
 
+/// Receipt of a semantic answer is distinct from its outcome (#1242, relay R3).
+public struct AnswerResultMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let requestId: String
+    public let sessionId: String
+    public let questionId: String
+    public let outcome: String
+}
+
 /// Client introduction sent immediately after the WebSocket opens.
 public struct HelloMessage: Codable, Sendable, Equatable {
     public let type = "hello"
