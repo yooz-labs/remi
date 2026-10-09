@@ -454,3 +454,41 @@ AppKit recursion crash. Two-machine answer acceptance is therefore partial;
 that UI investigation and the original crash reports remain separate from the
 shared-container correction. A numeric Tailscale address also hit ATS -1022;
 the supplied Tailscale hostname connected using the existing networking policy.
+
+## Mac Keychain selector follow-up (#1242)
+
+Entitlement inspection did not prove Mac Keychain access-group enforcement.
+The configured identity and recipient queries now explicitly select the data
+protection Keychain, as required by Apple's `kSecAttrAccessGroup` contract.
+The app's device key remains in its app-only group, and the recipient key uses
+the app/NSE group. iOS behavior and UUID-owned file-Keychain test contexts are
+unchanged.
+
+Foreground loading can copy a valid legacy file-Keychain record when the
+configured destination is absent. Raw32 conversion preserves the public key;
+a version2 record preserves its exact bytes, revision and protection policy.
+Recipient copying preserves its key version. Existing or racing destination
+records win, and corrupt/inaccessible records fail without generating a
+replacement. Cold device-key and NSE recipient reads do not consult or migrate
+legacy records.
+
+Legacy items are retained. Their historical access rules and older binaries'
+behavior remain, so this correction isolates the configured current slots;
+it does not claim every historical private-key copy is group-isolated. An older
+native binary expects raw32 and can replace a JSON record in its legacy slot.
+That code path and a different Mac fingerprint were observed during the Mac
+notification check; the exact legacy replacement call was not logged. The
+older owned test build was closed. The corrected signed app opened with the
+same current fingerprint as immediately before the correction. The earlier
+fingerprint change is not described as preserved, and the iPhone key was not
+changed.
+
+Two query controls detect the original missing selector. Nine migration
+controls construct the real codec, authority lease and stores, with only the
+OS boundary redirected to two UUID-owned file-Keychain slots because the
+unsigned package cannot claim the team's groups. A separate signed app/NSE
+role probe used the actual entitlement/profile shapes and UUID-only services:
+app reads succeeded, the NSE's device-group read was refused (-34018), its
+recipient read succeeded, and legacy replacement left the data protection
+fingerprints unchanged. The test rows were removed. These are storage/OS
+checks, not Mac APNs, locked-device, or Release acceptance.
