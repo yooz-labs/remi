@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import RemiPush
 import Testing
 @testable import RemiKit
 
@@ -49,7 +50,12 @@ struct NativeAnswerIdentityPinTests {
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         #expect(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
         let original = try ClientIdentity(rawPrivateKey: seed)
-        let store = ClientIdentityStore(service: service, account: account)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi-x2-identity-pin-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let push = try RemiPushStore.ownedTestStore(file: directory.appendingPathComponent("public.sqlite"),
+            service: "live.yooz.remi.tests.recipient-pin", account: UUID().uuidString)
+        let store = ClientIdentityStore(service: service, account: account, pushStore: push)
         #expect(try store.loadOrCreate().publicKeyRaw == original.publicKeyRaw)
         #expect(try store.loadOrCreate().publicKeyRaw == original.publicKeyRaw)
     }

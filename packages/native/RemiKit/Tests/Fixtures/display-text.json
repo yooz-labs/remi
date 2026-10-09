@@ -1,0 +1,998 @@
+{
+  "source": "packages/shared/src/display-text.ts",
+  "sha256": "bb16fd9e0ba05ef50de024ef91de7701b3688b69aef8b8d2c0f6424b86683fcb",
+  "cases": [
+    {
+      "text": "\u0000",
+      "expected": "\\u0000"
+    },
+    {
+      "text": "\u0001",
+      "expected": "\\u0001"
+    },
+    {
+      "text": "\u0002",
+      "expected": "\\u0002"
+    },
+    {
+      "text": "\u0003",
+      "expected": "\\u0003"
+    },
+    {
+      "text": "\u0004",
+      "expected": "\\u0004"
+    },
+    {
+      "text": "\u0005",
+      "expected": "\\u0005"
+    },
+    {
+      "text": "\u0006",
+      "expected": "\\u0006"
+    },
+    {
+      "text": "\u0007",
+      "expected": "\\u0007"
+    },
+    {
+      "text": "\b",
+      "expected": "\\u0008"
+    },
+    {
+      "text": "\t",
+      "expected": "\t"
+    },
+    {
+      "text": "\n",
+      "expected": "\n"
+    },
+    {
+      "text": "\u000b",
+      "expected": "\\u000B"
+    },
+    {
+      "text": "\f",
+      "expected": "\\u000C"
+    },
+    {
+      "text": "\r",
+      "expected": "\\u000D"
+    },
+    {
+      "text": "\u000e",
+      "expected": "\\u000E"
+    },
+    {
+      "text": "\u000f",
+      "expected": "\\u000F"
+    },
+    {
+      "text": "\u0010",
+      "expected": "\\u0010"
+    },
+    {
+      "text": "\u0011",
+      "expected": "\\u0011"
+    },
+    {
+      "text": "\u0012",
+      "expected": "\\u0012"
+    },
+    {
+      "text": "\u0013",
+      "expected": "\\u0013"
+    },
+    {
+      "text": "\u0014",
+      "expected": "\\u0014"
+    },
+    {
+      "text": "\u0015",
+      "expected": "\\u0015"
+    },
+    {
+      "text": "\u0016",
+      "expected": "\\u0016"
+    },
+    {
+      "text": "\u0017",
+      "expected": "\\u0017"
+    },
+    {
+      "text": "\u0018",
+      "expected": "\\u0018"
+    },
+    {
+      "text": "\u0019",
+      "expected": "\\u0019"
+    },
+    {
+      "text": "\u001a",
+      "expected": "\\u001A"
+    },
+    {
+      "text": "\u001b",
+      "expected": "\\u001B"
+    },
+    {
+      "text": "\u001c",
+      "expected": "\\u001C"
+    },
+    {
+      "text": "\u001d",
+      "expected": "\\u001D"
+    },
+    {
+      "text": "\u001e",
+      "expected": "\\u001E"
+    },
+    {
+      "text": "\u001f",
+      "expected": "\\u001F"
+    },
+    {
+      "text": " ",
+      "expected": " "
+    },
+    {
+      "text": "~",
+      "expected": "~"
+    },
+    {
+      "text": "",
+      "expected": "\\u007F"
+    },
+    {
+      "text": "",
+      "expected": "\\u0080"
+    },
+    {
+      "text": "",
+      "expected": "\\u0081"
+    },
+    {
+      "text": "",
+      "expected": "\\u0082"
+    },
+    {
+      "text": "",
+      "expected": "\\u0083"
+    },
+    {
+      "text": "",
+      "expected": "\\u0084"
+    },
+    {
+      "text": "",
+      "expected": "\\u0085"
+    },
+    {
+      "text": "",
+      "expected": "\\u0086"
+    },
+    {
+      "text": "",
+      "expected": "\\u0087"
+    },
+    {
+      "text": "",
+      "expected": "\\u0088"
+    },
+    {
+      "text": "",
+      "expected": "\\u0089"
+    },
+    {
+      "text": "",
+      "expected": "\\u008A"
+    },
+    {
+      "text": "",
+      "expected": "\\u008B"
+    },
+    {
+      "text": "",
+      "expected": "\\u008C"
+    },
+    {
+      "text": "",
+      "expected": "\\u008D"
+    },
+    {
+      "text": "",
+      "expected": "\\u008E"
+    },
+    {
+      "text": "",
+      "expected": "\\u008F"
+    },
+    {
+      "text": "",
+      "expected": "\\u0090"
+    },
+    {
+      "text": "",
+      "expected": "\\u0091"
+    },
+    {
+      "text": "",
+      "expected": "\\u0092"
+    },
+    {
+      "text": "",
+      "expected": "\\u0093"
+    },
+    {
+      "text": "",
+      "expected": "\\u0094"
+    },
+    {
+      "text": "",
+      "expected": "\\u0095"
+    },
+    {
+      "text": "",
+      "expected": "\\u0096"
+    },
+    {
+      "text": "",
+      "expected": "\\u0097"
+    },
+    {
+      "text": "",
+      "expected": "\\u0098"
+    },
+    {
+      "text": "",
+      "expected": "\\u0099"
+    },
+    {
+      "text": "",
+      "expected": "\\u009A"
+    },
+    {
+      "text": "",
+      "expected": "\\u009B"
+    },
+    {
+      "text": "",
+      "expected": "\\u009C"
+    },
+    {
+      "text": "",
+      "expected": "\\u009D"
+    },
+    {
+      "text": "",
+      "expected": "\\u009E"
+    },
+    {
+      "text": "",
+      "expected": "\\u009F"
+    },
+    {
+      "text": " ",
+      "expected": " "
+    },
+    {
+      "text": "¬",
+      "expected": "¬"
+    },
+    {
+      "text": "­",
+      "expected": "\\u00AD"
+    },
+    {
+      "text": "®",
+      "expected": "®"
+    },
+    {
+      "text": "؛",
+      "expected": "؛"
+    },
+    {
+      "text": "؜",
+      "expected": "\\u061C"
+    },
+    {
+      "text": "؝",
+      "expected": "؝"
+    },
+    {
+      "text": "᠍",
+      "expected": "᠍"
+    },
+    {
+      "text": "᠎",
+      "expected": "\\u180E"
+    },
+    {
+      "text": "᠏",
+      "expected": "᠏"
+    },
+    {
+      "text": " ",
+      "expected": " "
+    },
+    {
+      "text": "​",
+      "expected": "\\u200B"
+    },
+    {
+      "text": "‌",
+      "expected": "\\u200C"
+    },
+    {
+      "text": "‍",
+      "expected": "\\u200D"
+    },
+    {
+      "text": "‎",
+      "expected": "\\u200E"
+    },
+    {
+      "text": "‏",
+      "expected": "\\u200F"
+    },
+    {
+      "text": "‐",
+      "expected": "‐"
+    },
+    {
+      "text": "‧",
+      "expected": "‧"
+    },
+    {
+      "text": " ",
+      "expected": "\\u2028"
+    },
+    {
+      "text": " ",
+      "expected": "\\u2029"
+    },
+    {
+      "text": "‪",
+      "expected": "\\u202A"
+    },
+    {
+      "text": "‫",
+      "expected": "\\u202B"
+    },
+    {
+      "text": "‬",
+      "expected": "\\u202C"
+    },
+    {
+      "text": "‭",
+      "expected": "\\u202D"
+    },
+    {
+      "text": "‮",
+      "expected": "\\u202E"
+    },
+    {
+      "text": " ",
+      "expected": " "
+    },
+    {
+      "text": " ",
+      "expected": " "
+    },
+    {
+      "text": "⁠",
+      "expected": "\\u2060"
+    },
+    {
+      "text": "⁡",
+      "expected": "\\u2061"
+    },
+    {
+      "text": "⁢",
+      "expected": "\\u2062"
+    },
+    {
+      "text": "⁣",
+      "expected": "\\u2063"
+    },
+    {
+      "text": "⁤",
+      "expected": "\\u2064"
+    },
+    {
+      "text": "⁥",
+      "expected": "\\u2065"
+    },
+    {
+      "text": "⁦",
+      "expected": "\\u2066"
+    },
+    {
+      "text": "⁧",
+      "expected": "\\u2067"
+    },
+    {
+      "text": "⁨",
+      "expected": "\\u2068"
+    },
+    {
+      "text": "⁩",
+      "expected": "\\u2069"
+    },
+    {
+      "text": "⁪",
+      "expected": "\\u206A"
+    },
+    {
+      "text": "⁫",
+      "expected": "\\u206B"
+    },
+    {
+      "text": "⁬",
+      "expected": "\\u206C"
+    },
+    {
+      "text": "⁭",
+      "expected": "\\u206D"
+    },
+    {
+      "text": "⁮",
+      "expected": "\\u206E"
+    },
+    {
+      "text": "⁯",
+      "expected": "\\u206F"
+    },
+    {
+      "text": "⁰",
+      "expected": "⁰"
+    },
+    {
+      "text": "﻾",
+      "expected": "﻾"
+    },
+    {
+      "text": "﻿",
+      "expected": "\\uFEFF"
+    },
+    {
+      "text": "＀",
+      "expected": "＀"
+    },
+    {
+      "text": "퟿",
+      "expected": "퟿"
+    },
+    {
+      "text": "",
+      "expected": ""
+    },
+    {
+      "text": "󟿿",
+      "expected": "󟿿"
+    },
+    {
+      "text": "󠀀",
+      "expected": "\\u{E0000}"
+    },
+    {
+      "text": "󠀁",
+      "expected": "\\u{E0001}"
+    },
+    {
+      "text": "󠀂",
+      "expected": "\\u{E0002}"
+    },
+    {
+      "text": "󠀃",
+      "expected": "\\u{E0003}"
+    },
+    {
+      "text": "󠀄",
+      "expected": "\\u{E0004}"
+    },
+    {
+      "text": "󠀅",
+      "expected": "\\u{E0005}"
+    },
+    {
+      "text": "󠀆",
+      "expected": "\\u{E0006}"
+    },
+    {
+      "text": "󠀇",
+      "expected": "\\u{E0007}"
+    },
+    {
+      "text": "󠀈",
+      "expected": "\\u{E0008}"
+    },
+    {
+      "text": "󠀉",
+      "expected": "\\u{E0009}"
+    },
+    {
+      "text": "󠀊",
+      "expected": "\\u{E000A}"
+    },
+    {
+      "text": "󠀋",
+      "expected": "\\u{E000B}"
+    },
+    {
+      "text": "󠀌",
+      "expected": "\\u{E000C}"
+    },
+    {
+      "text": "󠀍",
+      "expected": "\\u{E000D}"
+    },
+    {
+      "text": "󠀎",
+      "expected": "\\u{E000E}"
+    },
+    {
+      "text": "󠀏",
+      "expected": "\\u{E000F}"
+    },
+    {
+      "text": "󠀐",
+      "expected": "\\u{E0010}"
+    },
+    {
+      "text": "󠀑",
+      "expected": "\\u{E0011}"
+    },
+    {
+      "text": "󠀒",
+      "expected": "\\u{E0012}"
+    },
+    {
+      "text": "󠀓",
+      "expected": "\\u{E0013}"
+    },
+    {
+      "text": "󠀔",
+      "expected": "\\u{E0014}"
+    },
+    {
+      "text": "󠀕",
+      "expected": "\\u{E0015}"
+    },
+    {
+      "text": "󠀖",
+      "expected": "\\u{E0016}"
+    },
+    {
+      "text": "󠀗",
+      "expected": "\\u{E0017}"
+    },
+    {
+      "text": "󠀘",
+      "expected": "\\u{E0018}"
+    },
+    {
+      "text": "󠀙",
+      "expected": "\\u{E0019}"
+    },
+    {
+      "text": "󠀚",
+      "expected": "\\u{E001A}"
+    },
+    {
+      "text": "󠀛",
+      "expected": "\\u{E001B}"
+    },
+    {
+      "text": "󠀜",
+      "expected": "\\u{E001C}"
+    },
+    {
+      "text": "󠀝",
+      "expected": "\\u{E001D}"
+    },
+    {
+      "text": "󠀞",
+      "expected": "\\u{E001E}"
+    },
+    {
+      "text": "󠀟",
+      "expected": "\\u{E001F}"
+    },
+    {
+      "text": "󠀠",
+      "expected": "\\u{E0020}"
+    },
+    {
+      "text": "󠀡",
+      "expected": "\\u{E0021}"
+    },
+    {
+      "text": "󠀢",
+      "expected": "\\u{E0022}"
+    },
+    {
+      "text": "󠀣",
+      "expected": "\\u{E0023}"
+    },
+    {
+      "text": "󠀤",
+      "expected": "\\u{E0024}"
+    },
+    {
+      "text": "󠀥",
+      "expected": "\\u{E0025}"
+    },
+    {
+      "text": "󠀦",
+      "expected": "\\u{E0026}"
+    },
+    {
+      "text": "󠀧",
+      "expected": "\\u{E0027}"
+    },
+    {
+      "text": "󠀨",
+      "expected": "\\u{E0028}"
+    },
+    {
+      "text": "󠀩",
+      "expected": "\\u{E0029}"
+    },
+    {
+      "text": "󠀪",
+      "expected": "\\u{E002A}"
+    },
+    {
+      "text": "󠀫",
+      "expected": "\\u{E002B}"
+    },
+    {
+      "text": "󠀬",
+      "expected": "\\u{E002C}"
+    },
+    {
+      "text": "󠀭",
+      "expected": "\\u{E002D}"
+    },
+    {
+      "text": "󠀮",
+      "expected": "\\u{E002E}"
+    },
+    {
+      "text": "󠀯",
+      "expected": "\\u{E002F}"
+    },
+    {
+      "text": "󠀰",
+      "expected": "\\u{E0030}"
+    },
+    {
+      "text": "󠀱",
+      "expected": "\\u{E0031}"
+    },
+    {
+      "text": "󠀲",
+      "expected": "\\u{E0032}"
+    },
+    {
+      "text": "󠀳",
+      "expected": "\\u{E0033}"
+    },
+    {
+      "text": "󠀴",
+      "expected": "\\u{E0034}"
+    },
+    {
+      "text": "󠀵",
+      "expected": "\\u{E0035}"
+    },
+    {
+      "text": "󠀶",
+      "expected": "\\u{E0036}"
+    },
+    {
+      "text": "󠀷",
+      "expected": "\\u{E0037}"
+    },
+    {
+      "text": "󠀸",
+      "expected": "\\u{E0038}"
+    },
+    {
+      "text": "󠀹",
+      "expected": "\\u{E0039}"
+    },
+    {
+      "text": "󠀺",
+      "expected": "\\u{E003A}"
+    },
+    {
+      "text": "󠀻",
+      "expected": "\\u{E003B}"
+    },
+    {
+      "text": "󠀼",
+      "expected": "\\u{E003C}"
+    },
+    {
+      "text": "󠀽",
+      "expected": "\\u{E003D}"
+    },
+    {
+      "text": "󠀾",
+      "expected": "\\u{E003E}"
+    },
+    {
+      "text": "󠀿",
+      "expected": "\\u{E003F}"
+    },
+    {
+      "text": "󠁀",
+      "expected": "\\u{E0040}"
+    },
+    {
+      "text": "󠁁",
+      "expected": "\\u{E0041}"
+    },
+    {
+      "text": "󠁂",
+      "expected": "\\u{E0042}"
+    },
+    {
+      "text": "󠁃",
+      "expected": "\\u{E0043}"
+    },
+    {
+      "text": "󠁄",
+      "expected": "\\u{E0044}"
+    },
+    {
+      "text": "󠁅",
+      "expected": "\\u{E0045}"
+    },
+    {
+      "text": "󠁆",
+      "expected": "\\u{E0046}"
+    },
+    {
+      "text": "󠁇",
+      "expected": "\\u{E0047}"
+    },
+    {
+      "text": "󠁈",
+      "expected": "\\u{E0048}"
+    },
+    {
+      "text": "󠁉",
+      "expected": "\\u{E0049}"
+    },
+    {
+      "text": "󠁊",
+      "expected": "\\u{E004A}"
+    },
+    {
+      "text": "󠁋",
+      "expected": "\\u{E004B}"
+    },
+    {
+      "text": "󠁌",
+      "expected": "\\u{E004C}"
+    },
+    {
+      "text": "󠁍",
+      "expected": "\\u{E004D}"
+    },
+    {
+      "text": "󠁎",
+      "expected": "\\u{E004E}"
+    },
+    {
+      "text": "󠁏",
+      "expected": "\\u{E004F}"
+    },
+    {
+      "text": "󠁐",
+      "expected": "\\u{E0050}"
+    },
+    {
+      "text": "󠁑",
+      "expected": "\\u{E0051}"
+    },
+    {
+      "text": "󠁒",
+      "expected": "\\u{E0052}"
+    },
+    {
+      "text": "󠁓",
+      "expected": "\\u{E0053}"
+    },
+    {
+      "text": "󠁔",
+      "expected": "\\u{E0054}"
+    },
+    {
+      "text": "󠁕",
+      "expected": "\\u{E0055}"
+    },
+    {
+      "text": "󠁖",
+      "expected": "\\u{E0056}"
+    },
+    {
+      "text": "󠁗",
+      "expected": "\\u{E0057}"
+    },
+    {
+      "text": "󠁘",
+      "expected": "\\u{E0058}"
+    },
+    {
+      "text": "󠁙",
+      "expected": "\\u{E0059}"
+    },
+    {
+      "text": "󠁚",
+      "expected": "\\u{E005A}"
+    },
+    {
+      "text": "󠁛",
+      "expected": "\\u{E005B}"
+    },
+    {
+      "text": "󠁜",
+      "expected": "\\u{E005C}"
+    },
+    {
+      "text": "󠁝",
+      "expected": "\\u{E005D}"
+    },
+    {
+      "text": "󠁞",
+      "expected": "\\u{E005E}"
+    },
+    {
+      "text": "󠁟",
+      "expected": "\\u{E005F}"
+    },
+    {
+      "text": "󠁠",
+      "expected": "\\u{E0060}"
+    },
+    {
+      "text": "󠁡",
+      "expected": "\\u{E0061}"
+    },
+    {
+      "text": "󠁢",
+      "expected": "\\u{E0062}"
+    },
+    {
+      "text": "󠁣",
+      "expected": "\\u{E0063}"
+    },
+    {
+      "text": "󠁤",
+      "expected": "\\u{E0064}"
+    },
+    {
+      "text": "󠁥",
+      "expected": "\\u{E0065}"
+    },
+    {
+      "text": "󠁦",
+      "expected": "\\u{E0066}"
+    },
+    {
+      "text": "󠁧",
+      "expected": "\\u{E0067}"
+    },
+    {
+      "text": "󠁨",
+      "expected": "\\u{E0068}"
+    },
+    {
+      "text": "󠁩",
+      "expected": "\\u{E0069}"
+    },
+    {
+      "text": "󠁪",
+      "expected": "\\u{E006A}"
+    },
+    {
+      "text": "󠁫",
+      "expected": "\\u{E006B}"
+    },
+    {
+      "text": "󠁬",
+      "expected": "\\u{E006C}"
+    },
+    {
+      "text": "󠁭",
+      "expected": "\\u{E006D}"
+    },
+    {
+      "text": "󠁮",
+      "expected": "\\u{E006E}"
+    },
+    {
+      "text": "󠁯",
+      "expected": "\\u{E006F}"
+    },
+    {
+      "text": "󠁰",
+      "expected": "\\u{E0070}"
+    },
+    {
+      "text": "󠁱",
+      "expected": "\\u{E0071}"
+    },
+    {
+      "text": "󠁲",
+      "expected": "\\u{E0072}"
+    },
+    {
+      "text": "󠁳",
+      "expected": "\\u{E0073}"
+    },
+    {
+      "text": "󠁴",
+      "expected": "\\u{E0074}"
+    },
+    {
+      "text": "󠁵",
+      "expected": "\\u{E0075}"
+    },
+    {
+      "text": "󠁶",
+      "expected": "\\u{E0076}"
+    },
+    {
+      "text": "󠁷",
+      "expected": "\\u{E0077}"
+    },
+    {
+      "text": "󠁸",
+      "expected": "\\u{E0078}"
+    },
+    {
+      "text": "󠁹",
+      "expected": "\\u{E0079}"
+    },
+    {
+      "text": "󠁺",
+      "expected": "\\u{E007A}"
+    },
+    {
+      "text": "󠁻",
+      "expected": "\\u{E007B}"
+    },
+    {
+      "text": "󠁼",
+      "expected": "\\u{E007C}"
+    },
+    {
+      "text": "󠁽",
+      "expected": "\\u{E007D}"
+    },
+    {
+      "text": "󠁾",
+      "expected": "\\u{E007E}"
+    },
+    {
+      "text": "󠁿",
+      "expected": "\\u{E007F}"
+    },
+    {
+      "text": "󠂀",
+      "expected": "󠂀"
+    },
+    {
+      "text": "tab\tnewline\nemoji🦉é é",
+      "expected": "tab\tnewline\nemoji🦉é é"
+    },
+    {
+      "text": "a\u001b]52;c;QUJD\u0007b\u001b[2K\rc",
+      "expected": "a\\u001B]52;c;QUJD\\u0007b\\u001B[2K\\u000Dc"
+    }
+  ]
+}

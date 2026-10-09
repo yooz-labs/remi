@@ -9,15 +9,18 @@ let package = Package(
     platforms: [.macOS(.v26), .iOS(.v26)],
     products: [
         .library(name: "RemiKit", targets: ["RemiKit"]),
+        .library(name: "RemiPush", targets: ["RemiPush"]),
         .library(name: "RemiUI", targets: ["RemiUI"]),
     ],
     targets: [
-        .target(name: "RemiKit"),
+        .target(name: "NativeAPNsRuntime", publicHeadersPath: "include"),
+        .target(name: "RemiPush", dependencies: ["NativeAPNsRuntime"]),
+        .target(name: "RemiKit", dependencies: ["RemiPush"]),
         .target(
             name: "RemiUI",
             dependencies: ["RemiKit"],
             resources: [.process("Resources")]
         ),
-        .testTarget(name: "RemiKitTests", dependencies: ["RemiKit", "RemiUI"]),
+        .testTarget(name: "RemiKitTests", dependencies: ["RemiKit", "RemiUI", "RemiPush"]),
     ]
 )
