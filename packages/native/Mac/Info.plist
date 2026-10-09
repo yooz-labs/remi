@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>RemiPushNamespace</key>
+	<string>$(REMI_PUSH_NAMESPACE)</string>
+	<key>RemiPushAccessGroup</key>
+	<string>$(AppIdentifierPrefix)live.yooz.remi.secure-push</string>
+	<key>RemiIdentityAccessGroup</key>
+	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+</dict>
+</plist>
