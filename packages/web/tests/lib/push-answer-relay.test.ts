@@ -20,6 +20,12 @@ import {
   relayAnswerViaSignaling,
   signalingAnswerUrl,
 } from '../../src/lib/push-answer-relay';
+import * as answerRelay from '../../src/lib/push-answer-relay';
+
+test('the retired code-room answer API has no exports (R7)', () => {
+  expect(Object.hasOwn(answerRelay, 'signalingAnswerUrl')).toBe(false);
+  expect(Object.hasOwn(answerRelay, 'relayAnswerViaSignaling')).toBe(false);
+});
 
 // Minimal in-memory localStorage so identity-client can read/write a real
 // identity. This is the runtime environment, not a stub of any logic under test.
