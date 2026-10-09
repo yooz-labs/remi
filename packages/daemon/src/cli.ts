@@ -279,6 +279,7 @@ import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
+import { RecentRepositoryStore } from './workspace/recent-store.ts';
 
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
@@ -2253,6 +2254,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   send: sendToConnection,
 });
 
+const recentRepositoryStore = new RecentRepositoryStore();
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
   harnesses: harnessRegistry,
   liveSessionsRegistry,
@@ -2277,6 +2279,10 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
     return args;
   },
   send: sendToConnection,
+  ...(serveMode && {
+    rememberRepository: (directory: string, repository?: string) =>
+      recentRepositoryStore.remember(directory, repository),
+  }),
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
@@ -2343,6 +2349,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
 // The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
 const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
   sessionStore,
+  repositoryStore: recentRepositoryStore,
   send: sendToConnection,
 });
 

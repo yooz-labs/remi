@@ -55,9 +55,10 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
 ## Decision (phase C): recent repositories
 
 9. **`recent_repositories_request {limit?}` is answered with `recent_repositories_response {repositories}`**, each `{ repository, name, lastUsedAt }`: the repositories the machine's recent sessions ran in, main worktrees only, most recently used first, each once (`recentRepositoriesReport`, `workspace/recent.ts`; `cli/handlers/recent-repositories-events.ts`).
-   - **Source.** The session store (`sessions.json`, at most 100 records). Reading it is the store's ordinary `list()`: it takes the store's lock, marks sessions whose process is gone as exited, and drops a session seven days after it exited.
-     So a repository leaves the list a week after its last session there ended, and at once when that session's directory is removed (a worktree the person deleted). Keeping those is #1284.
-   - **Last use.** When the session ended, or the time of the answer while it still runs. Sessions are walked in that order, and each repository carries its latest use.
+   - **Source.** The session store (`sessions.json`, at most 100 records), merged with `recent-repositories.json` under the same remi home (#1284). Reading sessions is the store's ordinary `list()`: it takes the store's lock, marks sessions whose process is gone as exited, and drops a session seven days after it exited.
+     After a successful child start, the hub remembers its main repository, including starts without `workspace` and resumes through the shared starter. Prepared workspaces already know their main repository; other directories use the same resolver and 5-second walk deadline. Wrappers do not write history, but their session records still contribute. History holds only `{repository, lastUsedAt}`, at most 20 distinct repositories, newest first, with no age expiry. A removed linked worktree or expired session no longer removes a remembered main repository that still exists.
+     Writes use an interprocess transaction with the existing ownership and stale recovery rules, yielding between lock attempts for up to 2 seconds, and restricted atomic JSON replacement (file 0600, directory 0700). Readers acquire no lock. Damaged history is ignored with a content-free diagnostic, and the next successful start can replace it. A history write failure is logged and does not turn an already successful child start into a failure. Older daemons do not touch this new file.
+   - **Last use.** When a session ended, the time of the answer while it still runs, or the remembered successful start time. Both sources are walked in that order, and each repository carries its latest use.
    - **What is left out.** Each session's directory goes through the resolver of item 2, so a subdirectory or a linked worktree names its repository and a submodule names itself. Left out:
      - a directory that is gone, is a file, or is one git cannot run in;
      - one outside any repository, in a bare repository, or in a linked worktree of one;
@@ -66,9 +67,9 @@ Owner decisions (#1233, 2026-10-06): hub-created worktrees live in `../remi-work
    - **Limit.** 1 to 20 as asked; above 20 is 20; absent, or anything else, is 10.
    - **Deadline.** One 5-second deadline covers the walk, every directory check and git call; reading the store comes before it. Past the deadline, git calls return at once and the walk ends with what it found.
      A list cut short is not marked on the wire: it is a convenience, and a client can always ask for a path instead. The hub logs it, with counts of what was left out by reason and never a path.
-   - **Errors and load.** A store that cannot be read is an empty list, never silence, since the client waits for the answer. Requests that arrive while a walk runs share it.
+   - **Errors and load.** An unreadable source contributes no candidates; the other source still answers. If neither can be read the answer is empty, never silence, since the client waits for it. Requests that arrive while a walk runs share it.
    - **Capability.** It is part of the `workspaces` capability, which no release has shipped without it: a daemon that does not list `workspaces` does not answer, and a client checks first.
-   - **Disclosure.** It tells an approved device the repositories (main worktrees, at most 20) that the machine's sessions from the last week ran in, exited ones included. That is by design: the device can already list the live sessions and start an agent in any directory.
+   - **Disclosure.** It tells an approved device up to 20 main repositories from recent session records and retained hub starts, exited ones included. Retained starts may be older than a week. That is by design: the device can already list the live sessions and start an agent in any directory. The wire and the `workspaces` capability do not change.
 
 ## Consequences
 

@@ -2,11 +2,11 @@
  * Recent repositories (#1236 phase C, ADR 0036): the repositories of the machine's recent
  * sessions, so a client can offer "new session in repository X on machine Y".
  *
- * The source is the session store (`sessions.json`, at most 100 records). The store drops a session
- * seven days after it exited, so a repository leaves the list a week after its last session there
- * ended, and at once if the session's directory is removed (a worktree the person deleted).
- * Sessions are walked by last use: when a session ended, or now for one still running. Each
- * session's directory is resolved to its repository's main worktree with the resolver both other
+ * Sources are the session store and up to 20 main repositories remembered after successful hub
+ * starts (#1284). The latter survive the session store's seven-day expiry and removed worktrees.
+ * Candidates are walked by last use: when a session ended, now for one still running, or the
+ * remembered start time. Each candidate's directory is resolved to its repository's main worktree
+ * with the resolver both other
  * phases use, so a subdirectory or a linked worktree names its repository, a submodule or a
  * separate-git-dir checkout names itself, and a directory that is gone, outside any repository or
  * in a bare one is left out, as is one git cannot run in. One deadline covers the walk (every
@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import type { RecentRepository } from '@remi/shared';
 import { escapeUnsafeText } from '@remi/shared';
 import { findGit, hasControl, resolveRepository } from './git.ts';
+import type { RememberedRepository } from './recent-store.ts';
 
 const DEFAULT_LIMIT = 10;
 /** The most a client may ask for. */
@@ -57,6 +58,13 @@ export interface RecentRepositoriesReport {
   readonly noGit: boolean;
 }
 
+export interface RecentRepositoriesOptions {
+  limit?: unknown;
+  timeoutMs?: number;
+  now?: () => number;
+  remembered?: readonly RememberedRepository[];
+}
+
 const TIMED_OUT = Symbol('timed out');
 
 /** `work`, or {@link TIMED_OUT} once `deadlineAt` passes, whichever comes first. */
@@ -86,7 +94,7 @@ const timeOf = (iso: string): number => {
  */
 export async function recentRepositoriesReport(
   sessions: readonly RecentSession[],
-  options: { limit?: unknown; timeoutMs?: number; now?: () => number } = {},
+  options: RecentRepositoriesOptions = {},
 ): Promise<RecentRepositoriesReport> {
   const skipped: Record<RecentSkip, number> = {
     gone: 0,
@@ -102,20 +110,28 @@ export async function recentRepositoriesReport(
   const limit = recentRepositoriesLimit(options.limit);
   const deadlineAt = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const usedNow = new Date((options.now ?? Date.now)()).toISOString();
-  const ordered = sessions
-    .map((session, order) => ({ session, lastUsedAt: session.exitedAt ?? usedNow, order }))
+  const ordered = [
+    ...sessions.map((session) => ({
+      dir: session.projectPath,
+      lastUsedAt: session.exitedAt ?? usedNow,
+    })),
+    ...(options.remembered ?? []).map((entry) => ({
+      dir: entry.repository,
+      lastUsedAt: entry.lastUsedAt,
+    })),
+  ]
+    .map((entry, order) => ({ ...entry, order }))
     .sort((a, b) => timeOf(b.lastUsedAt) - timeOf(a.lastUsedAt) || a.order - b.order);
 
   const seenRepositories = new Set<string>();
   const seenDirectories = new Set<string>();
   let timedOut = false;
-  for (const { session, lastUsedAt } of ordered) {
+  for (const { dir, lastUsedAt } of ordered) {
     if (found.length >= limit) break;
     if (Date.now() >= deadlineAt) {
       timedOut = true;
       break;
     }
-    const dir = session.projectPath;
     if (seenDirectories.has(dir)) continue;
     seenDirectories.add(dir);
     let stat: fs.Stats | typeof TIMED_OUT;
@@ -175,7 +191,7 @@ export async function recentRepositoriesReport(
 /** The repositories `sessions` ran in: {@link recentRepositoriesReport} without the report. */
 export async function recentRepositories(
   sessions: readonly RecentSession[],
-  options: { limit?: unknown; timeoutMs?: number; now?: () => number } = {},
+  options: RecentRepositoriesOptions = {},
 ): Promise<RecentRepository[]> {
   return (await recentRepositoriesReport(sessions, options)).repositories;
 }
