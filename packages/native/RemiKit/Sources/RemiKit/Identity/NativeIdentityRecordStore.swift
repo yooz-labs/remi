@@ -84,6 +84,7 @@ enum NativeIdentityRecordStore {
         case absent
         case nativeSeed(Data)
         case identity(ClientIdentity)
+        case legacyCopy(Data)
     }
 
     /// Load-only validation for a persisted signer. No migration, repair, authority
@@ -115,6 +116,26 @@ enum NativeIdentityRecordStore {
         let data: Data
         do {
             guard let stored = try read(accessGroup: accessGroup, service: service, account: account, operations: operations) else {
+                #if os(macOS)
+                // Foreground only. Cold signers never inspect the legacy slot.
+                if let accessGroup, let legacy = try readLegacy(service: service, account: account, operations: operations) {
+                    let identity = legacy.count == 32
+                        ? ClientIdentity(privateKey: try .init(rawRepresentation: legacy))
+                        : try JSONDecoder().decode(Record.self, from: legacy).identity()
+                    do {
+                        try persist(identity, expected: .legacyCopy(legacy), service: service, account: account,
+                            updating: false, accessGroup: accessGroup, operations: operations, authority: authority,
+                            encodedRecord: legacy.count == 32 ? nil : legacy)
+                    } catch NativeIdentityError.keychain(errSecDuplicateItem) {
+                        guard let winner = try currentRecord(accessGroup: accessGroup, service: service,
+                            account: account, operations: operations) else { throw NativeIdentityError.changed }
+                        try authority.reconcileObservedIdentity(publicKey: winner.publicKeyRaw,
+                            revision: winner.revision, requiresAppUnlock: winner.requiresAppUnlock)
+                        return winner
+                    }
+                    return identity
+                }
+                #endif
                 try authority.reconcileObservedIdentity(publicKey: nil, revision: nil, requiresAppUnlock: nil)
                 return nil
             }
@@ -175,14 +196,30 @@ enum NativeIdentityRecordStore {
     }
     #endif
 
-    private static func query(accessGroup: String?, service: String, account: String) -> [String: Any] {
+    static func query(accessGroup: String?, service: String, account: String) -> [String: Any] {
         var value: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: account]
-        if let accessGroup { value[kSecAttrAccessGroup as String] = accessGroup }
+        if let accessGroup {
+            value[kSecAttrAccessGroup as String] = accessGroup
+            #if os(macOS)
+            // Access groups are ignored by the file Keychain on Mac (#1242).
+            value[kSecUseDataProtectionKeychain as String] = true
+            #endif
+        }
         return value
     }
+    #if os(macOS)
+    private static func readLegacy(service: String, account: String, operations: NativeKeychainOperations) throws -> Data? {
+        var query = query(accessGroup: nil, service: service, account: account)
+        query[kSecUseDataProtectionKeychain as String] = false
+        return try read(query: query, operations: operations)
+    }
+    #endif
     private static func read(accessGroup: String?, service: String, account: String, operations: NativeKeychainOperations) throws -> Data? {
-        var q = query(accessGroup: accessGroup, service: service, account: account)
+        try read(query: query(accessGroup: accessGroup, service: service, account: account), operations: operations)
+    }
+    private static func read(query: [String: Any], operations: NativeKeychainOperations) throws -> Data? {
+        var q = query
         let context = LAContext()
         context.interactionNotAllowed = true
         q[kSecUseAuthenticationContext as String] = context
@@ -195,8 +232,9 @@ enum NativeIdentityRecordStore {
         guard let data = result as? Data else { throw NativeIdentityError.malformed }
         return data
     }
-    private static func persist(_ identity: ClientIdentity, expected: ExpectedRecord, service: String, account: String, updating: Bool, accessGroup: String?, operations: NativeKeychainOperations, authority: NativeIdentityAuthorityBarrier) throws {
-        let data = try JSONEncoder().encode(Record(identity))
+    private static func persist(_ identity: ClientIdentity, expected: ExpectedRecord, service: String, account: String, updating: Bool, accessGroup: String?, operations: NativeKeychainOperations, authority: NativeIdentityAuthorityBarrier,
+                                encodedRecord: Data? = nil) throws {
+        let data = try encodedRecord ?? JSONEncoder().encode(Record(identity))
         let lease = try authority.acquireIdentityMutation()
         defer { lease.release() }
         // The policy decision was prepared before acquiring the nonblocking
@@ -218,6 +256,16 @@ enum NativeIdentityRecordStore {
                 _ = try lease.invalidate()
                 throw NativeIdentityError.changed
             }
+        case .legacyCopy(let original):
+            #if os(macOS)
+            guard current == nil else { throw NativeIdentityError.keychain(errSecDuplicateItem) }
+            guard try readLegacy(service: service, account: account, operations: operations) == original else {
+                _ = try lease.invalidate()
+                throw NativeIdentityError.changed
+            }
+            #else
+            throw NativeIdentityError.changed
+            #endif
         }
         // This commit closes public trust before any private-record write.
         // A Keychain failure never restores the older authority.
