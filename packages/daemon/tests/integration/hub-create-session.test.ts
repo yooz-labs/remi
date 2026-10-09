@@ -342,6 +342,80 @@ describe('a hub creating a session for a harness (#1179)', () => {
     } finally {
       child.ws.close();
     }
+    // #1284: the main repository remains a useful choice after its session's worktree is gone.
+    git(repo, 'worktree', 'remove', '--force', dir);
+    const recent = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest(20);
+      recent.ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => recent.received.some(isResponse), 15000, 'retained repository');
+      expect(recent.received.find(isResponse)?.repositories.map((e) => e.repository)).toEqual([
+        repo,
+      ]);
+      const file = path.join(r.hub.home, '.remi', 'recent-repositories.json');
+      const records = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      expect(records).toHaveLength(1);
+      expect(Object.keys(records[0]).sort()).toEqual(['lastUsedAt', 'repository']);
+      expect(records[0].repository).toBe(repo);
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      recent.ws.close();
+    }
+  }, 60000);
+
+  test('repository history survives the session store pruning an eight-day-old session (#1284)', async () => {
+    const r = await startHub({ claude: true });
+    const repo = fs.realpathSync(r.hub.work);
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    const lastUsedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const home = path.join(r.hub.home, '.remi');
+    new SessionStore(path.join(home, 'sessions.json')).save({
+      remiSessionId: '44444444-4444-4444-8444-444444444444',
+      claudeSessionId: null,
+      projectPath: repo,
+      port: 0,
+      pid: null,
+      startedAt: lastUsedAt,
+      exitedAt: lastUsedAt,
+      exitCode: 0,
+    });
+    fs.writeFileSync(
+      path.join(home, 'recent-repositories.json'),
+      JSON.stringify([{ repository: repo, lastUsedAt }]),
+      { mode: 0o600 },
+    );
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest();
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 15000, 'eight-day repository');
+      expect(received.find(isResponse)?.repositories).toEqual([
+        { repository: repo, name: path.basename(repo), lastUsedAt },
+      ]);
+      expect(new SessionStore(path.join(home, 'sessions.json')).list()).toEqual([]);
+    } finally {
+      ws.close();
+    }
+  }, 60000);
+
+  test("a hub start without workspace remembers the directory's main repository (#1284)", async () => {
+    const r = await startHub({ claude: true });
+    const repo = fs.realpathSync(r.hub.work);
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    const nested = path.join(repo, 'src');
+    fs.mkdirSync(nested);
+    const { response } = await ask(r, { directory: nested });
+    expect(response.success, why(r, response)).toBe(true);
+    expect(response.workspace).toBeUndefined();
+    const records = JSON.parse(
+      fs.readFileSync(path.join(r.hub.home, '.remi', 'recent-repositories.json'), 'utf-8'),
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0].repository).toBe(repo);
   }, 60000);
 
   test("a recent-repositories request lists the repositories of the hub's recent sessions (#1236 phase C)", async () => {
