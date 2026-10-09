@@ -67,7 +67,7 @@ struct NewSessionSheet: View {
         .preferredColorScheme(.dark)
 }
 
-#Preview("New Session Sheet · Large Type") {
+#Preview("New Session Sheet · Accessibility") {
     NewSessionSheet(machines: MacPreviewData.machines)
-        .environment(\.dynamicTypeSize, .accessibility2)
+        .environment(\.dynamicTypeSize, .accessibility5)
 }

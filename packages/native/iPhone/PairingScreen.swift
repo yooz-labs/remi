@@ -3,6 +3,8 @@ import SwiftUI
 import UIKit
 
 struct PairingScreen: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     private let serveCommand = "remi serve"
     private let keysCommand = "remi keys"
     private let authorizeCommand = "remi authorize <fingerprint> --label phone"
@@ -98,6 +100,7 @@ struct PairingScreen: View {
             }
         }
         .navigationTitle("Add a machine")
+        .navigationBarTitleDisplayMode(dynamicTypeSize.isAccessibilitySize ? .inline : .automatic)
         .sheet(isPresented: $showingScanner) {
             PairingScannerSheet(
                 phoneFingerprint: publicIdentity?.fingerprint,

@@ -21,7 +21,6 @@ struct RemiPhoneApp: App {
                     )
                 }
             }
-            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }
