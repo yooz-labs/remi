@@ -182,6 +182,14 @@ public final class NativeRelayNotifications {
         enabling = false
     }
 
+    /// Local categories share the app/NSE publication lease and preserve secure IDs.
+    public func mergeLocalNotificationCategories(_ categories: Set<UNNotificationCategory>) async -> Bool {
+        guard let pushStore else { return false }
+        return await withCheckedContinuation { continuation in
+            pushStore.mergeNotificationCategories(categories) { continuation.resume(returning: $0) }
+        }
+    }
+
     public func enable(on endpoint: MachineEndpoint) {
         guard foreground, !enabling, let current = store, endpoint.relayPin != nil,
               current.persistableEndpoints.contains(endpoint) else {

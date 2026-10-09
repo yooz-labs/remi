@@ -215,6 +215,10 @@ public final class MachineStore {
     @ObservationIgnored private var resolvedQuestionRemovalTasks: [String: Task<Void, Never>] = [:]
     private var pendingRelayIDs: Set<String> = []
     @ObservationIgnored private var pendingAnswers: [String: AnswerMessage] = [:]
+    @ObservationIgnored private var localNotificationAnswers: Set<RemiNavigationDestination> = []
+    #if DEBUG
+    @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
+    #endif
     @ObservationIgnored private var answerTimeoutTasks: [String: Task<Void, Never>] = [:]
 
     /// Pending relay pairings are not durable trust. Both app roots save this list after READY.
@@ -676,6 +680,68 @@ public final class MachineStore {
             do { try await connection.send(response) }
             catch { self.finishAnswer(response.id, outcome: "uncertain") }
         }
+    }
+
+    public func localQuestionNotification(for destination: RemiNavigationDestination) -> LocalQuestionNotificationPlan? {
+        guard let machine = machines.first(where: { $0.id == destination.machineID }),
+              machine.status == .connected, machine.endpoint.relayPin == nil,
+              let route = routeBySession[destination.sessionID], route.relayPin == nil,
+              parentByConnection[route] == machine.endpoint,
+              let generation = connectionGenerations[route],
+              let current = machine.questions.first(where: {
+                  $0.sessionId == destination.sessionID && $0.question.id == destination.questionID &&
+                      $0.question.agentId == destination.agentID
+              }) else { return nil }
+        return LocalQuestionNotificationPlan(machineID: machine.id, message: current, generation: generation)
+    }
+
+    public func answerLocalNotification(_ plan: LocalQuestionNotificationPlan,
+                                        identifier: String) async -> LocalNotificationAnswerOutcome {
+        let destination = plan.destination
+        guard !Task.isCancelled,
+              let machine = machines.first(where: { $0.id == destination.machineID }),
+              machine.status == .connected, machine.endpoint.relayPin == nil,
+              let route = routeBySession[destination.sessionID], route.relayPin == nil,
+              parentByConnection[route] == machine.endpoint,
+              let generation = connectionGenerations[route], let connection = connections[route],
+              let current = machine.questions.first(where: {
+                  $0.sessionId == destination.sessionID && $0.question.id == destination.questionID
+              }), let value = plan.answerValue(identifier: identifier, current: current,
+                    machineID: machine.id, generation: generation) else { return .refused }
+        guard localNotificationAnswers.count < 8, !localNotificationAnswers.contains(destination) else { return .busy }
+        localNotificationAnswers.insert(destination)
+        defer { localNotificationAnswers.remove(destination) }
+        let response = AnswerMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format(),
+            sessionId: current.sessionId, questionId: current.question.id, answer: value,
+            claudeSessionId: current.claudeSessionId, selections: nil, cancel: nil, message: nil)
+        let permit = RelayRegistrationEpoch(), allowed = permit.capture()
+        let lifetimeStore = answerEpoch, lifetime = answerEpoch.capture()
+        let validate: @Sendable () throws -> Void = {
+            guard permit.matches(allowed), lifetimeStore.matches(lifetime), !Task.isCancelled else {
+                throw CancellationError()
+            }
+        }
+        return await withTaskCancellationHandler {
+            var attempted = false
+            do {
+                try Task.checkCancellation()
+                #if DEBUG
+                try await ownedBeforeLocalAnswerSend?()
+                #endif
+                try validate()
+                attempted = true
+                let result = try await connection.exchange(response, id: response.id,
+                    expected: .answer(session: response.sessionId, question: response.questionId),
+                    until: ContinuousClock.now.advanced(by: .seconds(15)), validate: validate)
+                guard case .answer(let receipt) = result else { return .uncertain }
+                switch receipt.outcome {
+                case "delivered": return .delivered
+                case "stale", "stale-binding", "session-not-found": return .stale
+                case "busy": return .busy
+                default: return .uncertain
+                }
+            } catch { return attempted ? .uncertain : .refused }
+        } onCancel: { permit.replace() }
     }
 
     public func sendChat(sessionId: String, content: String, claudeSessionId: String? = nil) {

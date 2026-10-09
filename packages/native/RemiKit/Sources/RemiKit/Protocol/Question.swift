@@ -17,6 +17,8 @@ public struct QuestionOption: Codable, Sendable, Equatable, Hashable {
     public let description: String?
     public let suggestionIndex: Int?
     public let standingGrant: String?
+    /// A separate session capability, never a one-time notification choice (#1141).
+    public let sessionGrant: String?
 }
 
 public struct QuestionStep: Codable, Sendable, Equatable {

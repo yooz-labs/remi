@@ -165,7 +165,11 @@ public actor RemiConnection {
 
     func exchange<T: Encodable & Sendable>(_ message: T, id: String, expected: RelayRPCExpected,
         until deadline: ContinuousClock.Instant, validate: @escaping @Sendable () throws -> Void) async throws -> RelayRPCResult {
-        guard ready, rpcWaiters.count < 8, rpcWaiters[id] == nil, deadline > .now else { throw RelayFailure.closed }
+        let admitted: Bool
+        if configuration.relayPin != nil { admitted = ready }
+        else if case .connected = state { admitted = true }
+        else { admitted = false }
+        guard admitted, rpcWaiters.count < 8, rpcWaiters[id] == nil, deadline > .now else { throw RelayFailure.closed }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let timeout = Task {
@@ -249,6 +253,10 @@ public actor RemiConnection {
             defer { pendingSends -= 1 }
             try await job.value
         } else {
+            if validateBeforeSend != nil {
+                guard case .connected = state else { throw RelayFailure.closed }
+            }
+            try validateBeforeSend?()
             try await socket.send(.data(data))
         }
     }

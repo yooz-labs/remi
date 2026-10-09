@@ -10,6 +10,37 @@ import UserNotifications
 final class MacNotificationRouter {
     static let shared = MacNotificationRouter()
     var destination: RemiNavigationDestination?
+    var notice: String?
+}
+
+@MainActor
+private final class MacLocalQuestionActions {
+    static let shared = MacLocalQuestionActions()
+    private struct Binding {
+        let plan: LocalQuestionNotificationPlan
+        let store: MachineStore
+        let title: String
+    }
+    private var bindings: [String: Binding] = [:]
+
+    func bind(id: String, plan: LocalQuestionNotificationPlan, store: MachineStore, title: String) -> Bool {
+        guard bindings.count < 128 else { return false }
+        bindings[id] = Binding(plan: plan, store: store, title: title)
+        return true
+    }
+
+    func remove(ids: [String]) {
+        for id in ids { bindings.removeValue(forKey: id) }
+    }
+
+    func answer(id: String, category: String, identifier: String, title: String, body: String,
+                destination: RemiNavigationDestination) async -> LocalNotificationAnswerOutcome {
+        guard category == LocalQuestionNotificationPlan.categoryIdentifier,
+              let binding = bindings.removeValue(forKey: id), binding.plan.destination == destination,
+              binding.title == title, binding.plan.body == body,
+              binding.store === NativeRelayNotifications.shared.store else { return .refused }
+        return await binding.store.answerLocalNotification(binding.plan, identifier: identifier)
+    }
 }
 
 enum MacNotificationAccess: Sendable, Equatable {
@@ -105,6 +136,22 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
         guard let destination = MacNotificationCoordinator.destination(
             from: response.notification.request.content.userInfo
         ) else { return }
+        if response.actionIdentifier == LocalQuestionNotificationPlan.yesIdentifier ||
+            response.actionIdentifier == LocalQuestionNotificationPlan.noIdentifier {
+            let content = response.notification.request.content
+            let outcome = await MacLocalQuestionActions.shared.answer(id: response.notification.request.identifier,
+                category: content.categoryIdentifier, identifier: response.actionIdentifier,
+                title: content.title, body: content.body, destination: destination)
+            guard outcome != .delivered else { return }
+            await MainActor.run {
+                MacNotificationRouter.shared.notice = outcome == .uncertain
+                    ? "Delivery couldn't be confirmed. Check the current request before answering again."
+                    : "This notification can no longer answer the request. Review it in Remi."
+                MacNotificationRouter.shared.destination = destination
+            }
+            return
+        }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
         await MainActor.run {
             MacNotificationRouter.shared.destination = destination
         }
@@ -116,25 +163,47 @@ enum MacNotificationCoordinator {
         await MacNotificationPermission.shared.requestIfNeeded()
     }
 
-    static func notify(
+    @MainActor static func notify(
         id: String,
         title: String,
         body: String,
-        destination: RemiNavigationDestination
+        destination: RemiNavigationDestination,
+        message: QuestionMessage,
+        store: MachineStore
     ) async {
+        let plan = store.localQuestionNotification(for: destination)
+        let actionsPublished: Bool
+        if plan != nil {
+            actionsPublished = await NativeRelayNotifications.shared.mergeLocalNotificationCategories(
+                [LocalQuestionNotificationPlan.category])
+        } else { actionsPublished = false }
         let summariesEnabled = UserDefaults.standard.object(
             forKey: QuestionNotificationSummarizer.preferenceKey
         ) as? Bool ?? true
-        let summarizedBody = summariesEnabled
-            ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
-            : QuestionNotificationSummarizer.fallback(for: body)
+        let summarizedBody: String
+        if let plan, actionsPublished { summarizedBody = plan.body }
+        else {
+            summarizedBody = summariesEnabled
+                ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
+                : QuestionNotificationSummarizer.fallback(for: body)
+        }
+        guard store.machines.first(where: { $0.id == destination.machineID })?.questions.contains(message) == true else { return }
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = summarizedBody
+        content.title = PushDisplayText.escape(title)
+        content.body = PushDisplayText.escape(summarizedBody)
+        if let plan, actionsPublished, store.localQuestionNotification(for: destination) == plan,
+           MacLocalQuestionActions.shared.bind(id: id, plan: plan, store: store, title: content.title) {
+            content.categoryIdentifier = LocalQuestionNotificationPlan.categoryIdentifier
+            content.body = plan.body
+        }
         content.sound = .default
         content.userInfo = destinationUserInfo(destination)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        try? await UNUserNotificationCenter.current().add(request)
+        do { try await UNUserNotificationCenter.current().add(request) }
+        catch {
+            MacLocalQuestionActions.shared.remove(ids: [id])
+            MacNotificationRouter.shared.notice = "The notification couldn't be shown. The request is still available in Remi."
+        }
     }
 
     static func destinationUserInfo(_ destination: RemiNavigationDestination) -> [AnyHashable: Any] {
@@ -155,7 +224,8 @@ enum MacNotificationCoordinator {
         return try? JSONDecoder().decode(RemiNavigationDestination.self, from: data)
     }
 
-    static func remove(ids: [String]) {
+    @MainActor static func remove(ids: [String]) {
+        MacLocalQuestionActions.shared.remove(ids: ids)
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ids)
         center.removeDeliveredNotifications(withIdentifiers: ids)
@@ -192,25 +262,29 @@ struct MacMenuBarLabel: View {
 
 private struct MacQuestionNotificationMonitor: View {
     let store: MachineStore
-    @State private var knownQuestionIDs: Set<String> = []
+    @State private var knownQuestions: Set<RemiNavigationDestination> = []
+    @State private var notificationIDs: [RemiNavigationDestination: String] = [:]
     @State private var baselineEstablished = false
 
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .task { await MacNotificationCoordinator.requestAuthorization() }
-            .onChange(of: Set(pending.map(\.message.question.id)), initial: true) { _, newValue in
+            .onChange(of: Set(pending.map(\.destination)), initial: true) { _, newValue in
                 guard baselineEstablished else {
-                    knownQuestionIDs = newValue
+                    knownQuestions = newValue
                     baselineEstablished = true
                     return
                 }
 
-                MacNotificationCoordinator.remove(ids: Array(knownQuestionIDs.subtracting(newValue)))
-                for id in newValue.subtracting(knownQuestionIDs) {
+                let removed = knownQuestions.subtracting(newValue).compactMap { notificationIDs.removeValue(forKey: $0) }
+                MacNotificationCoordinator.remove(ids: removed)
+                for destination in newValue.subtracting(knownQuestions) {
                     guard let item = pending.first(where: {
-                        $0.message.question.id == id
+                        $0.destination == destination
                     }) else { continue }
+                    let id = "remi.mac.question.\(UUID().uuidString.lowercased())"
+                    notificationIDs[destination] = id
                     let sessionName = item.machine.sessions.first(where: {
                         $0.sessionId == item.message.sessionId
                     })?.name ?? "A session"
@@ -219,22 +293,22 @@ private struct MacQuestionNotificationMonitor: View {
                             id: id,
                             title: "\(sessionName) needs you",
                             body: item.message.question.text,
-                            destination: RemiNavigationDestination(
-                                machineID: item.machine.id,
-                                sessionID: item.message.sessionId,
-                                questionID: id,
-                                agentID: item.message.question.agentId
-                            )
+                            destination: destination,
+                            message: item.message,
+                            store: store
                         )
                     }
                 }
-                knownQuestionIDs = newValue
+                knownQuestions = newValue
             }
     }
 
-    private var pending: [(machine: MachineState, message: QuestionMessage)] {
+    private var pending: [(machine: MachineState, message: QuestionMessage, destination: RemiNavigationDestination)] {
         store.machines.flatMap { machine in
-            machine.questions.map { (machine, $0) }
+            machine.questions.map { message in
+                (machine, message, RemiNavigationDestination(machineID: machine.id, sessionID: message.sessionId,
+                    questionID: message.question.id, agentID: message.question.agentId))
+            }
         }
     }
 }
