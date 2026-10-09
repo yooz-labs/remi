@@ -121,7 +121,15 @@ public final class RemiPushStore: @unchecked Sendable {
     }
 
     static func configuredApplicationGroup(bundle: Bundle) throws -> String {
-        "group.live.yooz.remi"
+        let accessGroup = try configuredAccessGroup("RemiPushAccessGroup", bundle: bundle)
+        #if os(macOS)
+        // macOS validates this group against the signing team (#1242). A group.
+        // identifier instead needs a profile grant that automatic Mac signing omitted.
+        let team = accessGroup.split(separator: ".", maxSplits: 1)[0]
+        return "\(team).live.yooz.remi"
+        #else
+        return "group.live.yooz.remi"
+        #endif
     }
 
     public static func configured(bundle: Bundle = .main) throws -> RemiPushStore {
