@@ -61,6 +61,11 @@ struct NativeAnswerProofTests {
         #expect(throws: (any Error).self) {
             try RelayPushResponse.decode(Data(#"{"type":"secure_push_unregister_response","id":"own","requestId":"own","timestamp":"own","success":false,"success":true}"#.utf8))
         }
+        // Both Foundation's first value and the parser's final value are valid.
+        // Only exact duplicate-field refusal can reject this shape.
+        #expect(throws: (any Error).self) {
+            try RelayPushResponse.decode(Data(#"{"type":"secure_push_unregister_response","id":"own","requestId":"own","timestamp":"own","success":true,"success":true}"#.utf8))
+        }
     }
 
     @Test(arguments: [false, true])
