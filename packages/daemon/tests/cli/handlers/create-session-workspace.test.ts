@@ -19,6 +19,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { RecentRepositoryStore } from '../../../src/workspace/recent-store.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -45,6 +46,7 @@ describe('create requests with a workspace (#1236)', () => {
   let freePort: number | null;
   let spawnError: Error | null;
   let spawns: Array<{ port: number; directory: string | undefined; extraArgs: string[] }>;
+  let history: RecentRepositoryStore;
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-create-ws-')));
@@ -69,6 +71,7 @@ describe('create requests with a workspace (#1236)', () => {
     freePort = SPAWNED.port;
     spawnError = null;
     spawns = [];
+    history = new RecentRepositoryStore(path.join(root, 'home', 'recent-repositories.json'));
     configureLogger({ writeLog: (line: string) => logged.push(line) });
   });
 
@@ -89,6 +92,7 @@ describe('create requests with a workspace (#1236)', () => {
       portRange: 10,
       bindHost: '127.0.0.1',
       inheritedArgs: () => ['--inherited'],
+      rememberRepository: (directory, repository) => history.remember(directory, repository),
       send: (_connectionId, message) => {
         sent.push(message);
         return true;
@@ -125,6 +129,7 @@ describe('create requests with a workspace (#1236)', () => {
       },
     });
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/x');
+    expect(history.list().map((r) => r.repository)).toEqual([repo]);
   });
 
   test('a workspace without a worktree starts the child in the main worktree', async () => {
@@ -219,6 +224,7 @@ describe('create requests with a workspace (#1236)', () => {
     });
     expect(response()).toMatchObject({ success: false });
     expect(response().error).not.toContain(root);
+    expect(history.list()).toEqual([]);
     expect(fs.existsSync(worktreeDir('b'))).toBe(true);
     // The failure line itself names the worktree it leaves (the spawn line names it too).
     expect(
@@ -266,5 +272,18 @@ describe('create requests with a workspace (#1236)', () => {
     expect(spawns.map((s) => s.directory)).toEqual([repo]);
     expect(response().success).toBe(true);
     expect('workspace' in response()).toBe(false);
+    expect(history.list().map((r) => r.repository)).toEqual([repo]);
+  });
+
+  test('a history write failure still reports the successfully started child', async () => {
+    fs.mkdirSync(history.filePath, { recursive: true });
+    await handlers().onCreateSessionRequest(CID, repo, REQ);
+    expect(response()).toMatchObject({
+      success: true,
+      sessionId: SPAWNED.sessionId,
+      port: SPAWNED.port,
+    });
+    expect(spawns).toHaveLength(1);
+    expect(logged.some((line) => line.includes('could not remember'))).toBe(true);
   });
 });

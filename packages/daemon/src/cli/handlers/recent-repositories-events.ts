@@ -1,13 +1,15 @@
 /**
  * The recent-repositories request (#1236 phase C, ADR 0036): answers the requesting connection
- * with the repositories of the machine's recent sessions, read from the session store. An empty
- * store, or a git that cannot answer, is an empty list, never silence: a client waits for it.
+ * with the repositories of the machine's recent sessions and remembered hub starts (#1284). An empty
+ * pair of sources, or a git that cannot answer, is an empty list, never silence: a client waits for it.
  * Requests that arrive while a walk is running share it, so many requests cost one walk.
  */
 
 import { createRecentRepositoriesResponse, errorToString, escapeUnsafeText } from '@remi/shared';
 import type { RecentRepository, UUID } from '@remi/shared';
 import type { SessionStore } from '../../session/index.ts';
+import type { RecentRepositoryStore } from '../../workspace/recent-store.ts';
+import type { RecentSession } from '../../workspace/recent.ts';
 import {
   MAX_RECENT_REPOSITORIES,
   recentRepositoriesLimit,
@@ -19,6 +21,7 @@ import type { SendToConnection } from './trivial-events.ts';
 export interface RecentRepositoriesHandlerDeps {
   readonly sessionStore: Pick<SessionStore, 'list'>;
   readonly send: SendToConnection;
+  readonly repositoryStore?: Pick<RecentRepositoryStore, 'list'>;
 }
 
 export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandlerDeps) {
@@ -28,8 +31,17 @@ export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandler
   /** One walk at the largest limit; each request takes its own share of it. */
   const walk = async (): Promise<RecentRepository[]> => {
     try {
-      const report = await recentRepositoriesReport(deps.sessionStore.list(), {
+      let sessions: RecentSession[] = [];
+      try {
+        sessions = deps.sessionStore.list();
+      } catch (err) {
+        logError(
+          `[RecentRepositories] could not read the recent sessions: ${escapeUnsafeText(errorToString(err))}`,
+        );
+      }
+      const report = await recentRepositoriesReport(sessions, {
         limit: MAX_RECENT_REPOSITORIES,
+        remembered: deps.repositoryStore?.list() ?? [],
       });
       const left = Object.entries(report.skipped).filter(([, count]) => count > 0);
       // Counts only: the paths of the sessions stay out of the log.
@@ -46,7 +58,7 @@ export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandler
       return report.repositories;
     } catch (err) {
       logError(
-        `[RecentRepositories] could not read the recent sessions: ${escapeUnsafeText(errorToString(err))}`,
+        `[RecentRepositories] could not build the repository list: ${escapeUnsafeText(errorToString(err))}`,
       );
       return [];
     }

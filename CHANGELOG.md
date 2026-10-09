@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Keep repositories available for native session creation (#1284)
+
+#### Added
+
+- The hub remembers up to 20 repositories after successful session starts, including starts without a workspace and resumes. They remain available after a linked worktree is removed or the session record expires, as long as the main repository still exists. History has no age expiry and stores only the repository and last-use time in an owner-only file under the remi home.
+- Recent repository answers merge that history with session records, keeping the latest use of each repository. The wire format and `workspaces` capability stay the same. Damaged history is logged and ignored; a history write failure does not report a successfully started session as failed.
+
 ### Authorize a device before it connects, and on machines you rebuild (#1303, [docs/PROVISIONING.md](docs/PROVISIONING.md))
 
 #### Added

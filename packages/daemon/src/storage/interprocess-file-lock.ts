@@ -317,6 +317,28 @@ export function withInterprocessFileLock<T>(filePath: string, operation: () => T
 }
 
 /**
+ * The same bounded ownership and stale recovery, yielding between attempts (#1284).
+ * The transaction itself is synchronous; only waiting for another writer is asynchronous.
+ */
+export async function withInterprocessFileLockAsync<T>(
+  filePath: string,
+  operation: () => T,
+): Promise<T> {
+  const lock = prepareLock(filePath);
+  const deadline = performance.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (performance.now() < deadline) {
+    if (publishLock(lock)) return withOwnedLock(lock, operation);
+    const snapshot = readLockSnapshot(lock.lockPath);
+    if (snapshot && isStaleLock(snapshot)) {
+      reclaimStaleLock(lock.lockPath, snapshot.owner);
+      continue;
+    }
+    await Bun.sleep(LOCK_RETRY_DELAY_MS);
+  }
+  throw new InterprocessFileLockError(lock.lockPath, 'timed out waiting for owner');
+}
+
+/**
  * Exactly one ownership attempt (#1224). Busy, stale and unknown locks all refuse;
  * only the waiting writer path performs stale recovery. Filesystem I/O remains synchronous.
  */

@@ -214,6 +214,8 @@ export interface CreateSessionHandlerDeps {
    */
   inheritedArgs: () => readonly string[];
   send: SendToConnection;
+  /** Best-effort history, installed only in hub mode (#1284); successful spawns only. */
+  rememberRepository?: (directory: string, repository?: string) => Promise<void>;
   /** Injectable for tests; defaults to the real port probe. */
   findAvailableTcpPort?: typeof defaultFindAvailableTcpPort;
   /** Injectable for tests; defaults to the real daemon spawner. */
@@ -321,6 +323,12 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           ...inheritedArgs(),
           ...request.spawnArgs,
         ]);
+        try {
+          await deps.rememberRepository?.(resolvedDirectory, workspace?.repository);
+        } catch {
+          // History is a convenience: a write failure must not report a real child as failed.
+          logError('[RecentRepositories] could not remember the started session repository');
+        }
         const notice = joinNotices(
           request.noticeFor?.({ sessionId: result.sessionId, port: result.port }),
           workspaceNotice,

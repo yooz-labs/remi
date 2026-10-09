@@ -42,6 +42,16 @@ The native apps (milestones 4 and 5) run in parallel too: Codex builds them in X
 They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 
+## Current backend continuation: recent repositories (#1284)
+
+The owner selected #1284 on 2026-10-09 while the native developer continues X2 separately.
+The wire stays unchanged; only successful hub starts write history, capped at 20 with no age expiry.
+
+1. Pin the removed-worktree and expired-session regressions against the original source, plus ordinary creates and hub resumes (`tests/integration/hub-create-session.test.ts`, `hub-resume.test.ts`).
+2. Add restricted atomic history (`workspace/recent-store.ts`), merge it into `workspace/recent.ts`, and wire the successful shared starter and recent-repositories handler in `cli.ts`; async lock waiting reuses the existing ownership and stale recovery rules.
+3. Verify canonical main repositories, latest-use deduplication, cap, permissions, damaged-source fallback, simultaneous writers and responsive bounded lock waiting; update ADR 0036's source and disclosure descriptions.
+4. Review, mutation-check each behavior, run fresh full suites on Bun 1.4.2 and 1.3.11 and the existing CI gates, then land through a PR to develop.
+
 ## Tracks (work outside the milestones)
 
 Labeled by area and prioritized P1 to P3.

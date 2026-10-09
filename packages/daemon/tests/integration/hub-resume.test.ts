@@ -18,6 +18,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
@@ -169,6 +170,7 @@ const why = (r: Running, response: object): string =>
 describe('remi serve resume (integration, #1129)', () => {
   test("a resume starts a child session daemon whose Claude receives --resume, and answers with the child's port", async () => {
     const r = await startHub();
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: r.project }).status).toBe(0);
     const remiSessionId = seedSession(r);
 
     const { response, received } = await ask(r, remiSessionId);
@@ -186,6 +188,12 @@ describe('remi serve resume (integration, #1129)', () => {
     expect(argv.slice(0, 2)).toEqual(['--resume', CLAUDE_ID]);
     const cwd = fs.readFileSync(path.join(r.agents.claudeDir, 'cwd'), 'utf-8').trim();
     expect(cwd).toBe(fs.realpathSync(r.project));
+    // #1284: resumes go through the same successful-start repository history as creates.
+    const history = JSON.parse(
+      fs.readFileSync(path.join(r.hub.home, '.remi', 'recent-repositories.json'), 'utf-8'),
+    );
+    expect(history).toHaveLength(1);
+    expect(history[0].repository).toBe(fs.realpathSync(r.project));
 
     // The session is a registered child daemon on the port the response named, not the hub.
     const entries = childEntries(r);
