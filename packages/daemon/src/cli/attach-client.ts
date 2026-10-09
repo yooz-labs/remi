@@ -417,6 +417,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       bullet_expand_response: 'ignore',
       session_list_request: 'ignore',
       session_list_response: 'ignore',
+      recent_repositories_request: 'ignore',
+      recent_repositories_response: 'ignore',
       transcript_load_request: 'ignore',
       transcript_load_complete: 'ignore',
       create_session_request: 'ignore',

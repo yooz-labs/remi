@@ -20,7 +20,14 @@ import {
   createPromptWaitingError,
   errorToString,
 } from '@remi/shared';
-import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
+import type {
+  AnswerExtras,
+  AnswerSelection,
+  Question,
+  QuestionOption,
+  ResolvedBy,
+  UUID,
+} from '@remi/shared';
 
 import {
   type AnswerCommit,
@@ -34,6 +41,20 @@ import { log, logError } from '../logger.ts';
 import type { PromptUp } from './prompt-up.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
 import type { SendToConnection } from './trivial-events.ts';
+
+/** What `onQuestionResolved` is told about a card an answer resolved (#1235). */
+export interface QuestionResolution {
+  readonly reason: 'answered' | 'cancelled';
+  readonly resolvedBy?: ResolvedBy;
+}
+
+/** An answer that reached the agent: through the notification endpoint, or a client's connection. */
+function answeredFrom(viaRelay: boolean): QuestionResolution {
+  return { reason: 'answered', resolvedBy: viaRelay ? 'lockscreen' : 'phone' };
+}
+
+/** A card cleared without its answer reaching the agent: no cause is named. */
+const CLEARED_ONLY: QuestionResolution = { reason: 'cancelled' };
 
 export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
@@ -96,8 +117,11 @@ export interface InputHandlerDeps {
    * the delivered path only (not for stale/session-not-found/stale-binding, where
    * nothing was consumed). Must be throw-safe: a broadcast failure must never
    * break answer handling. Absent => no dismissal broadcast (tests/old callers).
+   * `resolution` says whether the answer was applied and from where (#1235): `answered`
+   * with `phone` or `lockscreen` when it reached the agent, `cancelled` with no cause when the
+   * card was only cleared (a refused or late answer).
    */
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
+  onQuestionResolved?: (sessionId: UUID, questionId: UUID, resolution: QuestionResolution) => void;
   /**
    * Prompt-currency check for a resolved card-answer PTY submit (#920).
    * Backed by the session's `QuestionPresenceTracker.isPromptCurrent`, so
@@ -645,6 +669,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
       const stillActive =
         held === 'unknown' && sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
+      // #1235: the cancel reached the agent (the hook took it, or the Esc was written), or it only
+      // cleared the card.
+      let reached = held === 'resolved';
       if (held === 'resolved') {
         log(`[Answer] cancel: denied held prompt ${questionId.slice(0, 8)} through its hook`);
       } else if (held === 'closed') {
@@ -654,6 +681,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } else if (stillActive) {
         try {
           await session.pty.write(ESC);
+          reached = true;
           log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
         } catch (err) {
           logError(`[Answer] cancel: Esc write failed: ${errorToString(err)}`);
@@ -672,7 +700,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:cancel');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        onQuestionResolved?.(
+          session.sessionId,
+          questionId,
+          reached ? answeredFrom(viaRelay) : CLEARED_ONLY,
+        );
       } catch (err) {
         logError(`[Answer] cancel: question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -856,7 +888,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       ]);
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        onQuestionResolved?.(session.sessionId, questionId, answeredFrom(viaRelay));
       } catch (err) {
         logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -895,7 +927,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     if (closed) {
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        // The answer was refused: the card is only cleared (#1235).
+        onQuestionResolved?.(session.sessionId, questionId, CLEARED_ONLY);
       } catch (err) {
         logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -982,6 +1015,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
     let preserveQuestion = false;
+    /** Whether the typed answer reached the PTY (#1235); a refusal or a throwing submit did not. */
+    let applied = false;
     /** Refuse a PTY submit for the #1134 guard: log, trace, consume the card
      *  (in `finally`, under the refusal's own signal), tell the client, type
      *  nothing. */
@@ -1197,6 +1232,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         answerCacheKey(answer),
         ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
       ]);
+      applied = true;
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question, AND
@@ -1211,7 +1247,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // and it lives in `finally` so even a throwing submit still clears the card
         // (the question was consumed). Idempotent on the client side.
         try {
-          onQuestionResolved?.(session.sessionId, questionId);
+          onQuestionResolved?.(
+            session.sessionId,
+            questionId,
+            applied ? answeredFrom(viaRelay) : CLEARED_ONLY,
+          );
         } catch (err) {
           logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
         }

@@ -51,7 +51,7 @@
  */
 
 import { generateId, now } from '@remi/shared';
-import type { AgentStatus, Message, UUID } from '@remi/shared';
+import type { AgentStatus, Message, ResolvedBy, UUID } from '@remi/shared';
 
 import {
   type PtyOutputSink,
@@ -101,7 +101,12 @@ export interface CodexLaunchDeps {
    * A card stopped being pending without a phone answer (the TUI answered, the replay did not
    * bring it back): broadcast `question_resolved` and clear its lock-screen push.
    */
-  onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
+  onQuestionResolved: (
+    sid: UUID,
+    qid: UUID,
+    reason: 'answered' | 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   log: (message: string) => void;
   /**
    * Where a finished turn is reported (#1180): the daemon's turn-event sink, the one Claude's `Stop`
@@ -475,7 +480,8 @@ export function createCodexSession(
     client,
     sessionRegistry: deps.sessionRegistry,
     present: (question) => {
-      messageApi.handleQuestion(question, { held: true });
+      // Codex takes the answer as a JSON-RPC response; a terminal-only card is stamped none.
+      messageApi.handleQuestion(question, { held: true, answerPath: 'structured' });
     },
     onQuestionResolved: deps.onQuestionResolved,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
@@ -568,7 +574,8 @@ export function createCodexSession(
       statuses.clear();
       if (rotating) {
         // The old thread's cards are not this session's any more, and must not be answered.
-        decisions.forceRelease('the session moved to a new thread');
+        // The harness moved to a new thread (#1235).
+        decisions.forceRelease('the session moved to a new thread', 'harness');
         sendSystemMessage(ROTATION_MESSAGE);
         publish();
       }

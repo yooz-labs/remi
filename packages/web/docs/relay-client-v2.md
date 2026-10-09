@@ -1,6 +1,6 @@
 # Relay v2 client (#1199)
 
-Choose **Connect → Pair machine** and run `remi pair` on the daemon machine.
+Choose **Connect → Pair machine** and run `remi pair --relay` on the daemon machine.
 Paste the complete token, or choose its QR image in the iOS/macOS app. The native
 system picker and Vision decode the selected image locally; there is no upload.
 The image must be at most 8 MiB, at most 4096 pixels on either axis and at most

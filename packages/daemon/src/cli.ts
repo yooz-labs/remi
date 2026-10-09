@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.4'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.40'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.4'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.40'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -110,12 +110,11 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
-  createQuestionResolved,
   createQuestionSnapshot,
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
-import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, ResolvedBy, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
@@ -156,11 +155,13 @@ import {
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
 import { promptUpDeps } from './cli/handlers/prompt-up.ts';
+import { createRecentRepositoriesHandlers } from './cli/handlers/recent-repositories-events.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
+import { buildSessionList } from './cli/handlers/session-list-entries.ts';
 import {
   type TranscriptHandlers,
   createTranscriptHandlers,
@@ -186,6 +187,7 @@ import {
 } from './cli/log-rotation.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
+import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -277,6 +279,7 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
+import { WorkspaceCache } from './workspace/describe.ts';
 
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
@@ -644,6 +647,22 @@ if (cliInstall || cliUninstall) {
   process.exit(0);
 }
 
+// `remi pair` (#1275, ADR 0037): pair a phone by QR, approved at this terminal.
+if (cliSubcommand === 'pair') {
+  if (parsedArgs.relay && cliNoRelay) {
+    console.error(
+      'Choose remi pair for direct QR or remi pair --relay; do not combine --relay and --no-relay.',
+    );
+    process.exit(1);
+  }
+  if (parsedArgs.relay) {
+    const { runRelayCommand } = await import('./cli/cmd-relay.ts');
+    process.exit(await runRelayCommand('pair', parsedArgs.subcommandArgs, cliPort));
+  }
+  const { runPairCommand } = await import('./cli/cmd-pair.ts');
+  process.exit(await runPairCommand({ ...(cliHost !== undefined && { host: cliHost }) }));
+}
+
 // Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
 {
   const { isKeysSubcommand, runKeysCommand } = await import('./cli/cmd-keys.ts');
@@ -665,10 +684,12 @@ if (cliInstall || cliUninstall) {
 
 // Retire the v1 trust-on-first-use code path before any daemon or harness startup.
 if (cliSubcommand === 'code' || cliPermanentCode) {
-  console.error('Connection codes are retired. Start the hub with --relay, then use remi pair.');
+  console.error(
+    'Connection codes are retired. Start the hub with --relay, then use remi pair --relay.',
+  );
   process.exit(1);
 }
-if (cliSubcommand === 'pair' || cliSubcommand === 'devices') {
+if (cliSubcommand === 'devices') {
   const { runRelayCommand } = await import('./cli/cmd-relay.ts');
   process.exit(await runRelayCommand(cliSubcommand, parsedArgs.subcommandArgs, cliPort));
 }
@@ -1226,12 +1247,16 @@ let closingResolved: Set<UUID> | null = null;
 // file (#786/#787), keyed by question id so `createdAt` stays stable across
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
 const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
+// The workspace each listed session runs in (#1236 phase B), read from git without making the list wait.
+const workspaceCache = new WorkspaceCache({ log: (line) => log(`[Workspace] ${line}`) });
+
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
     // Every harness may carry personal command or question text (#1200).
     redactQuestionLogs: true,
+    workspaceOf: (directory) => workspaceCache.get(directory),
   },
   {
     onSessionCreated: (sessionId) => {
@@ -1259,7 +1284,8 @@ const sessionRegistry = new SessionRegistry(
           dispose: () => harnessSessions.get(sessionId)?.dispose(),
           pendingQuestionIds,
           alreadyResolved: resolvedAtClose,
-          dismiss: (questionId) => onQuestionResolved(sessionId, questionId, 'cancelled'),
+          dismiss: (questionId) =>
+            onQuestionResolved(sessionId, questionId, 'cancelled', causeOfSessionClose(reason)),
           onDisposeError: (error) =>
             logError(`[Session ${sessionId}] dispose failed at close: ${errorToString(error)}`),
         });
@@ -1310,6 +1336,8 @@ const sessionRegistry = new SessionRegistry(
     // construction; `refresh()` schedules only on a real change.
     onAttachStateChanged: () => statusWriter.refresh(),
     onQuestionsChanged: (sessionId, questions) => {
+      // #1235: a card that is live again can be resolved again.
+      questionResolver.noteLive(questions.map((q) => q.id));
       // Best-effort: a registry-file hiccup here must never take down the
       // question pipeline itself (the live WS `question`/`question_resolved`
       // broadcasts already happened before this fires).
@@ -1613,8 +1641,8 @@ function startBinaryUpdateWatcher(): void {
   });
 }
 
-// Watcher for live-sessions directory (pushes session list updates when a
-// sibling daemon registers). Closer assigned once started (wrapper mode, and
+// Watcher for live-sessions directory (pushes session list updates when the
+// set of sessions on the machine changes while another daemon runs). Closer assigned once started (wrapper mode, and
 // daemon mode since #542); cleanup() calls it unconditionally (no-op if null).
 let liveSessionsWatcherCloser: (() => void) | null = null;
 
@@ -1623,23 +1651,20 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
  * daemon's currently known sessions plus any newly-seen sibling ports. Shared
  * by both daemon and wrapper mode so a new sibling starting up is broadcast
  * to connected clients either way -- daemon mode never did this before #542.
- * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`, and
- * `liveSessionsRegistry` at CALL time (not closure-capture time), so it always
- * reflects the finalized port and current session state.
+ * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`,
+ * `harness` and `liveSessionsRegistry` at CALL time (not closure-capture time),
+ * so it always reflects the finalized port and current session state. The
+ * entries come from `buildSessionList`, the request path's builder (#1274).
  */
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
   const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
-  const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-  for (const remiId of [...managedIds]) {
-    const binding = bindingStore.get(remiId as UUID);
-    if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
-  }
-  const sessions = [
-    ...sessionRegistry.listSessions(),
-    ...transcriptDiscovery.discoverSessions(managedIds),
-  ];
-  return { sessions, newPorts };
+  // The same entries a session_list_request gets, harness identity included (#1274).
+  const { own, external } = buildSessionList(
+    { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+    true,
+  );
+  return { sessions: [...own, ...external], newPorts };
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
@@ -1886,11 +1911,14 @@ remiAttachState = () => {
 
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
- * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
- * reason 'answered'), or (b) resolved without a user answer (an external
+ * being pending on ANY channel: (a) a phone answer remi applied (input-events
+ * `handleAnswer`, reason 'answered'), or (b) anything else: an external
  * resolution, a Stop / SubagentStop / SessionEnd sweep, a superseded render,
- * `remi unstick`; reason 'cancelled'). Since #1125 the daemon never sends the
- * protocol's 'auto_approved' / 'auto_denied' reasons. It does TWO throw-safe things:
+ * `remi unstick`, or a phone answer that was refused (reason 'cancelled'). Since
+ * #1125 the daemon never sends the protocol's 'auto_approved' / 'auto_denied'
+ * reasons. `resolvedBy` names the cause when the caller knows it (#1235, ADR 0038).
+ * `questionResolver` does the two throw-safe things, once per card (the first
+ * resolution that names a cause wins):
  *   1. Broadcast `question_resolved` to every connected client so each dismisses
  *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
  *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
@@ -1899,22 +1927,21 @@ remiAttachState = () => {
  * Each step is independently guarded so a failure in one never blocks the other,
  * and neither can propagate into the answer handler or the gate decision.
  */
+const questionResolver = createQuestionResolver({
+  broadcast: (message) => registry.broadcast(message),
+  dismissPush: (sessionId, questionId) =>
+    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId),
+  logError,
+});
+
 const onQuestionResolved = (
   sessionId: UUID,
   questionId: UUID,
   reason: 'answered' | 'cancelled',
+  resolvedBy?: ResolvedBy,
 ): void => {
   closingResolved?.add(questionId);
-  try {
-    registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
-  } catch (err) {
-    logError(`[QuestionResolved] broadcast failed for ${questionId}: ${errorToString(err)}`);
-  }
-  try {
-    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId);
-  } catch (err) {
-    logError(`[QuestionResolved] APNS dismissal failed for ${questionId}: ${errorToString(err)}`);
-  }
+  questionResolver.resolve(sessionId, questionId, reason, resolvedBy);
 };
 
 import { createPtyMessageFanout } from './cli/handlers/pty-message-fanout.ts';
@@ -1981,8 +2008,9 @@ const inputHandlers: InputHandlers = createInputHandlers({
   acceptsTypedChat: (sessionId) => harnessSessions.get(sessionId)?.acceptsTypedChat,
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
-  onQuestionResolved: (sessionId, questionId) =>
-    onQuestionResolved(sessionId, questionId, 'answered'),
+  // #1235: the handler says whether the answer was applied, and from where.
+  onQuestionResolved: (sessionId, questionId, resolution) =>
+    onQuestionResolved(sessionId, questionId, resolution.reason, resolution.resolvedBy),
   // The screen reads the answer guards need (#920 prompt currency, #1002 any
   // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
   // tracker (each session's `decisions.screen`, from the same per-sessionId
@@ -2226,20 +2254,6 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   send: sendToConnection,
 });
 
-const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
-  // `remi serve` is session-less and must never run Claude (#1124).
-  hubMode: serveMode,
-  harnessId,
-  harnesses: () => harnessRegistry.available(),
-  sessionRegistry,
-  sessionStore,
-  bindingStore,
-  transcriptDiscovery,
-  harness,
-  createNewSession,
-  send: sendToConnection,
-});
-
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
   harnesses: harnessRegistry,
   liveSessionsRegistry,
@@ -2263,6 +2277,24 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
     args.push('--bind', bindHost);
     return args;
   },
+  send: sendToConnection,
+});
+
+const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  // `remi serve` is session-less and must never run Claude (#1124): a resume there starts a child
+  // session daemon with `--resume` through the create-session path (#1129). Every other process
+  // resumes in its own.
+  childSessions: serveMode
+    ? (directory, extra) => createSessionHandlers_.startSession(directory, extra)
+    : null,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
+  sessionRegistry,
+  sessionStore,
+  bindingStore,
+  transcriptDiscovery,
+  harness,
+  createNewSession,
   send: sendToConnection,
 });
 
@@ -2309,7 +2341,14 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: forgetConnectionToken,
 });
 
+// The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
+const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  sessionStore,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
+  ...recentRepositoriesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>
@@ -2317,7 +2356,7 @@ const sharedEvents = {
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
-  ...createSessionHandlers_,
+  onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,
   ...resumeSessionHandlers,
   // Expose the shared answer core under the adapter's relay event name (#575,
   // P4a). The HTTP /answer endpoint routes through the SAME logic as the
@@ -2878,7 +2917,15 @@ if (cliDaemonMode) {
       }
     }
 
-    updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+    updateRemiStatus({
+      wsPort: PORT,
+      sessionId: null,
+      sessionStatus: 'idle',
+      mode: 'hub',
+      // For `remi pair` (#1275): where a phone could reach this hub, and whether it authenticates.
+      bind: bindHost,
+      auth: authenticator !== undefined,
+    });
     if (relayWanted && relayIdentity) {
       hubRelay = new HubRelay(
         {

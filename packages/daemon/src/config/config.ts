@@ -670,7 +670,7 @@ allowed_origins = []
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
 # Opt-in authenticated hub relay (#1198); client/deployed acceptance pending.
-# remi serve --relay opts in; --no-relay wins. Pair locally with remi pair.
+# remi serve --relay opts in; --no-relay wins. Pair locally with remi pair --relay.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 

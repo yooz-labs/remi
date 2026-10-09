@@ -535,6 +535,28 @@ export class SessionStore {
     return selectClaudeSessionMatch(matches, claudeSessionId);
   }
 
+  /**
+   * The row a resume of this Claude session starts from (#1129). Every resume adds a row for the
+   * same Claude session, so once a resumed session has ended there are several exited rows for one
+   * id, and {@link findByClaudeSessionId} (right for its other callers) refuses to choose among
+   * them. A resume must not dead-end on that, so here: one live row wins (the caller's held check
+   * then refuses it), two live rows are still an unsafe ambiguity, and among exited rows the newest
+   * names where the session last ran. Claude records only, like the lookup it parallels.
+   */
+  findResumableByClaudeSessionId(claudeSessionId: string): StoredSession | null {
+    const matches = this.read().filter(
+      (s) => isClaudeRecord(s) && s.claudeSessionId === claudeSessionId,
+    );
+    if (matches.length <= 1) return matches[0] ?? null;
+    const live = matches.filter((s) => s.exitedAt === null);
+    if (live.length === 1) return live[0] ?? null;
+    if (live.length > 1) {
+      throw new AmbiguousSessionIdentityError('Claude', claudeSessionId, matches.length);
+    }
+    // ISO-8601 UTC strings sort as text, which is how remi writes `startedAt`.
+    return [...matches].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))[0] ?? null;
+  }
+
   /** Find a session by its Remi session ID. */
   findByRemiSessionId(remiSessionId: UUID): StoredSession | null {
     const sessions = this.read();

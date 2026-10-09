@@ -33,6 +33,7 @@ export type {
   SessionSource,
   DiscoverableSessionStatus,
   DiscoverableSession,
+  SessionGitWorkspace,
 } from './types.ts';
 
 export { ok, err, isOk, isErr, MAIN_AGENT_ID } from './types.ts';
@@ -91,6 +92,9 @@ export type {
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
   SessionListRequestMessage,
+  RecentRepositoriesRequestMessage,
+  RecentRepositoriesResponseMessage,
+  RecentRepository,
   SessionListResponseMessage,
   TranscriptContentMessage,
   TranscriptContentBlock,
@@ -166,6 +170,8 @@ export {
   createBulletExpandResponse,
   createSessionListRequest,
   createSessionListResponse,
+  createRecentRepositoriesRequest,
+  createRecentRepositoriesResponse,
   createTranscriptContent,
   createTranscriptLoadRequest,
   createTranscriptLoadComplete,
@@ -259,6 +265,21 @@ export { sleep } from './async-utils.ts';
 
 // Text a peer controls, made safe to show (#1178)
 export { escapeUnsafeText } from './display-text.ts';
+// The pairing link a machine shows as a QR (#1275, ADR 0037)
+export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
+export {
+  PAIRING_CODE_VERSION,
+  PAIRING_NAME_MAX_CODE_POINTS,
+  PAIRING_LINK_PREFIX,
+  PAIRING_NONCE_BYTES,
+  PAIRING_TTL_SECONDS,
+  decodePairingLink,
+  encodePairingLink,
+  generatePairingNonce,
+  isPairingHost,
+  isPairingNonce,
+  isPlainPairingText,
+} from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)
 export type { HubSupport, HubSupportAck } from './protocol-version.ts';
 export { hubSupport, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from './protocol-version.ts';

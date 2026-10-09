@@ -36,6 +36,7 @@ const SUBCOMMAND_LIST = [
   'model',
   'migrate-permissions',
   'codex',
+  'pair',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];

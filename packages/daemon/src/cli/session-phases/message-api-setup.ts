@@ -21,7 +21,7 @@
 import { createQuestion, createStructuredAgentOutput, generateId, now } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, Question, SessionIdentity, UUID } from '@remi/shared';
 
-import type { MessageAPIEvents } from '../../api/message-api.ts';
+import type { MessageAPIEvents, QuestionPushOptions } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
 import { NotificationDispatcher } from '../../notifications/notification-dispatcher.ts';
 import type { PushConfig } from '../../notifications/notification-dispatcher.ts';
@@ -141,7 +141,7 @@ export function createMessageApiForSession(
     onMessageFinalized: (msgId) => {
       log(`Message ${msgId} finalized`);
     },
-    onQuestion: (question: Question, opts?: { held?: boolean }) => {
+    onQuestion: (question: Question, opts?: QuestionPushOptions) => {
       log(`Question detected (${question.text.length} chars)`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const identity = getIdentity?.() ?? null;
@@ -152,7 +152,14 @@ export function createMessageApiForSession(
       // multi-choice card. The stamp keys `handleAnswer`'s refusal of free
       // text on a card that takes options (#1134, `free-text-on-held-card`)
       // and the terminal attach client's banner.
-      const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
+      // #1235: and how its answer is applied. A terminal-only card takes no phone answer whatever
+      // its source said; with no path given the field stays absent (unknown), never guessed.
+      const answerPath = question.terminalOnly === true ? 'none' : opts?.answerPath;
+      const stamped: Question = {
+        ...question,
+        ...(opts?.held === true && { held: true }),
+        ...(answerPath !== undefined && { answerPath }),
+      };
       const msg: ProtocolMessage = createQuestion(stamped, questionSessionId, identity);
       sendAndRecord(msg);
       // #808: `source` (QuestionSource: 'permission_request' | 'notification' |

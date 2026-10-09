@@ -8,7 +8,7 @@
  * - All timestamps are ISO 8601 strings for serialization
  */
 
-import type { HarnessId } from './harness.ts';
+import type { AnswerPath, HarnessId } from './harness.ts';
 
 /** Unique identifier for messages, sessions, etc. */
 export type UUID = string;
@@ -221,9 +221,24 @@ export interface Question {
    * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
    * (the lock-screen summary). `'plan_approval'` (#1127) is an `ExitPlanMode`
    * call: the plan is in `detail`, and `options` are the approval choices.
-   * A client that does not know a kind renders `text` + `options`.
+   * The set is open (#1235, ADR 0038): a client that does not know a kind
+   * renders `text` + `options` as a generic card, never with a permission's
+   * Allow/Deny styling, so a new kind is additive. Sandbox and trust prompts,
+   * which Claude draws in the terminal, have no kind: they are `source: 'pty'`
+   * cards. The union below lists the kinds this build sends; a client decoding
+   * the wire treats any other string as unknown, not as an error.
    */
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
+  /**
+   * How a phone answer reaches the harness (#1235, ADR 0038): `structured` (as
+   * data, through a held hook or Codex's JSON-RPC), `keystroke` (typed into the
+   * terminal behind the screen guards, so it can be refused as stale) or `none`
+   * (no phone answer; every `terminalOnly` card). Absent: an older daemon, or a
+   * path this daemon did not name; read it as unknown. A `none` card still takes a
+   * Cancel: it clears the card, and on a held Claude card it denies the request, so
+   * a client keeps its Cancel (the never-stuck floor, #627).
+   */
+  readonly answerPath?: AnswerPath | undefined;
 
   /**
    * True when no phone answer can be applied to this card (#1127 review S7):
@@ -496,6 +511,21 @@ export type SessionSource = 'daemon' | 'transcript';
 export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'detached' | 'completed';
 
 /**
+ * The git workspace a session runs in (#1236 phase B, ADR 0036), as git reports it for the
+ * session's directory: read, not remembered, so a session a person started in a worktree is
+ * described too and a branch checked out later shows (a list can be one read behind). Not
+ * `SessionWorkspace` (protocol.ts), which is what a create request made and when.
+ */
+export interface SessionGitWorkspace {
+  /** The repository's main worktree (a bare repository's own directory). */
+  readonly repository: string;
+  /** The top level of the worktree the session is in: `repository`, or a linked worktree. */
+  readonly directory: string;
+  /** The branch checked out there; null when HEAD is detached. */
+  readonly branch: string | null;
+}
+
+/**
  * A session visible through the discovery mechanism.
  * Combines daemon-managed sessions and externally-discovered transcript files.
  */
@@ -573,6 +603,13 @@ export interface DiscoverableSession {
 
   /** Hostname of the daemon hosting this session */
   readonly daemonHost?: string;
+
+  /**
+   * The git workspace the session runs in (#1236 phase B), on a daemon's own entry. Absent outside
+   * a repository, before git has first answered (shortly after the session starts), from a daemon
+   * older than phase B, and on transcript entries.
+   */
+  readonly workspace?: SessionGitWorkspace | undefined;
 }
 
 /**
@@ -642,4 +679,11 @@ export interface RemiStatus {
    * reasons as `mode`.
    */
   version?: string;
+  /**
+   * The address the hub listens on and whether it authenticates clients (#1275), so `remi pair`
+   * can refuse a hub no phone could reach or pair with. Written by a hub; absent from a session
+   * daemon and from a hub older than `remi pair`.
+   */
+  bind?: string;
+  auth?: boolean;
 }

@@ -30,6 +30,7 @@ const GOLDEN_KEYS = [
   'onAnswer',
   'onBulletExpandRequest',
   'onSessionListRequest',
+  'onRecentRepositoriesRequest',
   'onTranscriptLoadRequest',
   'onCreateSessionRequest',
   'onTerminalResize',
@@ -42,9 +43,9 @@ const GOLDEN_KEYS = [
 ];
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 14 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(14);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(14);
+  test('has exactly 15 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(15);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(15);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

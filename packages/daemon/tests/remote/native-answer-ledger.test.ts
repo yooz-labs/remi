@@ -118,7 +118,7 @@ async function fixture(options: { beforeApply?: () => void } = {}) {
       sessionRegistry: registry,
       isInSubagentContext: () => bridge.isInSubagentContext(),
       escalate: (input) => bridge.handlePermissionRequest(input),
-      onHeldEscalate: (id) => tracker.pushHeldHook(id),
+      onHeldEscalate: (id, answerPath) => tracker.pushHeldHook(id, answerPath),
       hasLocalTerminal: true,
       holdMs: 60_000,
       hookTimeoutMs: 600_000,
@@ -528,11 +528,14 @@ test(
     const queue = Array.from({ length: 180 }, (_, index) =>
       f.pty.submitInput(`owned-ahead-${index}`),
     );
-    const pending = f.ledger.answer(proof);
+    // Both callers verify asynchronously, so either can claim the queued effect first.
+    const first = f.ledger.answer(proof);
+    const second = f.ledger.answer(proof);
+    const pending = Promise.all([first, second]);
     cleanups.push(async () => {
       await Promise.allSettled([...queue, pending]);
     });
-    expect(await f.ledger.answer(proof)).toBe('uncertain');
+    expect(await Promise.race([first, second])).toBe('uncertain');
     expect(f.output()).not.toContain('y\r');
     const held = await f.hold();
     const excess = await f.proof(held.question);
@@ -540,7 +543,7 @@ test(
     expect(f.output()).not.toContain('y\r');
     expect(await f.ledger.answer(excess)).toBe('busy');
     expect(f.gate.isHeld(held.question.id)).toBe(true);
-    expect(await pending).toBe('delivered');
+    expect((await pending).sort()).toEqual(['delivered', 'uncertain']);
     await Promise.all(queue);
     const outputDeadline = Date.now() + 2000;
     while (!f.output().includes('y\r') && Date.now() < outputDeadline) await Bun.sleep(2);
@@ -553,6 +556,7 @@ test(
       hookSpecificOutput: { decision: { behavior: 'allow' } },
     });
     expect(f.resolved).toHaveLength(1025);
+    expect(f.resolved.filter((id) => id === question.id)).toHaveLength(1);
   },
   CAPACITY_TEST_TIMEOUT_MS,
 );

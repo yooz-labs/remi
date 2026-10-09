@@ -1,0 +1,9 @@
+{
+  "type": "question_resolved",
+  "id": "15f194d2-f4ad-45d3-b87a-6376ea46ce99",
+  "timestamp": "2026-10-07T21:19:37.305Z",
+  "sessionId": "fixture-session-id",
+  "questionId": "fixture-question-id",
+  "reason": "cancelled",
+  "resolvedBy": "terminal"
+}

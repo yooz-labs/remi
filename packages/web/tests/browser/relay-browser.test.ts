@@ -702,8 +702,8 @@ browserTest(
     });
     decoded.secret.fill(0);
     for (const [token, message] of [
-      ['remi-pair2:invalid', 'Pairing token is invalid. Copy the complete token from remi pair.'],
-      [expired, 'Pairing token has expired. Run remi pair again on the daemon machine.'],
+      ['remi-pair2:invalid', 'Pairing token is invalid. Copy the complete token from remi pair --relay.'],
+      [expired, 'Pairing token has expired. Run remi pair --relay again on the daemon machine.'],
     ]) {
       const context = await browser.newContext();
       const page = await context.newPage();

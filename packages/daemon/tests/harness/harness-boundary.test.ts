@@ -41,7 +41,11 @@
  * template with substitutions) is not checked, nor is a path built by hand for
  * `fs` or `new URL(..., import.meta.url)`; and a neutral module that reaches a
  * Claude module only through another neutral file's re-export is not caught
- * (the re-exporting file is itself scanned, so the first hop is).
+ * (the re-exporting file is itself scanned, so the first hop is). A neutral
+ * module that is handed a Claude object typed by its shape, with no import
+ * (`cli/handlers/session-list-entries.ts` receives transcript discovery that
+ * way, #1274), is not seen either: tsc checks the shape against the real class
+ * at each call site, and this test checks only imports.
  */
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -96,7 +100,6 @@ const DAEMON_PACKAGE = JSON.parse(readFileSync(join(SRC, '..', 'package.json'), 
  * deleting its line.
  */
 const DEBT: readonly string[] = [
-  'cli/handlers/session-events.ts -> transcript/index.ts',
   'cli/handlers/resume-session-events.ts -> transcript/index.ts',
   'cli/handlers/transcript-events.ts -> transcript/index.ts',
 ];

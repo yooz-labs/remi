@@ -245,7 +245,8 @@ export interface UIQuestion {
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
   /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions;
-   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). */
+   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). The wire set is open
+   *  (ADR 0038): a kind this build does not list renders as a generic card. */
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval';
   /** #1127: the long text the prompt is about (an ExitPlanMode's plan), shown in full. */
   readonly detail?: string;

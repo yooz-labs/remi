@@ -32,4 +32,7 @@ extend-exclude = [
   # base64url keys/signatures, not prose. Keep the original cryptographic bytes.
   "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json",
   "packages/shared/tests/fixtures/protocol/native_answer.json",
+  # Pairing link vectors (#1275): base64url bodies, not prose; they tokenize into
+  # false-positive "words" such as "UE" and "Iz".
+  "packages/shared/tests/fixtures/pairing/vectors.json",
 ]

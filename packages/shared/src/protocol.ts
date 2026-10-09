@@ -10,7 +10,7 @@
  * - Messages are ordered within a session
  */
 
-import type { HarnessId, SessionIdentity } from './harness.ts';
+import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   AnswerResultMessage,
@@ -120,6 +120,8 @@ export interface ProtocolMessageMap {
   bullet_expand_response: BulletExpandResponseMessage;
   session_list_request: SessionListRequestMessage;
   session_list_response: SessionListResponseMessage;
+  recent_repositories_request: RecentRepositoriesRequestMessage;
+  recent_repositories_response: RecentRepositoriesResponseMessage;
   transcript_content: TranscriptContentMessage;
   transcript_load_request: TranscriptLoadRequestMessage;
   transcript_load_complete: TranscriptLoadCompleteMessage;
@@ -245,6 +247,8 @@ export const MESSAGE_DIRECTION = {
   bullet_expand_response: 'd2c',
   session_list_request: 'c2d',
   session_list_response: 'd2c',
+  recent_repositories_request: 'c2d',
+  recent_repositories_response: 'd2c',
   transcript_content: 'd2c',
   transcript_load_request: 'c2d',
   transcript_load_complete: 'd2c',
@@ -595,8 +599,25 @@ export interface QuestionResolvedMessage {
   readonly sessionId: UUID;
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
-  /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
+  /**
+   * Why it resolved, coarsely (all dismiss the card the same): `answered` is a phone answer remi
+   * applied, `cancelled` anything else (the terminal, the agent, a deadline, a refused answer). A
+   * client labels the card from `resolvedBy` when it is present, and from `reason` only otherwise.
+   */
   readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
+  /**
+   * What resolved it, when the daemon knows (#1235, ADR 0038): `phone` (an answer from an app
+   * over its connection, or Telegram), `lockscreen` (an answer from a notification action, through
+   * the answer endpoint), `terminal` (a person at the machine), `harness` (the agent itself decided
+   * or moved on: an auto-deny, a session that ended, a new transcript or thread) or `timeout`
+   * (remi's own hold deadline). Absent when the cause is not known, which is never guessed: a No
+   * or an Esc at the terminal fires no hook, and Codex does not say who answered.
+   * `phone` and `lockscreen` mean remi delivered that answer first, not that it decided: after a
+   * terminal Yes Claude's hold stays open until the tool finishes, and Codex keeps whichever answer
+   * reached it first. `harness` names what ended the prompt, not who caused it: a person's /clear,
+   * /exit or Stop ends a session too.
+   */
+  readonly resolvedBy?: ResolvedBy | undefined;
 }
 
 /**
@@ -837,6 +858,42 @@ export interface SessionListResponseMessage {
 }
 
 /**
+ * The repositories of the machine's recent sessions (#1236 phase C, ADR 0036), for a client to
+ * offer "new session in repository X on machine Y". Part of the `workspaces` capability: a daemon
+ * that does not list it does not answer, so a client checks `hubSupport(ack, ['workspaces'])` first.
+ */
+export interface RecentRepositoriesRequestMessage {
+  readonly type: 'recent_repositories_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** How many to return: 1 to 20 as asked; above 20 is 20; absent or anything else is 10. */
+  readonly limit?: number | undefined;
+}
+
+/** One repository a recent session ran in (#1236 phase C). */
+export interface RecentRepository {
+  /** The repository's main worktree (a submodule or a separate-git-dir checkout is its own). */
+  readonly repository: string;
+  /** Its directory name, for display. */
+  readonly name: string;
+  /** The last time a session ran in it: when the session ended, or the time of the answer while one runs. */
+  readonly lastUsedAt: Timestamp;
+}
+
+/**
+ * The answer to a {@link RecentRepositoriesRequestMessage}: most recently used first, each once.
+ * A list the deadline cut short is not marked: it is a convenience, and a client can always ask
+ * for a path instead.
+ */
+export interface RecentRepositoriesResponseMessage {
+  readonly type: 'recent_repositories_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly requestId: UUID;
+  readonly repositories: readonly RecentRepository[];
+}
+
+/**
  * One atomic rotation event (#438): the PTY's bound Claude session rotated —
  * the user ran `/clear` or `/resume` inside the PTY, starting a NEW transcript
  * under a new Claude session id. (`/compact` does NOT rotate — it keeps the
@@ -991,7 +1048,10 @@ export interface WorkspaceRequest {
   readonly worktree?: { readonly branch: string; readonly base?: string | undefined } | undefined;
 }
 
-/** The workspace a session was started in (#1236, ADR 0036), as the hub resolved it. */
+/**
+ * The workspace a session was started in (#1236, ADR 0036), as the hub resolved it when it made
+ * it. Not `SessionGitWorkspace` (types.ts), which is what git says about a session's directory now.
+ */
 export interface SessionWorkspace {
   /** The repository's main worktree, whichever directory the request named. */
   readonly repository: string;
@@ -1074,6 +1134,16 @@ export interface ResumeSessionResponseMessage {
   readonly timestamp: Timestamp;
   /** Session ID to use (existing if still alive, or newly created). Present on success. */
   readonly sessionId?: UUID;
+  /**
+   * Port of the child session daemon a HUB started for the resume (#1129), present only on a
+   * success from a hub. The session runs in that other process, not in the one that answered, so a
+   * client does not open `sessionId` on this connection: it learns of the session through the
+   * session list's `daemonPorts` and a direct connection, as it does for a `create_session_response`
+   * with a port. Absent when the answering daemon resumed the session itself (a session daemon or a
+   * wrapper) and on a failure, so absence means the session is on this connection. Additive: an
+   * older hub refuses the request instead (`UNSUPPORTED`), and an older client ignores the field.
+   */
+  readonly port?: number;
   /** Whether resume succeeded */
   readonly success: boolean;
   /** Error message if resume failed */
@@ -1082,7 +1152,9 @@ export interface ResumeSessionResponseMessage {
    * Machine-readable failure code, from the same vocabulary as the `error`
    * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
    * a stable code; absent on success and on older daemons, so clients must
-   * keep treating `error` as the human-readable fallback (#1124).
+   * keep treating `error` as the human-readable fallback (#1124). Today only a
+   * daemon that hosts another harness than Claude sets it (`UNSUPPORTED`); a
+   * hub used to (#1124) and now starts a child session daemon (#1129).
    *
    * No client reads this field yet: the web client shows `error` only
    * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
@@ -1150,6 +1222,18 @@ export interface AuthResponseMessage {
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
+  /**
+   * The `nonce` of a pairing link the phone scanned (#1275, ADR 0037). It ties this key's first
+   * connection to the `remi pair` that showed the code; it authorizes nothing. Not signed: the trust
+   * step is the person comparing fingerprints at the machine. Sent only by a key not yet authorized.
+   */
+  readonly pairingNonce?: string | undefined;
+  /**
+   * The name the person gave this device, shown at the terminal: 1 to 64 Unicode code points, with
+   * nothing `escapeUnsafeText` writes out and no `"` or `\` (`isPlainPairingText`). It names the
+   * device; it proves nothing.
+   */
+  readonly pairingLabel?: string | undefined;
 }
 
 /** Authentication result from server to client */
@@ -1159,7 +1243,14 @@ export interface AuthResultMessage {
   readonly timestamp: Timestamp;
   /** Whether authentication succeeded */
   readonly success: boolean;
-  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, NO_PENDING_CHALLENGE, VERIFICATION_ERROR */
+  /**
+   * Error code if failed: UNKNOWN_KEY (pending local approval, #873), INVALID_SIGNATURE,
+   * FINGERPRINT_MISMATCH, NO_PENDING_CHALLENGE, VERIFICATION_ERROR, INVALID_KEY_DATA,
+   * PENDING_QUEUE_FULL, AUTH_STORE_ERROR, SERVER_SIGN_ERROR; and for a pairing code (#1275,
+   * ADR 0037): PAIRING_PENDING (claimed, the person has not decided: retry), PAIRING_REJECTED,
+   * PAIRING_CANCELLED, PAIRING_EXPIRED, PAIRING_USED (another key claimed it), PAIRING_UNKNOWN,
+   * PAIRING_MALFORMED.
+   */
   readonly error?: string;
   /** Server's signature of the challenge (for mutual authentication) */
   readonly serverSignature?: string;
@@ -1901,6 +1992,7 @@ export function createQuestionResolved(
   sessionId: UUID,
   questionId: UUID,
   reason: QuestionResolvedMessage['reason'],
+  resolvedBy?: ResolvedBy,
 ): QuestionResolvedMessage {
   return {
     type: 'question_resolved',
@@ -1909,6 +2001,7 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+    ...(resolvedBy !== undefined && { resolvedBy }),
   };
 }
 
@@ -2035,6 +2128,30 @@ export function createSessionListRequest(includeExternal?: boolean): SessionList
     id: generateId(),
     timestamp: now(),
     ...(includeExternal !== undefined && { includeExternal }),
+  };
+}
+
+/** Create a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesRequest(limit?: number): RecentRepositoriesRequestMessage {
+  return {
+    type: 'recent_repositories_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(limit !== undefined && { limit }),
+  };
+}
+
+/** Create the answer to a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesResponse(
+  repositories: readonly RecentRepository[],
+  requestId: UUID,
+): RecentRepositoriesResponseMessage {
+  return {
+    type: 'recent_repositories_response',
+    id: generateId(),
+    timestamp: now(),
+    requestId,
+    repositories,
   };
 }
 
@@ -2219,6 +2336,7 @@ export function createAuthResponse(
   signature: string,
   clientFingerprint: string,
   relayKex?: { readonly ephemeralKey: string; readonly signature: string },
+  pairing?: { readonly nonce: string; readonly label?: string | undefined },
 ): AuthResponseMessage {
   return {
     type: 'auth_response',
@@ -2230,6 +2348,10 @@ export function createAuthResponse(
     ...(relayKex && {
       relayEphemeralKey: relayKex.ephemeralKey,
       relayKexSignature: relayKex.signature,
+    }),
+    ...(pairing && {
+      pairingNonce: pairing.nonce,
+      ...(pairing.label !== undefined && { pairingLabel: pairing.label }),
     }),
   };
 }
@@ -2344,6 +2466,7 @@ export function createResumeSessionResponse(
   sessionId?: UUID,
   error?: string,
   errorCode?: string,
+  port?: number,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -2354,6 +2477,7 @@ export function createResumeSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(errorCode !== undefined && { errorCode }),
+    ...(port !== undefined && { port }),
   };
 }
 

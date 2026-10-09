@@ -74,15 +74,17 @@ const GOLDEN_TYPES = [
   'relay_devices_response',
   'relay_device_revoke_request',
   'relay_device_revoke_response',
+  'recent_repositories_request', // #1236 phase C
+  'recent_repositories_response', // #1236 phase C
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 55 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(55);
-    expect(new Set(GOLDEN_TYPES).size).toBe(55);
+  test('GOLDEN_TYPES has exactly 57 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(57);
+    expect(new Set(GOLDEN_TYPES).size).toBe(57);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 55 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 57 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -130,6 +132,7 @@ describe('protocol registry golden equality (#895)', () => {
     'register_device_token',
     'unregister_device_token',
     'session_history_request',
+    'recent_repositories_request', // #1236 phase C
     'ping',
     'pong',
     'ack',

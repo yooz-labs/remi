@@ -85,7 +85,7 @@
  */
 
 import { createSessionViews, errorToString } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, ResolvedBy, UUID } from '@remi/shared';
 
 import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
@@ -174,7 +174,12 @@ export interface HookBridgeDeps {
    * dismissal (Telegram does not dismiss cards, #1148). Must be throw-safe (the
    * gate also guards the call). Absent => no dismissal broadcast.
    */
-  broadcastQuestionResolved?: (sessionId: UUID, questionId: UUID, reason: 'cancelled') => void;
+  broadcastQuestionResolved?: (
+    sessionId: UUID,
+    questionId: UUID,
+    reason: 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   /**
    * Fail-safe fallback for a PermissionRequest that `binder.admits()` rejects
    * (#672): decides whether a live sibling daemon owns the foreign session
@@ -404,7 +409,8 @@ export function setupHookBridge(
       ];
       for (const questionId of pendingIds) {
         try {
-          broadcast(sessionId, questionId, 'cancelled');
+          // A new transcript: the harness moved on (#1235).
+          broadcast(sessionId, questionId, 'cancelled', 'harness');
         } catch (err) {
           logError(
             `[Hooks] question_resolved broadcast (restart) failed for ${questionId}: ${errorToString(err)}`,
@@ -515,6 +521,8 @@ export function setupHookBridge(
     const questionId = elicitationQuestions.get(elicitationId);
     if (!questionId) return;
     elicitationQuestions.delete(elicitationId);
+    // #1235: no cause. A user's own hook can answer an elicitation, and a chat message typed into
+    // its free-text dialog does too, so even an accept does not show a person at the terminal.
     try {
       deps.broadcastQuestionResolved?.(sessionId, questionId, 'cancelled');
     } catch (err) {
@@ -574,7 +582,8 @@ export function setupHookBridge(
         tracker.recordPendingHook(question);
         return undefined;
       }
-      return messageApi.handleQuestion(question);
+      // No hold stands behind a standalone card: a phone answer is typed, behind the guards.
+      return messageApi.handleQuestion(question, { answerPath: 'keystroke' });
     },
     // #1153: a turn that ended on an API error. Never a question; the push is
     // the whole surface. Guarded here, not in the bridge: a throw must not
@@ -641,7 +650,7 @@ export function setupHookBridge(
       // a passthrough multi-choice escalation (#625) push immediately under
       // their own id (-> addQuestion + maybePush); PTY question-emission is
       // suppressed for hooked sessions.
-      onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      onHeldEscalate: (questionId, answerPath) => tracker.pushHeldHook(questionId, answerPath),
       holdMs: deps.holdMs,
       hookTimeoutMs: deps.hookTimeoutMs,
       // #1126: a held prompt was released to the terminal without an answer
@@ -661,8 +670,8 @@ export function setupHookBridge(
       onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
       // #585: an open escalation that resolves without a user answer tells
       // the daemon to dismiss the pushed card on every remi client and APNS.
-      onResolved: (questionId, reason) =>
-        deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
+      onResolved: (questionId, reason, resolvedBy) =>
+        deps.broadcastQuestionResolved?.(sessionId, questionId, reason, resolvedBy),
       // #573: classify an escalation as binary (held, #1126) vs
       // design/multi-choice (pushed immediately); AskUserQuestion and
       // ExitPlanMode are held by name first (#1127). Absent => the gate's
@@ -749,7 +758,7 @@ export function setupHookBridge(
         // must never outlive the Claude session that asked, so every open
         // escalation is resolved and its hook released with the empty
         // response before the registry is cleared.
-        autoApproveGate.cancelStale('session_restart');
+        autoApproveGate.cancelStale('session_restart', { resolvedBy: 'harness' });
         tracker.clearPending();
         resolveAndClearQuestions();
         // #889: drop any elicitation_id correlations too -- their target
@@ -1035,7 +1044,7 @@ export function setupHookBridge(
     // sync here — the binder is the single source of truth.
     binder.onSessionEnd(input);
     if (!binder.admits(input)) return;
-    autoApproveGate.cancelStale('SessionEnd');
+    autoApproveGate.cancelStale('SessionEnd', { resolvedBy: 'harness' });
     handlers.onSessionEnd?.(input);
   });
 
@@ -1205,6 +1214,8 @@ export function setupHookBridge(
         agentId: input.agent_id,
       },
       'PermissionDenied',
+      // Claude's classifier, or its 2:00 auto-deny, decided (#1235).
+      { resolvedBy: 'harness' },
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
     // #1155: the call did not run, so it never alerts.

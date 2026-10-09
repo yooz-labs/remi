@@ -49,10 +49,6 @@ import type { Subcommand } from './arg-parser.ts';
 const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
-  pair: [
-    'Usage: remi pair',
-    'Start an authenticated hub with --relay, then compare fingerprints in this interactive terminal.',
-  ],
   devices: [
     'Usage: remi devices [revoke <exact fingerprint>]',
     'List relay devices or revoke authorization and request acknowledged Worker removal.',
@@ -222,7 +218,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     'Permanent relay codes are retired (#1198).',
     '',
     entry('remi serve --relay', 'Start the authenticated hub relay'),
-    entry('remi pair', 'Pair with exact local fingerprint confirmation'),
+    entry('remi pair --relay', 'Pair with exact local fingerprint confirmation'),
   ],
   reload: [
     'Reload configuration on all running daemons.',
@@ -349,6 +345,25 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi authorize <key> --label "name"', 'With a label'),
     entry('remi authorize --remove <fp>', 'Remove by fingerprint'),
   ],
+  pair: [
+    'Pair a phone by QR: the phone scans, you approve it here (#1275).',
+    '',
+    bold('Usage:'),
+    entry('remi pair', 'Show a pairing QR for the running hub, then approve or reject the phone'),
+    entry('remi pair --host <address>', 'Show this address in the code (a LAN or VPN address)'),
+    entry(
+      'remi pair --relay',
+      'Pair a relay device through an authenticated hub started with --relay',
+    ),
+    '',
+    'Direct QR needs an interactive terminal, a running hub with authentication on, and daemon.bind set',
+    'to an address a phone can reach. The code works once, for five minutes, and approves',
+    'nothing by itself: you approve the phone by typing the first four characters of its',
+    'fingerprint. Without a terminal, use remi keys and remi authorize.',
+    'Relay pairing needs a local terminal and an authenticated hub started with --relay;',
+    'it does not require a phone-reachable daemon.bind.',
+    'No released app scans the code yet (#1283).',
+  ],
   keys: [
     'List authorized and pending client public keys.',
     '',
@@ -415,7 +430,7 @@ export function formatHelp(version: string): string {
     entry('remi new --host <ip>', 'Create session on remote daemon'),
     entry('remi attach host:port/name', 'Attach to remote session'),
     entry('remi kill host:port/name', 'Kill a remote session'),
-    entry('remi pair', 'Pair a relay device in this local terminal'),
+    entry('remi pair --relay', 'Pair a relay device in this local terminal'),
     entry('remi devices', 'List or revoke relay devices'),
     '',
     bold('Session Management:'),
@@ -450,6 +465,7 @@ export function formatHelp(version: string): string {
     entry('remi keygen', 'Generate Ed25519 keypair'),
     entry('remi authorize <key>', 'Add client public key'),
     entry('remi keys', 'List authorized and pending keys'),
+    entry('remi pair', 'Pair a phone by QR, approved here (no released app scans it yet)'),
     entry('remi export-key', 'Export identity JSON'),
     entry('remi import-key [file]', 'Import identity from file or stdin'),
     '',
@@ -460,7 +476,7 @@ export function formatHelp(version: string): string {
     entry('--local', 'Localhost-only mode'),
     entry('--auth / --no-auth', 'Authentication control'),
     entry('--relay / --no-relay', 'Opt the hub into relay; --no-relay wins (default off)'),
-    entry('--permanent-code', 'Retired: use remi serve --relay and remi pair'),
+    entry('--permanent-code', 'Retired: use remi serve --relay and remi pair --relay'),
     '',
     entry('--no-mdns', 'Disable mDNS advertising'),
     entry('--no-tofu', 'Retired: unknown clients always need local approval'),

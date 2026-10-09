@@ -1,0 +1,62 @@
+{
+  "type": "question",
+  "id": "70773061-a969-44c0-8600-d5521e5ec480",
+  "timestamp": "2026-10-07T21:19:37.304Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Which approach?",
+    "options": [
+      {
+        "label": "Option A",
+        "value": "1",
+        "description": "The first approach",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": false
+      },
+      {
+        "label": "Option B",
+        "value": "2",
+        "description": "The second approach",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": false
+      }
+    ],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "source": "permission_request",
+    "kind": "multi_question",
+    "questions": [
+      {
+        "header": "Approach",
+        "text": "Which approach?",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "Option A",
+            "value": "1",
+            "description": "The first approach",
+            "isRecommended": false,
+            "isYes": false,
+            "isNo": false
+          },
+          {
+            "label": "Option B",
+            "value": "2",
+            "description": "The second approach",
+            "isRecommended": false,
+            "isYes": false,
+            "isNo": false
+          }
+        ]
+      }
+    ],
+    "held": true,
+    "answerPath": "structured"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
+  "claudeSessionId": "fixture-claude-session-id"
+}

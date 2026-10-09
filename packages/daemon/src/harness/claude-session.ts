@@ -39,7 +39,7 @@
  */
 
 import { errorToString } from '@remi/shared';
-import type { Question, UUID } from '@remi/shared';
+import type { Question, ResolvedBy, UUID } from '@remi/shared';
 
 import { hasLiveQuestionOnScreen } from '../api/live-questions.ts';
 import { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
@@ -96,7 +96,12 @@ export interface ClaudeLaunchDeps {
   foreignSessionEscalator: ForeignSessionEscalator;
   subagentAlerts: SubagentAlertSink;
   /** `question_resolved` to every client plus the APNS dismissal. */
-  onQuestionResolved: (sessionId: UUID, questionId: UUID, reason: 'answered' | 'cancelled') => void;
+  onQuestionResolved: (
+    sessionId: UUID,
+    questionId: UUID,
+    reason: 'answered' | 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   onHarnessDenied: (input: PermissionDeniedHookInput) => void;
   pushTurnFailed: (sessionId: UUID, input: StopFailureHookInput) => void;
   dismissTurnFailed: (sessionId: UUID) => void;

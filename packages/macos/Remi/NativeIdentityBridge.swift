@@ -606,7 +606,7 @@ final class NativeQRImagePicker: NSObject {
         let panel = NSOpenPanel(); self.panel = panel
         panel.allowedContentTypes = [.png, .jpeg, .heic]
         panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "Choose a QR image from remi pair. The image stays on this device."
+        panel.message = "Choose a QR image from remi pair --relay. The image stays on this device."
         let response = await panel.beginSheetModal(for: window)
         self.panel = nil
         guard response == .OK, let url = panel.url else { return nil }

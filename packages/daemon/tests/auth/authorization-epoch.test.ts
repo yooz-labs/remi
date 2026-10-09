@@ -65,6 +65,35 @@ test('secure grant epoch: legacy capture migrates only a present grant and prese
   expect(fs.readFileSync(path.join(directory, 'authorized_keys.json'))).toEqual(bytes);
 });
 
+test('secure grant epoch: direct QR approval persists a fresh incarnation and reapproval cannot revive captured authority', async () => {
+  const identity = await createIdentity();
+  const pair = store.createPairing();
+  expect(await store.claimPairing(pair.nonce, identity.publicKey, 'synthetic QR')).toBe('CLAIMED');
+  const approved = await store.approvePairing(pair.nonce, identity.fingerprint);
+  const original = records().keys[0]?.['authorizationEpoch'];
+  expect(original).toBeString();
+  if (typeof original !== 'string') throw new Error('missing QR grant incarnation');
+  expect(Buffer.from(original, 'base64url').length).toBe(32);
+  expect(Buffer.from(original, 'base64url').toString('base64url')).toBe(original);
+  expect('authorizationEpoch' in approved).toBe(false);
+  expect(store.captureAuthorizationEpoch(identity.publicKey)).toBe(original);
+  expect(store.removeAuthorizedKey(identity.fingerprint)).toBe(true);
+  const next = store.createPairing();
+  expect(await store.claimPairing(next.nonce, identity.publicKey, 'synthetic QR again')).toBe(
+    'CLAIMED',
+  );
+  await store.approvePairing(next.nonce, identity.fingerprint);
+  const current = records().keys[0]?.['authorizationEpoch'];
+  expect(current).toBeString();
+  expect(current).not.toBe(original);
+  expect(store.withAuthorizationEpoch(identity.publicKey, (epoch) => epoch === original)).toBe(
+    false,
+  );
+  // A direct grant creates neither relay enrollment nor secure push activation.
+  expect(fs.existsSync(path.join(directory, 'relay_devices.json'))).toBe(false);
+  expect(fs.existsSync(path.join(directory, 'secure_push_activation.json'))).toBe(false);
+});
+
 test('secure grant epoch: malformed present generations refuse without repair or file replacement', async () => {
   const identity = await createIdentity();
   await store.addAuthorizedKey(identity.publicKey, 'synthetic malformed');

@@ -19,6 +19,7 @@ import type {
   DiscoverableSession,
   ProtocolMessage,
   Question,
+  SessionGitWorkspace,
   Timestamp,
   UUID,
 } from '@remi/shared';
@@ -32,6 +33,12 @@ import { generateSessionName } from './session-name.ts';
 export interface SessionRegistryConfig {
   /** How long orphaned sessions stay alive (ms). Default: 5 minutes */
   readonly orphanTimeoutMs?: number;
+  /**
+   * The workspace of a session directory for its list entry (#1236 phase B): a
+   * `WorkspaceCache`'s `get` in production, which answers without waiting on git.
+   * Asked once at registration, so the first read starts then.
+   */
+  readonly workspaceOf?: ((directory: string) => SessionGitWorkspace | undefined) | undefined;
   /** Maximum messages to keep for replay. Default: 1000 */
   readonly maxReplayHistory?: number;
   /**
@@ -219,9 +226,11 @@ export class SessionRegistry {
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
   private readonly redactQuestionLogs: boolean;
+  private readonly workspaceOf: (directory: string) => SessionGitWorkspace | undefined;
 
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
+    this.workspaceOf = config.workspaceOf ?? (() => undefined);
     this.maxReplayHistory = config.maxReplayHistory ?? 1000;
     this.redactQuestionLogs = config.redactQuestionLogs ?? false;
     this.events = events;
@@ -249,6 +258,8 @@ export class SessionRegistry {
     }
 
     const name = generateSessionName(workingDirectory);
+    // Start the workspace read now (#1236 phase B), so the first list usually has it.
+    this.workspaceOf(workingDirectory);
 
     const createdAt = now();
     // #888: constructed BEFORE the session object literal so the
@@ -654,6 +665,7 @@ export class SessionRegistry {
 
     const status = this.getDiscoverableStatus(this.session);
     const lastMessage = this.getLastMessagePreview(this.session);
+    const workspace = this.workspaceOf(this.session.workingDirectory);
 
     return [
       {
@@ -669,6 +681,7 @@ export class SessionRegistry {
         // Always attachable (#795): there is no exclusive slot to be full.
         canAttach: true,
         canResume: false,
+        ...(workspace !== undefined && { workspace }),
       },
     ];
   }

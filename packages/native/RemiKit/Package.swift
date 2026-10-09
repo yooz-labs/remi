@@ -13,7 +13,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "RemiKit"),
-        .target(name: "RemiUI", dependencies: ["RemiKit"]),
-        .testTarget(name: "RemiKitTests", dependencies: ["RemiKit"]),
+        .target(
+            name: "RemiUI",
+            dependencies: ["RemiKit"],
+            resources: [.process("Resources")]
+        ),
+        .testTarget(name: "RemiKitTests", dependencies: ["RemiKit", "RemiUI"]),
     ]
 )

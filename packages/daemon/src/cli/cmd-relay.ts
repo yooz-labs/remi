@@ -28,7 +28,9 @@ export async function runRelayCommand(
   explicitPort?: number,
 ): Promise<number> {
   if (command === 'pair' && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-    console.error('Run remi pair in an interactive terminal to compare fingerprints and confirm.');
+    console.error(
+      'Run remi pair --relay in an interactive terminal to compare fingerprints and confirm.',
+    );
     return 1;
   }
   let port = explicitPort;

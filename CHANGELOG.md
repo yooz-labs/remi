@@ -4,6 +4,62 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Authorize a device before it connects, and on machines you rebuild (#1303, [docs/PROVISIONING.md](docs/PROVISIONING.md))
+
+#### Added
+
+- A guide to the three ways a device gets into a machine's authorized keys (`remi pair` nearby, `remi authorize <fingerprint>` for a pending key, `remi authorize` with the device's public-only JSON ahead of time), the one record they share, and what removing or resetting a key does. It includes a script and a cloud-init example for machines that are rebuilt; the script is run from the guide by a test.
+- Real-hub tests for each of those: importing a key before the hub has ever started, approving a pending key and reconnecting, another key under the same label, removal, a reset device, one device on two machines, and a session daemon the hub starts. They show a grant belongs to the machine's remi home and applies to the hub and its session daemons at the next authentication.
+
+#### Known limits
+
+- Removing a key (`remi authorize --remove`) does not close a connection that key already authenticated; the next fresh authentication is refused (#1305).
+- `remi authorize` keeps only the public key of the JSON it is given and does not refuse one that holds a private key (#1320), and a `--label` is stored and printed as typed (#1321).
+
+### Resume a session from the app when the machine runs only a hub (#1129)
+
+#### Added
+
+- Tapping Resume on a stored session now works through `remi serve`. The hub starts a new session daemon for it with `--resume`, in the directory the session ran in, and the app opens it when it appears. Before, the hub answered "not supported yet" and the only way was `remi --resume <session>` at the machine's terminal.
+- The resume response names the new daemon's port (`port`, optional; absent from a session daemon's answer, which resumes in its own process). An older hub still refuses the request, and an older app ignores the field.
+
+#### Changed
+
+- A resume goes through the same checks as a create request that names `--resume`, so a session another live remi session already holds is refused ("already open in a live remi session on the host") instead of being started twice.
+- The app opens the resumed session only if you are still where you were when you tapped Resume; if you opened another session meanwhile, it stays put and the resumed one appears in the list. If the new session cannot be reached from your device, the chat says so after about 30 seconds.
+- A session asked to resume twice at once (a double tap, two phones) starts one session; the second request is told it was just resumed. Resuming by a Claude session id no longer fails with "Ambiguous" once the session has been resumed and ended a few times, and a session found only as a transcript resumes in the directory the transcript recorded, even when its name has a dash.
+- An older web app against a hub that has this change selects the new session before it exists and shows nothing for a moment; it appears when the new session's connection is made.
+- Not verified live: a real Claude's transcript binding and hooks in a session resumed through a hub. The spawn and `--resume` themselves were (ADR 0033, LV-4), and a test now shows the child's Claude receives them.
+
+### A card says how it is answered and what resolved it (#1235, [ADR 0038](.context/decisions/0038-the-decision-object.md))
+
+#### Added
+
+- Each card says how a phone answer reaches the agent (`answerPath`):
+  - as data, through Claude's held prompt or Codex's approval;
+  - typed into the terminal, so it can be refused if the screen changed;
+  - or not at all, for a card only the terminal can answer.
+- When a card is cleared, the message says what resolved it, if the machine knows (`resolvedBy`): another phone, a notification action, the terminal, the agent itself (its session ended, it moved on, or it decided), or remi's hold deadline. When it does not know (a No typed at the terminal fires nothing remi can see), it says nothing rather than guess.
+
+#### Changed
+
+- A phone answer that was refused (the screen changed, or the hold had already ended) is reported as `cancelled`, not `answered`.
+- A card is cleared once: a second signal for the same card no longer sends a second, possibly contradicting, resolution. The one exception is a resolution that knew no cause, which can be followed by one that does.
+
+### Pair a phone by scanning a QR code (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md))
+
+#### Added
+
+- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. The Remi app scans it, and you approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. No released app scans the code yet; the native app's scanner is being aligned with it (#1283). Without a terminal, `remi keys` and `remi authorize` still work.
+- The code approves nothing on its own: the phone still proves its key, and you still say yes. A code someone else photographs gets them nothing but a request you can see and refuse. The connection is not encrypted by remi; use a trusted network, a VPN or an SSH tunnel.
+- `remi pair` needs the hub to listen on an address your phone can reach (`daemon.bind`) and authentication on, and says how to fix either. It needs the hub restarted once after upgrading, so the hub records how it is bound.
+- If another device tries the code after a phone claimed it, the terminal names it at the question; answer no unless the fingerprint is your phone's. Ctrl-C, SIGTERM or a closed terminal cancels a code nobody has claimed, and rejects one that is waiting for your answer. Keys typed while the code is up never answer the question.
+- New dependency: `uqr` (MIT) draws the QR code; its notice ships in `THIRD_PARTY_NOTICES`.
+
+#### Changed
+
+- Four of the 32 slots for devices waiting for approval are kept for pairing claims, so ordinary first connections get 28. A flood of unknown devices can no longer keep a phone from claiming a code.
+
 ### A session in a new worktree, made by the machine (#1236, [ADR 0036](.context/decisions/0036-workspaces.md))
 
 #### Added
@@ -11,7 +67,9 @@ All notable changes to Remi are documented here.
 - `create_session_request` can name a workspace: a repository on the machine and, optionally, a new branch (and the branch, tag or commit to start it from). The machine creates a git worktree for it at `remi-worktrees/<repository>-<branch>`, next to the repository, and starts the session there. The response says where the session runs and which commit the worktree started from. This is what lets the sandboxed native apps start a session on a new branch without running git themselves.
 - Only new branches, and nothing deletes a worktree: closing a session leaves its worktree in place.
 - The machine checks every value before git runs and runs git without a shell, with one 60-second limit that also ends the repository's hooks. A refusal says what was wrong (an invalid branch name, a branch that exists or conflicts with one, a base it cannot find) without naming anything on the machine; the remi log has git's reason. Two requests whose branches would share a directory cannot both go ahead. When a hook in the repository fails after the worktree is made, the session starts and the response says so. It needs git 2.36 or later on the machine.
+- A client can ask for the repositories of the machine's recent sessions (`recent_repositories_request`), most recently used first, so it can offer a new session in one of them without typing a path. The list reaches back as far as the session store does, a week after a session ended.
 - A daemon that supports this lists the `workspaces` capability on `hello_ack`.
+- A daemon's own entry in the session list says which repository, worktree and branch the session runs in, read from git, so a worktree you made yourself and a branch the agent switches to both show. The answer is cached for ten seconds: the first list after that still shows the previous one, and the next list shows the change. A worktree made from a submodule now lands next to the submodule, not inside the superproject's `.git`.
 
 ### The protocol has a version, and a daemon says what it supports (#1237, [ADR 0035](.context/decisions/0035-protocol-version-and-capabilities.md))
 
@@ -43,7 +101,17 @@ It is not deployed by this change (the owner deploys, from `docs/relay-worker-de
 
 The legacy `POST /push` is unchanged until push privacy ships.
 
+### A Codex session keeps its name when the machine's sessions change (#1274)
+
+#### Fixed
+
+- When the set of sessions on the machine changed (another session started, or one ended while others ran), the session list a daemon sent to connected clients left out which agent each of its sessions runs, so a Codex session read as Claude until the list was asked for again. Claude sessions also lacked their Claude id and transcript path in that list. Both lists are now built the same way.
+
 ## [0.7.16] - 2026-10-07
+
+### Fixed
+
+- When another session started on the machine, the session list a daemon sent to connected clients left out which agent each of its sessions runs, so a Codex session read as Claude until the list was asked for again. Both lists are now built the same way.
 
 ### Logs stay bounded on a machine that runs for weeks (#729)
 

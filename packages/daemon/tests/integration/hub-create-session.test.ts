@@ -24,9 +24,16 @@ import type {
   CreateSessionResponseMessage,
   HelloAckMessage,
   ProtocolMessage,
+  RecentRepositoriesResponseMessage,
+  SessionListResponseMessage,
   WorkspaceRequest,
 } from '@remi/shared/protocol.ts';
-import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
+import {
+  createCreateSessionRequest,
+  createRecentRepositoriesRequest,
+  createSessionListRequest,
+  serialize,
+} from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
@@ -314,6 +321,64 @@ describe('a hub creating a session for a harness (#1179)', () => {
     await waitForArgv(r.agents.claudeDir);
     expect(fs.readFileSync(path.join(r.agents.claudeDir, 'cwd'), 'utf-8').trim()).toBe(dir);
     expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/one');
+
+    // Phase B: the child's own session list names that workspace, read from git.
+    const child = await connectAndHello(response.port as number);
+    try {
+      let entry: { workspace?: unknown } | undefined;
+      await pollUntil(
+        () => {
+          child.ws.send(serialize(createSessionListRequest(false)));
+          const lists = child.received.filter(
+            (m): m is SessionListResponseMessage => m.type === 'session_list_response',
+          );
+          entry = lists.at(-1)?.sessions[0];
+          return entry?.workspace !== undefined;
+        },
+        15000,
+        'a session list entry with a workspace',
+      );
+      expect(entry?.workspace).toEqual({ repository: repo, directory: dir, branch: 'feature/one' });
+    } finally {
+      child.ws.close();
+    }
+  }, 60000);
+
+  test("a recent-repositories request lists the repositories of the hub's recent sessions (#1236 phase C)", async () => {
+    const r = await startHub({ claude: true });
+    const repo = path.join(fs.realpathSync(r.hub.work), 'recent-project');
+    fs.mkdirSync(repo);
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['commit', '-q', '--allow-empty', '-m', 'first'],
+    ]) {
+      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: repo });
+    }
+    // Relative to now: the store drops a session seven days after it exited.
+    const exitedAt = new Date(Date.now() - 60_000).toISOString();
+    new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+      remiSessionId: '33333333-3333-4333-8333-333333333333',
+      claudeSessionId: null,
+      projectPath: repo,
+      port: 0,
+      pid: null,
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      exitedAt,
+      exitCode: 0,
+    });
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest(5);
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 15000, 'the recent repositories');
+      expect(received.find(isResponse)?.repositories).toEqual([
+        { repository: repo, name: 'recent-project', lastUsedAt: exitedAt },
+      ]);
+    } finally {
+      ws.close();
+    }
   }, 60000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {

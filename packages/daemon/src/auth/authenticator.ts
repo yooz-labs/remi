@@ -17,7 +17,12 @@ import type {
   AuthResultMessage,
   UnlockedIdentity,
 } from '@remi/shared';
-import { errorToString } from '@remi/shared';
+import {
+  PAIRING_NAME_MAX_CODE_POINTS,
+  errorToString,
+  isPairingNonce,
+  isPlainPairingText,
+} from '@remi/shared';
 import {
   createAuthChallenge,
   createAuthResult,
@@ -52,9 +57,39 @@ export interface VerifyResponseOutcome {
   readonly verifiedFingerprint?: string;
 }
 
+/** What `verifyResponse` may be told about the connection it answers. */
+export interface VerifyResponseOptions {
+  /** Whether the connection is still open; a pairing claim stops waiting once it is not. */
+  readonly isOpen?: () => boolean;
+}
+
 export interface AuthenticatorConfig {
   readonly identity: UnlockedIdentity;
   readonly identityStore: IdentityStore;
+  /**
+   * How long a pairing claim waiting for the person's decision is held before `PAIRING_PENDING`
+   * (#1275, ADR 0037). Twenty seconds unless a test gives less.
+   */
+  readonly pairingWaitMs?: number;
+}
+
+/** How long a waiting pairing claim is held for the person's decision. */
+const DEFAULT_PAIRING_WAIT_MS = 20_000;
+/** How often a held claim checks for the decision. */
+const PAIRING_POLL_MS = 250;
+/** A pairing audit line repeats for the same key and outcome at most this often. */
+const PAIRING_LOG_REPEAT_MS = 60_000;
+/** How many key and outcome pairs are remembered before the memory starts over. */
+const PAIRING_LOG_KEYS = 256;
+const DEFAULT_PAIRING_LABEL = 'paired device';
+
+/**
+ * A label for the terminal and the authorized-keys file: the phone's own choice, so held to the
+ * machine name's rule (plain text, 1 to 64 code points). It names the device; it proves nothing.
+ */
+function pairingLabelOf(label: string | undefined): string | null {
+  if (label === undefined) return DEFAULT_PAIRING_LABEL;
+  return isPlainPairingText(label, PAIRING_NAME_MAX_CODE_POINTS) ? label : null;
 }
 
 export class Authenticator {
@@ -64,10 +99,14 @@ export class Authenticator {
   private answerEncryptionKey: string | undefined;
   /** Active challenges keyed by connection ID */
   private readonly pendingChallenges = new Map<string, string>();
+  private readonly pairingWaitMs: number;
+  /** When each pairing audit line (by key and outcome) was last logged. */
+  private readonly pairingLogged = new Map<string, number>();
 
   constructor(config: AuthenticatorConfig) {
     this.identity = config.identity;
     this.store = config.identityStore;
+    this.pairingWaitMs = config.pairingWaitMs ?? DEFAULT_PAIRING_WAIT_MS;
   }
 
   /**
@@ -178,6 +217,7 @@ export class Authenticator {
   async verifyResponse(
     connectionId: string,
     response: AuthResponseMessage,
+    options: VerifyResponseOptions = {},
   ): Promise<VerifyResponseOutcome> {
     const challenge = this.pendingChallenges.get(connectionId);
     if (!challenge) {
@@ -221,6 +261,13 @@ export class Authenticator {
       return { result: createAuthResult(false, undefined, 'AUTH_STORE_ERROR') };
     }
 
+    // #1275: a pairing code ties this verified key to the `remi pair` that showed it; the person
+    // still approves at the terminal. Checked only after the signature, so a forged answer never
+    // claims a code.
+    if (!isAuthorized && response.pairingNonce !== undefined) {
+      return this.verifyPairing(challenge, response, derivedFingerprint, options.isOpen);
+    }
+
     // #873: verified unknown identities request local human approval, never trust on first use.
     if (!isAuthorized) {
       try {
@@ -238,8 +285,13 @@ export class Authenticator {
       return { result: createAuthResult(false, undefined, 'UNKNOWN_KEY') };
     }
 
+    return this.admit(challenge, derivedFingerprint);
+  }
+
+  /** An authorized key: touch it and sign the same challenge for mutual authentication. */
+  private async admit(challenge: string, fingerprint: string): Promise<VerifyResponseOutcome> {
     // Update lastUsedAt (non-critical; don't let failures break auth)
-    this.store.touchAuthorizedKey(derivedFingerprint);
+    this.store.touchAuthorizedKey(fingerprint);
 
     // Sign the same challenge with server's key for mutual authentication
     try {
@@ -247,13 +299,85 @@ export class Authenticator {
       const serverSignature = await sign(this.identity.privateKey, challengeData);
       return {
         result: createAuthResult(true, serverSignature),
-        verifiedFingerprint: derivedFingerprint,
+        verifiedFingerprint: fingerprint,
       };
     } catch (err) {
       const detail = errorToString(err);
       console.error(`Server failed to sign mutual auth challenge: ${detail}`);
       return { result: createAuthResult(false, undefined, 'SERVER_SIGN_ERROR') };
     }
+  }
+
+  /**
+   * A verified, unknown key presenting a pairing code (#1275, ADR 0037). A malformed code or label,
+   * or a code the store refuses, is answered with its own error and registers nothing. A claimed
+   * code is held for the person's decision for up to `pairingWaitMs`: an approval is answered with
+   * the ordinary success, a rejection or cancellation with its error, and no decision with
+   * `PAIRING_PENDING`, after which the phone retries. The wait reads without the lock, so another
+   * process holding it neither stalls nor fails the wait; it ends at once when the connection closes.
+   */
+  private async verifyPairing(
+    challenge: string,
+    response: AuthResponseMessage,
+    fingerprint: string,
+    isOpen: () => boolean = () => true,
+  ): Promise<VerifyResponseOutcome> {
+    const fail = (code: string): VerifyResponseOutcome => ({
+      result: createAuthResult(false, undefined, code),
+    });
+    const nonce = response.pairingNonce;
+    const label = pairingLabelOf(response.pairingLabel);
+    if (!isPairingNonce(nonce) || label === null) {
+      this.logPairingOnce(
+        `${fingerprint} malformed`,
+        `[Pairing] refused a malformed code or label from ${fingerprint}`,
+      );
+      return fail('PAIRING_MALFORMED');
+    }
+    let outcome: string;
+    try {
+      outcome = await this.store.claimPairing(nonce, response.clientPublicKey, label);
+    } catch (err) {
+      console.error(`Auth store error during pairing claim: ${errorToString(err)}`);
+      return fail('AUTH_STORE_ERROR');
+    }
+    this.logPairingOnce(
+      `${fingerprint} ${outcome}`,
+      `[Pairing] ${fingerprint} presented a code: ${outcome}`,
+    );
+    if (outcome !== 'CLAIMED') return fail(outcome);
+
+    const deadline = Date.now() + this.pairingWaitMs;
+    for (;;) {
+      if (!isOpen()) return fail('PAIRING_PENDING');
+      try {
+        if (this.store.isAuthorized(response.clientPublicKey, fingerprint)) {
+          return this.admit(challenge, fingerprint);
+        }
+        const state = this.store.peekPairing(nonce)?.state;
+        if (state === 'rejected') return fail('PAIRING_REJECTED');
+        if (state === 'cancelled') return fail('PAIRING_CANCELLED');
+      } catch (err) {
+        console.error(`Auth store error while a pairing waits: ${errorToString(err)}`);
+        return fail('AUTH_STORE_ERROR');
+      }
+      const left = deadline - Date.now();
+      if (left <= 0) return fail('PAIRING_PENDING');
+      await Bun.sleep(Math.min(PAIRING_POLL_MS, left));
+    }
+  }
+
+  /**
+   * A pairing audit line, at most once a minute for the same key and outcome: a phone retrying after
+   * `PAIRING_PENDING`, or a flood of attempts, does not fill the log. Never the nonce.
+   */
+  private logPairingOnce(key: string, line: string): void {
+    const now = Date.now();
+    const last = this.pairingLogged.get(key);
+    if (last !== undefined && now - last < PAIRING_LOG_REPEAT_MS) return;
+    if (this.pairingLogged.size >= PAIRING_LOG_KEYS) this.pairingLogged.clear();
+    this.pairingLogged.set(key, now);
+    console.log(line);
   }
 
   /**

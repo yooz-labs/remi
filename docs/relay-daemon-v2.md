@@ -31,7 +31,7 @@ notice. It creates no secure-push service in that case and never posts to a
 guessed root route. Supporting proxy-prefixed push needs an explicit deployment
 route; the signed canonical path remains `/v2/push/<rid>` (#1200).
 
-`remi pair` requires a local interactive terminal. Its private control connection
+`remi pair --relay` requires a local interactive terminal. Its private control connection
 requires both actual TCP loopback and the daemon capability; forwarded headers or
 bare loopback are insufficient. It displays the token as text and a QR, then asks
 for exact client fingerprint confirmation, defaulting to refusal. A remote peer

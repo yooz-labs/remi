@@ -45,6 +45,8 @@ import {
   createQuestionResolved,
   createQuestionSnapshot,
   createRawPtyOutput,
+  createRecentRepositoriesRequest,
+  createRecentRepositoriesResponse,
   createRegisterDeviceToken,
   createRemiStatus,
   createReplayBatch,
@@ -137,6 +139,35 @@ const FIXED_QUESTION_OPTION: QuestionOption = {
   isYes: true,
   isNo: false,
 };
+
+const FIXED_NO_OPTION: QuestionOption = {
+  label: 'No',
+  value: 'no',
+  isRecommended: false,
+  isYes: false,
+  isNo: true,
+};
+
+/** Picks with descriptions, for an AskUserQuestion step or a plan approval (#1235). */
+const FIXED_PICK_A: QuestionOption = {
+  label: 'Option A',
+  value: '1',
+  description: 'The first approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+const FIXED_PICK_B: QuestionOption = {
+  label: 'Option B',
+  value: '2',
+  description: 'The second approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+
+/** A Codex thread id (a UUIDv7) for the Codex cards. */
+const CODEX_THREAD_ID = '0199b0a0-0000-7000-8000-000000000000';
 
 const FIXED_QUESTION: Question = {
   id: QUESTION_ID,
@@ -314,6 +345,18 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   bullet_expand_response: () =>
     createBulletExpandResponse(1, 'Full bullet content here', REQUEST_ID),
   session_list_request: () => createSessionListRequest(true),
+  recent_repositories_request: () => createRecentRepositoriesRequest(10),
+  recent_repositories_response: () =>
+    createRecentRepositoriesResponse(
+      [
+        {
+          repository: '/Users/fixture/project',
+          name: 'project',
+          lastUsedAt: '2026-10-07T10:00:00.000Z',
+        },
+      ],
+      REQUEST_ID,
+    ),
   session_list_response: () =>
     createSessionListResponse([FIXED_DISCOVERABLE_SESSION], REQUEST_ID, [19924, 19925]),
   transcript_content: () =>
@@ -419,6 +462,25 @@ export const FIXTURE_VARIANTS: Record<
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
   },
+  // A session's list entry with its workspace (#1236 phase B): a session in a worktree the hub made.
+  session_list_response_workspace: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse(
+        [
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            projectPath: '/Users/fixture/remi-worktrees/project-feature-fixture',
+            workspace: {
+              repository: '/Users/fixture/project',
+              directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+              branch: 'feature/fixture',
+            },
+          },
+        ],
+        REQUEST_ID,
+      ),
+  },
   // A session in a new worktree (#1236, ADR 0036): the request a client sends to a hub that lists
   // the `workspaces` capability, and the response that says where the session runs.
   create_session_request_workspace: {
@@ -438,6 +500,23 @@ export const FIXTURE_VARIANTS: Record<
         repository: '/Users/fixture/project',
         directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
         worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
+      }),
+  },
+  // A resume through a hub (#1129): the hub started a child session daemon for it, so the response
+  // says which port the session runs on. A session daemon resumes in its own process and sends none.
+  resume_session_response_child: {
+    type: 'resume_session_response',
+    build: () =>
+      createResumeSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, undefined, 19924),
+  },
+  // A phone's first answer after scanning a pairing link (#1275, ADR 0037): the ordinary signed
+  // answer, plus the link's nonce and the name the person gave the phone.
+  auth_response_pairing: {
+    type: 'auth_response',
+    build: () =>
+      createAuthResponse('base64-client-pubkey', 'base64-signature', 'EE:FF:00:11', undefined, {
+        nonce: 'oKGio6SlpqeoqaqrrK2urw',
+        label: 'Fixture phone',
       }),
   },
   // The ack of a daemon before #1237 (ADR 0035), written out field by field rather than derived
@@ -462,6 +541,139 @@ export const FIXTURE_VARIANTS: Record<
       daemonVersion: '0.7.4-dev.1',
       harnesses: ['claude', 'codex'],
     }),
+  },
+  // The "agent needs you" object, frozen (#1235, ADR 0038): one card per kind and answer path,
+  // for Claude and Codex. `kind` is an open set: a client renders one it does not know as a
+  // generic card.
+  question_claude_permission: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_ask_user_question: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Which approach?',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'multi_question',
+          questions: [
+            {
+              header: 'Approach',
+              text: 'Which approach?',
+              multiSelect: false,
+              options: [FIXED_PICK_A, FIXED_PICK_B],
+            },
+          ],
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_plan_approval: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Approve this plan?',
+          detail: '# Plan\n1. Read the code\n2. Change it',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'plan_approval',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  // A prompt Claude draws in the terminal with no hook (sandbox network, trust): no kind, typed.
+  question_claude_terminal_prompt: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow network access to example.com?',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'pty',
+          answerPath: 'keystroke',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'mcp__custom__ask wants to ask you something',
+          options: [],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_codex_command: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow Codex to run: ls',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_codex_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Codex wants to change files',
+          options: [],
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_resolved_terminal: {
+    type: 'question_resolved',
+    build: () => createQuestionResolved(SESSION_ID, QUESTION_ID, 'cancelled', 'terminal'),
   },
 };
 

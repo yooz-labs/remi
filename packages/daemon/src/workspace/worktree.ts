@@ -29,7 +29,7 @@ import * as path from 'node:path';
 import type { SessionWorkspace } from '@remi/shared';
 import { errorToString, escapeUnsafeText } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
-import { withoutRemiSecrets } from '../pty/child-env.ts';
+import { type GitResult, detailOf, findGit, hasControl, resolveRepository, runGit } from './git.ts';
 
 /** A workspace request whose values are plain text, with the repository resolved. */
 export interface ParsedWorkspace {
@@ -73,19 +73,6 @@ const MAX_REF_TEXT = 200;
 const DEFAULT_DEADLINE_MS = 60_000;
 /** How long the checks after a failed `git worktree add` may take, on their own deadline. */
 const INSPECT_MS = 10_000;
-/** How long a git process group has to exit after SIGTERM before SIGKILL. */
-const KILL_GRACE_MS = 2_000;
-/** How much of git's stderr goes into the log detail. */
-const MAX_DETAIL = 500;
-
-/** Any C0 control, DEL or C1 control: none belongs in a path, a branch or a revision. */
-function hasControl(text: string): boolean {
-  for (const ch of text) {
-    const c = ch.codePointAt(0) as number;
-    if (c <= 0x1f || (c >= 0x7f && c <= 0x9f)) return true;
-  }
-  return false;
-}
 
 /**
  * A branch or base as plain text: present, bounded, not a flag, no control character, and nothing
@@ -146,86 +133,6 @@ export function worktreePath(mainWorktree: string, branch: string): string {
   );
 }
 
-/** What one git command did. `timedOut` means the deadline passed and its group was ended. */
-export interface GitResult {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly timedOut: boolean;
-}
-
-/** The hub's environment for git: no remi secret, no inherited `GIT_*`, never a prompt. */
-function gitEnv(): Record<string, string | undefined> {
-  const env = withoutRemiSecrets(process.env);
-  for (const name of Object.keys(env)) {
-    if (name.startsWith('GIT_')) delete env[name];
-  }
-  env['GIT_TERMINAL_PROMPT'] = '0';
-  return env;
-}
-
-/** SIGTERM to the whole group now, SIGKILL after a grace period; either may find it gone. */
-function endGroup(pid: number): void {
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    // already gone
-  }
-  setTimeout(() => {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      // already gone
-    }
-  }, KILL_GRACE_MS).unref();
-}
-
-/**
- * One git command, in a process group of its own, raced against `deadlineAt`. The race matters: a
- * hook or filter git started keeps the output pipes open after git itself is killed, so waiting for
- * the pipes would wait for the hook.
- */
-async function runGit(
-  git: string,
-  cwd: string,
-  args: readonly string[],
-  deadlineAt: number,
-): Promise<GitResult> {
-  const remaining = deadlineAt - Date.now();
-  if (remaining <= 0) {
-    return { code: -1, stdout: '', stderr: 'timed out before git started', timedOut: true };
-  }
-  const proc = Bun.spawn([git, '-c', 'core.fsmonitor=false', ...args], {
-    cwd,
-    env: gitEnv(),
-    stdin: 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-    detached: true,
-  });
-  const finished = Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]).then(([stdout, stderr, code]) => ({ code, stdout, stderr, timedOut: false }));
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), remaining);
-  });
-  const result = await Promise.race([finished, expired]);
-  clearTimeout(timer);
-  if (result !== null) return result;
-  endGroup(proc.pid);
-  finished.catch(() => {});
-  return { code: -1, stdout: '', stderr: `timed out after ${remaining} ms`, timedOut: true };
-}
-
-/** git's stderr for the log: escaped, on one line, cut. */
-function detailOf(result: GitResult): string {
-  const text = escapeUnsafeText(result.stderr.trim()).replaceAll('\n', ' | ');
-  return text.length > MAX_DETAIL ? `${text.slice(0, MAX_DETAIL)} [cut]` : text;
-}
-
 /**
  * What a failed `git worktree list` means for the client: a timeout; git older than 2.36, which
  * has no `-z` and exits with its usage code, 129; a repository git refuses to read as another
@@ -272,32 +179,33 @@ export async function prepareWorkspace(
   }
   if (!isDirectory) return { ok: false, error: TEXT.notFound, detail: `no directory ${shown}` };
 
-  const git = Bun.which('git', { PATH: process.env['PATH'] ?? '' });
+  const git = findGit();
   if (git === null) return { ok: false, error: TEXT.noGit, detail: 'no git on the PATH' };
 
-  // The first entry of the worktree list is the main worktree, whichever directory was named.
-  const list = await runGit(
-    git,
-    parsed.repository,
-    ['worktree', 'list', '--porcelain', '-z'],
-    deadlineAt,
-  );
-  if (list.code !== 0) {
+  // The repository's main worktree, whichever directory was named (#1276 review: a submodule or a
+  // separate git directory is its own repository; only a linked worktree reads the worktree list).
+  const lookup = await resolveRepository(git, parsed.repository, deadlineAt);
+  if (lookup.kind === 'unknown') {
     return {
       ok: false,
-      error: refusalForWorktreeList(list),
-      detail: `${shown}: ${detailOf(list)}`,
+      error: refusalForWorktreeList(lookup.result),
+      detail: `${shown}: ${detailOf(lookup.result)}`,
     };
   }
-  const first = list.stdout.split('\0\0')[0]?.split('\0') ?? [];
-  const head = first[0] ?? '';
-  if (!head.startsWith('worktree ')) {
-    return { ok: false, error: TEXT.notGit, detail: `${shown}: no worktree in git's list` };
+  if (lookup.kind === 'none') {
+    return { ok: false, error: TEXT.notGit, detail: `${shown} is in no worktree of a repository` };
   }
-  if (first.includes('bare')) {
-    return { ok: false, error: TEXT.bare, detail: `${shown} is a bare repository` };
+  if (lookup.kind === 'ambiguous') {
+    return {
+      ok: false,
+      error: TEXT.unusablePath,
+      detail: `${shown} is in a repository whose path holds a newline`,
+    };
   }
-  const main = head.slice('worktree '.length);
+  if (lookup.kind === 'bare' || lookup.mainIsBare) {
+    return { ok: false, error: TEXT.bare, detail: `${shown} belongs to a bare repository` };
+  }
+  const main = lookup.repository;
   // The path becomes the child's `--dir` and reaches clients: fail closed, as for a requested one.
   if (hasControl(main)) {
     return {

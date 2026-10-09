@@ -319,7 +319,7 @@ describe('relay wording', () => {
   test('--permanent-code is retired with current local pairing guidance', () => {
     process.env['NO_COLOR'] = '1';
     const help = formatHelp('0.0.0');
-    expect(help).toContain('Retired: use remi serve --relay and remi pair');
+    expect(help).toContain('Retired: use remi serve --relay and remi pair --relay');
     expect(help).not.toContain('even if network.relay = false');
   });
 

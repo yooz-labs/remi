@@ -2,28 +2,65 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
-/// The iPhone app: sessions grouped by machine, the session, and its cards (handoff/ios.md).
 @main
 struct RemiPhoneApp: App {
+    @UIApplicationDelegateAdaptor(PhoneNotificationDelegate.self) private var notificationDelegate
+    @State private var store: MachineStore?
+    private let startupError: String?
+
+    init() {
+        do {
+            let identity = try ClientIdentityStore.shared.loadOrCreate()
+            let clientId = Self.clientId()
+            let saved = MachineConfigurationStore.shared.load()
+            _store = State(initialValue: MachineStore(
+                endpoints: saved.isEmpty
+                    ? [MachineEndpoint(host: "127.0.0.1", port: 18765)] : saved,
+                identity: identity,
+                clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
+                clientId: clientId
+            ))
+            startupError = nil
+        } catch {
+            _store = State(initialValue: nil)
+            startupError = error.localizedDescription
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
-            PhoneRootView()
+            Group {
+                if let store {
+                    PhoneLiveRootView(store: store)
+                } else {
+                    ContentUnavailableView(
+                        "Couldn’t load device identity",
+                        systemImage: "key.slash",
+                        description: Text(startupError ?? "The Keychain is unavailable.")
+                    )
+                }
+            }
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
+    }
+
+    private static func clientId() -> String {
+        let key = "remi.native.client-id"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let value = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(value, forKey: key)
+        return value
     }
 }
 
-/// Placeholder shell: sessions grouped by machine.
 struct PhoneRootView: View {
     var body: some View {
         NavigationStack {
-            List {
-                Section("Machines") { Text("No machines yet") }
-            }
-            .navigationTitle("Remi")
+            HomeScreen(
+                questions: [RemiPreviewData.binaryQuestion],
+                sessions: RemiPreviewData.sessions,
+                machines: RemiPreviewData.machines
+            )
         }
     }
-}
-
-#Preview {
-    PhoneRootView()
 }

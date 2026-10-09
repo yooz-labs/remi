@@ -66,7 +66,7 @@ Also keep `subagent-alert.ts` (164 lines, informational, the only visibility pat
 |---|---|
 | Default install (auto-approve off): binary main-agent prompts never reached the phone | Fixed by #1121 (push on render), then superseded by #1126 (PR #1143): binary prompts are held and pushed at hook time, answered through the hook; verified live |
 | Claude fullscreen default (users since 2026-05-06) vs remi's inline assumption; owner's `"tui": "default"` masks it | Fixed in #1124 (PR #1133): the Claude child gets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` unless the user set a non-empty value |
-| Hub resume runs Claude inside the hub process (`cli.ts:1694`, no `serveMode` guard; corroborated by the advisor) | Fixed in #1124 (PR #1133): the hub refuses resume (`UNSUPPORTED`) and never runs Claude; spawning a child daemon instead is #1129 |
+| Hub resume runs Claude inside the hub process (`cli.ts:1694`, no `serveMode` guard; corroborated by the advisor) | Fixed in #1124 (PR #1133): the hub refuses resume (`UNSUPPORTED`) and never runs Claude; #1129 then made it start a child daemon with `--resume` instead |
 | ExitPlanMode labels in `hooks/tool-question.ts` have drifted from current Claude docs | Fixed in #1127: the labels are deleted; ExitPlanMode is held and answered with a structured `updatedInput` by meaning (section 6) |
 | New sessions go to the first-connected socket; no machine object; socket per session | Open: section 9 |
 
@@ -109,13 +109,15 @@ One object for every "the agent needs you" moment:
 ```
 Decision {
   id, harness, harnessSessionId, agentId?,
-  kind: permission | question | plan | sandbox | trust,
+  kind: permission | question | plan,
   options[], optionsAreFallback,
   localRender: harness | remi | none,
   answerPath: structured | keystroke | none,
   resolvedBy: terminal | phone | lockscreen | harness | timeout
 }
 ```
+
+Frozen by ADR 0038 (#1235, 2026-10-07): it is the `question` message's `Question`. `answerPath` is on the question and `resolvedBy` on `question_resolved`, both optional (absent is unknown, never a guess). `localRender` stays typed-only. `kind` is an open set (an unknown kind is a generic card), and the sandbox and trust prompts stay kind-less terminal cards.
 
 Invariants: the first answer wins everywhere; remi never answers by guess; for Codex and OpenCode the harness is the arbiter of record; remi's hold is only for Claude; decisions never come from transcripts (chat does).
 

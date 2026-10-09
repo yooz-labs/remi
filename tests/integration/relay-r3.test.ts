@@ -164,7 +164,7 @@ test('retired code command exits visibly before any model invocation', async () 
   expect(`${out}${err}`).toContain('remi pair');
 }, 10000);
 test('noninteractive pair refuses before dialing or starting a model', async () => {
-  const proc = spawn(home(), ['pair']);
+  const proc = spawn(home(), ['pair', '--relay']);
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -178,6 +178,7 @@ import {
   type ProtocolMessage,
   createAnswer,
   createHello,
+  createRecentRepositoriesRequest,
   createSessionListRequest,
   createUserInput,
   deserialize,
@@ -301,7 +302,7 @@ async function paired() {
     throw new Error('expected correlated devices response');
   expect(response.requestId).toBe(id);
   expect(response.devices).toHaveLength(1);
-  return { running, local, device, socket, channel, inbox, drain: () => incoming, rid };
+  return { running, local, device, socket, channel, inbox, hello, drain: () => incoming, rid };
 }
 /** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
 const RESETTING_RUNTIME = '1.3.11';
@@ -373,6 +374,29 @@ test('real source hub grants only after exact local confirmation and persists be
   await expectHubClose(running, rid, closed, relayV2.FAILURE_CLOSE.code, reason);
   await drain();
   expect(await channel.transportClosed()).toBe('unclean');
+}, 20000);
+
+test('encrypted hub keeps its advertised workspace contract after READY and Hello', async () => {
+  const { channel, inbox, hello } = await paired();
+  expect(hello.type === 'hello_ack' && hello.capabilities).toContain('workspaces');
+  const request = createRecentRepositoriesRequest();
+  await channel.send(new TextEncoder().encode(serialize(request)));
+  const response = await nextType(
+    inbox,
+    'recent_repositories_response',
+    (message) =>
+      message.type === 'recent_repositories_response' && message.requestId === request.id,
+  );
+  expect(response.type === 'recent_repositories_response' && response.repositories).toEqual([]);
+  // The request must leave the channel usable for the next native discovery query.
+  const list = createSessionListRequest();
+  await channel.send(new TextEncoder().encode(serialize(list)));
+  const discovery = await nextType(
+    inbox,
+    'session_list_response',
+    (message) => message.type === 'session_list_response' && message.requestId === list.id,
+  );
+  expect(discovery.type === 'session_list_response' && discovery.sessions).toEqual([]);
 }, 20000);
 
 test('authenticated peer BYE receives authenticated host BYE, and the hub leaves the close to the peer', async () => {

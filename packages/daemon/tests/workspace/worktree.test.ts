@@ -292,6 +292,17 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     }
   });
 
+  test('a worktree made from a submodule lands next to the submodule, never inside .git (#1276 review)', async () => {
+    const lib = makeRepo(root, 'lib');
+    const sup = makeRepo(root, 'super');
+    git(sup, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libsub');
+    const sub = path.join(sup, 'libsub');
+    const workspace = await ok({ repository: sub, worktree: { branch: 'feat' } });
+    expect(workspace.repository).toBe(sub);
+    expect(workspace.directory).toBe(path.join(sup, 'remi-worktrees', 'libsub-feat'));
+    expect(workspace.directory).not.toContain(`${path.sep}.git${path.sep}`);
+  });
+
   test('a directory outside any repository is refused', async () => {
     const plain = path.join(root, 'plain');
     fs.mkdirSync(plain);
@@ -496,6 +507,19 @@ describe('prepareWorkspace against real repositories (#1236)', () => {
     expect(await no({ repository: real(linked), worktree: { branch: 'b' } })).toContain(
       'cannot be used',
     );
+  });
+
+  test('a repository whose path holds a newline cannot be used, named directly or through a symlink', async () => {
+    const odd = makeRepo(root, 'new\nline');
+    const link = path.join(root, 'link-to-odd');
+    fs.symlinkSync(odd, link);
+    expect(await no({ repository: link })).toContain('cannot be used');
+    expect(await no({ repository: link, worktree: { branch: 'b' } })).toContain('cannot be used');
+    const bare = path.join(root, 'bare\nrepo.git');
+    git(root, 'init', '-q', '--bare', bare);
+    const bareLink = path.join(root, 'link-to-bare');
+    fs.symlinkSync(bare, bareLink);
+    expect(await no({ repository: bareLink })).toContain('cannot be used');
   });
 
   test('a detached HEAD is a base like any other commit', async () => {

@@ -52,7 +52,7 @@
  */
 
 import { escapeUnsafeText, generateId } from '@remi/shared';
-import type { Question, UUID } from '@remi/shared';
+import type { Question, ResolvedBy, UUID } from '@remi/shared';
 
 import type { SessionRegistry } from '../../session/session-registry.ts';
 import {
@@ -106,7 +106,12 @@ export interface CodexDecisionsDeps {
   sessionRegistry: Pick<SessionRegistry, 'removeQuestion' | 'getQuestion'>;
   /** Show a card: `messageApi.handleQuestion(q, { held: true })`, which stamps `held`. */
   present: (q: Question) => void;
-  onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
+  onQuestionResolved: (
+    sid: UUID,
+    qid: UUID,
+    reason: 'answered' | 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   /** The tracker's `role`: is this thread the session's, or a subagent's, or neither? */
   threadRole: (threadId: string) => ThreadRole | null;
   log: (message: string) => void;
@@ -358,13 +363,17 @@ export class CodexDecisions implements DecisionChannel {
   /** The app-server's `serverRequest/resolved` is authoritative; an Escape sent through remi needs nothing here. */
   noteTerminalEscape(): void {}
 
-  forceRelease(reason: string): { resolved: number } {
+  /**
+   * Retire every card. `resolvedBy` names the cause when the caller knows it (#1235): a rotation
+   * is the harness moving to a new thread; unstick and the session ending name none.
+   */
+  forceRelease(reason: string, resolvedBy?: ResolvedBy): { resolved: number } {
     this.clock.clear(this.sweepTimer);
     this.sweepTimer = undefined;
     let resolved = 0;
     for (const entry of [...this.byId.values()]) {
       const shown = entry.state !== 'answered';
-      this.forget(entry, shown, 'codex:released');
+      this.forget(entry, shown, 'codex:released', resolvedBy);
       if (shown) resolved += 1;
     }
     if (resolved > 0) this.deps.log(`released ${resolved} card(s): ${reason}`);
@@ -382,7 +391,7 @@ export class CodexDecisions implements DecisionChannel {
   }
 
   /** Stop tracking `entry`, and dismiss its card from every client when `dismiss` (else the caller already did, or there is none). */
-  private forget(entry: Entry, dismiss: boolean, signal: string): void {
+  private forget(entry: Entry, dismiss: boolean, signal: string, resolvedBy?: ResolvedBy): void {
     if (entry.confirmTimer !== undefined) {
       this.clock.clear(entry.confirmTimer);
       entry.confirmTimer = undefined;
@@ -400,7 +409,8 @@ export class CodexDecisions implements DecisionChannel {
       );
     }
     try {
-      this.deps.onQuestionResolved(sessionId, qid, 'cancelled');
+      // serverRequest/resolved does not say who answered, so only a known cause is named.
+      this.deps.onQuestionResolved(sessionId, qid, 'cancelled', resolvedBy);
     } catch (error) {
       this.deps.log(
         `could not tell the clients (${error instanceof Error ? error.name : typeof error})`,

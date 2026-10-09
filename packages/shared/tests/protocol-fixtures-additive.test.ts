@@ -188,6 +188,17 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     });
   });
 
+  test('the session list golden with a workspace: repository, directory and branch (#1236 phase B)', () => {
+    const listed = (
+      load('session_list_response_workspace')['sessions'] as { [key: string]: Json }[]
+    )[0];
+    expect(listed?.['workspace']).toEqual({
+      repository: '/Users/fixture/project',
+      directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+      branch: 'feature/fixture',
+    });
+  });
+
   test('the workspace goldens: a request for a new worktree, and the response that says where (#1236)', () => {
     expect(load('create_session_request_workspace')).toEqual({
       type: 'create_session_request',
@@ -209,6 +220,18 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
         worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
       },
     });
+  });
+
+  test('the resume golden for a hub: the child daemon the session runs on (#1129)', () => {
+    expect(load('resume_session_response_child')).toEqual({
+      type: 'resume_session_response',
+      success: true,
+      requestId: 'fixture-request-id',
+      sessionId: 'fixture-session-id',
+      port: 19924,
+    });
+    // The response of a session daemon, which resumes in its own process, has no port.
+    expect('port' in load('resume_session_response')).toBe(false);
   });
 
   test('the create_session_request fixture names a harness and its arguments', () => {

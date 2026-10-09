@@ -208,7 +208,8 @@ describe('CodexDecisions', () => {
       },
       sessionRegistry: registry,
       present: (q) => present(q),
-      onQuestionResolved: (sid, qid, reason) => sent.push(createQuestionResolved(sid, qid, reason)),
+      onQuestionResolved: (sid, qid, reason, resolvedBy) =>
+        sent.push(createQuestionResolved(sid, qid, reason, resolvedBy)),
       threadRole: (id) => roles.get(id) ?? null,
       log: (m) => logs.push(m),
       scheduler: sched.scheduler,
@@ -495,6 +496,21 @@ describe('CodexDecisions', () => {
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
       expect(decisions.answerHeld(q.id, { kind: 'cancel' })).toBe('closed');
       expect(responses).toHaveLength(1);
+    });
+
+    test('a rotation names the harness; serverRequest/resolved and unstick name no cause (#1235)', () => {
+      request(1);
+      decisions.handleResolved({ threadId: MAIN, requestId: 1 });
+      request(2);
+      decisions.forceRelease('remi unstick');
+      request(3);
+      decisions.forceRelease('the session moved to a new thread', 'harness');
+      const resolved = sent.filter((m) => m.type === 'question_resolved');
+      expect(resolved.map((m) => (m.type === 'question_resolved' ? m.resolvedBy : 'x'))).toEqual([
+        undefined,
+        undefined,
+        'harness',
+      ]);
     });
 
     test('a request with id 0, the first one the real app-server sends, is a card, and its answer carries id 0 (Q4)', () => {

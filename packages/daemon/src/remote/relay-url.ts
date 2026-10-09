@@ -21,7 +21,7 @@ export function legacyRelayUrlNotice(base: string): string | null {
   try {
     const url = new URL(base);
     if (url.origin === DEFAULT_RELAY_URL && /^\/connect\/?$/.test(url.pathname))
-      return `The official /connect relay endpoint is retired. Set [network] signaling_url = "${DEFAULT_RELAY_URL}" or pass --signaling-url ${DEFAULT_RELAY_URL}; then run remi serve --relay and remi pair.`;
+      return `The official /connect relay endpoint is retired. Set [network] signaling_url = "${DEFAULT_RELAY_URL}" or pass --signaling-url ${DEFAULT_RELAY_URL}; then run remi serve --relay and remi pair --relay.`;
   } catch {
     // Other URL failures remain the transport's responsibility; never echo private URL input.
   }

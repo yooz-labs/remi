@@ -24,9 +24,9 @@ function pairingErrorMessage(cause: unknown): string {
   )
     return message;
   if (message === 'TOKEN' || message === 'Pairing token exceeds limit.')
-    return 'Pairing token is invalid. Copy the complete token from remi pair.';
+    return 'Pairing token is invalid. Copy the complete token from remi pair --relay.';
   if (message === 'EXPIRED' || message === 'Pairing token expired.')
-    return 'Pairing token has expired. Run remi pair again on the daemon machine.';
+    return 'Pairing token has expired. Run remi pair --relay again on the daemon machine.';
   if (message === 'Saved machine limit reached. Forget a machine locally before pairing another.')
     return 'Saved machine limit reached. Forget a machine locally before pairing another.';
   if (
@@ -175,7 +175,7 @@ export function RelayPairingForm({
   return (
     <div className="space-y-3">
       <p className="text-sm text-[var(--color-text-secondary)]">
-        Run <code>remi pair</code> on the daemon machine. Scan its QR or paste the complete token.
+        Run <code>remi pair --relay</code> on the daemon machine. Scan its QR or paste the complete token.
         Approval happens on that machine.
       </p>
       {!waiting && (
