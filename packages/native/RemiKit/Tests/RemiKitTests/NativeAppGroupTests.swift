@@ -1,0 +1,32 @@
+import Foundation
+import Testing
+@testable import RemiPush
+
+struct NativeAppGroupTests {
+    @Test func sharedContainerUsesThePlatformGroup() throws {
+        let (bundle, directory) = try makeBundle(accessGroup: "9DQ459HAZB.live.yooz.remi.secure-push")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #if os(macOS)
+        #expect(try RemiPushStore.configuredApplicationGroup(bundle: bundle) == "9DQ459HAZB.live.yooz.remi")
+        #else
+        #expect(try RemiPushStore.configuredApplicationGroup(bundle: bundle) == "group.live.yooz.remi")
+        #endif
+    }
+
+    @Test(arguments: [nil, "", ".live.yooz.remi.secure-push", "bad-prefix.live.yooz.remi.secure-push"])
+    func invalidDeclaredSharingIsRefused(accessGroup: String?) throws {
+        let (bundle, directory) = try makeBundle(accessGroup: accessGroup)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(throws: (any Error).self) { try RemiPushStore.configuredApplicationGroup(bundle: bundle) }
+    }
+
+    private func makeBundle(accessGroup: String?) throws -> (Bundle, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi-x2-app-group-\(UUID().uuidString).bundle")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        var info: [String: Any] = ["CFBundleIdentifier": "live.yooz.remi.tests.app-group"]
+        if let accessGroup { info["RemiPushAccessGroup"] = accessGroup }
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: directory.appendingPathComponent("Info.plist"))
+        return (try #require(Bundle(url: directory)), directory)
+    }
+}
