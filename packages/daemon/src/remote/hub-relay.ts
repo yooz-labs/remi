@@ -273,7 +273,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     }
   }
   private current(peer: Peer): boolean {
-    return (
+    const current =
       this.active(peer) &&
       !peer.transportClosing &&
       !!peer.key &&
@@ -281,13 +281,20 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       (peer.pushAuthority
         ? this.authorityCurrent(peer, peer.pushAuthority)
         : peer.stage !== 'ready') &&
-      (peer.stage !== 'ready' || this.enrolled(peer))
-    );
+      (peer.stage !== 'ready' || this.enrolled(peer));
+    // Every READY check retires a refused peer, including checks after awaits and
+    // connection queries (#1224). Otherwise a transient store fault can consume
+    // one request while leaving its ordered channel usable. Do not await closure:
+    // the receive queue must remain free to drain the counterpart's reply BYE.
+    // An existing transport close owns its uncertainty and cleanup instead.
+    if (!current && peer.stage === 'ready' && this.active(peer) && !peer.transportClosing)
+      void this.closePeer(peer, true);
+    return current;
   }
   /**
    * Whether the peer's captured authority is still current (#1201). A revoked grant and an
    * unreadable store (lock contention, a damaged file) both answer false, and both close the
-   * peer at their callers (`sendRaw`, `route`). That is deliberate for the store fault too:
+   * admitted READY peer through `current`. That is deliberate for the store fault too:
    * the channel is ordered and complete, so refusing one frame and staying open would drop it
    * silently and leave the client's state diverged, while a close makes the client reconnect
    * and resync. A reconnect re-captures authority under the same lock, so a persistent fault
