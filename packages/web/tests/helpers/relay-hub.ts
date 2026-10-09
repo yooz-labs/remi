@@ -196,12 +196,26 @@ export async function ownedRelayHub() {
     '--no-telegram',
   ]);
   const stdout = new Response(proc.stdout).text();
-  const stderr = new Response(proc.stderr).text();
+  let relayAdmitted = false;
+  const stderr = (async () => {
+    const reader = proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    let output = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      output += decoder.decode(chunk.value, { stream: true });
+      // The source hub emits this only after actual Worker control admission.
+      // Listening /health alone does not establish relay readiness (#1202).
+      if (output.split('\n').includes('Relay control admitted')) relayAdmitted = true;
+    }
+    return output + decoder.decode();
+  })();
   const deadline = Date.now() + 10000;
   while (true) {
     if (proc.exitCode !== null) throw new Error(`hub exited: ${await stdout} ${await stderr}`);
     try {
-      if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) break;
+      if ((await fetch(`http://127.0.0.1:${port}/health`)).ok && relayAdmitted) break;
     } catch {}
     if (Date.now() > deadline) throw new Error('hub startup deadline');
     await Bun.sleep(10);
@@ -227,7 +241,6 @@ export async function ownedRelayOffer() {
     ws.onopen = () => resolve();
     ws.onerror = () => reject(new Error('local control refused'));
   });
-  await Bun.sleep(150);
   ws.send(JSON.stringify({ t: 'pair', id: 'owned-r4' }));
   const offer = await inbox.next();
   if (offer['t'] !== 'offer') throw new Error('expected real pairing offer');
