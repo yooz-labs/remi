@@ -117,3 +117,26 @@ Receipts: `/private/tmp/remi-1224-inbound-pin-root-{142,1311}.log`,
 Full exact-head suites, the 61-minute soak and Linux CI are separate integration
 gates; deployed Worker, Apple APNs and signed-device acceptance remain owner
 gates. This receipt does not claim those outcomes.
+
+## Linux reply-BYE control correction
+
+Linux R7 run `37901644901` at `664f86fb` reported 272 passed, 4 skipped and
+one failed assertion: the new connection-count pin logged delivery uncertainty.
+The pin closed its client immediately after sending reply BYE. Bun 1.3.11 can
+reset that connection and discard the just-sent frame (#1225), the same behavior
+already documented by the existing R3 orderly-close tests.
+The four new triggers now follow that existing control: send authenticated reply
+BYE and leave the transport open until the hub's bounded two-second grace closes
+it. The 500 ms retirement bound, clean-close/no-uncertainty assertions, owned
+writer checks and fresh-channel recovery remain unchanged. No production code or
+runtime exception changes. Independent read-only delta review found no findings.
+
+A fresh private clone with this test correction passes the same five-file control
+on both runtimes: 16 passed / 0 failed (Bun 1.4.2: 24.96 s, 150 assertions;
+Bun 1.3.11: 24.91 s, 149 assertions). Scoped TypeScript, formatting and diff checks
+pass. Receipts: `/private/tmp/remi-r7-close-correction-g_u2f88g/`.
+The old-head Bun 1.4.2 full suite passed (7920 tests, 26 skips, 0 failures);
+the coordinator was interrupted normally during the old-head 1.3.11 suite to
+avoid running the hour gate on a superseded head. Neither is acceptance of the
+new committed head. Fresh exact-head suites and Linux/hour gates follow this
+correction separately.

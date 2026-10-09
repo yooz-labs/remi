@@ -135,7 +135,8 @@ for (const trigger of ['inbound', 'connection-count', 'connection-presence'] as 
       expect(frame[0]).toBe(relayV2.TYPE_BYE);
       expect(await owned.channel.receive(frame)).toBeNull();
       await owned.channel.bye();
-      owned.socket.close();
+      // Let the hub close after its bounded grace (#1225). Bun 1.3.11's
+      // immediate client close can discard the reply BYE this pin must prove.
       expect((await owned.socket.closed).code).toBe(1000);
       expect(await owned.socket.quiet(50)).toBe(true);
       expect(owned.logs.some((line) => line.includes('no longer current'))).toBe(false);
@@ -225,7 +226,8 @@ test('a held session-list response resumes into a real busy writer and retires t
       expect(frame[0]).toBe(relayV2.TYPE_BYE);
       expect(await owned.channel.receive(frame)).toBeNull();
       await owned.channel.bye();
-      owned.socket.close();
+      // Preserve the reply BYE until the hub's bounded close, as in R3's
+      // existing clean-end tests (#1225).
       expect((await owned.socket.closed).code).toBe(1000);
       expect(await owned.socket.quiet(50)).toBe(true);
       expect(await holder.exited).toBe(0);
