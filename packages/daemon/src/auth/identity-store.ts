@@ -29,7 +29,10 @@ import {
 } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { isAuthorityEpoch, newAuthorityEpoch } from '../storage/authority-epoch.ts';
-import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import {
+  withInterprocessFileLock,
+  withInterprocessFileLockNonblocking,
+} from '../storage/interprocess-file-lock.ts';
 import { purgeSecurePushSubscriptionsLocked } from '../storage/secure-push-subscriptions.ts';
 
 export class DuplicateKeyError extends Error {
@@ -306,22 +309,37 @@ export class IdentityStore {
     operation: (current: string | null) => T,
     migrate = false,
   ): T {
-    return this.transaction(() => {
-      const file = this.loadAuthorizedKeys();
-      const key = file.keys.find((candidate) => candidate.publicKey === publicKey) as
-        | StoredAuthorizedKey
-        | undefined;
-      let epoch = key?.authorizationEpoch;
-      if (key && epoch === undefined && migrate) {
-        epoch = newAuthorityEpoch();
-        const updated: StoredAuthorizedKey = { ...key, authorizationEpoch: epoch };
-        this.writeAuthorizedKeys({
-          ...file,
-          keys: file.keys.map((candidate) => (candidate === key ? updated : candidate)),
-        });
-      }
-      return operation(epoch ?? null);
-    });
+    return this.transaction(() => this.decideAuthorizationEpoch(publicKey, operation, migrate));
+  }
+  /** Current generation read under one ownership attempt; never migrates or writes (#1224). */
+  withAuthorizationEpochNonblocking<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+  ): T {
+    this.ensureDir();
+    return withInterprocessFileLockNonblocking(this.authorizedKeysPath, () =>
+      this.decideAuthorizationEpoch(publicKey, operation, false),
+    );
+  }
+  private decideAuthorizationEpoch<T>(
+    publicKey: string,
+    operation: (current: string | null) => T,
+    migrate: boolean,
+  ): T {
+    const file = this.loadAuthorizedKeys();
+    const key = file.keys.find((candidate) => candidate.publicKey === publicKey) as
+      | StoredAuthorizedKey
+      | undefined;
+    let epoch = key?.authorizationEpoch;
+    if (key && epoch === undefined && migrate) {
+      epoch = newAuthorityEpoch();
+      const updated: StoredAuthorizedKey = { ...key, authorizationEpoch: epoch };
+      this.writeAuthorizedKeys({
+        ...file,
+        keys: file.keys.map((candidate) => (candidate === key ? updated : candidate)),
+      });
+    }
+    return operation(epoch ?? null);
   }
   private readPendingKeys(): PendingKey[] {
     const parsed = this.readJson(this.pendingKeysPath);

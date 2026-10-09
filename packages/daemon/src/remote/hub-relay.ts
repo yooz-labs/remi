@@ -286,7 +286,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   /**
    * Whether the peer's captured authority is still current (#1201). A revoked grant and an
-   * unreadable store (a lock timeout, a damaged file) both answer false, and both close the
+   * unreadable store (lock contention, a damaged file) both answer false, and both close the
    * peer at their callers (`sendRaw`, `route`). That is deliberate for the store fault too:
    * the channel is ordered and complete, so refusing one frame and staying open would drop it
    * silently and leave the client's state diverged, while a close makes the client reconnect

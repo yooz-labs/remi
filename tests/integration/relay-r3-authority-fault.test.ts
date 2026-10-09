@@ -4,7 +4,7 @@
 import { expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createSessionUpdate, relayV2 } from '@remi/shared';
+import { createSessionUpdate, deserialize, relayV2 } from '@remi/shared';
 import { resumed } from './relay-r3-fixture.ts';
 
 test('a real busy authority writer retires the peer without blocking the hub event loop (#1224)', async () => {
@@ -56,6 +56,13 @@ test('a real busy authority writer retires the peer without blocking the hub eve
       'Relay authority store unreadable (InterprocessFileLockError); failing closed, not a revocation',
     ]);
     expect(owned.logs.some((line) => line.includes('no longer current'))).toBe(false);
+    expect(await holder.exited).toBe(0);
+    // A transient busy writer is not durable revocation: fresh READY can resync.
+    const fresh = await owned.connect();
+    expect(owned.relay.sendRaw(fresh.cid, createSessionUpdate('owned-session', 'idle'))).toBe(true);
+    const payload = await fresh.channel.receive(await fresh.socket.binary());
+    expect(payload === null || payload === undefined).toBe(false);
+    expect(payload && deserialize(new TextDecoder().decode(payload))?.type).toBe('session_update');
   } finally {
     expect(await holder.exited).toBe(0);
     expect(await new Response(holder.stderr).text()).toBe('');

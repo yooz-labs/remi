@@ -61,33 +61,39 @@ export async function resumed(events: Partial<AdapterEvents> = {}) {
   );
   await relay.start();
   await admission;
-  const socket = await Socket.open(clientUrl(worker, Buffer.from(rid).toString('hex')));
-  await admit(socket, { signer, publicKey: signer.publicKey }, 'client', rid);
-  await socket.json();
-  await socket.json();
-  const start = await relayV2.clientStart(
-    { machinePublicKey: machine, device: signer, mode: 'resume', random: relayV2.systemRandom },
-    Date.now(),
-  );
-  socket.sendText(start.hello);
-  const auth = await start.onHelloAck(await socket.text(), Date.now());
-  socket.sendText(auth.auth);
-  const channel = await auth.onReady(await socket.text(), Date.now(), {
-    emit: (bytes) => socket.sendBinary(bytes),
-    close: (code) => socket.close(code),
-  });
-  const hello = createHello('owned-device', '2.0.0');
-  await channel.send(new TextEncoder().encode(serialize(hello)));
-  const receipt = await channel.receive(await socket.binary());
-  if (!receipt || deserialize(new TextDecoder().decode(receipt))?.type !== 'ack')
-    throw new Error('MACHINE_HELLO_RECEIPT_MISSING');
-  if (!cid) throw new Error('MACHINE_CONNECTION_MISSING');
+  const connections: { socket: Socket; channel: relayV2.Channel }[] = [];
+  const connect = async () => {
+    const socket = await Socket.open(clientUrl(worker, Buffer.from(rid).toString('hex')));
+    await admit(socket, { signer, publicKey: signer.publicKey }, 'client', rid);
+    await socket.json();
+    await socket.json();
+    const start = await relayV2.clientStart(
+      { machinePublicKey: machine, device: signer, mode: 'resume', random: relayV2.systemRandom },
+      Date.now(),
+    );
+    socket.sendText(start.hello);
+    const auth = await start.onHelloAck(await socket.text(), Date.now());
+    socket.sendText(auth.auth);
+    const channel = await auth.onReady(await socket.text(), Date.now(), {
+      emit: (bytes) => socket.sendBinary(bytes),
+      close: (code) => socket.close(code),
+    });
+    const hello = createHello('owned-device', '2.0.0');
+    await channel.send(new TextEncoder().encode(serialize(hello)));
+    const receipt = await channel.receive(await socket.binary());
+    if (!receipt || deserialize(new TextDecoder().decode(receipt))?.type !== 'ack')
+      throw new Error('MACHINE_HELLO_RECEIPT_MISSING');
+    if (!cid) throw new Error('MACHINE_CONNECTION_MISSING');
+    connections.push({ socket, channel });
+    return { cid, socket, channel };
+  };
+  const connected = await connect();
   const cleanup = async () => {
-    socket.close();
+    for (const { socket } of connections) socket.close();
     await relay.stop();
-    await channel.transportClosed();
+    for (const { channel } of connections) await channel.transportClosed();
     await worker.stop();
     rmSync(dir, { recursive: true, force: true });
   };
-  return { cid, dir, worker, trust, devices, device, relay, socket, channel, logs, cleanup };
+  return { ...connected, dir, worker, trust, devices, device, relay, logs, connect, cleanup };
 }
