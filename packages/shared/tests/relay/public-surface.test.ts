@@ -130,11 +130,41 @@ describe('public relayV2 surface', () => {
     }
   });
 
-  test('the package root does not leak v2 names next to the v1 exports', () => {
+  test('the package root has neither unscoped v2 helpers nor retired v1 crypto', () => {
     for (const name of ['clientStart', 'hostOnHello', 'seal', 'openSeal', 'RelayError', 'V']) {
       expect([name, name in shared]).toEqual([name, false]);
     }
     expect('encryptRelayPayload' in shared).toBe(false);
-    expect(typeof shared.kexSigningInput).toBe('function');
+    for (const name of [
+      'kexSigningInput',
+      'generateAnswerKeyPair',
+      'sealAnswer',
+      'openSealedAnswer',
+      'isSealedAnswer',
+    ])
+      expect([name, name in shared]).toEqual([name, false]);
+  });
+  test('retired optional auth fields and factory positions retain additive wire compatibility', () => {
+    const kex = { ephemeralKey: 'historical-ephemeral', signature: 'historical-signature' };
+    const challenge = shared.createAuthChallenge(
+      'challenge',
+      'server-fingerprint',
+      'server-key',
+      kex,
+      'historical-answer-key',
+    );
+    const response = shared.createAuthResponse('client-key', 'signature', 'fingerprint', kex);
+    expect(challenge).toMatchObject({
+      relayEphemeralKey: kex.ephemeralKey,
+      relayKexSignature: kex.signature,
+      answerEncryptionKey: 'historical-answer-key',
+    });
+    expect(response).toMatchObject({
+      relayEphemeralKey: kex.ephemeralKey,
+      relayKexSignature: kex.signature,
+    });
+    for (const message of [challenge, response])
+      expect(shared.deserialize(shared.serialize(message))).toEqual(message);
+    expect(shared.PROTOCOL_VERSION).toBe(1);
   });
 });

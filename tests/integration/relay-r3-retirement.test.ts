@@ -12,6 +12,7 @@ test('v1 room codes and payload encryption have no remaining daemon implementati
     'remote/code-store.ts',
     'remote/relay-notices.ts',
     'cli/cmd-code.ts',
+    'auth/answer-key.ts',
   ]) {
     expect(existsSync(join(import.meta.dir, '../../packages/daemon/src', file))).toBe(false);
   }
@@ -20,9 +21,15 @@ test('v1 room codes and payload encryption have no remaining daemon implementati
     'decryptRelayPayload',
     'deriveRelaySessionKeys',
     'generateEphemeralKeyPair',
+    'kexSigningInput',
+    'generateAnswerKeyPair',
+    'sealAnswer',
+    'openSealedAnswer',
+    'isSealedAnswer',
   ])
     expect(name in shared).toBe(false);
-  expect(typeof shared.kexSigningInput).toBe('function');
+  for (const file of ['relay-crypto.ts', 'sealed-answer.ts'])
+    expect(existsSync(join(import.meta.dir, '../../packages/shared/src', file))).toBe(false);
 });
 
 test('actual encrypted relay contains a throwing application handler, replies and remains usable', async () => {

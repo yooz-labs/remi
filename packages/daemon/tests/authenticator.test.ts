@@ -58,6 +58,18 @@ describe('Authenticator', () => {
     }
   });
 
+  test('the direct authenticator exposes no retired relay key exchange or answer-key announcement', () => {
+    for (const method of [
+      'createChallengeWithRelayKex',
+      'verifyRelayKex',
+      'setAnswerEncryptionKey',
+    ])
+      expect([method, method in authenticator]).toEqual([method, false]);
+    const challenge = authenticator.createChallenge('owned-retirement');
+    for (const field of ['relayEphemeralKey', 'relayKexSignature', 'answerEncryptionKey'])
+      expect([field, field in challenge]).toEqual([field, false]);
+  });
+
   describe('createChallenge', () => {
     test('creates a valid auth challenge message', () => {
       const challenge = authenticator.createChallenge('conn-1');

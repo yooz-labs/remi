@@ -69,6 +69,9 @@ describe('v2 signing inputs are disjoint from every other signed message', () =>
     const challenge = fromBase64(generateChallenge());
     expect(challenge.byteLength).toBe(32);
     const kex = new Uint8Array(kexSigningInput('challenge', 'daemon-ephemeral', null));
+    expect(new TextDecoder().decode(kex)).toBe(
+      '17:remi-relay-kex-v19:challenge16:daemon-ephemeral0:',
+    );
     const answer = new TextEncoder().encode('session-id|question-id|answer text');
     for (const [name, , input] of BUILDERS) {
       expect([name, input.length > challenge.byteLength]).toEqual([name, true]);
