@@ -47,6 +47,8 @@
     "ignore": [
       "node_modules",
       "packages/shared/tests/fixtures/relay-v2/vectors.json",
+      "packages/shared/tests/fixtures/relay-v2/push-vectors.json",
+      "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json",
       "dist",
       ".git",
       "*.md",

@@ -26,6 +26,8 @@ extend-exclude = [
   # Relay v2 test vectors (R1): hex and base64url tokens, not prose; random-looking
   # substrings such as "Iy" and "Ot" trip the checker by chance.
   "packages/shared/tests/fixtures/relay-v2/vectors.json",
+  "packages/shared/tests/fixtures/relay-v2/push-vectors.json",
+  "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json",
   # Pairing link vectors (#1275): base64url bodies, not prose; they tokenize into
   # false-positive "words" such as "UE" and "Iz".
   "packages/shared/tests/fixtures/pairing/vectors.json",
