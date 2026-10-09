@@ -49,7 +49,7 @@ struct MacLiveRootView: View {
                                     Label("Add machine", systemImage: "plus")
                                 }
                                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                                .help("Add machine (⇧⌘N)")
+                                .help("Add another Remi machine")
                             }
                             .visibilityPriority(.high)
                         } else {
@@ -60,7 +60,7 @@ struct MacLiveRootView: View {
                                     Label("Add machine", systemImage: "plus")
                                 }
                                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                                .help("Add machine (⇧⌘N)")
+                                .help("Add another Remi machine")
                             }
                         }
                     }
@@ -99,7 +99,7 @@ struct MacLiveRootView: View {
                                     Label("New session", systemImage: "plus")
                                 }
                                 .keyboardShortcut("n", modifiers: .command)
-                                .help("New session (⌘N)")
+                                .help("Start a new session")
                                 .disabled(sessionCreationMachines.isEmpty)
                             }
                             .visibilityPriority(.high)
@@ -111,7 +111,7 @@ struct MacLiveRootView: View {
                                     Label("New session", systemImage: "plus")
                                 }
                                 .keyboardShortcut("n", modifiers: .command)
-                                .help("New session (⌘N)")
+                                .help("Start a new session")
                                 .disabled(sessionCreationMachines.isEmpty)
                             }
                         }
