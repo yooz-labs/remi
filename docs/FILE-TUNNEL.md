@@ -368,6 +368,55 @@ establish an atomic snapshot or a validated private copy. Private-copy bounds,
 growth/truncation/mutation, publication/recovery, quotas and transfer authority
 remain separate subsequent gates. No capability or attachment UI is advertised.
 
+Admission landed in #1362 at `35ccce9a`: six builds/executions passed all
+16 controls, and 12 guard mutations failed their exact named assertions on
+both compiled Mac ARM Bun versions (24/24). Linux mutation execution remains
+unmeasured; the standalone candidate selects no production helper.
+
+The next bounded change adds `private-copy.ts` and an owned `copy-probe.ts`
+beside that candidate, reusing `AdmittedFile`, captured directories and native
+exclusive creation/link/unlink. Its gate is fixed before execution:
+preserve all 16 controls; pass empty/nonempty/10 MiB copies with exact bytes,
+digest and mode; read no more than admitted size plus one using bounded chunks;
+refuse growth, truncation, detected same-size edits (including restored mtime),
+new hardlinks and source ancestor/leaf/root replacements; refuse private-root
+replacement and publication collisions without overwriting another file;
+prove captured-directory cleanup and real read/write errors. All six compiled
+executions must match the exact control list and input hashes, without cleanup
+errors. Removed copy guards must fail their exact named filesystem assertions
+on both compiled Mac ARM Bun versions; Linux mutations remain a separate limit.
+Failed runs are retained. No source bytes leave the probe before validation.
+
+This step checks descriptor identity/type/link count/size and nanosecond
+mtime/ctime against admission metadata before and after copying. Publication
+uses a generated private name and only the completed private descriptor is read.
+It does not prove atomic source snapshots or complete concurrent-edit detection.
+Durable reservations, recovery, production-helper selection, transfer authority
+and the attachment capability remain later gates.
+
+Independent review of the initial E/B candidate found destination mutations
+after validation and private name replacement missing from its controls.
+The corrected candidate repeats destination validation at publication and
+binds generated names to the held private device/inode before publication and
+cleanup. Replaced names refuse cleanup without deleting the replacement.
+New controls alter destination bytes/mode at publication and replace actual
+partial/completed names. This detects the recorded replacements; name checks
+and subsequent effects are not atomic against every concurrent edit.
+
+The corrected private-copy candidate passed six builds and six executions on
+2026-10-10 with all 27 primitive/admission/copy controls and no cleanup errors.
+Twelve removed-guard variants failed their exact named assertions on both
+compiled Mac ARM Bun gates (24/24); Linux mutation execution and forced partial
+writes are unmeasured. Final source snapshots, binaries and logs are retained
+in `/private/tmp/remi-1170-copy-20261010-f/` and
+`/private/tmp/remi-1170-copy-mutations-20261010-d/`.
+Earlier copy receipts remain historical snapshots. A targeted typecheck found
+a fixture type-annotation shadowing error, corrected before the final result.
+Mutation receipt C caught the new name guards but failed exact witness matching
+because `assert.throws` prepends `Missing expected exception:`. D registers that
+full message; no source, corpus, mutation or exit condition changed. C remains
+failed evidence, rather than acceptance.
+
 | Next PR | Existing code and proposed files | Prerequisite and exit gate |
 |---|---|---|
 | T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |

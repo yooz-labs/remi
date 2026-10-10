@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { admissionProbe } from './admission-probe';
+import { copyProbe } from './copy-probe';
 import source from './openat.c' with { type: 'file' };
 if (!process.argv.includes('--owned-spike')) {
   console.error('Use --owned-spike to run this temporary-filesystem experiment.');
@@ -164,6 +165,33 @@ try {
     },
   );
   checks.push(...admissionResult.checks);
+  checks.push(
+    ...copyProbe(root, {
+      openAt: (directory, component, flags) => {
+        const encoded = name(component);
+        return lib.symbols.openat(directory, ptr(encoded), flags);
+      },
+      create: (directory, component, flags, mode) => {
+        const encoded = name(component);
+        return fixed.symbols.remi_openat_create(
+          openatAddress,
+          directory,
+          ptr(encoded),
+          flags,
+          mode,
+        );
+      },
+      link: (directory, from, to) => {
+        const left = name(from);
+        const right = name(to);
+        return lib.symbols.linkat(directory, ptr(left), directory, ptr(right), 0);
+      },
+      unlink: (directory, component) => {
+        const encoded = name(component);
+        return lib.symbols.unlinkat(directory, ptr(encoded), 0);
+      },
+    }),
+  );
   fs.renameSync(path.join(root, 'private'), path.join(root, 'moved'));
   fs.symlinkSync(path.join(root, 'outside'), path.join(root, 'private'));
   assert.equal(lib.symbols.unlinkat(fd, ptr(final), 0), 0, 'captured directory unlink');
@@ -178,7 +206,7 @@ try {
       checks,
       admissionAliases: admissionResult.aliases,
       scope:
-        'storage primitives and admission candidate only; no transfer protocol, authority, decoder, quota or production integration',
+        'storage primitives admission and private-copy candidate only; no transfer protocol, authority, decoder, quota or production integration',
     }),
   );
 } finally {

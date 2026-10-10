@@ -32,6 +32,17 @@ CHECKS = {
     "directory FIFO socket and device refusal",
     "initial 10 MiB size admission",
     "captured project root replacement refusal",
+    "empty nonempty and 10 MiB private copies with exact bytes digest and mode",
+    "growth truncation and detected same-size mutation refusal",
+    "source link and ancestor leaf root replacement refusal during copy",
+    "private bytes mode and effect-time source validation",
+    "actual descriptor read and write failure cleanup",
+    "nonprivate directory and exclusive creation collision refusal",
+    "private publication collision refuses without overwrite",
+    "private root replacement cleanup through captured directory",
+    "completed private descriptor survives source and root changes",
+    "actual completed cleanup failure remains visible and retryable",
+    "partial and completed name replacement refuses owned cleanup",
 }
 
 
@@ -55,7 +66,7 @@ def main():
     compilers = (("1311", options.bun_1311), ("current", options.bun_current))
     source = Path(__file__).resolve().parent
     source_hashes = {name: digest(source / name) for name in (
-        "probe.ts", "admission.ts", "admission-probe.ts", "openat.c", "matrix.py")}
+        "probe.ts", "admission.ts", "admission-probe.ts", "private-copy.ts", "copy-probe.ts", "openat.c", "matrix.py")}
     output = options.out.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     snapshot = output / "source"
@@ -104,7 +115,7 @@ def main():
             "cleanupErrors": cleanup_errors,
             "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(TARGETS) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
-            "scope": "Seven primitives plus nine admission controls; private-copy validation and full T0a remain pending",
+            "scope": "Seven primitives plus nine admission and eleven private-copy controls; production helper, quotas, recovery and full T0a remain pending",
             "results": results,
         }, indent=2) + "\n")
 

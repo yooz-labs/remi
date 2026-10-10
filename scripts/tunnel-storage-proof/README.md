@@ -32,11 +32,33 @@ The corpus confirms a sibling prefix remains readable.
 Replacement checkpoints run after actual native opens and perform real renames;
 they do not substitute filesystem calls or metadata.
 
-This is a packaging/admission experiment. Private-copy validation, detected
-growth/truncation/mutation, reservations, recovery and transfer lifecycle remain
-subsequent work. Name revalidation is not an atomic snapshot and does not prove
-that every concurrent edit was detected. Bun's compiler/FFI APIs remain candidate
-mechanisms; no production helper has been selected.
+The private-copy candidate reuses the admitted source FD and checks its original
+device/inode, regular type, single link, size and nanosecond mtime/ctime before
+and after copying. It reads at most the admitted size plus one into 32 KiB
+buffers, handles partial writes, verifies the completed private length/digest
+and repeats destination validation at publication. Generated private names
+are checked against the held device/inode before publication and cleanup;
+replacements refuse cleanup and remain untouched. Publication uses exclusive
+descriptor-relative linking. Generated partials
+are 0600 beneath a captured owner-only 0700 directory; only the completed
+private descriptor is read. A retained directory FD supports cleanup after a
+root-path replacement and an actual failed completed unlink remains retryable.
+
+Eleven copy control groups cover empty/nonempty/10 MiB bytes/digest/mode, growth,
+truncation and detected same-size changes, an exactly restored mtime with a
+changed ctime, source name replacements and new hardlinks, private byte/mode
+changes, effect-time source validation, actual EBADF reads/writes, creation and
+publication collisions, captured cleanup and independent completed bytes.
+Destination bytes/mode are changed at the final validation checkpoint too;
+actual partial/completed name replacements prove inode-bound cleanup refusal.
+All fixture changes use actual OS files/descriptors; checkpoint completion is
+required before a refusal counts. Short writes are handled in source but not
+forced in this corpus. No fixture establishes atomic snapshots or complete
+concurrent-edit detection, including edits between final checks/publication.
+
+This remains a packaging/admission/copy experiment. Durable reservations, crash
+recovery and transfer lifecycle remain subsequent work. Bun's compiler/FFI APIs
+remain candidate mechanisms; no production helper has been selected.
 No helper or decoder is selected for production by this spike.
 
 ## Run
