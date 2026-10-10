@@ -2,6 +2,7 @@ import AppKit
 import Observation
 import RemiKit
 import RemiPush
+import RemiUI
 import SwiftUI
 import UserNotifications
 

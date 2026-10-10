@@ -1,4 +1,5 @@
 import RemiKit
+import RemiUI
 import SwiftUI
 import UIKit
 
@@ -36,7 +37,7 @@ struct PairingScreen: View {
                 PairingIntroduction()
             }
 
-            Section("Recommended") {
+            Section {
                 PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand)
                 PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand)
 
@@ -47,11 +48,13 @@ struct PairingScreen: View {
                         .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
                 }
                 .buttonStyle(.glassProminent)
+            } header: {
+                Text("Recommended")
             } footer: {
                 Text("The code pins the machine identity but does not approve this phone. Confirm the phone fingerprint in the terminal.")
             }
 
-            Section("Manual direct connection") {
+            Section {
                 TextField("Host or IP address", text: $host)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -65,6 +68,8 @@ struct PairingScreen: View {
                     added = true
                 }
                 .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+            } header: {
+                Text("Manual direct connection")
             } footer: {
                 Text("Use 127.0.0.1 in the simulator. A physical phone needs an address reachable through the machine’s configured LAN, VPN, or Tailscale bind.")
             }
