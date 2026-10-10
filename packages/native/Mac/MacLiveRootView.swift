@@ -14,32 +14,31 @@ struct MacLiveRootView: View {
     @State private var notificationDestination: RemiNavigationDestination?
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var expandedColumnVisibility = NavigationSplitViewVisibility.all
 
     private var mainContent: some View {
         Group {
             if store.machines.isEmpty {
                 MacFirstRunView(onAddMachine: { showingAddMachine = true })
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     List(store.machines, selection: machineSelection) { machine in
-                        VStack(alignment: .leading) {
-                            Text(machine.displayName).font(.headline)
-                            Text(statusText(machine.status)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag(machine.id)
-                        .contextMenu {
-                            if machine.endpoint.relayPin != nil {
-                                Button("Enable relay notifications", systemImage: "bell.badge") {
-                                    relayNotifications.enable(on: machine.endpoint)
+                        RemiMachineRow(machine: machinePresentation(machine))
+                            .tag(machine.id)
+                            .contextMenu {
+                                if machine.endpoint.relayPin != nil {
+                                    Button("Enable relay notifications", systemImage: "bell.badge") {
+                                        relayNotifications.enable(on: machine.endpoint)
+                                    }
+                                    .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
                                 }
-                                .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
+                                Button("Remove machine", systemImage: "trash", role: .destructive) {
+                                    pendingMachineRemoval = machine
+                                }
                             }
-                            Button("Remove machine", systemImage: "trash", role: .destructive) {
-                                pendingMachineRemoval = machine
-                            }
-                        }
                     }
-                    .navigationSplitViewColumnWidth(min: 160, ideal: 190, max: 260)
+                    .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
                     .navigationTitle("Remi")
                     .toolbar {
                         if #available(macOS 26.1, *) {
@@ -66,33 +65,15 @@ struct MacLiveRootView: View {
                         }
                     }
                 } content: {
-                    List(visibleSessions, selection: sessionSelection) { session in
-                        HStack(spacing: RemiTheme.Spacing.s) {
-                            RemiSessionRow(session: session)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .layoutPriority(1)
-                            if session.canResume {
-                                Button {
-                                    resume(session)
-                                } label: {
-                                    if session.isResuming {
-                                        ProgressView().controlSize(.small)
-                                    } else {
-                                        Label("Resume", systemImage: "play.fill")
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                                .contentShape(.rect)
-                                .disabled(session.isResuming)
-                                .accessibilityLabel(
-                                    session.isResuming ? "Resuming session" : "Resume session"
-                                )
-                            }
-                        }
-                        .tag(session.id)
-                    }
-                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 460)
+                    MacSessionsColumn(
+                        machine: selectedMachine,
+                        sessions: visibleSessions,
+                        selection: sessionSelection,
+                        onResume: resume,
+                        onRetryApproval: store.retryApproval,
+                        onNewSession: { showingNewSession = true }
+                    )
+                    .navigationSplitViewColumnWidth(min: 380, ideal: 440, max: 540)
                     .navigationTitle("Sessions")
                     .toolbar {
                         if #available(macOS 26.1, *) {
@@ -200,6 +181,27 @@ struct MacLiveRootView: View {
                             "Select a session",
                             systemImage: "bubble.left.and.bubble.right"
                         )
+                    }
+                }
+                .toolbar {
+                    ToolbarItemGroup(placement: .navigation) {
+                        Button {
+                            toggleMachineColumn()
+                        } label: {
+                            Label("Toggle machines", systemImage: "sidebar.leading")
+                        }
+                        .labelStyle(.iconOnly)
+                        .keyboardShortcut("1", modifiers: [.command, .control])
+                        .help("Show or hide machines (Control-Command-1)")
+
+                        Button {
+                            toggleSessionColumn()
+                        } label: {
+                            Label("Focus conversation", systemImage: "rectangle.split.3x1")
+                        }
+                        .labelStyle(.iconOnly)
+                        .keyboardShortcut("2", modifiers: [.command, .control])
+                        .help("Show or hide both navigation columns (Control-Command-2)")
                     }
                 }
             }
@@ -376,6 +378,55 @@ struct MacLiveRootView: View {
         store.machines.filter { $0.status == .connected }
     }
 
+    private func machinePresentation(_ machine: MachineState) -> RemiMachineSummary {
+        RemiMachineSummary(
+            id: machine.id,
+            name: machine.displayName,
+            address: machine.endpoint.displayAddress,
+            reachability: reachability(machine.status),
+            transport: machine.endpoint.relayPin != nil ? .relay
+                : isLoopback(machine.endpoint.host) ? .local : .direct,
+            sessionCount: machine.activeSessions.count
+        )
+    }
+
+    private func reachability(_ status: MachineConnectionStatus) -> RemiMachineReachability {
+        switch status {
+        case .connected: .connected
+        case .connecting: .connecting
+        case .waitingForApproval, .waitingForRelayConfirmation: .waitingForApproval
+        case .disconnected, .unavailable: .unreachable
+        }
+    }
+
+    private func isLoopback(_ host: String) -> Bool {
+        ["127.0.0.1", "::1", "localhost"].contains(host.lowercased())
+    }
+
+    private func toggleMachineColumn() {
+        if columnVisibility == .all {
+            columnVisibility = .doubleColumn
+            expandedColumnVisibility = .doubleColumn
+        } else if columnVisibility == .doubleColumn {
+            columnVisibility = .all
+            expandedColumnVisibility = .all
+        } else {
+            columnVisibility = .all
+            expandedColumnVisibility = .all
+        }
+    }
+
+    private func toggleSessionColumn() {
+        if columnVisibility == .detailOnly {
+            columnVisibility = expandedColumnVisibility
+        } else {
+            if columnVisibility == .all || columnVisibility == .doubleColumn {
+                expandedColumnVisibility = columnVisibility
+            }
+            columnVisibility = .detailOnly
+        }
+    }
+
     private var visibleSessions: [RemiSessionSummary] {
         guard let machine = selectedMachine else { return [] }
         return machine.sessions.filter { $0.source == "daemon" || $0.canResume == true }.map { session in
@@ -544,14 +595,166 @@ struct MacLiveRootView: View {
         }
     }
 
-    private func statusText(_ status: MachineConnectionStatus) -> String {
-        switch status {
-        case .disconnected: "Disconnected"
-        case .connecting: "Connecting"
-        case .connected: "Connected"
-        case .waitingForApproval(let fingerprint): "Approve \(fingerprint) locally"
-        case .waitingForRelayConfirmation(let fingerprint): "Compare \(fingerprint) in the terminal"
-        case .unavailable(let reason): reason ?? "Unavailable"
+}
+
+private struct MacSessionsColumn: View {
+    let machine: MachineState?
+    let sessions: [RemiSessionSummary]
+    @Binding var selection: String?
+    let onResume: (RemiSessionSummary) -> Void
+    let onRetryApproval: (MachineEndpoint) -> Void
+    let onNewSession: () -> Void
+
+    var body: some View {
+        Group {
+            if let machine, shouldShowSessions(machine) {
+                if sessions.isEmpty {
+                    MacNoSessionsState(onNewSession: onNewSession)
+                } else {
+                    MacSessionList(sessions: sessions, selection: $selection, onResume: onResume)
+                }
+            } else if let machine {
+                MacMachineConnectionState(
+                    machine: machine,
+                    onRetryApproval: { onRetryApproval(machine.endpoint) }
+                )
+            } else {
+                ContentUnavailableView("Select a machine", systemImage: "desktopcomputer")
+            }
+        }
+    }
+
+    private func shouldShowSessions(_ machine: MachineState) -> Bool {
+        machine.hasLoadedSessions && machine.status == .connected
+    }
+}
+
+private struct MacSessionList: View {
+    let sessions: [RemiSessionSummary]
+    @Binding var selection: String?
+    let onResume: (RemiSessionSummary) -> Void
+
+    var body: some View {
+        List(sessions, selection: $selection) { session in
+            MacSessionListRow(session: session, onResume: { onResume(session) })
+            .tag(session.id)
+        }
+    }
+}
+
+private struct MacSessionListRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let session: RemiSessionSummary
+    let onResume: () -> Void
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            RemiSessionRow(session: session)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+            if session.canResume {
+                Button(action: onResume) {
+                    if session.isResuming {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+                .disabled(session.isResuming)
+                .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
+            }
+        }
+    }
+}
+
+private struct MacNoSessionsState: View {
+    let onNewSession: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("No sessions", systemImage: "bubble.left.and.bubble.right")
+        } description: {
+            Text("Start an agent session on this machine. It will appear here and stay available as you switch machines.")
+        } actions: {
+            Button("New session", systemImage: "plus", action: onNewSession)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct MacMachineConnectionState: View {
+    let machine: MachineState
+    let onRetryApproval: () -> Void
+
+    var body: some View {
+        switch machine.status {
+        case .connecting:
+            ContentUnavailableView {
+                Label("Connecting to \(machine.displayName)", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+            } description: {
+                Text("Remi will load this machine’s active and resumable sessions when the connection is ready.")
+            } actions: {
+                ProgressView().controlSize(.small)
+            }
+        case .waitingForApproval(let fingerprint):
+            MacAuthorizationState(
+                title: "Authorization needed",
+                detail: "Approve this Mac on \(machine.displayName) with fingerprint \(fingerprint), then retry the connection.",
+                onRetry: onRetryApproval
+            )
+        case .waitingForRelayConfirmation(let fingerprint):
+            MacAuthorizationState(
+                title: "Confirm this Mac",
+                detail: "Compare fingerprint \(fingerprint) in the terminal on \(machine.displayName) and complete the pairing approval there.",
+                onRetry: nil
+            )
+        case .unavailable(let reason):
+            ContentUnavailableView(
+                "Machine unavailable",
+                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                description: Text(reason ?? "Remi will keep trying to reconnect to \(machine.displayName).")
+            )
+        case .disconnected:
+            ContentUnavailableView(
+                "Machine offline",
+                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                description: Text("Remi will keep trying to reconnect to \(machine.displayName).")
+            )
+        case .connected:
+            ContentUnavailableView {
+                Label("Loading sessions", systemImage: "clock")
+            } description: {
+                Text("Connected to \(machine.displayName). Waiting for its session list.")
+            } actions: {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+}
+
+private struct MacAuthorizationState: View {
+    let title: LocalizedStringKey
+    let detail: String
+    let onRetry: (() -> Void)?
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: "person.badge.clock")
+        } description: {
+            Text(detail)
+                .textSelection(.enabled)
+        } actions: {
+            if let onRetry {
+                Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 }

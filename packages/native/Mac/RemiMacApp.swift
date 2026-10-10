@@ -21,14 +21,14 @@ struct RemiMacApp: App {
                     )
                 }
             }
-            .frame(minWidth: 760, minHeight: 560)
+            .frame(minWidth: 980, minHeight: 600)
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }
                 else if phase == .background { notifications.background() }
             }
         }
-        .defaultSize(width: 1180, height: 760)
+        .defaultSize(width: 1280, height: 800)
         .keyboardShortcut(nil)
 
         MenuBarExtra {
