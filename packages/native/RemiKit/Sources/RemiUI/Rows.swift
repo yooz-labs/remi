@@ -57,6 +57,12 @@ public struct RemiSessionRow: View {
                 }
                 .foregroundStyle(.secondary)
 
+                if let activity = session.lastActivityDate {
+                    Text("Updated \(activity, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
                 if let resumeError = session.resumeError {
                     Text(resumeError)
                         .font(.caption)
@@ -73,6 +79,14 @@ public struct RemiSessionRow: View {
         if session.isResuming { return "Resuming…" }
         guard let identity = session.resumeIdentity else { return "Stored" }
         return "Stored · \(identity)"
+    }
+}
+
+private extension RemiSessionSummary {
+    var lastActivityDate: Date? {
+        guard let lastActivity else { return nil }
+        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))
+            ?? (try? Date.ISO8601FormatStyle().parse(lastActivity))
     }
 }
 
@@ -136,7 +150,9 @@ private struct MachineMetadata: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xxs) {
             Text(transport.rawValue).font(.caption2.weight(.semibold)).textCase(.uppercase)
-            Text("\(sessionCount) sessions").font(.caption).foregroundStyle(.secondary)
+            Text(sessionCount == 1 ? "1 session" : "\(sessionCount) sessions")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

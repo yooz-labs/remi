@@ -1,3 +1,4 @@
+import AppKit
 import RemiKit
 import RemiUI
 import SwiftUI
@@ -606,7 +607,12 @@ private struct MacSessionsColumn: View {
                 if sessions.isEmpty {
                     MacNoSessionsState(onNewSession: onNewSession)
                 } else {
-                    MacSessionList(sessions: sessions, selection: $selection, onResume: onResume)
+                    MacSessionList(
+                        machineID: machine.id,
+                        sessions: sessions,
+                        selection: $selection,
+                        onResume: onResume
+                    )
                 }
             } else if let machine {
                 MacMachineConnectionState(
@@ -625,6 +631,7 @@ private struct MacSessionsColumn: View {
 }
 
 private struct MacSessionList: View {
+    let machineID: String
     let sessions: [RemiSessionSummary]
     @Binding var selection: String?
     let onResume: (RemiSessionSummary) -> Void
@@ -645,9 +652,11 @@ private struct MacSessionList: View {
                             workspaceGroup(workspace)
                         }
                     } label: {
-                        Label("Recent workspaces (\(recentWorkspaces.count))", systemImage: "clock")
+                        Label(recentWorkspaceLabel, systemImage: "clock")
                             .font(.subheadline.weight(.semibold))
                     }
+                    .accessibilityLabel(recentWorkspaceLabel)
+                    .accessibilityHint(showsRecent ? "Hides finished workspaces" : "Shows finished workspaces")
                 } else {
                     ForEach(recentWorkspaces) { workspace in
                         workspaceGroup(workspace)
@@ -660,7 +669,19 @@ private struct MacSessionList: View {
             }
         }
         .searchable(text: $searchText, prompt: "Search sessions")
+        .toolbar {
+            ToolbarItemGroup {
+                navigationButton(title: "Previous session", systemImage: "chevron.up", offset: -1)
+                navigationButton(title: "Next session", systemImage: "chevron.down", offset: 1)
+            }
+        }
         .onAppear { expandRelevantWorkspace() }
+        .onChange(of: machineID) { _, _ in
+            searchText = ""
+            showsRecent = false
+            expandedWorkspaces.removeAll()
+            expandRelevantWorkspace()
+        }
         .onChange(of: selection) { _, _ in expandRelevantWorkspace() }
         .onChange(of: workspaces.map { "\($0.id):\($0.needsAttention)" }) { _, _ in
             expandRelevantWorkspace()
@@ -698,6 +719,10 @@ private struct MacSessionList: View {
         workspaces.filter { !$0.hasLiveSessions }
     }
 
+    private var recentWorkspaceLabel: String {
+        recentWorkspaces.count == 1 ? "1 recent workspace" : "\(recentWorkspaces.count) recent workspaces"
+    }
+
     private func workspaceGroup(_ workspace: MacSessionWorkspace) -> some View {
         DisclosureGroup(isExpanded: workspaceExpansionBinding(workspace)) {
             ForEach(workspace.sessions) { session in
@@ -706,11 +731,23 @@ private struct MacSessionList: View {
         } label: {
             MacWorkspaceGroupLabel(workspace: workspace)
         }
+        .contextMenu {
+            Button("Copy directory", systemImage: "doc.on.doc") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(workspace.projectPath, forType: .string)
+            }
+        }
     }
 
     private func sessionRow(_ session: RemiSessionSummary) -> some View {
         MacSessionListRow(session: session, onResume: { onResume(session) })
             .tag(session.id)
+            .contextMenu {
+                Button("Copy session ID", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.id, forType: .string)
+                }
+            }
     }
 
     private func workspaceExpansionBinding(_ workspace: MacSessionWorkspace) -> Binding<Bool> {
@@ -732,6 +769,27 @@ private struct MacSessionList: View {
             expandedWorkspaces.insert(workspace.id)
             if !workspace.hasLiveSessions { showsRecent = true }
         }
+    }
+
+    private func navigationButton(title: String, systemImage: String, offset: Int) -> some View {
+        Button {
+            moveSelection(offsetBy: offset)
+        } label: {
+            Label(title, systemImage: systemImage)
+        }
+        .labelStyle(.iconOnly)
+        .keyboardShortcut(offset < 0 ? .upArrow : .downArrow, modifiers: [.command, .option])
+        .help("\(title) (Option-Command-\(offset < 0 ? "↑" : "↓"))")
+        .disabled(sessions.isEmpty)
+    }
+
+    private func moveSelection(offsetBy offset: Int) {
+        let orderedIDs = workspaces.flatMap { $0.sessions.map(\.id) }
+        guard !orderedIDs.isEmpty else { return }
+        let currentIndex = selection.flatMap { orderedIDs.firstIndex(of: $0) }
+            ?? (offset > 0 ? -1 : orderedIDs.count)
+        let nextIndex = (currentIndex + offset + orderedIDs.count) % orderedIDs.count
+        selection = orderedIDs[nextIndex]
     }
 }
 
@@ -782,7 +840,7 @@ private struct MacWorkspaceGroupLabel: View {
                 Label(workspace.project, systemImage: "folder")
                     .font(.headline)
                 Spacer(minLength: RemiTheme.Spacing.s)
-                Text("\(workspace.sessions.count)")
+                Text(workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -794,7 +852,7 @@ private struct MacWorkspaceGroupLabel: View {
                 .truncationMode(.middle)
 
             if workspace.questionCount > 0 {
-                Label("\(workspace.questionCount) need attention", systemImage: "questionmark.bubble.fill")
+                Label(attentionLabel, systemImage: "questionmark.bubble.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(RemiTheme.Color.attentionInk)
                     .padding(.horizontal, RemiTheme.Spacing.xs)
@@ -804,6 +862,24 @@ private struct MacWorkspaceGroupLabel: View {
         }
         .padding(.vertical, RemiTheme.Spacing.xxs)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Expands or collapses sessions in this workspace")
+    }
+
+    private var attentionLabel: String {
+        workspace.questionCount == 1 ? "1 needs attention" : "\(workspace.questionCount) need attention"
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [
+            workspace.project,
+            workspace.projectPath,
+            workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions"
+        ]
+        if workspace.questionCount > 0 {
+            parts.append(workspace.questionCount == 1 ? "1 question needs attention" : "\(workspace.questionCount) questions need attention")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 

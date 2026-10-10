@@ -336,7 +336,7 @@ private struct MachineScopePicker: View {
                 HStack(spacing: RemiTheme.Spacing.xs) {
                     ScopeButton(
                         title: "All",
-                        subtitle: "\(machines.count) machines",
+                        subtitle: countLabel(machines.count, singular: "machine"),
                         systemImage: "square.grid.2x2",
                         selected: selectedMachineID.isEmpty
                     ) { selectedMachineID = "" }
@@ -344,7 +344,7 @@ private struct MachineScopePicker: View {
                     ForEach(machines) { machine in
                         ScopeButton(
                             title: machine.name,
-                            subtitle: "\(machine.sessionCount) sessions",
+                            subtitle: countLabel(machine.sessionCount, singular: "session"),
                             systemImage: machine.reachability == .connected
                                 ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark",
                             selected: selectedMachineID == machine.id
@@ -355,6 +355,10 @@ private struct MachineScopePicker: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+
+    private func countLabel(_ count: Int, singular: String) -> String {
+        count == 1 ? "1 \(singular)" : "\(count) \(singular)s"
     }
 }
 
@@ -455,10 +459,16 @@ private struct SessionsSection: View {
                                 if workspace.id != recentWorkspaces.last?.id { Divider() }
                             }
                         } label: {
-                            Label("Recent workspaces (\(recentWorkspaces.count))", systemImage: "clock")
+                            Label(recentWorkspaceLabel(recentWorkspaces.count), systemImage: "clock")
                                 .font(.subheadline.weight(.semibold))
                         }
                         .padding(.vertical, RemiTheme.Spacing.xs)
+                        .accessibilityLabel(recentWorkspaceLabel(recentWorkspaces.count))
+                        .accessibilityHint(
+                            expandedRecentMachines.contains(machine.id)
+                                ? "Hides finished workspaces"
+                                : "Shows finished workspaces"
+                        )
                     }
                 }
             }
@@ -503,8 +513,11 @@ private struct SessionsSection: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Show \(workspace.sessions.count) sessions", systemImage: "rectangle.stack") {
+            Button(showSessionsLabel(workspace.sessions.count), systemImage: "rectangle.stack") {
                 focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            }
+            Button("Copy directory", systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = workspace.projectPath
             }
             if let resumable = workspace.sessions.first(where: { $0.canResume }) {
                 Button("Resume latest", systemImage: "play.fill") {
@@ -513,6 +526,14 @@ private struct SessionsSection: View {
                 .disabled(resumable.isResuming)
             }
         }
+    }
+
+    private func showSessionsLabel(_ count: Int) -> String {
+        count == 1 ? "Show 1 session" : "Show \(count) sessions"
+    }
+
+    private func recentWorkspaceLabel(_ count: Int) -> String {
+        count == 1 ? "1 recent workspace" : "\(count) recent workspaces"
     }
 }
 
@@ -606,7 +627,7 @@ private struct PhoneWorkspaceRow: View {
                     : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
                 metadataLayout {
-                    Label("\(workspace.sessions.count) sessions", systemImage: "rectangle.stack")
+                    Label(sessionCountLabel, systemImage: "rectangle.stack")
                     if workspace.activeCount > 0 {
                         Text("\(workspace.activeCount) active")
                     }
@@ -637,7 +658,22 @@ private struct PhoneWorkspaceRow: View {
         .padding(.vertical, RemiTheme.Spacing.xs)
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Shows sessions in this workspace")
+    }
+
+    private var sessionCountLabel: String {
+        workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions"
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [workspace.project, workspace.projectPath, sessionCountLabel]
+        if workspace.activeCount > 0 { parts.append("\(workspace.activeCount) active") }
+        if workspace.storedCount > 0 { parts.append("\(workspace.storedCount) finished") }
+        if workspace.questionCount > 0 {
+            parts.append(workspace.questionCount == 1 ? "1 question needs attention" : "\(workspace.questionCount) questions need attention")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -719,12 +755,20 @@ private struct PhoneWorkspaceSessionsSheet: View {
             }) {
                 sessionDestination(session)
             }
+            .contextMenu { copySessionIDButton(session.id) }
         } else {
             NavigationLink {
                 sessionDestination(session)
             } label: {
                 RemiSessionRow(session: session)
             }
+            .contextMenu { copySessionIDButton(session.id) }
+        }
+    }
+
+    private func copySessionIDButton(_ sessionID: String) -> some View {
+        Button("Copy session ID", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = sessionID
         }
     }
 
