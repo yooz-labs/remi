@@ -508,29 +508,14 @@ private struct MachinesSection: View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             Text("Machines").font(.title2.weight(.bold))
             ForEach(machines) { machine in
-                HStack(spacing: RemiTheme.Spacing.s) {
-                    RemiMachineRow(machine: machine)
-                    Menu {
-                        if let state = states.first(where: { $0.id == machine.id }), state.endpoint.relayPin != nil {
-                            Button("Enable relay notifications", systemImage: "bell.badge") {
-                                onEnableRelayNotifications(state.endpoint)
-                            }
-                            .disabled(enablingRelayNotifications || state.status != .connected)
-                        }
-                        Button("Remove machine", systemImage: "trash", role: .destructive) {
-                            pendingRemoval = machine
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.title3)
-                            .frame(
-                                width: RemiTheme.Size.minimumTapTarget,
-                                height: RemiTheme.Size.minimumTapTarget
-                            )
-                            .contentShape(.rect)
-                    }
-                    .accessibilityLabel("Machine actions")
-                }
+                let state = states.first { $0.id == machine.id }
+                PhoneMachineManagementRow(
+                    machine: machine,
+                    state: state,
+                    enablingRelayNotifications: enablingRelayNotifications,
+                    onEnableRelayNotifications: onEnableRelayNotifications,
+                    onRemove: { pendingRemoval = machine }
+                )
                 if let state = states.first(where: { $0.id == machine.id }),
                    case .waitingForApproval(let fingerprint) = state.status {
                     ApprovalHelp(
@@ -563,6 +548,52 @@ private struct MachinesSection: View {
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
         } message: { machine in
             Text("Remi will forget \(machine.name) and its cached conversations on this device. Sessions on the machine keep running.")
+        }
+    }
+}
+
+private struct PhoneMachineManagementRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let machine: RemiMachineSummary
+    let state: MachineState?
+    let enablingRelayNotifications: Bool
+    let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            RemiMachineRow(machine: machine)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
+            Menu {
+                if let state, state.endpoint.relayPin != nil {
+                    Button("Enable relay notifications", systemImage: "bell.badge") {
+                        onEnableRelayNotifications(state.endpoint)
+                    }
+                    .disabled(enablingRelayNotifications || state.status != .connected)
+                }
+                Button("Remove machine", systemImage: "trash", role: .destructive) {
+                    onRemove()
+                }
+            } label: {
+                if dynamicTypeSize.isAccessibilitySize {
+                    Label("Machine actions", systemImage: "ellipsis.circle")
+                } else {
+                    Label("Machine actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .font(.title3)
+                        .frame(
+                            width: RemiTheme.Size.minimumTapTarget,
+                            height: RemiTheme.Size.minimumTapTarget
+                        )
+                        .contentShape(.rect)
+                }
+            }
         }
     }
 }
