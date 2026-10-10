@@ -811,17 +811,57 @@ private struct MacAddMachineSheet: View {
     let onAdd: (MachineEndpoint) -> Void
 
     var body: some View {
-        Form {
-            Toggle("Connect over the relay", isOn: $relayMode)
-            if relayMode {
-                SecureField("Relay pairing token", text: $relayToken)
-                Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if let relayError { Text(relayError).foregroundStyle(.red) }
-            } else {
-                TextField("Host or IP address", text: $host)
-                TextField("Port", value: $port, format: .number)
+        VStack(spacing: 0) {
+            MacAddMachineHeader()
+                .padding(.horizontal, RemiTheme.Spacing.l)
+                .padding(.top, RemiTheme.Spacing.l)
+                .padding(.bottom, RemiTheme.Spacing.m)
+
+            Form {
+                Section {
+                    Picker("Connection method", selection: $relayMode) {
+                        Label("Direct", systemImage: "point.3.connected.trianglepath.dotted")
+                            .tag(false)
+                        Label("Relay", systemImage: "network")
+                            .tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } header: {
+                    Label("Connection", systemImage: "link")
+                }
+
+                Section {
+                    if relayMode {
+                        SecureField("Relay pairing token", text: $relayToken)
+                        Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if let relayError {
+                            Label(relayError, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                        }
+                    } else {
+                        TextField("Host or IP address", text: $host)
+                        TextField("Port", value: $port, format: .number)
+                    }
+                } header: {
+                    if relayMode {
+                        Label("Pairing", systemImage: "qrcode")
+                    } else {
+                        Label("Address", systemImage: "server.rack")
+                    }
+                }
+
+                Section {
+                    MacMachineAccessNotice(relayMode: relayMode)
+                } header: {
+                    Label("System access", systemImage: "lock.shield")
+                }
             }
+
+            Divider()
+
             ViewThatFits(in: .horizontal) {
                 HStack {
                     Spacer()
@@ -832,13 +872,17 @@ private struct MacAddMachineSheet: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            .padding(RemiTheme.Spacing.m)
         }
-        .padding(24)
         .frame(
-            minWidth: 360,
-            idealWidth: dynamicTypeSize.isAccessibilitySize ? 560 : 420,
-            maxWidth: 680
+            minWidth: 480,
+            idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 560,
+            maxWidth: 720,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 620 : 540,
+            idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 600,
+            maxHeight: 760
         )
+        .onChange(of: relayMode) { _, _ in relayError = nil }
     }
 
     @ViewBuilder private var actionButtons: some View {
@@ -857,6 +901,51 @@ private struct MacAddMachineSheet: View {
         .buttonStyle(.glassProminent)
         .disabled(relayMode ? relayToken.isEmpty :
             host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+    }
+}
+
+private struct MacAddMachineHeader: View {
+    var body: some View {
+        HStack(spacing: RemiTheme.Spacing.m) {
+            Image(systemName: "desktopcomputer.and.macbook")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.m))
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                Text("Add machine")
+                    .font(.title2.weight(.semibold))
+                Text("Connect this Mac to a Remi hub you control.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+}
+
+private struct MacMachineAccessNotice: View {
+    let relayMode: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+            Label("What this Mac can do", systemImage: "checkmark.shield")
+                .font(.subheadline.weight(.semibold))
+
+            Text("After approval, this Mac can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions on this machine.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if !relayMode {
+                Text("Remi does not add transport encryption to direct connections. Use loopback, an SSH tunnel, or a trusted VPN.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, RemiTheme.Spacing.xxs)
     }
 }
 
