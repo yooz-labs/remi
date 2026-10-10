@@ -40,6 +40,7 @@ struct RemiMacApp: App {
         } label: {
             MacMenuBarLabel(store: notifications.store)
         }
+        .menuBarExtraStyle(.window)
 
         Settings {
             Group {
