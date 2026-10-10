@@ -293,7 +293,7 @@ seven-control probe built and executed successfully on all eight target/version
 combinations: Mac ARM natively, Mac x64 through Rosetta, Linux ARM in Docker's VM
 and Linux x64 through emulation, on Bun 1.3.11 and 1.4.2.
 The first repeat stopped before Linux execution: Docker's platform inspection
-returned a configuration digest that `docker run` could not address.
+returned a platform manifest digest that `docker run` could not address.
 The corrected runner pins each reference once for the whole matrix to a local
 image/index ID, inspects the requested platform
 through that immutable ID, records both IDs, and runs it with the explicit platform.

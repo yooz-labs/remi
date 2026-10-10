@@ -174,7 +174,7 @@ def main():
                     image = options.linux_arm64_image if architecture == "arm64" else options.linux_x64_image
                     docker_platform = "linux/" + ("amd64" if architecture == "x64" else "arm64")
                     # Pin the locally addressable image/index before selecting its platform.
-                    # Docker's containerd store can expose a platform configuration digest
+                    # Docker's containerd store can expose a platform manifest digest
                     # via inspect --platform that docker run cannot resolve as an image.
                     if image not in image_pins:
                         image_id = subprocess.check_output([

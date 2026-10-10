@@ -24,7 +24,7 @@ The runner resolves each reference once for the whole matrix to a local
 immutable image/index ID, inspects
 the requested platform through that ID, then executes the same ID with the
 explicit platform. Both the runnable ID and selected platform's ID are recorded.
-With Docker's containerd store, a platform inspection can report a configuration
+With Docker's containerd store, a platform inspection can report a platform manifest
 digest that is not itself a runnable image reference.
 Choose a new private output directory outside the checkout.
 
