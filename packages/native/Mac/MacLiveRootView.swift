@@ -15,7 +15,7 @@ struct MacLiveRootView: View {
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
 
-    var body: some View {
+    private var mainContent: some View {
         Group {
             if store.machines.isEmpty {
                 MacFirstRunView(onAddMachine: { showingAddMachine = true })
@@ -39,6 +39,7 @@ struct MacLiveRootView: View {
                             }
                         }
                     }
+                    .navigationSplitViewColumnWidth(min: 160, ideal: 190, max: 260)
                     .navigationTitle("Remi")
                     .toolbar {
                         if #available(macOS 26.1, *) {
@@ -68,6 +69,8 @@ struct MacLiveRootView: View {
                     List(visibleSessions, selection: sessionSelection) { session in
                         HStack(spacing: RemiTheme.Spacing.s) {
                             RemiSessionRow(session: session)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .layoutPriority(1)
                             if session.canResume {
                                 Button {
                                     resume(session)
@@ -89,6 +92,7 @@ struct MacLiveRootView: View {
                         }
                         .tag(session.id)
                     }
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 460)
                     .navigationTitle("Sessions")
                     .toolbar {
                         if #available(macOS 26.1, *) {
@@ -200,15 +204,13 @@ struct MacLiveRootView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let message = store.latestOperationError ?? store.latestError?.message {
-                MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
-            } else if let message = store.latestOperationNotice {
-                MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
-            } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
-                Text(message).font(.callout).padding(RemiTheme.Spacing.s)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+    }
+
+    var body: some View {
+        // Split columns can paint beneath a root safe-area inset on Mac (#1141).
+        VStack(spacing: 0) {
+            feedbackBanner
+            mainContent
         }
         .task {
             reconcileNavigation()
@@ -292,6 +294,19 @@ struct MacLiveRootView: View {
             Button("Cancel", role: .cancel) { pendingMachineRemoval = nil }
         } message: {
             Text("Remi will forget this endpoint and its cached conversations on this Mac. Sessions on the machine keep running.")
+        }
+    }
+
+    @ViewBuilder private var feedbackBanner: some View {
+        if let message = notificationRouter.notice {
+            MacFeedbackBanner(message: message, isError: true, onDismiss: { notificationRouter.notice = nil })
+        } else if let message = store.latestOperationError ?? store.latestError?.message {
+            MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
+        } else if let message = store.latestOperationNotice {
+            MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
+        } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
+            Text(message).font(.callout).padding(RemiTheme.Spacing.s)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

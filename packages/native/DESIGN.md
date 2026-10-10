@@ -28,6 +28,11 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 - **New session sheet:** pick the machine, repository, a new branch (the hub makes its worktree; starting in an existing worktree means picking its directory), harness (Claude Code, Codex) and model. The hub creates the worktree (`create_session_request.workspace`, #1236) when it lists the `workspaces` capability; for a hub that does not, the sheet starts a session in a directory.
 - **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays.
 - **Notifications:** native, grouped by machine. A card's notification opens it in place.
+  Short, fully displayed one-time Yes/No requests also offer those choices in the
+  notification on an unlocked Mac, without bringing the main window forward.
+  A long request, plan, standing grant or unsupported card opens the current
+  request in the existing window. A stale or unconfirmed notification answer
+  brings that request forward for review.
 
 ## The iPhone app
 
