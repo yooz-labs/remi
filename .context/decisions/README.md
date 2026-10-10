@@ -55,6 +55,7 @@ add a row below.
 | [0037](0037-pairing-by-qr-with-terminal-approval.md) | Pairing by QR: `remi pair` shows `remi://pair#` + canonical base64url JSON (machine name, address, full public key, a single-use 16-byte nonce, five-minute expiry, protocol version; strict decode, shared vectors); the phone checks the key before signing and sends `pairingNonce`/`pairingLabel` in `auth_response`; the first verified key claims the nonce and becomes pending, other keys and dead codes get their own errors; a waiting claim is held up to 20 s for the decision; the person approves at the terminal, where the claim's fingerprint is shown, through the same commit `remi authorize` uses; four pending slots are kept for claims, other keys trying a claimed code are named at the question. The QR authorizes nothing |
 | [0038](0038-the-decision-object.md) | The decision object, frozen: it is the `question` message's `Question`; `Question.answerPath` (structured, keystroke, none) says how a phone answer applies and `question_resolved.resolvedBy` (phone, lockscreen, terminal, harness, timeout) what resolved a card, both optional and sent only when known; one resolver sends each card's resolution once (the first wins); `localRender` stays off the wire; `kind` is an open set with no sandbox or trust kinds |
 | [0039](0039-machine-object-on-the-wire.md) | Machine descriptor on hello and lists: existing relay room ID, shared bounded pairing name, connection-scoped version/harnesses/capabilities, session machine IDs, and native alias/pin handoff |
+| [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
 
 ## By area
 
@@ -66,4 +67,4 @@ another one closed.
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034
-- **Process:** 0007, 0008, 0011
+- **Process:** 0007, 0008, 0011, 0040

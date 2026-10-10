@@ -245,12 +245,16 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 ## Spike plan and Xcode handoff
 
 No helper or decoder dependency is selected by this proposal.
-Run each implementation spike on `bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-arm64` and `bun-linux-x64`, including the actual compiled release shape and both project Bun gates, before relying on it.
+The owner's supported hosts are Apple Silicon Macs and Linux ARM64/x64.
+Run each implementation spike on `bun-darwin-arm64`, `bun-linux-arm64` and
+`bun-linux-x64`, including the actual compiled release shape and both project
+Bun gates, before relying on it: six required target/version executions.
+Intel Mac and Rosetta execution are outside product scope.
 
 | Spike | Evidence and pass/fail gate |
 |---|---|
 | Portable private storage and egress | Identify descriptor-relative open/create/rename/unlink and regular-file inspection APIs. Use captured roots and the same opened descriptor; deterministic ancestor/final-component replacement, symlink/hardlink/device/FIFO, credential-root overlap and detected source-mutation cases must refuse. Prove private-copy publication and crash cleanup without project traversal. Unsupported target/API or inability to enforce checks means no corresponding capability, never a path-based fallback. |
-| Bounded image decode | Compare explicitly declared decoder candidates and their license/distribution requirements. Miniflare's transitive `sharp` is not a daemon runtime implementation. Before choosing, prove full PNG/JPEG decode, dimension/pixel admission before excessive allocation, finite CPU/memory/deadline/concurrency budgets, cancellation and malformed/truncated/decompression cases on all four compiled targets. Decoder work must not stall a real held approval. Failure leaves staging unavailable. |
+| Bounded image decode | Compare explicitly declared decoder candidates and their license/distribution requirements. Miniflare's transitive `sharp` is not a daemon runtime implementation. Before choosing, prove full PNG/JPEG decode, dimension/pixel admission before excessive allocation, finite CPU/memory/deadline/concurrency budgets, cancellation and malformed/truncated/decompression cases on all three supported compiled targets. Decoder work must not stall a real held approval. Failure leaves staging unavailable. |
 | Claude insertion and lifetime | Record the installed version; use owned scratch paths including spaces and quoting cases. Measure actual bytes/no Enter and no reference write for held, terminal, observed-menu and queued-prompt controls. Trace when image contents are consumed and whether session exit/resume still needs the file. Prove one effect with lost-receipt, revoke/regrant and changed-binding controls. Unproven quoting, prompt protection or reference lifetime leaves insertion unavailable. |
 
 | Xcode operation | Availability after this docs-only preparation |
@@ -280,11 +284,11 @@ Receipts and exact input hashes are retained in `/private/tmp/remi-1284-77yRf87N
 
 The existing seven-control source is now reproducible through
 [`scripts/tunnel-storage-proof/`](../scripts/tunnel-storage-proof/README.md).
-Its runner builds both Bun versions for the four targets, records source and
+Its runner builds both Bun versions for the three supported targets, records source and
 executable hashes, and accepts a runtime result only when its version,
 platform, architecture and named controls match.
 Missing executions remain explicit failures; `--build-only` exits 2 with an
-incomplete receipt. This tool neither installs Rosetta nor selects a production
+incomplete receipt. This tool selects no production
 helper. Its initial tooling PR (#1343) carried build preparation;
 the historical runtime results above belong to the earlier private source.
 
@@ -306,6 +310,11 @@ recorded in `/private/tmp/remi-1170-pin-control-20261010/receipt.json`.
 The full path-race, nonregular-file and credential-overlap corpus remains a T0a
 gate before production storage is selected.
 
+The owner then clarified on 2026-10-10 that Intel Mac support is not offered.
+The Intel/Rosetta executions above are historical extra work and impose no
+current acceptance requirement. Required matrices now cover Apple Silicon Mac,
+Linux ARM64 and Linux x64 on both Bun gates. Linux x64 remains supported.
+
 The private T0b candidate pins `pngjs` 7.0.0 and `jpeg-js` 0.4.4 and adds admission
 before full decoding; neither dependency is selected for the daemon.
 Its eight standalone executions decoded the same two owned sample inputs and
@@ -324,7 +333,7 @@ Keep each change to one subsystem and about 500 net implementation lines; split 
 
 | Next PR | Existing code and proposed files | Prerequisite and exit gate |
 |---|---|---|
-| T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all four targets on both Bun gates, including Mac x64; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
+| T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
 | T0b: decoder packaging proof | Compare explicitly declared PNG/JPEG decoder candidates and license/runtime assets; proposed `tunnel/image-validation.ts` and decoder corpus. Do not import Miniflare's development dependency as an implicit runtime dependency. | Standalone compiled execution on all targets, full decode with admission before excessive allocation, finite CPU/memory/deadline/concurrency limits and cancellation. A real held approval stays responsive. No chosen dependency before evidence. |
 | T0c: accept the staging contract | Reuse ADR 0035, protocol registry and fixture rules. Add the reviewed ADR, strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | T0a/T0b settle implementation feasibility. Owner reviews the concrete fields, bounds, outcomes and cleanup policy; an independent review finds no unresolved critical decision. Fixtures alone do not advertise support. |
 | T1a storage: reservations and recovery | Reuse `storage/interprocess-file-lock.ts`; proposed `tunnel/reservations.ts`, private artifact ledger and startup recovery. | Reserve bytes and artifact slots across actual processes before creation; retain failed-cleanup reservations. Crash recovery touches only captured private roots. This internal preparation exposes no upload API. |

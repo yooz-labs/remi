@@ -17,6 +17,8 @@ No helper or decoder is selected for production by this spike.
 ## Run
 
 Use the project's Bun 1.3.11 pin and the installed current Bun.
+The owner's supported hosts are Apple Silicon Macs and Linux ARM64/x64.
+These three targets on two Bun versions require six runtime executions.
 Supply existing Docker image references with suitable Linux runtimes; the
 runner uses `--pull=never` and records the executable's actual architecture.
 Linux execution requires Docker's platform-specific image inspection support.
@@ -37,13 +39,10 @@ uv run python scripts/tunnel-storage-proof/matrix.py \
   --linux-x64-image image-reference
 ```
 
-`--skip-mac-x64` records those executions as missing and exits 2.
-It never makes a partial matrix pass. Mac x64 execution needs an Intel Mac
-or an already configured Rosetta runtime; this tool installs neither.
-On an Intel Mac, Mac ARM executions are recorded as unavailable; that run
-can supply Mac x64 evidence but still has an incomplete matrix.
-The scope of an 8/8 execution result is these seven primitive controls.
-`--build-only` prepares all eight executables, records their hashes and exits 2
+The Mac execution requires an Apple Silicon host; if unavailable, it is recorded
+as missing and the matrix remains incomplete. There is no Intel Mac target.
+The scope of a 6/6 execution result is these seven primitive controls.
+`--build-only` prepares all six executables, records their hashes and exits 2
 with every runtime execution explicitly unmeasured.
 
 ## Receipts
@@ -56,7 +55,7 @@ creation failed. All other containers are untouched.
 The child environment selects PATH, LANG and the private temporary directory;
 it does not replace HOME or pass the parent's credential variables.
 
-The output must report eight successful builds and eight matching runtime
+The output must report six successful builds and six matching runtime
 executions before `complete` is true. A build alone proves no execution.
 Missing or mismatched probe output fails the stage.
 The runner records the compiler versions, checks the seven named controls,
