@@ -300,7 +300,8 @@ through that immutable ID, records both IDs, and runs it with the explicit platf
 The original failure and successful unchanged primitive controls are retained in
 `/private/tmp/remi-1170-packaging-20261010-a/` and sibling `-b/`/`-c/` receipts.
 A controlled retag of a unique owned alias before the second Bun compiler left
-all eight executions on the original image; that control and alias cleanup are
+all eight executions passing, with all four Linux executions using the original
+image; that control and alias cleanup are
 recorded in `/private/tmp/remi-1170-pin-control-20261010/receipt.json`.
 The full path-race, nonregular-file and credential-overlap corpus remains a T0a
 gate before production storage is selected.
