@@ -10,6 +10,10 @@ public actor QuestionNotificationSummarizer {
     private let generator: Generator
     private let deadline: Duration
     private var cache: [String: String] = [:]
+    private var cacheOrder: [String] = []
+    private var inFlight: [String: Task<String, Never>] = [:]
+
+    static let maximumCacheEntries = 128
 
     public init() {
         generator = Self.generateOnDevice
@@ -21,18 +25,29 @@ public actor QuestionNotificationSummarizer {
         self.deadline = deadline
     }
 
+    var cachedSummaryCount: Int { cache.count }
+
     public func summary(questionID: String, text: String) async -> String {
         if let cached = cache[questionID] { return cached }
+        if let pending = inFlight[questionID] { return await pending.value }
 
         let fallback = Self.fallback(for: text)
         guard Self.shouldGenerate(for: text) else {
-            cache[questionID] = fallback
+            store(fallback, for: questionID)
             return fallback
         }
 
-        let generated = await raceGeneration(for: text)
-        let summary = generated.flatMap(Self.sanitizedGeneratedSummary) ?? fallback
-        cache[questionID] = summary
+        let generator = self.generator
+        let deadline = self.deadline
+        let input = String(text.prefix(2_000))
+        let task = Task {
+            let generated = await Self.raceGeneration(input, generator: generator, deadline: deadline)
+            return generated.flatMap(Self.sanitizedGeneratedSummary) ?? fallback
+        }
+        inFlight[questionID] = task
+        let summary = await task.value
+        inFlight[questionID] = nil
+        store(summary, for: questionID)
         return summary
     }
 
@@ -43,31 +58,34 @@ public actor QuestionNotificationSummarizer {
         return String(normalized.prefix(137)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
-    private func raceGeneration(for text: String) async -> String? {
-        let generator = self.generator
-        let deadline = self.deadline
-        let input = String(text.prefix(2_000))
-
-        return await withTaskGroup(of: RaceResult.self) { group in
-            group.addTask {
-                do {
-                    return .generated(try await generator(input))
-                } catch {
-                    return .failed
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: deadline)
-                return .timedOut
-            }
-
-            let result = await group.next()
-            group.cancelAll()
-            switch result {
-            case .generated(let value): return value
-            case .failed, .timedOut, .none: return nil
-            }
+    private func store(_ summary: String, for questionID: String) {
+        guard cache[questionID] == nil else { return }
+        cache[questionID] = summary
+        cacheOrder.append(questionID)
+        while cacheOrder.count > Self.maximumCacheEntries {
+            cache.removeValue(forKey: cacheOrder.removeFirst())
         }
+    }
+
+    private static func raceGeneration(
+        _ input: String,
+        generator: @escaping Generator,
+        deadline: Duration
+    ) async -> String? {
+        let race = SummaryRace()
+        let generation = Task {
+            do { await race.resolve(try await generator(input)) }
+            catch { await race.resolve(nil) }
+        }
+        let timeout = Task {
+            try? await Task.sleep(for: deadline)
+            guard !Task.isCancelled else { return }
+            await race.resolve(nil)
+        }
+        let result = await race.value()
+        generation.cancel()
+        timeout.cancel()
+        return result
     }
 
     private static func shouldGenerate(for text: String) -> Bool {
@@ -77,7 +95,7 @@ public actor QuestionNotificationSummarizer {
     private static func sanitizedGeneratedSummary(_ value: String) -> String? {
         let normalized = normalizedWhitespace(value)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        guard !normalized.isEmpty, normalized.count <= 160 else { return nil }
+        guard !normalized.isEmpty, normalized.count <= 120 else { return nil }
         return normalized
     }
 
@@ -106,10 +124,23 @@ public actor QuestionNotificationSummarizer {
     }
 }
 
-private enum RaceResult: Sendable {
-    case generated(String)
-    case failed
-    case timedOut
+private actor SummaryRace {
+    private var resolved = false
+    private var result: String?
+    private var waiter: CheckedContinuation<String?, Never>?
+
+    func value() async -> String? {
+        if resolved { return result }
+        return await withCheckedContinuation { waiter = $0 }
+    }
+
+    func resolve(_ value: String?) {
+        guard !resolved else { return }
+        resolved = true
+        result = value
+        waiter?.resume(returning: value)
+        waiter = nil
+    }
 }
 
 private enum SummarizationError: Error {
