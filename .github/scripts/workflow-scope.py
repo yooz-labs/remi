@@ -96,6 +96,8 @@ def validate():
     files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
     workflows = {file.name: load(file.read_text()) for file in files}
     ci, relay = workflows["ci.yml"], workflows["relay-r7.yml"]
+    assert relay["jobs"]["local-relay"].get("name", "local-relay") == "local-relay"
+    assert workflows["macos-app.yml"]["jobs"]["build-test"]["name"] == "Build and Test (macOS)"
     assert ci["on"] == {"push": {"branches": ["main"]}, "pull_request": {"branches": ["main", "develop"]}}
     assert relay["on"] == {"workflow_dispatch": "", "pull_request": {"branches": ["main", "develop"]}}
     mac = workflows["macos-app.yml"]
@@ -181,7 +183,7 @@ def validate():
     assert all(item["kind"] == "if-cond" and 'constant expression "false"' in item["message"]
                and item["filepath"].endswith("ci.yml") for item in allowed), findings
     assert len(allowed) <= 1, findings
-    assert proc.returncode in (0, 1), proc.stderr
+    assert proc.returncode == 0 or (proc.returncode == 1 and len(allowed) == 1), proc.stderr
     print(json.dumps({"workflow_yaml_and_contracts": "pass", "actionlint_new_diagnostics": 0,
                       "existing_disabled_e2e_warning": len(allowed)}))
 
