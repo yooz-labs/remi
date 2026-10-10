@@ -190,7 +190,7 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
         self.status = status
         self.lastMessage = lastMessage
         self.openQuestionCount = openQuestionCount
-        self.isLive = isLive ?? canTerminate
+        self.isLive = isLive ?? status != .offline
         self.canTerminate = canTerminate
         self.canResume = canResume
         self.isResuming = isResuming
