@@ -26,19 +26,19 @@ private struct MenuPreview: View {
 
 #Preview("Window · Light") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions).preferredColorScheme(.light) }
 #Preview("Window · Dark") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions).preferredColorScheme(.dark) }
-#Preview("Window · Large Type") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions).environment(\.dynamicTypeSize, .accessibility2) }
+#Preview("Window · Accessibility") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions).environment(\.dynamicTypeSize, .accessibility5) }
 #Preview("Window · Unreachable") { MacWindowPreview(machines: MacPreviewData.unreachableMachines, sessions: RemiPreviewData.sessions) }
 #Preview("Window · Waiting Approval") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions) }
 
 #Preview("New Session · Light") { NewSessionPreview().preferredColorScheme(.light) }
 #Preview("New Session · Dark") { NewSessionPreview().preferredColorScheme(.dark) }
-#Preview("New Session · Large Type") { NewSessionPreview().environment(\.dynamicTypeSize, .accessibility2) }
+#Preview("New Session · Accessibility") { NewSessionPreview().environment(\.dynamicTypeSize, .accessibility5) }
 
 #Preview("Menu · Light") { MenuPreview().preferredColorScheme(.light) }
 #Preview("Menu · Dark") { MenuPreview().preferredColorScheme(.dark) }
-#Preview("Menu · Large Type") { MenuPreview().environment(\.dynamicTypeSize, .accessibility2) }
+#Preview("Menu · Accessibility") { MenuPreview().environment(\.dynamicTypeSize, .accessibility5) }
 
 #Preview("First Run · Light") { MacWindowPreview(machines: [], sessions: []).preferredColorScheme(.light) }
 #Preview("First Run · Dark") { MacWindowPreview(machines: [], sessions: []).preferredColorScheme(.dark) }
-#Preview("First Run · Large Type") { MacWindowPreview(machines: [], sessions: []).environment(\.dynamicTypeSize, .accessibility2) }
+#Preview("First Run · Accessibility") { MacWindowPreview(machines: [], sessions: []).environment(\.dynamicTypeSize, .accessibility5) }
 #endif
