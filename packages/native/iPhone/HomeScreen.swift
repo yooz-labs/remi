@@ -642,6 +642,13 @@ private struct ApprovalHelp: View {
                 .textSelection(.enabled)
 
             if let command {
+                Text(command)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(RemiTheme.Spacing.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
+
                 Button(copied ? "Command copied" : "Copy authorization command", systemImage: copied ? "checkmark" : "doc.on.doc") {
                     UIPasteboard.general.string = command
                     copied = true
