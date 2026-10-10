@@ -9,28 +9,29 @@ struct MacLiveNeedsYouMenu: View {
     let store: MachineStore
 
     var body: some View {
-        let items = pendingQuestions
+        let groups = pendingGroups
+        let questionCount = groups.reduce(0) { $0 + $1.items.count }
 
         VStack(spacing: 0) {
             MacNeedsYouHeader(
-                questionCount: items.count,
-                machineCount: Set(items.map(\.model.machineID)).count
+                questionCount: questionCount,
+                machineCount: groups.count
             )
 
             Divider()
 
-            if items.isEmpty {
+            if groups.isEmpty {
                 MacNeedsYouEmptyState()
             } else {
                 ScrollView {
-                    LazyVStack(spacing: RemiTheme.Spacing.s) {
-                        ForEach(items) { item in
-                            MacNeedsYouQuestionItem(
-                                model: item.model,
-                                onAnswer: { answer(item, value: $0) },
-                                onSubmit: { submit(item, selections: $0) },
-                                onCancel: { cancel(item) },
-                                onOpen: { open(item.destination) }
+                    LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                        ForEach(groups) { group in
+                            MacNeedsYouMachineGroup(
+                                group: group,
+                                onAnswer: answer,
+                                onSubmit: submit,
+                                onCancel: cancel,
+                                onOpen: { open($0.destination) }
                             )
                         }
                     }
@@ -43,19 +44,18 @@ struct MacLiveNeedsYouMenu: View {
             MacNeedsYouFooter(onOpen: { open(nil) })
         }
         .frame(minWidth: 380, idealWidth: 420, maxWidth: 460)
-        .frame(minHeight: 190, idealHeight: items.isEmpty ? 220 : 480, maxHeight: 620)
+        .frame(minHeight: 190, idealHeight: groups.isEmpty ? 220 : 520, maxHeight: 660)
         .background(.background)
     }
 
-    private var pendingQuestions: [MacPendingQuestion] {
-        store.machines.flatMap { machine in
-            machine.questions.map { message in
-                MacPendingQuestion(machine: machine, message: message)
-            }
-        }
+    private var pendingGroups: [RemiPendingQuestionGroup] {
+        RemiPendingQuestionPresentation.groups(
+            machines: store.machines,
+            viewsBySession: store.sessionViewsBySession
+        )
     }
 
-    private func answer(_ item: MacPendingQuestion, value: String) {
+    private func answer(_ item: RemiPendingQuestionItem, value: String) {
         store.answer(
             sessionId: item.sessionID,
             questionId: item.questionID,
@@ -64,7 +64,7 @@ struct MacLiveNeedsYouMenu: View {
         )
     }
 
-    private func submit(_ item: MacPendingQuestion, selections: [RemiQuestionStepSelection]) {
+    private func submit(_ item: RemiPendingQuestionItem, selections: [RemiQuestionStepSelection]) {
         store.answer(
             sessionId: item.sessionID,
             questionId: item.questionID,
@@ -81,7 +81,7 @@ struct MacLiveNeedsYouMenu: View {
         )
     }
 
-    private func cancel(_ item: MacPendingQuestion) {
+    private func cancel(_ item: RemiPendingQuestionItem) {
         store.answer(
             sessionId: item.sessionID,
             questionId: item.questionID,
@@ -98,94 +98,87 @@ struct MacLiveNeedsYouMenu: View {
     }
 }
 
-private struct MacPendingQuestion: Identifiable {
-    let model: RemiQuestionCardModel
-    let sessionID: String
-    let questionID: String
-    let agentID: String?
-    let claudeSessionID: String?
+private struct MacNeedsYouMachineGroup: View {
+    let group: RemiPendingQuestionGroup
+    let onAnswer: (RemiPendingQuestionItem, String) -> Void
+    let onSubmit: (RemiPendingQuestionItem, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (RemiPendingQuestionItem) -> Void
+    let onOpen: (RemiPendingQuestionItem) -> Void
 
-    var id: String { model.id }
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            MacNeedsYouMachineHeader(group: group)
+            ForEach(group.items) { item in
+                MacNeedsYouQuestionItem(
+                    item: item,
+                    onAnswer: { onAnswer(item, $0) },
+                    onSubmit: { onSubmit(item, $0) },
+                    onCancel: { onCancel(item) },
+                    onOpen: { onOpen(item) }
+                )
+            }
+        }
+    }
+}
 
-    var destination: RemiNavigationDestination {
-        RemiNavigationDestination(
-            machineID: model.machineID,
-            sessionID: sessionID,
-            questionID: questionID,
-            agentID: agentID
-        )
+private struct MacNeedsYouMachineHeader: View {
+    let group: RemiPendingQuestionGroup
+
+    var body: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Image(systemName: icon)
+                .foregroundStyle(group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk)
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                Text(group.machineName).font(.subheadline.weight(.semibold))
+                Text("\(group.transport.rawValue.capitalized) · \(group.address)")
+                    .font(RemiTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: RemiTheme.Spacing.xs)
+            Text(statusLabel.capitalized)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(
+                    group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk
+                )
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.vertical, RemiTheme.Spacing.xxxs)
+                .background(
+                    group.reachability == .connected
+                        ? Color.secondary.opacity(0.12)
+                        : RemiTheme.Color.attention,
+                    in: Capsule()
+                )
+            Text(group.items.count, format: .number)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(group.machineName), \(statusLabel), \(group.items.count) pending requests")
     }
 
-    init(machine: MachineState, message: QuestionMessage) {
-        let question = message.question
-        let kind = RemiQuestionKind(wireValue: question.kind)
-        let sessionName = machine.sessions.first(where: { $0.sessionId == message.sessionId })?.name
-            ?? String(message.sessionId.prefix(8))
-
-        model = RemiQuestionCardModel(
-            id: RemiQuestionCardModel.identity(
-                machineID: machine.id,
-                sessionID: message.sessionId,
-                questionID: question.id
-            ),
-            questionID: question.id,
-            kind: kind,
-            text: question.text,
-            detail: question.detail,
-            machineID: machine.id,
-            machineName: machine.displayName,
-            sessionName: sessionName,
-            options: question.options.map { option in
-                RemiQuestionOption(
-                    id: option.value,
-                    label: option.label,
-                    detail: option.description,
-                    role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
-                    grantsForSession: option.standingGrant != nil,
-                    isRecommended: option.isRecommended
-                )
-            },
-            steps: (question.questions ?? []).enumerated().map { index, step in
-                RemiQuestionStep(
-                    id: String(index),
-                    header: step.header,
-                    text: step.text,
-                    allowsMultipleSelection: step.multiSelect,
-                    allowsFreeText: !step.multiSelect,
-                    options: step.options.enumerated().map { optionIndex, option in
-                        RemiQuestionOption(
-                            id: String(optionIndex),
-                            label: option.label,
-                            detail: option.description,
-                            role: .neutral,
-                            isRecommended: option.isRecommended
-                        )
-                    }
-                )
-            },
-            terminalOnly: question.terminalOnly == true
-                || question.answerPath == QuestionAnswerPath.none
-                || question.hasUnknownAnswerPath,
-            answerPath: Self.answerPath(question.answerPath)
-        )
-        sessionID = message.sessionId
-        questionID = question.id
-        agentID = question.agentId
-        claudeSessionID = message.claudeSessionId
+    private var icon: String {
+        switch group.reachability {
+        case .connected: "desktopcomputer"
+        case .connecting: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .unreachable: "desktopcomputer.trianglebadge.exclamationmark"
+        case .waitingForApproval: "person.badge.clock"
+        }
     }
 
-    private static func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
-        switch value {
-        case .some(.structured): .structured
-        case .some(.keystroke): .keystroke
-        case .some(.none): RemiAnswerPath.none
-        case nil: nil
+    private var statusLabel: String {
+        switch group.reachability {
+        case .connected: "connected"
+        case .connecting: "connecting"
+        case .unreachable: "unreachable"
+        case .waitingForApproval: "waiting for approval"
         }
     }
 }
 
 private struct MacNeedsYouQuestionItem: View {
-    let model: RemiQuestionCardModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let item: RemiPendingQuestionItem
     let onAnswer: (String) -> Void
     let onSubmit: ([RemiQuestionStepSelection]) -> Void
     let onCancel: () -> Void
@@ -193,8 +186,20 @@ private struct MacNeedsYouQuestionItem: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xs) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xxs))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs))
+            layout {
+                Label(item.conversationName, systemImage: item.agentID == nil ? "person" : "person.2")
+                if let projectName = item.projectName { Text(projectName) }
+                if let harnessName = item.harnessName { Text(harnessName) }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
             RemiQuestionCard(
-                model: model,
+                model: item.model,
                 onAnswer: onAnswer,
                 onSubmit: onSubmit,
                 onCancel: onCancel
@@ -202,7 +207,7 @@ private struct MacNeedsYouQuestionItem: View {
 
             Button("Open conversation", systemImage: "arrow.up.forward.app", action: onOpen)
                 .buttonStyle(.glass)
-                .accessibilityLabel("Open \(model.sessionName) conversation")
+                .accessibilityLabel("Open \(item.model.sessionName) conversation")
                 .accessibilityHint("Opens this exact request in the Remi window")
         }
     }
@@ -262,14 +267,19 @@ private struct MacNeedsYouFooter: View {
     let onOpen: () -> Void
 
     var body: some View {
-        Button("Open Remi", systemImage: "macwindow", action: onOpen)
-            .buttonStyle(.plain)
-            .keyboardShortcut("o", modifiers: [.command, .shift])
-            .help("Open the Remi window (Shift-Command-O)")
-            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-            .contentShape(.rect)
-            .padding(.horizontal, RemiTheme.Spacing.m)
-            .accessibilityHint("Opens the main Remi window")
+        HStack(spacing: RemiTheme.Spacing.s) {
+            Button("Open Remi", systemImage: "macwindow", action: onOpen)
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .help("Open the Remi window (Shift-Command-O)")
+                .accessibilityHint("Opens the main Remi window")
+            Spacer()
+            SettingsLink { Label("Settings", systemImage: "gearshape") }
+                .help("Open Remi settings")
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        .contentShape(.rect)
+        .padding(.horizontal, RemiTheme.Spacing.m)
     }
 }
 
