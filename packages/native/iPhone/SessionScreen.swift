@@ -89,7 +89,13 @@ struct SessionScreen: View {
 
             Divider()
 
-            if selectedViewID.isEmpty {
+            if session.canResume && !session.canTerminate {
+                Label("Finished conversation · Read only", systemImage: "checkmark.circle")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(.horizontal, RemiTheme.Spacing.m)
+            } else if selectedViewID.isEmpty {
                 RemiComposer(
                     text: $draft,
                     promptWaiting: !questions.isEmpty,
