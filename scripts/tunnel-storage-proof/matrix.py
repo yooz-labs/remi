@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import uuid
@@ -54,7 +55,25 @@ def digest(path):
     return value.hexdigest()
 
 
-def main():
+def dependency_tree(root, packages):
+    """Capture exact membership/types as well as file bytes; new require targets matter."""
+    entries = {}
+    for name in packages:
+        package = root / name
+        for item in (package, *package.rglob("*")):
+            relative = str(item.relative_to(root))
+            if item.is_symlink():
+                raise ValueError("Candidate dependency snapshot refuses symlinks")
+            if item.is_file():
+                entries[relative] = {"type": "file", "sha256": digest(item)}
+            elif item.is_dir():
+                entries[relative] = {"type": "directory"}
+            else:
+                raise ValueError("Candidate dependency has missing or unsupported entries")
+    return entries
+
+
+def main(proof=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bun-1311", type=Path, required=True)
     parser.add_argument("--bun-current", type=Path, required=True)
@@ -62,19 +81,49 @@ def main():
     parser.add_argument("--linux-arm64-image", required=True)
     parser.add_argument("--linux-x64-image", required=True)
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--node-modules", type=Path)
     options = parser.parse_args()
     compilers = (("1311", options.bun_1311), ("current", options.bun_current))
-    source = Path(__file__).resolve().parent
-    source_hashes = {name: digest(source / name) for name in (
-        "probe.ts", "admission.ts", "admission-probe.ts", "private-copy.ts", "copy-probe.ts", "openat.c", "matrix.py")}
+    proof = proof or {
+        "source": Path(__file__).resolve().parent,
+        "files": ("probe.ts", "admission.ts", "admission-probe.ts", "private-copy.ts", "copy-probe.ts", "openat.c", "matrix.py"),
+        "checks": CHECKS,
+        "scope": "Seven primitives plus nine admission and eleven private-copy controls; production helper, quotas, recovery and full T0a remain pending",
+    }
+    source = proof["source"]
+    checks = proof["checks"]
+    source_hashes = {name: digest(source / name) for name in proof["files"]}
+    runner = Path(__file__).resolve()
+    runner_hash = digest(runner)
     output = options.out.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    runner_snapshot = output / "runner.py"
+    runner_snapshot.write_bytes(runner.read_bytes())
+    if digest(runner_snapshot) != runner_hash:
+        raise RuntimeError("Runner changed while taking its snapshot")
     snapshot = output / "source"
     snapshot.mkdir(mode=0o700)
     for name in source_hashes:
         (snapshot / name).write_bytes((source / name).read_bytes())
         if digest(snapshot / name) != source_hashes[name]:
             raise RuntimeError("Source changed while taking the snapshot; start a new run")
+    dependency_hashes = {}
+    dependency_manifest = {}
+    dependencies = proof.get("dependencies", {})
+    if dependencies:
+        if options.node_modules is None:
+            raise RuntimeError("Supply installed standalone pinned candidate dependencies with --node-modules")
+        dependency_manifest = dependency_tree(options.node_modules, dependencies)
+        dependency_hashes = {name: entry["sha256"] for name, entry in dependency_manifest.items()
+                             if entry["type"] == "file"}
+        for name, version in dependencies.items():
+            package = options.node_modules / name
+            if json.loads((package / "package.json").read_text())["version"] != version:
+                raise RuntimeError("Candidate dependency version mismatch: " + name)
+            shutil.copytree(package, snapshot / "node_modules" / name)
+        if (dependency_tree(options.node_modules, dependencies) != dependency_manifest or
+                dependency_tree(snapshot / "node_modules", dependencies) != dependency_manifest):
+            raise RuntimeError("Candidate dependency tree changed while taking its snapshot")
     compiler_cwd = output / "compiler-cwd"
     compiler_cwd.mkdir(mode=0o700)
     temporary = output / "tmp"
@@ -98,9 +147,12 @@ def main():
 
     def source_unchanged():
         try:
-            return all(digest(directory / name) == value
-                       for directory in (source, snapshot) for name, value in source_hashes.items())
-        except OSError:
+            return (digest(runner) == runner_hash and digest(runner_snapshot) == runner_hash and
+                    all(digest(directory / name) == value
+                        for directory in (source, snapshot) for name, value in source_hashes.items()) and
+                    (not dependencies or all(dependency_tree(directory, dependencies) == dependency_manifest
+                        for directory in (options.node_modules, snapshot / "node_modules"))))
+        except (OSError, ValueError):
             return False
 
     def save():
@@ -108,6 +160,9 @@ def main():
         (output / "receipt.json").write_text(json.dumps({
             "host": {"system": platform.system(), "machine": platform.machine()},
             "sourceHashes": source_hashes,
+            "runnerSha256": runner_hash,
+            "dependencyHashes": dependency_hashes,
+            "dependencyTree": dependency_manifest,
             "targets": list(TARGETS),
             "sourceUnchanged": unchanged,
             "compilerVersions": versions,
@@ -115,7 +170,7 @@ def main():
             "cleanupErrors": cleanup_errors,
             "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(TARGETS) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
-            "scope": "Seven primitives plus nine admission and eleven private-copy controls; production helper, quotas, recovery and full T0a remain pending",
+            "scope": proof["scope"],
             "results": results,
         }, indent=2) + "\n")
 
@@ -153,7 +208,8 @@ def main():
                               value.get("platform") == expected[1] and
                               value.get("arch") == expected[2] and
                               value.get("checks") is not None and
-                              len(value["checks"]) == len(CHECKS) and set(value["checks"]) == CHECKS)
+                              len(value["checks"]) == len(checks) and set(value["checks"]) == checks and
+                              all(value.get(key) == expected_value for key, expected_value in proof.get("expected", {}).items()))
         results.append(item)
         save()
         if not item["passed"]:
