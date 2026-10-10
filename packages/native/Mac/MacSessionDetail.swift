@@ -1,3 +1,4 @@
+import AppKit
 import RemiKit
 import RemiUI
 import SwiftUI
@@ -20,6 +21,8 @@ struct MacSessionDetail: View {
     @State private var selectedViewID = ""
     @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
+    @State private var isSearchPresented = false
+    @State private var reviewState = RemiTranscriptReviewState()
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
     init(
@@ -69,38 +72,68 @@ struct MacSessionDetail: View {
             Divider()
 
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-                        if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
-                            MacConversationEmptyState(
-                                isSubagent: !selectedViewID.isEmpty,
-                                isFinished: !session.isLive
-                            )
-                        }
+                VStack(spacing: 0) {
+                    if isSearchPresented {
+                        RemiTranscriptSearchBar(
+                            query: searchQueryBinding,
+                            resultPosition: reviewState.resultPosition,
+                            resultCount: reviewState.matchingEntryIDs.count,
+                            onPrevious: { reviewState.selectPrevious() },
+                            onNext: { reviewState.selectNext() },
+                            onClose: closeSearch
+                        )
+                    }
 
-                        ForEach(focusedQuestions) { question in
-                            questionCard(question)
-                        }
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                                MacConversationEmptyState(
+                                    isSubagent: !selectedViewID.isEmpty,
+                                    isFinished: !session.isLive
+                                )
+                            }
 
-                        ForEach(visibleTranscript) { entry in
-                            RemiTranscriptEntryView(entry: entry)
+                            ForEach(focusedQuestions) { question in
+                                questionCard(question)
+                            }
+
+                            let matchingEntryIDs = Set(reviewState.matchingEntryIDs)
+                            ForEach(visibleTranscript) { entry in
+                                RemiTranscriptEntryView(
+                                    entry: entry,
+                                    isSearchMatch: matchingEntryIDs.contains(entry.id),
+                                    isSelectedSearchMatch: reviewState.selectedEntryID == entry.id
+                                )
+                                .id(entry.id)
+                                .contextMenu {
+                                    Button("Copy", systemImage: "doc.on.doc") {
+                                        copyToPasteboard(entry.copyText)
+                                    }
+                                }
+                            }
+                            ForEach(remainingQuestions) { question in
+                                questionCard(question)
+                            }
                         }
-                        ForEach(remainingQuestions) { question in
-                            questionCard(question)
+                        .frame(maxWidth: 760)
+                        .padding(RemiTheme.Spacing.l)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .onAppear { focusQuestion(using: proxy) }
+                    .onChange(of: questions.map(\.questionID)) { _, questionIDs in
+                        guard let focusedQuestionID else { return }
+                        if questionIDs.contains(focusedQuestionID) {
+                            focusQuestion(using: proxy)
+                        } else {
+                            self.focusedQuestionID = nil
+                            accessibilityQuestionID = nil
                         }
                     }
-                    .frame(maxWidth: 760)
-                    .padding(RemiTheme.Spacing.l)
-                    .frame(maxWidth: .infinity)
-                }
-                .onAppear { focusQuestion(using: proxy) }
-                .onChange(of: questions.map(\.questionID)) { _, questionIDs in
-                    guard let focusedQuestionID else { return }
-                    if questionIDs.contains(focusedQuestionID) {
-                        focusQuestion(using: proxy)
-                    } else {
-                        self.focusedQuestionID = nil
-                        accessibilityQuestionID = nil
+                    .onChange(of: reviewState.selectedEntryID) { _, entryID in
+                        scrollToSearchResult(entryID, using: proxy)
+                    }
+                    .onChange(of: visibleTranscript) { _, entries in
+                        reviewState.refresh(entries: entries)
                     }
                 }
             }
@@ -130,10 +163,12 @@ struct MacSessionDetail: View {
         .onChange(of: selectedViewID) { _, newValue in
             focusedQuestionID = nil
             accessibilityQuestionID = nil
+            resetReview()
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
         .onChange(of: session.id) { _, _ in
             selectedViewID = ""
+            resetReview()
         }
         .onChange(of: views.map(\.agentId)) { _, agentIDs in
             if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
@@ -150,10 +185,27 @@ struct MacSessionDetail: View {
         } message: {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
+        .toolbar {
+            ToolbarItem {
+                Button("Search conversation", systemImage: "magnifyingglass") {
+                    isSearchPresented = true
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(visibleTranscript.isEmpty)
+                .help("Search conversation")
+            }
+        }
     }
 
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+
+    private var searchQueryBinding: Binding<String> {
+        Binding(
+            get: { reviewState.query },
+            set: { reviewState.update(query: $0, entries: visibleTranscript) }
+        )
     }
 
     private var visibleQuestions: [RemiQuestionCardModel] {
@@ -191,6 +243,28 @@ struct MacSessionDetail: View {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
         accessibilityQuestionID = focusedQuestionID
+    }
+
+    private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
+        guard let entryID else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(entryID, anchor: .center)
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func closeSearch() {
+        isSearchPresented = false
+        reviewState.reset()
+    }
+
+    private func resetReview() {
+        isSearchPresented = false
+        reviewState.reset()
     }
 }
 

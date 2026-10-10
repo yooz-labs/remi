@@ -190,7 +190,7 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
         self.status = status
         self.lastMessage = lastMessage
         self.openQuestionCount = openQuestionCount
-        self.isLive = isLive ?? status != .offline
+        self.isLive = isLive ?? (status != .offline)
         self.canTerminate = canTerminate
         self.canResume = canResume
         self.isResuming = isResuming
@@ -229,6 +229,82 @@ public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
     public var id: String {
         switch self {
         case .user(let id, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
+        }
+    }
+
+    public var searchableText: String {
+        switch self {
+        case .user(_, let text), .agent(_, let text), .error(_, let text):
+            text
+        case .tool(_, let name, let summary):
+            "\(name)\n\(summary)"
+        }
+    }
+
+    public var copyText: String {
+        switch self {
+        case .user(_, let text), .agent(_, let text), .error(_, let text):
+            text
+        case .tool(_, let name, let summary):
+            "\(name)\n\(summary)"
+        }
+    }
+}
+
+public struct RemiTranscriptReviewState: Sendable, Equatable {
+    public private(set) var query = ""
+    public private(set) var matchingEntryIDs: [String] = []
+    public private(set) var selectedMatchIndex: Int?
+
+    public init() {}
+
+    public var selectedEntryID: String? {
+        guard let selectedMatchIndex, matchingEntryIDs.indices.contains(selectedMatchIndex) else {
+            return nil
+        }
+        return matchingEntryIDs[selectedMatchIndex]
+    }
+
+    public var resultPosition: Int? {
+        selectedMatchIndex.map { $0 + 1 }
+    }
+
+    public mutating func update(query: String, entries: [RemiTranscriptEntry]) {
+        let previousSelection = selectedEntryID
+        self.query = query
+        matchingEntryIDs = Self.matches(query: query, entries: entries)
+
+        if let previousSelection,
+           let preservedIndex = matchingEntryIDs.firstIndex(of: previousSelection) {
+            selectedMatchIndex = preservedIndex
+        } else {
+            selectedMatchIndex = matchingEntryIDs.isEmpty ? nil : 0
+        }
+    }
+
+    public mutating func refresh(entries: [RemiTranscriptEntry]) {
+        update(query: query, entries: entries)
+    }
+
+    public mutating func selectNext() {
+        guard !matchingEntryIDs.isEmpty else { return }
+        selectedMatchIndex = ((selectedMatchIndex ?? -1) + 1) % matchingEntryIDs.count
+    }
+
+    public mutating func selectPrevious() {
+        guard !matchingEntryIDs.isEmpty else { return }
+        selectedMatchIndex = ((selectedMatchIndex ?? 0) - 1 + matchingEntryIDs.count) % matchingEntryIDs.count
+    }
+
+    public mutating func reset() {
+        self = RemiTranscriptReviewState()
+    }
+
+    private static func matches(query: String, entries: [RemiTranscriptEntry]) -> [String] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return [] }
+        return entries.compactMap { entry in
+            entry.searchableText.localizedCaseInsensitiveContains(trimmedQuery) ? entry.id : nil
         }
     }
 }

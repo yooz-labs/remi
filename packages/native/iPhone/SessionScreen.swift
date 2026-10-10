@@ -1,6 +1,7 @@
 import RemiKit
 import RemiUI
 import SwiftUI
+import UIKit
 
 struct SessionScreen: View {
     @Environment(\.dismiss) private var dismiss
@@ -20,6 +21,8 @@ struct SessionScreen: View {
     @State private var selectedViewID = ""
     @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
+    @State private var isSearchPresented = false
+    @State private var reviewState = RemiTranscriptReviewState()
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
     init(
@@ -55,52 +58,82 @@ struct SessionScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-                        SessionIdentityHeader(
-                            machineName: session.machineName,
-                            project: session.project,
-                            harness: session.harness,
-                            status: session.status
+                VStack(spacing: 0) {
+                    if isSearchPresented {
+                        RemiTranscriptSearchBar(
+                            query: searchQueryBinding,
+                            resultPosition: reviewState.resultPosition,
+                            resultCount: reviewState.matchingEntryIDs.count,
+                            onPrevious: { reviewState.selectPrevious() },
+                            onNext: { reviewState.selectNext() },
+                            onClose: closeSearch
                         )
+                    }
 
-                        if !views.isEmpty {
-                            ConversationPicker(
-                                views: views,
-                                selectedViewID: $selectedViewID
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                            SessionIdentityHeader(
+                                machineName: session.machineName,
+                                project: session.project,
+                                harness: session.harness,
+                                status: session.status
                             )
-                        }
 
-                        if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
-                            PhoneConversationEmptyState(
-                                isSubagent: !selectedViewID.isEmpty,
-                                isFinished: !session.isLive
-                            )
-                        }
+                            if !views.isEmpty {
+                                ConversationPicker(
+                                    views: views,
+                                    selectedViewID: $selectedViewID
+                                )
+                            }
 
-                        ForEach(focusedQuestions) { question in
-                            questionCard(question)
-                        }
+                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                                PhoneConversationEmptyState(
+                                    isSubagent: !selectedViewID.isEmpty,
+                                    isFinished: !session.isLive
+                                )
+                            }
 
-                        ForEach(visibleTranscript) { entry in
-                            RemiTranscriptEntryView(entry: entry)
-                        }
+                            ForEach(focusedQuestions) { question in
+                                questionCard(question)
+                            }
 
-                        ForEach(remainingQuestions) { question in
-                            questionCard(question)
+                            let matchingEntryIDs = Set(reviewState.matchingEntryIDs)
+                            ForEach(visibleTranscript) { entry in
+                                RemiTranscriptEntryView(
+                                    entry: entry,
+                                    isSearchMatch: matchingEntryIDs.contains(entry.id),
+                                    isSelectedSearchMatch: reviewState.selectedEntryID == entry.id
+                                )
+                                .id(entry.id)
+                                .contextMenu {
+                                    Button("Copy", systemImage: "doc.on.doc") {
+                                        UIPasteboard.general.string = entry.copyText
+                                    }
+                                }
+                            }
+
+                            ForEach(remainingQuestions) { question in
+                                questionCard(question)
+                            }
+                        }
+                        .padding(RemiTheme.Spacing.m)
+                    }
+                    .modifier(SessionNavigationBarBehavior())
+                    .onAppear { focusQuestion(using: proxy) }
+                    .onChange(of: questions.map(\.questionID)) { _, questionIDs in
+                        guard let focusedQuestionID else { return }
+                        if questionIDs.contains(focusedQuestionID) {
+                            focusQuestion(using: proxy)
+                        } else {
+                            self.focusedQuestionID = nil
+                            accessibilityQuestionID = nil
                         }
                     }
-                    .padding(RemiTheme.Spacing.m)
-                }
-                .modifier(SessionNavigationBarBehavior())
-                .onAppear { focusQuestion(using: proxy) }
-                .onChange(of: questions.map(\.questionID)) { _, questionIDs in
-                    guard let focusedQuestionID else { return }
-                    if questionIDs.contains(focusedQuestionID) {
-                        focusQuestion(using: proxy)
-                    } else {
-                        self.focusedQuestionID = nil
-                        accessibilityQuestionID = nil
+                    .onChange(of: reviewState.selectedEntryID) { _, entryID in
+                        scrollToSearchResult(entryID, using: proxy)
+                    }
+                    .onChange(of: visibleTranscript) { _, entries in
+                        reviewState.refresh(entries: entries)
                     }
                 }
             }
@@ -136,6 +169,12 @@ struct SessionScreen: View {
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Search conversation", systemImage: "magnifyingglass") {
+                    isSearchPresented = true
+                }
+                .disabled(visibleTranscript.isEmpty)
+            }
             if session.canTerminate {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("Session actions", systemImage: "ellipsis.circle") {
@@ -162,10 +201,12 @@ struct SessionScreen: View {
         .onChange(of: selectedViewID) { _, newValue in
             focusedQuestionID = nil
             accessibilityQuestionID = nil
+            resetReview()
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
         .onChange(of: session.id) { _, _ in
             selectedViewID = ""
+            resetReview()
         }
         .onChange(of: views.map(\.agentId)) { _, agentIDs in
             if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
@@ -176,6 +217,13 @@ struct SessionScreen: View {
 
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+
+    private var searchQueryBinding: Binding<String> {
+        Binding(
+            get: { reviewState.query },
+            set: { reviewState.update(query: $0, entries: visibleTranscript) }
+        )
     }
 
     private var visibleQuestions: [RemiQuestionCardModel] {
@@ -213,6 +261,23 @@ struct SessionScreen: View {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
         accessibilityQuestionID = focusedQuestionID
+    }
+
+    private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
+        guard let entryID else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(entryID, anchor: .center)
+        }
+    }
+
+    private func closeSearch() {
+        isSearchPresented = false
+        reviewState.reset()
+    }
+
+    private func resetReview() {
+        isSearchPresented = false
+        reviewState.reset()
     }
 }
 
