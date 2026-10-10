@@ -97,6 +97,7 @@ struct FixtureConformanceTests {
         let list = try JSONDecoder().decode(
             SessionListResponse.self, from: Self.fixture("session_list_response"))
         #expect(list.sessions.first?.sessionId == "fixture-session-id")
+        #expect(list.sessions.first?.lastActivity == "2026-01-01T00:00:00.000Z")
         #expect(list.daemonPorts == [19924, 19925])
     }
 

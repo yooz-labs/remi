@@ -166,25 +166,31 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let name: String
     public let harness: String
     public let project: String
+    public let projectPath: String
+    public let lastActivity: String?
     public let status: RemiSessionStatus
     public let lastMessage: String?
     public let openQuestionCount: Int
+    public let isLive: Bool
     public let canTerminate: Bool
     public let canResume: Bool
     public let isResuming: Bool
     public let resumeIdentity: String?
     public let resumeError: String?
 
-    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
+    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, projectPath: String? = nil, lastActivity: String? = nil, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, isLive: Bool? = nil, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
         self.id = id
         self.machineID = machineID ?? machineName
         self.machineName = machineName
         self.name = name
         self.harness = harness
         self.project = project
+        self.projectPath = projectPath ?? project
+        self.lastActivity = lastActivity
         self.status = status
         self.lastMessage = lastMessage
         self.openQuestionCount = openQuestionCount
+        self.isLive = isLive ?? status != .offline
         self.canTerminate = canTerminate
         self.canResume = canResume
         self.isResuming = isResuming

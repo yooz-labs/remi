@@ -416,57 +416,283 @@ private struct SessionsSection: View {
     let onSend: (String, String) -> Void
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
+    @State private var focusedWorkspace: PhoneWorkspaceFocus?
+    @State private var expandedRecentMachines: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Sessions").font(.title2.weight(.bold))
+            Text("Workspaces").font(.title2.weight(.bold))
             ForEach(machines) { machine in
-                let machineSessions = sessions.filter { $0.machineID == machine.id }
-                if !machineSessions.isEmpty {
+                let machineWorkspaces = workspaces.filter { $0.machineID == machine.id }
+                let activeWorkspaces = machineWorkspaces.filter { $0.activeCount > 0 }
+                let recentWorkspaces = machineWorkspaces.filter { $0.activeCount == 0 }
+                if !machineWorkspaces.isEmpty {
                     Text(machine.name)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.top, RemiTheme.Spacing.xs)
 
-                    ForEach(machineSessions) { session in
-                        if session.canResume {
-                            PhoneResumableSessionRow(session: session) {
-                                onResumeSession(session.machineID, session.id)
-                            }
-                        } else {
-                            NavigationLink {
-                                SessionScreen(
-                                    session: session,
-                                    transcript: transcriptForSession(session.id),
-                                    questions: questionsForSession(session.id),
-                                    views: viewsForSession(session.id),
-                                    transcriptForView: transcriptForSession,
-                                    onSelectView: onOpenSession,
-                                    onAnswer: { onAnswer(session.id, $0, $1) },
-                                    onSubmit: { onSubmit(session.id, $0, $1) },
-                                    onCancel: { onCancel(session.id, $0) },
-                                    onSend: { onSend(session.id, $0) },
-                                    onTerminate: { onTerminateSession(session.id) }
-                                )
-                                .onAppear { onOpenSession(session.id) }
-                            } label: {
-                                RemiSessionRow(session: session)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                    ForEach(activeWorkspaces) { workspace in
+                        workspaceEntry(workspace)
+                        if workspace.id != activeWorkspaces.last?.id { Divider() }
+                    }
 
-                        if session.id != machineSessions.last?.id { Divider() }
+                    if !recentWorkspaces.isEmpty {
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { expandedRecentMachines.contains(machine.id) },
+                                set: { expanded in
+                                    if expanded {
+                                        expandedRecentMachines.insert(machine.id)
+                                    } else {
+                                        expandedRecentMachines.remove(machine.id)
+                                    }
+                                }
+                            )
+                        ) {
+                            ForEach(recentWorkspaces) { workspace in
+                                workspaceEntry(workspace)
+                                if workspace.id != recentWorkspaces.last?.id { Divider() }
+                            }
+                        } label: {
+                            Label("Recent workspaces (\(recentWorkspaces.count))", systemImage: "clock")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .padding(.vertical, RemiTheme.Spacing.xs)
                     }
                 }
+            }
+        }
+        .sheet(item: $focusedWorkspace) { focus in
+            if let workspace = workspaces.first(where: { $0.id == focus.id }) {
+                PhoneWorkspaceSessionsSheet(
+                    workspace: workspace,
+                    transcriptForSession: transcriptForSession,
+                    questionsForSession: questionsForSession,
+                    viewsForSession: viewsForSession,
+                    onAnswer: onAnswer,
+                    onSubmit: onSubmit,
+                    onCancel: onCancel,
+                    onOpenSession: onOpenSession,
+                    onSend: onSend,
+                    onTerminateSession: onTerminateSession,
+                    onResumeSession: onResumeSession
+                )
+            }
+        }
+    }
+
+    private var workspaces: [PhoneSessionWorkspace] {
+        Dictionary(grouping: sessions) { session in
+            "\(session.machineID)|\(session.projectPath)"
+        }
+        .values
+        .compactMap(PhoneSessionWorkspace.init(sessions:))
+        .sorted { lhs, rhs in
+            if lhs.machineID != rhs.machineID { return lhs.machineID < rhs.machineID }
+            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+            return lhs.project.localizedCaseInsensitiveCompare(rhs.project) == .orderedAscending
+        }
+    }
+
+    private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
+        Button {
+            focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+        } label: {
+            PhoneWorkspaceRow(workspace: workspace)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Show \(workspace.sessions.count) sessions", systemImage: "rectangle.stack") {
+                focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            }
+            if let resumable = workspace.sessions.first(where: { $0.canResume }) {
+                Button("Resume latest", systemImage: "play.fill") {
+                    onResumeSession(resumable.machineID, resumable.id)
+                }
+                .disabled(resumable.isResuming)
             }
         }
     }
 }
 
-private struct PhoneResumableSessionRow: View {
+private struct PhoneWorkspaceFocus: Identifiable {
+    let id: String
+}
+
+private struct PhoneSessionWorkspace: Identifiable {
+    let id: String
+    let machineID: String
+    let machineName: String
+    let project: String
+    let projectPath: String
+    let sessions: [RemiSessionSummary]
+
+    init?(sessions: [RemiSessionSummary]) {
+        guard let first = sessions.first else { return nil }
+        id = "\(first.machineID)|\(first.projectPath)"
+        machineID = first.machineID
+        machineName = first.machineName
+        project = first.project
+        projectPath = first.projectPath
+        self.sessions = sessions.sorted {
+            if $0.displayPriority != $1.displayPriority {
+                return $0.displayPriority < $1.displayPriority
+            }
+            return ($0.lastActivity ?? "") > ($1.lastActivity ?? "")
+        }
+    }
+
+    var priority: Int { sessions.first?.displayPriority ?? .max }
+    var status: RemiSessionStatus { sessions.first?.status ?? .offline }
+    var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
+    var activeCount: Int { sessions.count { $0.isLive } }
+    var storedCount: Int { sessions.count { !$0.isLive } }
+}
+
+private extension RemiSessionSummary {
+    var displayPriority: Int {
+        switch status {
+        case .needsYou: 0
+        case .working: 1
+        case .connecting: 2
+        case .idle: 3
+        case .offline: 4
+        }
+    }
+}
+
+private struct PhoneWorkspaceRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let workspace: PhoneSessionWorkspace
+
+    var body: some View {
+        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
+            Image(systemName: "folder")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                        Text(workspace.project)
+                            .font(.headline)
+                        RemiStatusBadge(status: workspace.status)
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(workspace.project)
+                            .font(.headline)
+                        Spacer(minLength: RemiTheme.Spacing.xs)
+                        RemiStatusBadge(status: workspace.status)
+                    }
+                }
+
+                Text(workspace.projectPath)
+                    .font(RemiTheme.Typography.code)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .truncationMode(.middle)
+
+                let metadataLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xxs))
+                    : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+                metadataLayout {
+                    Label("\(workspace.sessions.count) sessions", systemImage: "rectangle.stack")
+                    if workspace.activeCount > 0 {
+                        Text("\(workspace.activeCount) active")
+                    }
+                    if workspace.storedCount > 0 {
+                        Text("\(workspace.storedCount) stored")
+                    }
+                    if workspace.questionCount > 0 {
+                        Label("\(workspace.questionCount)", systemImage: "questionmark.bubble.fill")
+                            .foregroundStyle(RemiTheme.Color.attentionInk)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.top, RemiTheme.Spacing.xs)
+                .accessibilityHidden(true)
+        }
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Shows sessions in this workspace")
+    }
+}
+
+private struct PhoneWorkspaceSessionsSheet: View {
+    let workspace: PhoneSessionWorkspace
+    let transcriptForSession: (String) -> [RemiTranscriptEntry]
+    let questionsForSession: (String) -> [RemiQuestionCardModel]
+    let viewsForSession: (String) -> [SessionViewMeta]
+    let onAnswer: (String, String, String) -> Void
+    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (String, String) -> Void
+    let onOpenSession: (String) -> Void
+    let onSend: (String, String) -> Void
+    let onTerminateSession: (String) -> Void
+    let onResumeSession: (String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(workspace.sessions) { session in
+                if session.canResume {
+                    PhoneStoredSessionRow(session: session, onResume: {
+                        onResumeSession(session.machineID, session.id)
+                    }) {
+                        sessionDestination(session)
+                    }
+                } else {
+                    NavigationLink {
+                        sessionDestination(session)
+                    } label: {
+                        RemiSessionRow(session: session)
+                    }
+                }
+            }
+            .navigationTitle(workspace.project)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func sessionDestination(_ session: RemiSessionSummary) -> some View {
+        SessionScreen(
+            session: session,
+            transcript: transcriptForSession(session.id),
+            questions: questionsForSession(session.id),
+            views: viewsForSession(session.id),
+            transcriptForView: transcriptForSession,
+            onSelectView: onOpenSession,
+            onAnswer: { onAnswer(session.id, $0, $1) },
+            onSubmit: { onSubmit(session.id, $0, $1) },
+            onCancel: { onCancel(session.id, $0) },
+            onSend: { onSend(session.id, $0) },
+            onTerminate: { onTerminateSession(session.id) }
+        )
+        .onAppear { onOpenSession(session.id) }
+    }
+}
+
+private struct PhoneStoredSessionRow<Destination: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
     let onResume: () -> Void
+    @ViewBuilder let destination: () -> Destination
 
     var body: some View {
         let layout = dynamicTypeSize.isAccessibilitySize
@@ -474,9 +700,12 @@ private struct PhoneResumableSessionRow: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            RemiSessionRow(session: session)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
+            NavigationLink(destination: destination) {
+                RemiSessionRow(session: session)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+            }
+            .buttonStyle(.plain)
 
             Button(action: onResume) {
                 if session.isResuming {

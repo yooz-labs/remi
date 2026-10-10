@@ -23,6 +23,7 @@ public struct DiscoverableSession: Codable, Sendable, Equatable, Identifiable {
     public let name: String?
     public let projectPath: String
     public let status: String
+    public let lastActivity: String?
     public let source: String
     public let lastMessage: String?
     public let harness: String?
