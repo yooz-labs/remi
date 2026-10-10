@@ -102,20 +102,7 @@ struct MacLiveRootView: View {
                         }
                     }
                 } detail: {
-                    if let session = visibleSessions.first(where: { $0.id == selectedSessionID }),
-                       session.canResume {
-                        ContentUnavailableView {
-                            Label("Stored session", systemImage: "clock.arrow.circlepath")
-                        } description: {
-                            Text("Resume this session on the machine to continue its conversation.")
-                        } actions: {
-                            Button(session.isResuming ? "Resuming…" : "Resume session") {
-                                resume(session)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(session.isResuming)
-                        }
-                    } else if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
+                    if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
                         MacSessionDetail(
                             session: session,
                             transcript: transcript(for: session.id),
@@ -167,6 +154,7 @@ struct MacLiveRootView: View {
                                     claudeSessionId: binding
                                 )
                             },
+                            onResume: session.canResume ? { resume(session) } : nil,
                             onTerminate: { store.terminateSession(sessionId: session.id) }
                         )
                         .id(notificationDestination ?? RemiNavigationDestination(
@@ -442,11 +430,14 @@ struct MacLiveRootView: View {
                 name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                 harness: session.harness ?? "claude",
                 project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
+                projectPath: session.projectPath,
+                lastActivity: session.lastActivity,
                 status: session.source == "daemon"
                     ? (questionCount > 0 ? .needsYou : status(for: session.status))
                     : .offline,
                 lastMessage: session.lastMessage,
                 openQuestionCount: questionCount,
+                isLive: session.source == "daemon",
                 canTerminate: session.source == "daemon",
                 canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                 isResuming: store.resumingSessions.contains(ResumeSessionKey(
@@ -637,12 +628,61 @@ private struct MacSessionList: View {
     let sessions: [RemiSessionSummary]
     @Binding var selection: String?
     let onResume: (RemiSessionSummary) -> Void
+    @State private var searchText = ""
+    @State private var showsRecent = false
 
     var body: some View {
-        List(sessions, selection: $selection) { session in
-            MacSessionListRow(session: session, onResume: { onResume(session) })
-            .tag(session.id)
+        List(selection: $selection) {
+            ForEach(activeSessions) { session in
+                sessionRow(session)
+            }
+
+            if !recentSessions.isEmpty {
+                if searchText.isEmpty {
+                    DisclosureGroup(isExpanded: $showsRecent) {
+                        ForEach(recentSessions) { session in
+                            sessionRow(session)
+                        }
+                    } label: {
+                        Label("Recent (\(recentSessions.count))", systemImage: "clock")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                } else {
+                    ForEach(recentSessions) { session in
+                        sessionRow(session)
+                    }
+                }
+            }
+
+            if activeSessions.isEmpty && recentSessions.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+            }
         }
+        .searchable(text: $searchText, prompt: "Search sessions")
+    }
+
+    private var filteredSessions: [RemiSessionSummary] {
+        guard !searchText.isEmpty else { return sessions }
+        return sessions.filter { session in
+            session.name.localizedCaseInsensitiveContains(searchText) ||
+                session.project.localizedCaseInsensitiveContains(searchText) ||
+                session.projectPath.localizedCaseInsensitiveContains(searchText) ||
+                session.harness.localizedCaseInsensitiveContains(searchText) ||
+                (session.lastMessage?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+
+    private var activeSessions: [RemiSessionSummary] {
+        filteredSessions.filter(\.isLive)
+    }
+
+    private var recentSessions: [RemiSessionSummary] {
+        filteredSessions.filter { !$0.isLive }
+    }
+
+    private func sessionRow(_ session: RemiSessionSummary) -> some View {
+        MacSessionListRow(session: session, onResume: { onResume(session) })
+            .tag(session.id)
     }
 }
 
