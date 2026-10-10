@@ -60,6 +60,10 @@ struct TranscriptReviewTests {
         #expect(state.matchingEntryIDs.isEmpty)
         #expect(state.selectedEntryID == nil)
 
+        state.update(query: "not present", entries: entries)
+        #expect(state.matchingEntryIDs.isEmpty)
+        #expect(state.resultPosition == nil)
+
         state.update(query: "cache", entries: entries)
         state.reset()
         #expect(state == RemiTranscriptReviewState())
