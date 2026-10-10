@@ -12,7 +12,7 @@ The existing relay contract worktree is reused for this phase.
   32-character lowercase hexadecimal form. Reuse that exact derivation.
 - `cli.ts` unlocks the per-home identity once for authentication and passes
   that same identity to `HubRelay`. Hubs and their ordinary children share
-  the home; a separate home or a changed machine key is a separate identity.
+  the home; a separately generated home identity or a changed key is a separate identity.
 - Production hello paths are in `connection-events.ts` and the two
   session-daemon resume branches in `resume-session-events.ts`.
 - `buildSessionList` is shared by requested lists and watcher broadcasts.

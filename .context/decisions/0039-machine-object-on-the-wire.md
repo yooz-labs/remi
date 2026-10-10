@@ -17,7 +17,9 @@ machine's raw Ed25519 public key, encoded as 32 lowercase hexadecimal characters
 `cli/machine.ts` calls `relayV2.ridOf`; it invents no second identity. `cli.ts`
 derives it once from the identity already unlocked for authentication, including
 on a direct-only daemon. A hub and its ordinary children share that home and
-key. A separate home or key rotation changes the ID.
+key. A separately generated home identity or key rotation changes the ID.
+Copying the same identity key preserves its ID, even in another directory or
+on another host; the ID identifies that key, not physical hardware.
 
 The name is a display default, shared with `remi pair`: the short host name,
 plain letters, numbers, spaces and `._'-`, at most 64 Unicode scalars, with
