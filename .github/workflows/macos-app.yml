@@ -14,32 +14,65 @@ on:
       - "scripts/stage-macos-web.sh"
       - ".github/workflows/macos-app.yml"
 
+# Superseded PR heads can stop; no release or owner device job shares this group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  scope:
+    name: macOS Scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      macos: ${{ steps.scope.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-scope
+        id: scope
+
   build-test:
+    needs: [scope]
+    if: ${{ !cancelled() }}
     name: Build and Test (macOS)
     runs-on: macos-14
     timeout-minutes: 30
     steps:
+      - name: Fail unvalidated scope
+        if: needs.scope.result != 'success'
+        run: |
+          echo "CI scope validation failed; runtime checks were not started." >&2
+          exit 1
       - uses: actions/checkout@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
 
       - uses: oven-sh/setup-bun@v2
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         with:
           # Pinned: bun 1.3.12 --compile ships silent-exit binaries.
           bun-version: 1.3.11
 
       - name: Install dependencies
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         run: bun install --frozen-lockfile
 
       - name: Stage web bundle
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         run: bun run build:macos-web
 
       - name: Build real web provider test fixture
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         run: bun packages/web/tests/browser/build-native-provider-harness.ts "$RUNNER_TEMP/remi-native-provider.js"
 
       - name: Build daemon binary (for integration tests)
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         run: bun run build:binary
 
       - name: Build and test app
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         working-directory: packages/macos
         env:
           # TEST_RUNNER_ prefix: xcodebuild strips it and passes the variable
@@ -52,3 +85,6 @@ jobs:
             -scheme Remi \
             -destination "platform=macOS" \
             CODE_SIGNING_ALLOWED=NO
+      - name: Report scoped skip
+        if: needs.scope.result == 'success' && needs.scope.outputs.macos == 'false'
+        run: echo "macOS build skipped; no relevant inputs changed." >> "$GITHUB_STEP_SUMMARY"

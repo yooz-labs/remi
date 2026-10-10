@@ -1,0 +1,116 @@
+{
+  "source_commit": "d2e90a89cc92c3ab9e6550265bca9372ea33239f",
+  "measurement_sha256": {
+    "ci.yml/test/Test with coverage": "aa88605594efbd9201c62bfa659b06685fd48c9de767ab6cc21540cbdc73f449",
+    "ci.yml/test/Check coverage threshold": "7014458938cc5124d84339467e759c3fe0291d8bac11640437bcf639d21b3b2e",
+    "relay-r7.yml/local-relay/Existing actual wire and authority controls": "c29611f2846d7edf06765b403f4a264b9bb918dae88358dba64d84fde54caaaa",
+    "relay-r7.yml/local-relay/Same attached session for 61 actual minutes": "34d0b295f1c1b80b3a4f2ee2d885cebefec8f50dc78af473160873ca5995c0d3"
+  },
+  "scope_action": {
+    "name": "Classify CI scope",
+    "description": "Complete PR diff classification with full-gate fallback",
+    "outputs": {
+      "lint": {
+        "value": "${{ steps.scope.outputs.lint }}",
+        "description": "Root Biome"
+      },
+      "typecheck": {
+        "value": "${{ steps.scope.outputs.typecheck }}",
+        "description": "Any Type Check step"
+      },
+      "root": {
+        "value": "${{ steps.scope.outputs.root }}",
+        "description": "Root TypeScript"
+      },
+      "web": {
+        "value": "${{ steps.scope.outputs.web }}",
+        "description": "Web source and tests"
+      },
+      "signaling": {
+        "value": "${{ steps.scope.outputs.signaling }}",
+        "description": "Worker TypeScript"
+      },
+      "integration": {
+        "value": "${{ steps.scope.outputs.integration }}",
+        "description": "Relay integration TypeScript"
+      },
+      "notices": {
+        "value": "${{ steps.scope.outputs.notices }}",
+        "description": "Bundled dependency notices"
+      },
+      "test": {
+        "value": "${{ steps.scope.outputs.test }}",
+        "description": "Full Bun coverage suite"
+      },
+      "relay": {
+        "value": "${{ steps.scope.outputs.relay }}",
+        "description": "Actual 61-minute relay gate"
+      },
+      "macos": {
+        "value": "${{ steps.scope.outputs.macos }}",
+        "description": "macOS shell build and tests"
+      }
+    },
+    "runs": {
+      "using": "composite",
+      "steps": [
+        {
+          "uses": "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+          "with": {
+            "version": "0.12.23",
+            "enable-cache": "false"
+          }
+        },
+        {
+          "name": "Install pinned workflow validation tools",
+          "shell": "bash",
+          "run": "set -euo pipefail\nuv pip install --python python3 --only-binary=:all: --target \"$RUNNER_TEMP/remi-ci-python\" PyYAML==6.0.3\nmkdir -p \"$RUNNER_TEMP/remi-ci-tools\"\ncurl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o \"$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz\"\necho '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | (cd \"$RUNNER_TEMP/remi-ci-tools\" && sha256sum -c -)\ntar -xzf \"$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz\" -C \"$RUNNER_TEMP/remi-ci-tools\" actionlint\n"
+        },
+        {
+          "name": "Verify classifier controls",
+          "shell": "bash",
+          "env": {
+            "PYTHONPATH": "${{ runner.temp }}/remi-ci-python",
+            "ACTIONLINT": "${{ runner.temp }}/remi-ci-tools/actionlint"
+          },
+          "run": "python3 .github/scripts/check-ci-scope.py"
+        },
+        {
+          "name": "Validate workflow YAML and execution contracts",
+          "shell": "bash",
+          "env": {
+            "PYTHONPATH": "${{ runner.temp }}/remi-ci-python",
+            "ACTIONLINT": "${{ runner.temp }}/remi-ci-tools/actionlint"
+          },
+          "run": "python3 .github/scripts/workflow-scope.py"
+        },
+        {
+          "name": "Classify complete diff",
+          "id": "scope",
+          "shell": "bash",
+          "env": {
+            "PYTHONPATH": "${{ runner.temp }}/remi-ci-python"
+          },
+          "run": "python3 .github/scripts/ci-scope.py"
+        },
+        {
+          "name": "Validate mandatory scope outputs",
+          "shell": "bash",
+          "env": {
+            "CI_SCOPE_LINT": "${{ steps.scope.outputs.lint }}",
+            "CI_SCOPE_TYPECHECK": "${{ steps.scope.outputs.typecheck }}",
+            "CI_SCOPE_ROOT": "${{ steps.scope.outputs.root }}",
+            "CI_SCOPE_WEB": "${{ steps.scope.outputs.web }}",
+            "CI_SCOPE_SIGNALING": "${{ steps.scope.outputs.signaling }}",
+            "CI_SCOPE_INTEGRATION": "${{ steps.scope.outputs.integration }}",
+            "CI_SCOPE_NOTICES": "${{ steps.scope.outputs.notices }}",
+            "CI_SCOPE_TEST": "${{ steps.scope.outputs.test }}",
+            "CI_SCOPE_RELAY": "${{ steps.scope.outputs.relay }}",
+            "CI_SCOPE_MACOS": "${{ steps.scope.outputs.macos }}"
+          },
+          "run": "python3 .github/scripts/check-scope-output.py"
+        }
+      ]
+    }
+  }
+}
