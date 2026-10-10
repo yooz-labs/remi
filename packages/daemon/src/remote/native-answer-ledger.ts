@@ -93,6 +93,10 @@ function failed(error: unknown, phase: 'verifying' | 'claiming'): 'stale' {
   return 'stale';
 }
 
+// Matches SUGGESTION_LABEL_MAX in hook-event-bridge.ts. The signed title is
+// never truncated or rewritten to fit this boundary.
+const MAX_NATIVE_ACTION_TITLE_GRAPHEMES = 80;
+
 /** Background choices preserve the complete signed options; unsupported forms open the app. */
 function backgroundChoice(payload: relayV2.SecurePushPayload, answer: string): boolean {
   if (payload.type !== 'question' || !payload.actionable) return false;
@@ -112,7 +116,7 @@ function backgroundChoice(payload: relayV2.SecurePushPayload, answer: string): b
       !standing?.isYes ||
       standing.isNo ||
       standing.standingGrant !== 'addRules' ||
-      !standing.description?.trim()
+      (!standing.description?.trim() && !standing.label.endsWith(' for this session'))
     )
       return false;
   } else return false;
@@ -122,11 +126,11 @@ function backgroundChoice(payload: relayV2.SecurePushPayload, answer: string): b
       const title =
         o.label +
         (o.description === null ? '' : ` — ${o.description}`) +
-        (o.standingGrant === 'addRules' ? ' · This session' : '');
+        (o.standingGrant === 'addRules' && o.description !== null ? ' · This session' : '');
       return (
         o.label.trim().length > 0 &&
         (o.description === null || o.description.trim().length > 0) &&
-        [...graphemes.segment(title)].length <= 24 &&
+        [...graphemes.segment(title)].length <= MAX_NATIVE_ACTION_TITLE_GRAPHEMES &&
         !/[\p{Cc}\p{Cf}]/u.test(title)
       );
     })

@@ -25,7 +25,7 @@ import {
   trackerScreenDeps,
 } from '../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
-import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
+import { HookEventBridge, optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import { SecurePushContexts } from '../../src/notifications/secure-push-contexts.ts';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
@@ -322,6 +322,28 @@ test('native ledger delivers actual held HTTP decision once and retains outcome 
   expect(f.pty.sessionState).toBe('created');
 });
 
+test('native ledger accepts the production description-less standing label while preserving the held decision', async () => {
+  const f = await fixture();
+  const held = await f.hold();
+  const options = optionsFromSuggestions([
+    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls' }], behavior: 'allow' },
+  ]).options;
+  expect(options[1]).toMatchObject({
+    label: 'Yes, allow ls for this session',
+    standingGrant: 'addRules',
+  });
+  expect(options[1]?.description).toBeUndefined();
+  const production = {
+    ...held.question,
+    options,
+  };
+  f.registry.addQuestion(f.sessionId, production, 'owned production standing shape');
+  expect(await f.ledger.answer(await f.proof(production))).toBe('delivered');
+  expect(await (await held.response).json()).toMatchObject({
+    hookSpecificOutput: { decision: { behavior: 'allow' } },
+  });
+});
+
 test('native ledger keeps id and nonce conflicts distinct from legacy same-choice aliases', async () => {
   const f = await fixture();
   const held = await f.hold();
@@ -464,7 +486,7 @@ test('native ledger current content revision and full-title policy constrain the
   expect(await f.ledger.answer(old)).toBe('stale');
   const long = {
     ...changed,
-    options: changed.options.map((option) => ({ ...option, description: 'x'.repeat(25) })),
+    options: changed.options.map((option) => ({ ...option, description: 'x'.repeat(81) })),
   };
   f.registry.addQuestion(f.sessionId, long, 'owned complete long labels');
   expect(await f.ledger.answer(await f.proof(long))).toBe('stale');

@@ -47,12 +47,16 @@ enum NativePushActionPolicy {
     static let prefix = "remi.secure.v2."
     static let maximumCategories = 128
     static let maximumObserved = 512
+    // Matches the daemon's bounded permission-suggestion label contract.
+    static let maximumActionTitleLength = 80
     static func acceptsUnverifiedCategories(_ categories: Set<UNNotificationCategory>) -> Bool {
         categories.allSatisfy { !$0.identifier.hasPrefix(prefix) }
     }
     static func title(_ option: VerifiedPushOption) -> String {
-        option.label + (option.description.map { " \u{2014} " + $0 } ?? "") +
-            (option.standingGrant == "addRules" ? " · This session" : "")
+        let described = option.label + (option.description.map { " \u{2014} " + $0 } ?? "")
+        return option.standingGrant == "addRules" && option.description != nil
+            ? described + " · This session"
+            : described
     }
     static func choices(_ notification: VerifiedPushNotification) -> [VerifiedPushOption] {
         guard notification.kind == .question else { return [] }
@@ -63,14 +67,16 @@ enum NativePushActionPolicy {
             guard options.count == 2, yes(options[0]), no(options[1]) else { return [] }
         } else if notification.category == "REMI_YNA" {
             guard options.count == 3, yes(options[0]), no(options[2]), options[1].isYes, !options[1].isNo,
-                  options[1].standingGrant == "addRules", options[1].description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return [] }
+                  options[1].standingGrant == "addRules",
+                  options[1].description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ||
+                    options[1].label.hasSuffix(" for this session") else { return [] }
         } else { return [] }
         guard Set(options.map { Data($0.value.utf8) }).count == options.count else { return [] }
         for option in options {
             let rendered = title(option)
             guard !option.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   option.description == nil || option.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-                  rendered.count <= 24, rendered.unicodeScalars.allSatisfy({
+                  rendered.count <= maximumActionTitleLength, rendered.unicodeScalars.allSatisfy({
                       $0.properties.generalCategory != .control && $0.properties.generalCategory != .format
                   }) else { return [] }
         }
