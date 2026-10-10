@@ -28,13 +28,39 @@ outputs:
   relay:
     value: ${{ steps.scope.outputs.relay }}
     description: Actual 61-minute relay gate
+  macos:
+    value: ${{ steps.scope.outputs.macos }}
+    description: macOS shell build and tests
 runs:
   using: composite
   steps:
+    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      with:
+        version: 0.12.23
+        enable-cache: false
+    - name: Install pinned workflow validation tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        uv pip install --python python3 --only-binary=:all: --target "$RUNNER_TEMP/remi-ci-python" PyYAML==6.0.3
+        mkdir -p "$RUNNER_TEMP/remi-ci-tools"
+        curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz"
+        echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | (cd "$RUNNER_TEMP/remi-ci-tools" && sha256sum -c -)
+        tar -xzf "$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz" -C "$RUNNER_TEMP/remi-ci-tools" actionlint
     - name: Verify classifier controls
       shell: bash
+      env:
+        PYTHONPATH: ${{ runner.temp }}/remi-ci-python
       run: python3 .github/scripts/check-ci-scope.py
+    - name: Validate workflow YAML and execution contracts
+      shell: bash
+      env:
+        PYTHONPATH: ${{ runner.temp }}/remi-ci-python
+        ACTIONLINT: ${{ runner.temp }}/remi-ci-tools/actionlint
+      run: python3 .github/scripts/workflow-scope.py
     - name: Classify complete diff
       id: scope
       shell: bash
+      env:
+        PYTHONPATH: ${{ runner.temp }}/remi-ci-python
       run: python3 .github/scripts/ci-scope.py

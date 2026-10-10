@@ -4,10 +4,11 @@ import argparse
 import json
 import os
 import re
+import runpy
 import subprocess
 from pathlib import Path
 
-GATES = ("lint", "root", "web", "signaling", "integration", "notices", "test", "relay")
+GATES = ("lint", "root", "web", "signaling", "integration", "notices", "test", "relay", "macos")
 BUILD_SCRIPTS = {
     "build:darwin-arm64", "build:darwin-x64", "build:linux-arm64",
     "build:linux-x64", "build:all",
@@ -23,6 +24,11 @@ NON_RELAY_WORKFLOWS = {
     ".github/workflows/release.yml", ".github/workflows/auto-bump-dev.yml",
     ".github/workflows/close-on-develop.yml", ".github/workflows/macos-app.yml",
     ".github/scripts/close-on-develop.ts",
+}
+CI_TOOLS = {
+    ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
+    ".github/scripts/workflow-scope.py", ".github/actions/ci-scope/action.yml",
+    ".github/ci-scope.md",
 }
 
 
@@ -77,6 +83,9 @@ def classify(base, head):
                     continue
                 # Root Biome excludes all of packages/web; its config changes run all gates.
                 gates.update(web=True, integration=True, test=True, relay=True)
+                if path.startswith("packages/web/src/lib/native-") or (
+                        path.startswith("packages/web/tests/browser/") and "native-provider-harness" in path):
+                    gates["macos"] = True
                 if path.endswith("package.json") or "tsconfig" in path or "bunfig" in path:
                     return all_gates("Web dependency or tool configuration changed")
             elif path.startswith("packages/native/"):
@@ -87,7 +96,7 @@ def classify(base, head):
                     return all_gates("Unknown native input; running all gates")
                 gates["lint"] |= path.endswith(".json")
             elif path.startswith("packages/macos/"):
-                gates.update(lint=True, root=True, web=True, integration=True, test=True)
+                gates.update(lint=True, root=True, web=True, integration=True, test=True, macos=True)
             elif path.startswith(PROOFS):
                 # The exemption belongs only to standalone proofs. A new source/test
                 # consumer must not leave later proof edits outside runtime coverage.
@@ -99,6 +108,18 @@ def classify(base, head):
                 if consumers.returncode != 1:
                     return all_gates("Proof consumer found or scan unavailable; running all gates")
                 gates["lint"] |= path.endswith(LINT_EXTENSIONS)
+            elif path in CI_TOOLS:
+                # These execute their actual classifier/YAML/actionlint controls in the scope job.
+                continue
+            elif path in {".github/workflows/ci.yml", ".github/workflows/relay-r7.yml"} or (
+                    path in NON_RELAY_WORKFLOWS and path.endswith(".yml")):
+                try:
+                    compare = runpy.run_path(str(Path(__file__).with_name("workflow-scope.py")))["changed_gates"]
+                    selected = compare(path, git("show", f"{merge_base}:{path}").decode(),
+                                       git("show", f"{head}:{path}").decode())
+                except Exception:
+                    return all_gates("Workflow comparison unavailable or unknown; running all gates")
+                gates.update(dict.fromkeys(selected, True))
             elif path in RELEASE_SCRIPTS or path in NON_RELAY_WORKFLOWS or path.startswith("npm/"):
                 gates.update(lint=True, root=True, notices=True, test=True)
             elif path.startswith("tests/"):

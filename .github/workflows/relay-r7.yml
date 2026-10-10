@@ -17,6 +17,8 @@ jobs:
   scope:
     name: Relay Scope
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       relay: ${{ steps.scope.outputs.relay }}
     steps:

@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).with_name("ci-scope.py").resolve()
 module = runpy.run_path(str(SCRIPT))
 classify, gates = module["classify"], set(module["GATES"])
@@ -16,6 +18,9 @@ ROOT_PACKAGE = {"version": "0.7.17-dev.1", "scripts": {"test": "bun test",
                 "devDependencies": {"typescript": "5.7.0"}}
 WEB = {"web", "integration", "test", "relay"}
 METADATA = {"lint", "root", "notices", "test"}
+WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
+ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
+WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
 
 
 def git(*args):
@@ -57,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write("package.json", json.dumps(ROOT_PACKAGE))
         write("packages/daemon/src/relay/hub.ts", "export const initial = true;\n")
         write("docs/PROVISIONING.md", "# initial executable bootstrap fixture\n")
+        for name, text in WORKFLOWS.items():
+            write(f".github/workflows/{name}", text)
+        write(".github/actions/ci-scope/action.yml", ACTION)
         base = commit()
         cases = [
             ("README.md", "docs\n", set()),
@@ -99,11 +107,12 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("tests/integration/relay-r3.test.ts", "export {};", gates),
             (".github/workflows/ci.yml", "name: owned", gates),
             (".github/workflows/relay-r7.yml", "name: owned", gates),
-            (".github/workflows/release.yml", "name: owned", METADATA),
+            (".github/workflows/release.yml", "name: owned", gates),
             (".github/workflows/new.yml", "name: owned", gates),
-            (".github/workflows/macos-app.yml", "name: owned", METADATA),
-            (".github/actions/ci-scope/action.yml", "name: owned", gates),
-            (".github/scripts/ci-scope.py", "print('owned')", gates),
+            (".github/workflows/macos-app.yml", "name: owned", gates),
+            (".github/actions/ci-scope/action.yml", "name: owned", set()),
+            (".github/scripts/ci-scope.py", "print('owned')", set()),
+            (".github/scripts/workflow-scope.py", "print('owned')", set()),
             (".rules/testing.md", "owned rule", gates),
             ("bun.lock", "owned lock", gates),
             ("docs/relay-r7-gates.md", "owned gate doc", {"relay"}),
@@ -136,6 +145,67 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (field, result)
             count += 1
+        # Mutate actual workflow YAML in actual git commits: route changes versus execution.
+        def workflow_case(name, mutate, expected):
+            global count
+            git("reset", "--hard", base); git("clean", "-fdq")
+            value = WORKFLOW_TOOLS["load"](WORKFLOWS[name])
+            mutate(value)
+            write(f".github/workflows/{name}", yaml.safe_dump(value, sort_keys=False))
+            result = classify(base, commit())
+            assert selected(result) == expected, (name, expected, result)
+            count += 1
+        workflow_case("ci.yml", lambda w: w.update(concurrency={"group": "owned"}), set())
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(needs=["scope", "owned"]), set())
+        workflow_case("relay-r7.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]), set())
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(**{"timeout-minutes": "81"}), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(**{"runs-on": "ubuntu-24.04"}), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"]["env"].update(BUN_VERSION="1.4.2"), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"]["steps"][0].update(uses="actions/checkout@v4"), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"] if "run" in s).update(run="true"), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"] if s.get("name") == "Existing actual wire and authority controls").update(run="bun test tests/integration/relay-r7*.test.ts"), {"relay"})
+        workflow_case("ci.yml", lambda w: w["jobs"]["test"].update(**{"timeout-minutes": "26"}), {"test"})
+        workflow_case("ci.yml", lambda w: w["jobs"]["test"].update(env={"NODE_ENV": "test"}), {"test"})
+        workflow_case("ci.yml", lambda w: w["jobs"]["test"].update(**{"runs-on": "ubuntu-24.04"}), {"test"})
+        workflow_case("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"] if s.get("name") == "Check coverage threshold").update(run="true"), {"test"})
+        workflow_case("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"] if s.get("name") == "Check coverage threshold").update(run='if [ "$COVERAGE < 59" ]; then exit 1; fi'), {"test"})
+        workflow_case("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"] if s.get("run") == "bun install --frozen-lockfile").update(run="bun install"), {"test"})
+        workflow_case("ci.yml", lambda w: w["jobs"]["lint"].update(**{"runs-on": "ubuntu-24.04"}), {"lint"})
+        workflow_case("ci.yml", lambda w: w["jobs"]["typecheck"].update(**{"runs-on": "ubuntu-24.04"}), {"root", "web", "signaling", "integration", "notices"})
+        workflow_case("ci.yml", lambda w: w["env"].update(BUN_VERSION="1.4.2"), gates)
+        workflow_case("ci.yml", lambda w: w["jobs"].update(unknown={"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}), gates)
+        # The real validator must reject coverage removal, rather than calling a no-op covered.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        value = WORKFLOW_TOOLS["load"](WORKFLOWS["ci.yml"])
+        next(s for s in value["jobs"]["test"]["steps"] if s.get("name") == "Test with coverage")["run"] = "true"
+        write(".github/workflows/ci.yml", yaml.safe_dump(value, sort_keys=False))
+        try:
+            WORKFLOW_TOOLS["validate"]()
+        except AssertionError:
+            count += 1
+        else:
+            raise AssertionError("workflow validator accepted a no-op coverage job")
+        def routing_refusal(name, mutate):
+            global count
+            git("reset", "--hard", base); git("clean", "-fdq")
+            value = WORKFLOW_TOOLS["load"](WORKFLOWS[name])
+            mutate(value)
+            write(f".github/workflows/{name}", yaml.safe_dump(value, sort_keys=False))
+            commit()
+            try:
+                WORKFLOW_TOOLS["validate"]()
+            except AssertionError:
+                count += 1
+            else:
+                raise AssertionError("validator accepted an unrecognized routing contract")
+        routing_refusal("ci.yml", lambda w: w["on"].pop("push"))
+        routing_refusal("ci.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]))
+        routing_refusal("relay-r7.yml", lambda w: w["on"].pop("workflow_dispatch"))
+        routing_refusal("ci.yml", lambda w: w["concurrency"].update(**{"cancel-in-progress": "true"}))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["typecheck"]["steps"] if s.get("run") == "bun run typecheck").update(**{"if": "needs.scope.result != 'success' || needs.scope.outputs.web != 'false'"}))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["permissions"].update(contents="write"))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["steps"].append({"run": "true"}))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
         for destination in (None, "docs/moved.md"):
             git("reset", "--hard", base)
             git("clean", "-fdq")
@@ -180,7 +250,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         for left, right in [(base, base), (None, base), ("bad-ref", base), ("f" * 40, base)]:
             assert selected(classify(left, right)) == gates
             count += 1
-        for event in ("push", "workflow_dispatch"):
+        for event in ("push", "workflow_dispatch", "repository_dispatch"):
             env = dict(os.environ, GITHUB_EVENT_NAME=event)
             for key in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
                 env.pop(key, None)
