@@ -5,7 +5,8 @@ import UIKit
 struct PairingScreen: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private let serveCommand = "remi serve"
+    private let startCommand = "remi start"
+    private let pairCommand = "remi pair"
     private let keysCommand = "remi keys"
     private let authorizeCommand = "remi authorize <fingerprint> --label phone"
     let onAddMachine: (MachineEndpoint) -> Void
@@ -35,19 +36,22 @@ struct PairingScreen: View {
                 PairingIntroduction()
             }
 
-            Section("On the machine") {
-                PairingStep(number: 1, title: "Start Remi", detail: "Run the hub from a terminal.", command: serveCommand)
-                PairingStep(number: 2, title: "Use a direct address", detail: "The simulator can use 127.0.0.1. A phone needs daemon.bind configured for its LAN, VPN, or Tailscale address.")
-            }
+            Section("Recommended") {
+                PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand)
+                PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand)
 
-            Section("Connection") {
                 Button {
                     showingScanner = true
                 } label: {
                     Label("Scan pairing code", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
                 }
                 .buttonStyle(.glassProminent)
+            } footer: {
+                Text("The code pins the machine identity but does not approve this phone. Confirm the phone fingerprint in the terminal.")
+            }
 
+            Section("Manual direct connection") {
                 TextField("Host or IP address", text: $host)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -61,9 +65,11 @@ struct PairingScreen: View {
                     added = true
                 }
                 .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+            } footer: {
+                Text("Use 127.0.0.1 in the simulator. A physical phone needs an address reachable through the machine’s configured LAN, VPN, or Tailscale bind.")
             }
 
-            Section("Approve this phone") {
+            Section("Authorize a manual connection") {
                 PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand)
                 PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand)
             }
@@ -93,10 +99,8 @@ struct PairingScreen: View {
                 }
             }
 
-            Section {
-                Label("Direct WebSocket connections are not encrypted by Remi. Use a trusted network, VPN, or SSH tunnel.", systemImage: "lock.open")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            Section("System access") {
+                PairingAccessNotice()
             }
         }
         .navigationTitle("Add a machine")
@@ -110,6 +114,24 @@ struct PairingScreen: View {
                 added = true
             }
         }
+    }
+}
+
+private struct PairingAccessNotice: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label("What this phone can do", systemImage: "checkmark.shield")
+                .font(.headline)
+
+            Text("After approval, this phone can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions exposed by the machine.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Label("Direct WebSocket connections are not encrypted by Remi. Use a trusted network, VPN, or SSH tunnel.", systemImage: "lock.open")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, RemiTheme.Spacing.xs)
     }
 }
 
