@@ -262,31 +262,68 @@ private struct MacConversationEmptyState: View {
 }
 
 private struct MacSessionToolbarHeader: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
     let onTerminate: () -> Void
 
     var body: some View {
-        HStack(spacing: RemiTheme.Spacing.s) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.m))
+
+        layout {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text(session.name).font(.headline)
-                Text("\(session.machineName) / \(session.project) · \(session.harness)")
-                    .font(RemiTheme.Typography.code)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            RemiStatusBadge(status: session.status)
-            if session.canTerminate {
-                Menu("Session actions", systemImage: "ellipsis.circle") {
-                    Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
-                        onTerminate()
+                Text(verbatim: session.name)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: RemiTheme.Spacing.m) {
+                        metadataLabel(session.machineName, systemImage: "desktopcomputer")
+                        metadataLabel(session.project, systemImage: "folder")
+                        metadataLabel(session.harness, systemImage: "cpu")
+                    }
+
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                        metadataLabel(session.machineName, systemImage: "desktopcomputer")
+                        metadataLabel(session.project, systemImage: "folder")
+                        metadataLabel(session.harness, systemImage: "cpu")
                     }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+            }
+            .layoutPriority(1)
+
+            if !dynamicTypeSize.isAccessibilitySize {
+                Spacer()
+            }
+
+            HStack(spacing: RemiTheme.Spacing.s) {
+                RemiStatusBadge(status: session.status)
+                if session.canTerminate {
+                    Menu("Session actions", systemImage: "ellipsis.circle") {
+                        Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                            onTerminate()
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Session actions")
+                }
             }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.xs)
+        .padding(.vertical, RemiTheme.Spacing.s)
+    }
+
+    private func metadataLabel(_ value: String, systemImage: String) -> some View {
+        Label {
+            Text(verbatim: value)
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: systemImage)
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
     }
 }
 
