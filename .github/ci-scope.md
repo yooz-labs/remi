@@ -32,6 +32,7 @@ Moving a candidate into a live caller cannot preserve its standalone exemption.
 Files with Bun test/spec names under docs, npm metadata or proof directories also
 run full gates, because suite discovery does not require an explicit import.
 CSS exemptions cover web source, not tests.
+Proof lint selection includes TS/TSX/MTS/CTS, JS/JSX/MJS/CJS and JSON/JSONC files.
 
 `docs/PROVISIONING.md` is an explicit Markdown exception: the existing
 `packages/daemon/tests/integration/key-provisioning.test.ts` reads its actual

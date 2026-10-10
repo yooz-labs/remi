@@ -13,6 +13,7 @@ BUILD_SCRIPTS = {
     "build:linux-x64", "build:all",
 }
 PROOFS = ("scripts/tunnel-storage-proof/", "scripts/tunnel-decoder-proof/")
+LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
     "scripts/bump-version.sh", "scripts/testflight-ios.sh", "scripts/testflight-macos.sh",
@@ -97,7 +98,7 @@ def classify(base, head):
                 )
                 if consumers.returncode != 1:
                     return all_gates("Proof consumer found or scan unavailable; running all gates")
-                gates["lint"] |= path.endswith((".ts", ".js", ".json"))
+                gates["lint"] |= path.endswith(LINT_EXTENSIONS)
             elif path in RELEASE_SCRIPTS or path in NON_RELAY_WORKFLOWS or path.startswith("npm/"):
                 gates.update(lint=True, root=True, notices=True, test=True)
             elif path.startswith("tests/"):
