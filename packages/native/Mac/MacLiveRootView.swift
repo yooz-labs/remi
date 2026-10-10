@@ -122,6 +122,7 @@ struct MacLiveRootView: View {
                             questions: questions(for: session.id),
                             views: store.sessionViewsBySession[session.id] ?? [],
                             initialConversationID: notificationDestination?.agentID,
+                            initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: transcript,
                             onSelectView: store.loadTranscript,
                             onAnswer: { questionId, value in
@@ -168,7 +169,10 @@ struct MacLiveRootView: View {
                             },
                             onTerminate: { store.terminateSession(sessionId: session.id) }
                         )
-                        .id(notificationDestination?.agentID ?? session.id)
+                        .id(notificationDestination ?? RemiNavigationDestination(
+                            machineID: session.machineID,
+                            sessionID: session.id
+                        ))
                         .task(id: session.id) { store.loadTranscript(sessionId: session.id) }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(

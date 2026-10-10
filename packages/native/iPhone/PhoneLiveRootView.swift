@@ -452,6 +452,7 @@ struct PhoneLiveRootView: View {
                 questions: questions(session.id),
                 views: store.sessionViewsBySession[session.id] ?? [],
                 initialConversationID: destination.agentID,
+                initialQuestionID: destination.questionID,
                 transcriptForView: transcript,
                 onSelectView: store.loadTranscript,
                 onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
