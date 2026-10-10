@@ -14,6 +14,11 @@ on:
       - "scripts/stage-macos-web.sh"
       - ".github/workflows/macos-app.yml"
 
+# Superseded PR heads can stop; no release or owner device job shares this group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-test:
     name: Build and Test (macOS)

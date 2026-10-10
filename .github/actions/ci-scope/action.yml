@@ -1,0 +1,40 @@
+name: Classify CI scope
+description: Complete PR diff classification with full-gate fallback
+outputs:
+  lint:
+    value: ${{ steps.scope.outputs.lint }}
+    description: Root Biome
+  typecheck:
+    value: ${{ steps.scope.outputs.typecheck }}
+    description: Any Type Check step
+  root:
+    value: ${{ steps.scope.outputs.root }}
+    description: Root TypeScript
+  web:
+    value: ${{ steps.scope.outputs.web }}
+    description: Web source and tests
+  signaling:
+    value: ${{ steps.scope.outputs.signaling }}
+    description: Worker TypeScript
+  integration:
+    value: ${{ steps.scope.outputs.integration }}
+    description: Relay integration TypeScript
+  notices:
+    value: ${{ steps.scope.outputs.notices }}
+    description: Bundled dependency notices
+  test:
+    value: ${{ steps.scope.outputs.test }}
+    description: Full Bun coverage suite
+  relay:
+    value: ${{ steps.scope.outputs.relay }}
+    description: Actual 61-minute relay gate
+runs:
+  using: composite
+  steps:
+    - name: Verify classifier controls
+      shell: bash
+      run: python3 .github/scripts/check-ci-scope.py
+    - name: Classify complete diff
+      id: scope
+      shell: bash
+      run: python3 .github/scripts/ci-scope.py
