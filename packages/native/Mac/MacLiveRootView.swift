@@ -630,35 +630,41 @@ private struct MacSessionList: View {
     let onResume: (RemiSessionSummary) -> Void
     @State private var searchText = ""
     @State private var showsRecent = false
+    @State private var expandedWorkspaces: Set<String> = []
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(activeSessions) { session in
-                sessionRow(session)
+            ForEach(activeWorkspaces) { workspace in
+                workspaceGroup(workspace)
             }
 
-            if !recentSessions.isEmpty {
+            if !recentWorkspaces.isEmpty {
                 if searchText.isEmpty {
                     DisclosureGroup(isExpanded: $showsRecent) {
-                        ForEach(recentSessions) { session in
-                            sessionRow(session)
+                        ForEach(recentWorkspaces) { workspace in
+                            workspaceGroup(workspace)
                         }
                     } label: {
-                        Label("Recent (\(recentSessions.count))", systemImage: "clock")
+                        Label("Recent workspaces (\(recentWorkspaces.count))", systemImage: "clock")
                             .font(.subheadline.weight(.semibold))
                     }
                 } else {
-                    ForEach(recentSessions) { session in
-                        sessionRow(session)
+                    ForEach(recentWorkspaces) { workspace in
+                        workspaceGroup(workspace)
                     }
                 }
             }
 
-            if activeSessions.isEmpty && recentSessions.isEmpty {
+            if activeWorkspaces.isEmpty && recentWorkspaces.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
         }
         .searchable(text: $searchText, prompt: "Search sessions")
+        .onAppear { expandRelevantWorkspace() }
+        .onChange(of: selection) { _, _ in expandRelevantWorkspace() }
+        .onChange(of: workspaces.map { "\($0.id):\($0.needsAttention)" }) { _, _ in
+            expandRelevantWorkspace()
+        }
     }
 
     private var filteredSessions: [RemiSessionSummary] {
@@ -672,18 +678,33 @@ private struct MacSessionList: View {
         }
     }
 
-    private var activeSessions: [RemiSessionSummary] {
-        filteredSessions.filter(\.isLive).sorted { lhs, rhs in
-            if statusPriority(lhs.status) != statusPriority(rhs.status) {
-                return statusPriority(lhs.status) < statusPriority(rhs.status)
-            }
+    private var workspaces: [MacSessionWorkspace] {
+        Dictionary(grouping: filteredSessions) { session in
+            "\(session.machineID)|\(session.projectPath)"
+        }
+        .values
+        .compactMap(MacSessionWorkspace.init(sessions:))
+        .sorted { lhs, rhs in
+            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
             return (lhs.lastActivity ?? "") > (rhs.lastActivity ?? "")
         }
     }
 
-    private var recentSessions: [RemiSessionSummary] {
-        filteredSessions.filter { !$0.isLive }.sorted {
-            ($0.lastActivity ?? "") > ($1.lastActivity ?? "")
+    private var activeWorkspaces: [MacSessionWorkspace] {
+        workspaces.filter(\.hasLiveSessions)
+    }
+
+    private var recentWorkspaces: [MacSessionWorkspace] {
+        workspaces.filter { !$0.hasLiveSessions }
+    }
+
+    private func workspaceGroup(_ workspace: MacSessionWorkspace) -> some View {
+        DisclosureGroup(isExpanded: workspaceExpansionBinding(workspace)) {
+            ForEach(workspace.sessions) { session in
+                sessionRow(session)
+            }
+        } label: {
+            MacWorkspaceGroupLabel(workspace: workspace)
         }
     }
 
@@ -692,7 +713,56 @@ private struct MacSessionList: View {
             .tag(session.id)
     }
 
-    private func statusPriority(_ status: RemiSessionStatus) -> Int {
+    private func workspaceExpansionBinding(_ workspace: MacSessionWorkspace) -> Binding<Bool> {
+        Binding(
+            get: { !searchText.isEmpty || expandedWorkspaces.contains(workspace.id) },
+            set: { expanded in
+                guard searchText.isEmpty else { return }
+                if expanded {
+                    expandedWorkspaces.insert(workspace.id)
+                } else {
+                    expandedWorkspaces.remove(workspace.id)
+                }
+            }
+        )
+    }
+
+    private func expandRelevantWorkspace() {
+        for workspace in workspaces where workspace.needsAttention || workspace.sessions.contains(where: { $0.id == selection }) {
+            expandedWorkspaces.insert(workspace.id)
+            if !workspace.hasLiveSessions { showsRecent = true }
+        }
+    }
+}
+
+private struct MacSessionWorkspace: Identifiable {
+    let id: String
+    let project: String
+    let projectPath: String
+    let sessions: [RemiSessionSummary]
+
+    init?(sessions: [RemiSessionSummary]) {
+        guard let first = sessions.first else { return nil }
+        id = "\(first.machineID)|\(first.projectPath)"
+        project = first.project
+        projectPath = first.projectPath
+        self.sessions = sessions.sorted { lhs, rhs in
+            if lhs.statusPriority != rhs.statusPriority {
+                return lhs.statusPriority < rhs.statusPriority
+            }
+            return (lhs.lastActivity ?? "") > (rhs.lastActivity ?? "")
+        }
+    }
+
+    var priority: Int { sessions.first?.statusPriority ?? .max }
+    var lastActivity: String? { sessions.compactMap(\.lastActivity).max() }
+    var hasLiveSessions: Bool { sessions.contains(where: \.isLive) }
+    var needsAttention: Bool { sessions.contains { $0.status == .needsYou } }
+    var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
+}
+
+private extension RemiSessionSummary {
+    var statusPriority: Int {
         switch status {
         case .needsYou: 0
         case .working: 1
@@ -700,6 +770,37 @@ private struct MacSessionList: View {
         case .idle: 3
         case .offline: 4
         }
+    }
+}
+
+private struct MacWorkspaceGroupLabel: View {
+    let workspace: MacSessionWorkspace
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+            HStack {
+                Label(workspace.project, systemImage: "folder")
+                    .font(.headline)
+                Spacer(minLength: RemiTheme.Spacing.s)
+                Text("\(workspace.sessions.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(workspace.projectPath)
+                .font(RemiTheme.Typography.code)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if workspace.questionCount > 0 {
+                Label("\(workspace.questionCount) need attention", systemImage: "questionmark.bubble.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(RemiTheme.Color.attentionInk)
+            }
+        }
+        .padding(.vertical, RemiTheme.Spacing.xxs)
+        .accessibilityElement(children: .combine)
     }
 }
 
