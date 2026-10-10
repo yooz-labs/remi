@@ -116,10 +116,10 @@ struct HomeScreen: View {
                 }
 
                 if visibleSessions.isEmpty {
-                    PhoneEmptyState(
-                        systemImage: "rectangle.stack",
-                        title: "No sessions",
-                        message: emptySessionsMessage
+                    PhoneNoSessionsState(
+                        message: emptySessionsMessage,
+                        canCreateSession: !availableSessionMachines.isEmpty,
+                        onNewSession: { showingNewSession = true }
                     )
                 } else {
                     SessionsSection(
@@ -259,6 +259,27 @@ struct HomeScreen: View {
         selectedMachineID.isEmpty
             ? "Sessions from your connected machines will appear here."
             : "This machine has no available sessions yet."
+    }
+}
+
+private struct PhoneNoSessionsState: View {
+    let message: LocalizedStringKey
+    let canCreateSession: Bool
+    let onNewSession: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("No sessions", systemImage: "rectangle.stack")
+        } description: {
+            Text(message)
+        } actions: {
+            if canCreateSession {
+                Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
+                    .buttonStyle(.glassProminent)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.l)
     }
 }
 
