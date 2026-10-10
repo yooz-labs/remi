@@ -551,6 +551,12 @@ private struct PhoneSessionWorkspace: Identifiable {
 }
 
 private extension RemiSessionSummary {
+    var lastActivityDate: Date? {
+        guard let lastActivity else { return nil }
+        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))
+            ?? (try? Date.ISO8601FormatStyle().parse(lastActivity))
+    }
+
     var displayPriority: Int {
         switch status {
         case .needsYou: 0
@@ -614,6 +620,12 @@ private struct PhoneWorkspaceRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+                if let activity = workspace.sessions.compactMap(\.lastActivityDate).max() {
+                    Text("Updated \(activity, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             Image(systemName: "chevron.right")
@@ -642,30 +654,76 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
 
     var body: some View {
         NavigationStack {
-            List(workspace.sessions) { session in
-                if session.canResume {
-                    PhoneStoredSessionRow(session: session, onResume: {
-                        onResumeSession(session.machineID, session.id)
-                    }) {
-                        sessionDestination(session)
+            List {
+                Section {
+                    PhoneWorkspaceDetailHeader(workspace: workspace)
+                }
+
+                if !activeSessions.isEmpty {
+                    Section("Active") {
+                        ForEach(activeSessions) { session in
+                            sessionEntry(session)
+                        }
                     }
-                } else {
-                    NavigationLink {
-                        sessionDestination(session)
-                    } label: {
-                        RemiSessionRow(session: session)
+                }
+
+                if !finishedSessions.isEmpty {
+                    Section("Finished") {
+                        ForEach(finishedSessions) { session in
+                            sessionEntry(session)
+                        }
                     }
+                }
+
+                if activeSessions.isEmpty && finishedSessions.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 }
             }
             .navigationTitle(workspace.project)
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search sessions")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+    }
+
+    private var filteredSessions: [RemiSessionSummary] {
+        guard !searchText.isEmpty else { return workspace.sessions }
+        return workspace.sessions.filter { session in
+            session.name.localizedCaseInsensitiveContains(searchText) ||
+                session.harness.localizedCaseInsensitiveContains(searchText) ||
+                (session.lastMessage?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+
+    private var activeSessions: [RemiSessionSummary] {
+        filteredSessions.filter(\.isLive)
+    }
+
+    private var finishedSessions: [RemiSessionSummary] {
+        filteredSessions.filter { !$0.isLive }
+    }
+
+    @ViewBuilder
+    private func sessionEntry(_ session: RemiSessionSummary) -> some View {
+        if session.canResume {
+            PhoneStoredSessionRow(session: session, onResume: {
+                onResumeSession(session.machineID, session.id)
+            }) {
+                sessionDestination(session)
+            }
+        } else {
+            NavigationLink {
+                sessionDestination(session)
+            } label: {
+                RemiSessionRow(session: session)
             }
         }
     }
@@ -685,6 +743,31 @@ private struct PhoneWorkspaceSessionsSheet: View {
             onTerminate: { onTerminateSession(session.id) }
         )
         .onAppear { onOpenSession(session.id) }
+    }
+}
+
+private struct PhoneWorkspaceDetailHeader: View {
+    let workspace: PhoneSessionWorkspace
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label(workspace.machineName, systemImage: "desktopcomputer")
+                .font(.subheadline.weight(.semibold))
+
+            Text(workspace.projectPath)
+                .font(RemiTheme.Typography.code)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            HStack(spacing: RemiTheme.Spacing.m) {
+                Label("\(workspace.activeCount) active", systemImage: "bolt")
+                Label("\(workspace.storedCount) finished", systemImage: "checkmark.circle")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .accessibilityElement(children: .combine)
     }
 }
 
