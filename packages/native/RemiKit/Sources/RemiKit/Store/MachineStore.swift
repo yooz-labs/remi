@@ -633,6 +633,10 @@ public final class MachineStore {
         resumeErrorsBySession.removeAll()
     }
 
+    public func clearRelayNotificationNotice() {
+        relayNotificationNotice = nil
+    }
+
     public func loadTranscript(sessionId: String) {
         guard let connection = connection(forSession: sessionId) else { return }
         let request = TranscriptLoadRequestMessage(

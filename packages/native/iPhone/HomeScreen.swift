@@ -33,6 +33,7 @@ struct HomeScreen: View {
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     let onDismissError: () -> Void
+    let onDismissNotice: () -> Void
 
     init(
         questions: [RemiQuestionCardModel],
@@ -60,7 +61,8 @@ struct HomeScreen: View {
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
         onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
         enablingRelayNotifications: Bool = false,
-        onDismissError: @escaping () -> Void = {}
+        onDismissError: @escaping () -> Void = {},
+        onDismissNotice: @escaping () -> Void = {}
     ) {
         self.questions = questions
         self.sessions = sessions
@@ -88,6 +90,7 @@ struct HomeScreen: View {
         self.onEnableRelayNotifications = onEnableRelayNotifications
         self.enablingRelayNotifications = enablingRelayNotifications
         self.onDismissError = onDismissError
+        self.onDismissNotice = onDismissNotice
     }
 
     var body: some View {
@@ -98,7 +101,7 @@ struct HomeScreen: View {
                 }
 
                 if let noticeMessage {
-                    NoticeBanner(message: noticeMessage, onDismiss: onDismissError)
+                    NoticeBanner(message: noticeMessage, onDismiss: onDismissNotice)
                 }
 
                 if machines.count > 1 {
