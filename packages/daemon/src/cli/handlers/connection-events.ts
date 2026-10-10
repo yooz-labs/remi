@@ -17,7 +17,7 @@
  */
 
 import { createError, createHelloAck, createReplayBatch } from '@remi/shared';
-import type { CreateHelloAckOptions, HarnessId, UUID } from '@remi/shared';
+import type { CreateHelloAckOptions, HarnessId, MachineDescriptor, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
@@ -29,6 +29,8 @@ import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
+  /** Read after identity initialization; undefined when authentication is disabled (#1234). */
+  machine?: () => MachineDescriptor | undefined;
   sessionRegistry: SessionRegistry;
   /** Resolves the daemon's current owned session so every hello_ack carries the
    *  authoritative claudeSessionId + transcriptPath the client must follow (#499). */
@@ -106,13 +108,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
    * Every hello_ack names the daemon's version, the harnesses it can start and its capabilities
    * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
    */
-  const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) =>
-    createHelloAck('1.0.0', sessionId, {
+  const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) => {
+    const machine = deps.machine?.();
+    return createHelloAck('1.0.0', sessionId, {
       ...options,
       daemonVersion: remiVersion,
-      harnesses: harnesses(),
+      harnesses: machine?.harnesses ?? harnesses(),
       capabilities,
+      machine,
     });
+  };
 
   /** The current binding for hello_ack: who the session is, and the transcript it writes. */
   const currentBinding = () => {

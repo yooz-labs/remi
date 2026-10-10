@@ -44,7 +44,7 @@ import {
   errorToString,
   escapeUnsafeText,
 } from '@remi/shared';
-import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
+import type { HarnessId, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import { AmbiguousSessionIdentityError, isClaudeRecord } from '../../session/index.ts';
@@ -116,6 +116,7 @@ const CHILD_START_FAILED_TEXT =
   "The session could not be started on the host; the host's remi log has the reason.";
 
 export interface ResumeSessionHandlerDeps {
+  machine?: () => MachineDescriptor | undefined;
   /**
    * Set in hub mode (`remi serve`) and only there: starts a child session daemon (#1129). The hub is
    * session-less and must never run Claude (#1124), so it is handed no way to: a resume there goes
@@ -390,6 +391,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       if (existingSession) {
         const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
         if (result.success) {
+          const machine = deps.machine?.();
           send(connectionId, createResumeSessionResponse(true, requestId, targetSessionId as UUID));
           send(
             connectionId,
@@ -399,8 +401,9 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
                 replayCount: result.replayMessages.length,
                 nextBulletId: result.nextBulletId,
               },
-              harnesses: harnesses(),
+              harnesses: machine?.harnesses ?? harnesses(),
               capabilities,
+              machine,
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -475,13 +478,15 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         const result = sessionRegistry.attachConnection(newSessionId, connectionId);
 
         if (result.success) {
+          const machine = deps.machine?.();
           send(connectionId, createResumeSessionResponse(true, requestId, newSessionId));
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
-              harnesses: harnesses(),
+              harnesses: machine?.harnesses ?? harnesses(),
               capabilities,
+              machine,
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

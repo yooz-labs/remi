@@ -72,7 +72,7 @@ async function bounded<T>(promise: Promise<T>, what: string, ms = 10000): Promis
     clearTimeout(timer);
   }
 }
-async function hub() {
+async function hub(auth = true) {
   const dir = home();
   const worker = await bounded(startWorker(), 'the local Worker to start');
   workers.push(worker);
@@ -86,6 +86,7 @@ async function hub() {
     String(port),
     '--no-mdns',
     '--no-telegram',
+    ...(!auth ? ['--no-auth'] : []),
   ]);
   const stdout = new Response(proc.stdout).text();
   // Read stderr as it arrives: the hub logs its Worker control admission there, and one fixed-form
@@ -212,6 +213,26 @@ async function localSocket(running: Awaited<ReturnType<typeof hub>>) {
   );
   return { ws, inbox };
 }
+/** Actual loopback capability connection to the source daemon, with a protocol inbox. */
+async function directHello(port: number, capability: string) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?mode=query`, {
+    headers: { [CAPABILITY_HEADER]: capability },
+  } as never);
+  sockets.push(ws);
+  const inbox = new Mailbox<ReturnType<typeof deserialize>>();
+  ws.onmessage = (event) => inbox.push(deserialize(String(event.data)));
+  await bounded(
+    new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error('owned direct socket refused'));
+    }),
+    'the direct socket',
+  );
+  ws.send(serialize(createHello('owned-direct-machine', '1')));
+  const hello = await nextType(inbox, 'hello_ack');
+  if (hello.type !== 'hello_ack') throw new Error('direct hello missing');
+  return { ws, inbox, hello };
+}
 async function paired() {
   const running = await hub();
   // Health precedes the hub's asynchronous control admission at the Worker, and a pairing offer
@@ -292,6 +313,7 @@ async function paired() {
   await channel.send(new TextEncoder().encode(serialize(createHello('owned-device', '2.0.0'))));
   const hello = await nextType(inbox, 'hello_ack');
   expect(hello?.type).toBe('hello_ack');
+  expect(hello?.type === 'hello_ack' && hello.machine?.id).toBe(hex(rid));
   const id = generateId();
   await channel.send(
     new TextEncoder().encode(serialize({ type: 'relay_devices_request', id, timestamp: now() })),
@@ -304,6 +326,36 @@ async function paired() {
   expect(response.devices).toHaveLength(1);
   return { running, local, device, socket, channel, inbox, hello, drain: () => incoming, rid };
 }
+
+test('one source hub names the same authenticated machine on direct and relay hello and lists', async () => {
+  const pairedHub = await paired();
+  const { running, hello, channel, inbox } = pairedHub;
+  if (hello.type !== 'hello_ack') throw new Error('relay hello missing');
+  const direct = await directHello(running.port, running.capability);
+  expect(direct.hello.machine).toEqual(hello.machine);
+  expect(hello.machine?.name.length).toBeGreaterThan(0);
+  expect(hello.machine?.platform).toBe(process.platform);
+  expect(hello.daemonVersion).toBe(hello.machine?.remiVersion);
+  expect(hello.harnesses).toEqual(hello.machine?.harnesses);
+  expect(hello.capabilities).toEqual(hello.machine?.capabilities);
+  const request = createSessionListRequest();
+  direct.ws.send(serialize(request));
+  const directList = await nextType(direct.inbox, 'session_list_response');
+  await channel.send(new TextEncoder().encode(serialize(request)));
+  const relayList = await nextType(inbox, 'session_list_response');
+  expect(directList.type === 'session_list_response' && directList.machine).toEqual(hello.machine);
+  expect(relayList.type === 'session_list_response' && relayList.machine).toEqual(hello.machine);
+}, 20000);
+
+test('an auth-disabled source hub retains descriptor-free hello and list shapes', async () => {
+  const running = await hub(false);
+  const direct = await directHello(running.port, running.capability);
+  expect(direct.hello.machine).toBeUndefined();
+  direct.ws.send(serialize(createSessionListRequest()));
+  const list = await nextType(direct.inbox, 'session_list_response');
+  expect(list.type === 'session_list_response' && list.machine).toBeUndefined();
+  expect(existsSync(join(running.dir, 'state/identity.json'))).toBe(false);
+}, 20000);
 /** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
 const RESETTING_RUNTIME = '1.3.11';
 /**
@@ -445,7 +497,8 @@ async function nextType(
   throw new Error('semantic response not found');
 }
 test('actual child hook decision yields delivered result while stale answer refuses and raw PTY stays local', async () => {
-  const { running, channel, inbox } = await paired();
+  const { running, channel, inbox, rid } = await paired();
+  const directHub = await directHello(running.port, running.capability);
   writeFileSync(
     join(running.dir, 'bin/claude'),
     '#!/bin/sh\nprintf "RAW_PTY_PRIVATE_SENTINEL\\n"\nexec /bin/cat\n',
@@ -476,6 +529,23 @@ test('actual child hook decision yields delivered result while stale answer refu
     if (Date.now() > deadline) throw new Error('controlled child registration deadline');
     if (!entry) await Bun.sleep(10);
   }
+  const broadcast = await nextType(
+    directHub.inbox,
+    'session_list_response',
+    (message) => message.type === 'session_list_response' && !!message.daemonPorts?.includes(port),
+  );
+  expect(broadcast.type === 'session_list_response' && broadcast.machine?.id).toBe(hex(rid));
+  const directChild = await directHello(port, running.capability);
+  expect(directChild.hello.machine?.id).toBe(hex(rid));
+  directChild.ws.send(serialize(createSessionListRequest()));
+  const childList = await nextType(directChild.inbox, 'session_list_response');
+  expect(childList.type === 'session_list_response' && childList.sessions.length).toBeGreaterThan(
+    0,
+  );
+  if (childList.type === 'session_list_response') {
+    expect(childList.machine?.id).toBe(hex(rid));
+    for (const session of childList.sessions) expect(session.machineId).toBe(hex(rid));
+  }
   const list = createSessionListRequest();
   await channel.send(new TextEncoder().encode(serialize(list)));
   const discovery = await nextType(
@@ -484,6 +554,14 @@ test('actual child hook decision yields delivered result while stale answer refu
     (message) => message.type === 'session_list_response' && message.requestId === list.id,
   );
   expect(discovery.type === 'session_list_response' && discovery.requestId).toBe(list.id);
+  if (discovery.type === 'session_list_response') {
+    expect(discovery.machine?.id).toBe(hex(rid));
+    for (const session of discovery.sessions) {
+      expect(session.machineId).toBe(hex(rid));
+      expect(session.wsPort).toBeUndefined();
+      expect(session.daemonHost).toBeUndefined();
+    }
+  }
   expect(
     discovery.type === 'session_list_response' &&
       discovery.sessions.some((session) => session.sessionId === entry.sessionId),
@@ -495,6 +573,7 @@ test('actual child hook decision yields delivered result while stale answer refu
   );
   const attached = await nextType(inbox, 'hello_ack');
   expect(attached.type === 'hello_ack' && attached.sessionId).toBe(entry.sessionId);
+  expect(attached.type === 'hello_ack' && attached.machine?.id).toBe(hex(rid));
   expect(attached.type === 'hello_ack' && Boolean(attached.attachState)).toBe(true);
   if (attached.type !== 'hello_ack' || !attached.claudeSessionId)
     throw new Error('child binding missing');

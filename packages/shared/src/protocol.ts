@@ -35,6 +35,7 @@ import type {
   Acknowledgment,
   AgentStatus,
   DiscoverableSession,
+  MachineDescriptor,
   Message,
   Question,
   RemiStatus,
@@ -349,6 +350,8 @@ export interface HelloAckMessage {
    * since #1237; a name a client does not know is ignored.
    */
   readonly capabilities?: readonly string[] | undefined;
+  /** Authenticated hosting machine metadata; absent on older or auth-disabled daemons (#1234). */
+  readonly machine?: MachineDescriptor | undefined;
   /**
    * The daemon's primary session (null on a session-less hub daemon, #542):
    * a hub boots with no session of its own, so a connecting client still
@@ -855,6 +858,8 @@ export interface SessionListResponseMessage {
   readonly requestId: UUID;
   /** Other daemon ports on this machine (for auto-connect) */
   readonly daemonPorts?: readonly number[];
+  /** Hosting machine; every entry's machineId matches it when present (#1234). */
+  readonly machine?: MachineDescriptor | undefined;
 }
 
 /**
@@ -1651,6 +1656,8 @@ export function createHello(
  *  new optionals never requires threading `undefined` through positional
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
+  /** One snapshot also supplies daemonVersion, harnesses and capabilities (#1234). */
+  machine?: MachineDescriptor | undefined;
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
   /**
    * Who the session is and which transcript it writes (#430, #1179). The
@@ -1686,8 +1693,10 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness, capabilities } =
-    options;
+  const { resumeInfo, binding, attachState, harness, machine } = options;
+  const daemonVersion = machine?.remiVersion ?? options.daemonVersion;
+  const harnesses = machine?.harnesses ?? options.harnesses;
+  const capabilities = machine?.capabilities ?? options.capabilities;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -1715,6 +1724,7 @@ export function createHelloAck(
     ...(daemonVersion !== undefined && { daemonVersion }),
     ...(harnesses !== undefined && { harnesses }),
     capabilities: capabilities ?? [],
+    ...(machine !== undefined && { machine }),
   };
 }
 
@@ -2148,14 +2158,18 @@ export function createSessionListResponse(
   sessions: readonly DiscoverableSession[],
   requestId: UUID,
   daemonPorts?: readonly number[],
+  machine?: MachineDescriptor,
 ): SessionListResponseMessage {
   return {
     type: 'session_list_response',
     id: generateId(),
     timestamp: now(),
-    sessions,
+    sessions: machine
+      ? sessions.map((session) => ({ ...session, machineId: machine.id }))
+      : sessions,
     requestId,
     ...(daemonPorts && daemonPorts.length > 0 && { daemonPorts }),
+    ...(machine !== undefined && { machine }),
   };
 }
 

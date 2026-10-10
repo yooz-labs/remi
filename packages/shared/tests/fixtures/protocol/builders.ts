@@ -87,12 +87,22 @@ import type {
   Acknowledgment,
   Bullet,
   DiscoverableSession,
+  MachineDescriptor,
   Message,
   Question,
   QuestionOption,
   RemiStatus,
   StructuredMessage,
 } from '../../../src/types.ts';
+
+export const FIXED_MACHINE: MachineDescriptor = {
+  id: '00112233445566778899aabbccddeeff',
+  name: 'Remi Workstation',
+  platform: 'darwin',
+  remiVersion: '0.7.4-dev.1',
+  harnesses: ['claude', 'codex'],
+  capabilities: ['workspaces'],
+};
 
 // Fixed IDs shared across builders so fixtures read coherently (all
 // referencing "the same" fixture session/question where that matters).
@@ -456,6 +466,15 @@ export const FIXTURE_VARIANTS: Record<
   string,
   { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
 > = {
+  hello_ack_machine: {
+    type: 'hello_ack',
+    build: () => createHelloAck('1.0.0', null, { machine: FIXED_MACHINE }),
+  },
+  session_list_response_machine: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse([FIXED_DISCOVERABLE_SESSION], REQUEST_ID, [18766], FIXED_MACHINE),
+  },
   // Before Phase 5 the request named a directory and nothing else; the registry golden now names
   // a harness and arguments too, and an older client still sends this.
   create_session_request_plain: {

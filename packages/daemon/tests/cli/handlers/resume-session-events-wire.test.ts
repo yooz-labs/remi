@@ -19,6 +19,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import { PROTOCOL_VERSION, generateId } from '@remi/shared';
+import { FIXED_MACHINE } from '../../../../shared/tests/fixtures/protocol/builders.ts';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { DAEMON_CAPABILITIES } from '../../../src/cli/capabilities.ts';
 import {
@@ -77,11 +78,19 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
     harnesses: () => readonly HarnessId[],
     harnessId: HarnessId = 'claude',
     capabilities?: readonly string[],
+    withMachine = false,
   ) {
     return createResumeSessionHandlers({
       childSessions: null,
       harnessId,
       harnesses,
+      ...(withMachine && {
+        machine: () => ({
+          ...FIXED_MACHINE,
+          harnesses: harnesses(),
+          capabilities: capabilities ?? DAEMON_CAPABILITIES,
+        }),
+      }),
       ...(capabilities !== undefined && { capabilities }),
       sessionRegistry,
       sessionStore,
@@ -103,7 +112,13 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
   test('the ack for a session that is still live', async () => {
     const sessionId = sessionRegistry.createSessionId();
     sessionRegistry.registerSession(sessionId, '/test/dir', pty(), messageApi());
-    await handlers(() => ['claude', 'codex']).onResumeSessionRequest(CID, sessionId, REQ);
+    await handlers(() => ['claude', 'codex'], 'claude', undefined, true).onResumeSessionRequest(
+      CID,
+      sessionId,
+      REQ,
+    );
+    expect(acks().map((a) => a.machine?.id)).toEqual([FIXED_MACHINE.id]);
+    expect(acks().map((a) => a.daemonVersion)).toEqual([FIXED_MACHINE.remiVersion]);
     expect(acks().map((a) => a.harnesses)).toEqual([['claude', 'codex']]);
     expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
       [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
@@ -123,7 +138,12 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
       exitedAt: null,
       exitCode: null,
     });
-    await handlers(() => ['codex']).onResumeSessionRequest(CID, REMI_ID, REQ);
+    await handlers(() => ['codex'], 'claude', undefined, true).onResumeSessionRequest(
+      CID,
+      REMI_ID,
+      REQ,
+    );
+    expect(acks().map((a) => a.machine?.id)).toEqual([FIXED_MACHINE.id]);
     expect(acks().map((a) => a.harnesses)).toEqual([['codex']]);
     expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
       [PROTOCOL_VERSION, DAEMON_CAPABILITIES],

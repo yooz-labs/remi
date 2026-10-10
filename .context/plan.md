@@ -57,8 +57,8 @@ The existing native caller needs no new Swift model or wire field for this persi
 
 ## Next work while native acceptance proceeds
 
-1. Continue existing [#1330](https://github.com/yooz-labs/remi/pull/1330), now ready for review. The owner has an iPhone and Watch available; signed app/extension, provider configuration, actual delivery, locked-device actions and two-machine Mac acceptance still need measured results. Source and unsigned receipts do not close those gates. Generic #1141 categories follow the accepted X2 answer path.
-2. Land the existing file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) after its refreshed source passes normal CI. Keep #1170 open: this is preparation, with no accepted freeze or implemented attachment capability.
+1. Complete the backend machine descriptor in #1234, with the existing relay room ID and shared bounded pairing name, hello/list fields, entry machine IDs, fixtures and ADR 0039. Native persisted aliases, rename controls and profile transfer follow these contracts in the Xcode track. #1330 and #1342 have landed; remaining signed/native acceptance stays with #1242/#1201.
+2. The file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) landed at `35254d7e`. [#1343](https://github.com/yooz-labs/remi/pull/1343) adds reproducible packaging tooling; it remains preparation, with no accepted helper or attachment capability. Keep #1170 open.
 3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): prove standalone storage and bounded-decoder packaging, accept the staging ADR/fixtures, implement durable reservations and direct staging, then add one production client caller. Claude insertion, links, outbound files and relay/native depth each have separate gates. The existing decoder's compiled runtime failed to load; resolve that before upload implementation. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
 
 ## Tracks (work outside the milestones)

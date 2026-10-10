@@ -2,6 +2,7 @@
 import {
   type AgentStatus,
   MESSAGE_DIRECTION,
+  type MachineDescriptor,
   type Message,
   MessageIdTracker,
   type NativeAnswerMessage,
@@ -115,6 +116,8 @@ type Peer = {
   hubLists: Map<string, (response: SessionListResponseMessage) => void>;
 };
 export interface HubRelayConfig {
+  /** The same authenticated machine snapshot the direct hub replies carry (#1234). */
+  machine?: () => MachineDescriptor | undefined;
   relayUrl: string;
   identity: UnlockedIdentity;
   trust: IdentityStore;
@@ -682,7 +685,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.hubLists.set(request.id, resolve);
       timer = setTimeout(() => {
         localTimedOut = true;
-        resolve(createSessionListResponse([], request.id));
+        resolve(createSessionListResponse([], request.id, undefined, this.cfg.machine?.()));
       }, 5000);
     });
     this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
@@ -746,7 +749,17 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           { requestId: request.id },
         ),
       );
-    this.sendRaw(peer.cid, createSessionListResponse([...sessions.values()], request.id), true);
+    // Relay clients route through this hub. The old aggregate omitted daemonPorts but still
+    // leaked each entry's direct endpoint (#1234); preserve machine identity, not child routing.
+    const semanticSessions = [...sessions.values()].map((session) => {
+      const { wsPort: _port, daemonHost: _host, ...semantic } = session;
+      return semantic;
+    });
+    this.sendRaw(
+      peer.cid,
+      createSessionListResponse(semanticSessions, request.id, undefined, this.cfg.machine?.()),
+      true,
+    );
   }
   private nextPushMutation(peer: Peer): number {
     const current = peer.pushMutation ?? 0;

@@ -114,7 +114,14 @@ import {
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
-import type { HarnessId, ProtocolMessage, ResolvedBy, UUID, UnlockedIdentity } from '@remi/shared';
+import type {
+  HarnessId,
+  MachineDescriptor,
+  ProtocolMessage,
+  ResolvedBy,
+  UUID,
+  UnlockedIdentity,
+} from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -133,6 +140,7 @@ import {
   removedAutoApproveEnvVars,
 } from './cli/auto-approve-removal.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
+import { DAEMON_CAPABILITIES } from './cli/capabilities.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runMigratePermissionsCommand } from './cli/cmd-migrate-permissions.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
@@ -184,6 +192,7 @@ import {
   guardLogFiles,
   planStdioLogGuard,
 } from './cli/log-rotation.ts';
+import { defaultMachineName, machineIdForKey } from './cli/machine.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
@@ -1664,7 +1673,7 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
     { sessionRegistry, bindingStore, transcriptDiscovery, harness },
     true,
   );
-  return { sessions: [...own, ...external], newPorts };
+  return { sessions: [...own, ...external], newPorts, machine: machineDescriptor() };
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
@@ -2212,6 +2221,7 @@ if (codexHarness) {
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
+  machine: machineDescriptor,
   sessionRegistry,
   bindingStore,
   transcriptDiscovery,
@@ -2286,6 +2296,7 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  machine: machineDescriptor,
   // `remi serve` is session-less and must never run Claude (#1124): a resume there starts a child
   // session daemon with `--resume` through the create-session path (#1129). Every other process
   // resumes in its own.
@@ -2324,6 +2335,7 @@ const hubClientTracker: HubClientTracker | null = serveMode
   : null;
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  machine: machineDescriptor,
   hubMode: serveMode,
   sessionRegistry,
   currentOwnedSession,
@@ -2407,6 +2419,19 @@ const authEnabled = cliAuth ?? configAuth !== false;
 let authenticator: Authenticator | undefined;
 /** Stable machine identity for the hub-owned v2 room. */
 let relayIdentity: UnlockedIdentity | undefined;
+let machineId: string | undefined;
+/** One current snapshot; initialized only with an authenticated per-home identity (#1234). */
+function machineDescriptor(): MachineDescriptor | undefined {
+  if (machineId === undefined) return undefined;
+  return {
+    id: machineId,
+    name: defaultMachineName(),
+    platform: process.platform,
+    remiVersion: REMI_VERSION,
+    harnesses: harnessRegistry.available(),
+    capabilities: DAEMON_CAPABILITIES,
+  };
+}
 const relayTrust = new IdentityStore();
 let hubRelay: HubRelay | undefined;
 const localRelayControl = serveMode
@@ -2479,6 +2504,9 @@ if (authEnabled) {
 
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
   relayIdentity = unlockedIdentity;
+  machineId = await machineIdForKey(
+    new Uint8Array(Buffer.from(unlockedIdentity.publicKeyRaw, 'base64')),
+  );
   serverFingerprint = storedIdentity.fingerprint;
   console.log(
     `Authentication enabled (fingerprint: ${serverFingerprint}, unknown keys require local approval)`,
@@ -2927,6 +2955,7 @@ if (cliDaemonMode) {
         {
           relayUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
           identity: relayIdentity,
+          machine: machineDescriptor,
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,

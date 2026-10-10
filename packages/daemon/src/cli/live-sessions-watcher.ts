@@ -14,9 +14,10 @@
 
 import * as fs from 'node:fs';
 import { createSessionListResponse, errorToString, generateId } from '@remi/shared';
-import type { DiscoverableSession, ProtocolMessage, UUID } from '@remi/shared';
+import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 
 export interface LiveSessionsCollectResult {
+  readonly machine?: MachineDescriptor | undefined;
   readonly sessions: readonly DiscoverableSession[];
   readonly newPorts: readonly number[];
 }
@@ -61,6 +62,7 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
         result.sessions,
         generateId() as UUID,
         result.newPorts,
+        result.machine,
       );
       deps.broadcast(message);
     } catch (err) {

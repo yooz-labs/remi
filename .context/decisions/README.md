@@ -54,6 +54,7 @@ add a row below.
 | [0036](0036-workspaces.md) | (phase A) `create_session_request.workspace` names a repository and optionally a new branch and base; the hub checks the values as text, then with git (no shell, no inherited `GIT_*`), makes the worktree at `<parent>/remi-worktrees/<name>-<branch>` once a port is held, starts the session there and reports the workspace; new branches only, nothing deletes a worktree; `workspaces` is the first capability. (phase B) a daemon's own session-list entry carries `workspace {repository, directory, branch}`, read from git through one resolver shared with phase A (a submodule or separate git dir is its own repository) and served from a cache that never makes the list wait (a stale entry shows once more; an unanswered read keeps the last answer). (phase C) `recent_repositories_request` lists main worktrees from recent session records and up to 20 retained successful hub starts (#1284), most recently used first, under the same capability |
 | [0037](0037-pairing-by-qr-with-terminal-approval.md) | Pairing by QR: `remi pair` shows `remi://pair#` + canonical base64url JSON (machine name, address, full public key, a single-use 16-byte nonce, five-minute expiry, protocol version; strict decode, shared vectors); the phone checks the key before signing and sends `pairingNonce`/`pairingLabel` in `auth_response`; the first verified key claims the nonce and becomes pending, other keys and dead codes get their own errors; a waiting claim is held up to 20 s for the decision; the person approves at the terminal, where the claim's fingerprint is shown, through the same commit `remi authorize` uses; four pending slots are kept for claims, other keys trying a claimed code are named at the question. The QR authorizes nothing |
 | [0038](0038-the-decision-object.md) | The decision object, frozen: it is the `question` message's `Question`; `Question.answerPath` (structured, keystroke, none) says how a phone answer applies and `question_resolved.resolvedBy` (phone, lockscreen, terminal, harness, timeout) what resolved a card, both optional and sent only when known; one resolver sends each card's resolution once (the first wins); `localRender` stays off the wire; `kind` is an open set with no sandbox or trust kinds |
+| [0039](0039-machine-object-on-the-wire.md) | Machine descriptor on hello and lists: existing relay room ID, shared bounded pairing name, connection-scoped version/harnesses/capabilities, session machine IDs, and native alias/pin handoff |
 
 ## By area
 
@@ -63,6 +64,6 @@ another one closed.
 
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
-- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0012, 0013, 0014, 0006
+- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034
 - **Process:** 0007, 0008, 0011
