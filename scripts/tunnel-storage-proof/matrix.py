@@ -67,6 +67,7 @@ def main():
     run_id = uuid.uuid4().hex[:12]
     versions = {}
     images = {}
+    image_pins = {}
     cleanup_errors = []
 
     def interrupted(_signal, _frame):
@@ -175,11 +176,14 @@ def main():
                     # Pin the locally addressable image/index before selecting its platform.
                     # Docker's containerd store can expose a platform configuration digest
                     # via inspect --platform that docker run cannot resolve as an image.
-                    image_id = subprocess.check_output([
-                        "docker", "image", "inspect", "--format", "{{.Id}}", "--", image],
-                        env=environment, text=True, timeout=30).strip()
-                    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
-                        raise RuntimeError("Cached Linux image has no canonical local ID")
+                    if image not in image_pins:
+                        image_id = subprocess.check_output([
+                            "docker", "image", "inspect", "--format", "{{.Id}}", "--", image],
+                            env=environment, text=True, timeout=30).strip()
+                        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                            raise RuntimeError("Cached Linux image has no canonical local ID")
+                        image_pins[image] = image_id
+                    image_id = image_pins[image]
                     image_info = subprocess.check_output([
                         "docker", "image", "inspect", "--platform", docker_platform,
                         "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image_id],
@@ -187,8 +191,11 @@ def main():
                     if (len(image_info) != 3 or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_info[0])
                             or "/".join(image_info[1:]) != docker_platform):
                         raise RuntimeError("Cached Linux image does not match " + docker_platform)
-                    images[architecture] = {"reference": image, "id": image_id,
-                                            "platformImageId": image_info[0], "platform": docker_platform}
+                    selected = {"reference": image, "id": image_id,
+                                "platformImageId": image_info[0], "platform": docker_platform}
+                    if architecture in images and images[architecture] != selected:
+                        raise RuntimeError("Linux platform selection changed during the matrix")
+                    images[architecture] = selected
                     container_name = "remi-storage-proof-" + run_id + "-" + label + "-" + architecture
                     container = {"name": container_name, "cidfile": output / (container_name + ".cid")}
                     run("run-" + label + "-" + target, ["docker", "run", "--rm", "--pull=never",
