@@ -331,6 +331,43 @@ Continue #1170 and this proposal; do not start another tunnel plan or duplicate 
 Paths below are proposed implementation locations, not modules already present.
 Keep each change to one subsystem and about 500 net implementation lines; split it when needed.
 
+The next bounded T0a change extends the existing standalone storage candidate
+under `scripts/tunnel-storage-proof/`; it selects no production helper.
+Its admission gate is fixed before execution: preserve all seven primitive
+controls and pass hidden/credential component refusal before any native open,
+configured credential-directory containment (including custom names, sibling
+prefixes, replacements and renamed directories), captured-root replacement,
+deterministic ancestor/leaf replacement, retained-descriptor revalidation,
+symlink/hardlink and directory/FIFO/socket/device refusal, and the initial
+10 MiB size boundary. All three supported compiled targets must pass on both
+Bun versions with matching source hashes and no cleanup failures.
+Private mutations of the component, credential-path/identity, regular-file,
+link-count, size, name-identity, current-root refresh and retained-root snapshot
+guards must fail their exact named real-filesystem assertions.
+Failed runs remain evidence; they do not relax the gate.
+
+The candidate rejects backup suffix `~`, colon syntax, control and bidirectional
+characters, components over 255 UTF-8 bytes and paths deeper than 64 components.
+Trusted absolute roots are walked from `/` without following symlinks; their
+canonical spelling is supplied by the owned fixture setup, never a client.
+Credential roots are represented by held directory identities plus their
+configured component boundaries, compared with ASCII case folding.
+A rename keeps the identity denied; a replacement at the configured name keeps
+the path denied. The candidate also captures current configured-directory
+identities before admission and lease revalidation to cover actual filesystem
+normalization/non-ASCII case aliases without assuming string collation rules.
+The admission snapshot's descriptors and identities stay held through traversal
+and the resulting file lease; a configured replacement moved under a selected
+ancestor during lookup remains denied, even after its configured name is recreated.
+It inspects directory metadata only; missing/unreadable configured roots refuse.
+Receipts report which actual alias modes the filesystem provided.
+The device control inspects `/dev/null` metadata without reading bytes or
+creating a device; every other content fixture is an owned temporary file.
+These admission checks detect the recorded name replacements, but do not
+establish an atomic snapshot or a validated private copy. Private-copy bounds,
+growth/truncation/mutation, publication/recovery, quotas and transfer authority
+remain separate subsequent gates. No capability or attachment UI is advertised.
+
 | Next PR | Existing code and proposed files | Prerequisite and exit gate |
 |---|---|---|
 | T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
