@@ -379,8 +379,14 @@ private struct ScopeButton: View {
             .contentShape(.rect)
         }
         .buttonStyle(.glass)
-        .tint(selected ? RemiTheme.Color.attention : nil)
+        .overlay {
+            RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
+                .allowsHitTesting(false)
+        }
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityHint(selected ? "Selected session scope" : "Filter sessions to this scope")
     }
 }
 
