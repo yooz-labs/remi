@@ -673,16 +673,33 @@ private struct MacSessionList: View {
     }
 
     private var activeSessions: [RemiSessionSummary] {
-        filteredSessions.filter(\.isLive)
+        filteredSessions.filter(\.isLive).sorted { lhs, rhs in
+            if statusPriority(lhs.status) != statusPriority(rhs.status) {
+                return statusPriority(lhs.status) < statusPriority(rhs.status)
+            }
+            return (lhs.lastActivity ?? "") > (rhs.lastActivity ?? "")
+        }
     }
 
     private var recentSessions: [RemiSessionSummary] {
-        filteredSessions.filter { !$0.isLive }
+        filteredSessions.filter { !$0.isLive }.sorted {
+            ($0.lastActivity ?? "") > ($1.lastActivity ?? "")
+        }
     }
 
     private func sessionRow(_ session: RemiSessionSummary) -> some View {
         MacSessionListRow(session: session, onResume: { onResume(session) })
             .tag(session.id)
+    }
+
+    private func statusPriority(_ status: RemiSessionStatus) -> Int {
+        switch status {
+        case .needsYou: 0
+        case .working: 1
+        case .connecting: 2
+        case .idle: 3
+        case .offline: 4
+        }
     }
 }
 
