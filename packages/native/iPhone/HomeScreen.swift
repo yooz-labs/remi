@@ -291,6 +291,7 @@ private struct ErrorBanner: View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -300,7 +301,6 @@ private struct ErrorBanner: View {
         }
         .padding(RemiTheme.Spacing.m)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -312,6 +312,7 @@ private struct NoticeBanner: View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
             Image(systemName: "info.circle.fill")
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -321,7 +322,6 @@ private struct NoticeBanner: View {
         }
         .padding(RemiTheme.Spacing.m)
         .background(.blue.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
-        .accessibilityElement(children: .combine)
     }
 }
 
