@@ -546,8 +546,8 @@ private struct PhoneSessionWorkspace: Identifiable {
     var priority: Int { sessions.first?.displayPriority ?? .max }
     var status: RemiSessionStatus { sessions.first?.status ?? .offline }
     var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
-    var activeCount: Int { sessions.count { !$0.canResume } }
-    var storedCount: Int { sessions.count { $0.canResume } }
+    var activeCount: Int { sessions.count { $0.isLive } }
+    var storedCount: Int { sessions.count { !$0.isLive } }
 }
 
 private extension RemiSessionSummary {

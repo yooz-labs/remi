@@ -89,7 +89,7 @@ struct SessionScreen: View {
 
             Divider()
 
-            if session.canResume && !session.canTerminate {
+            if !session.isLive {
                 Label("Finished conversation · Read only", systemImage: "checkmark.circle")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)

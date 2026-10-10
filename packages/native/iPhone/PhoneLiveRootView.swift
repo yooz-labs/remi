@@ -153,6 +153,7 @@ struct PhoneLiveRootView: View {
                         : .offline,
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
+                    isLive: session.source == "daemon",
                     canTerminate: session.source == "daemon",
                     canResume: machine.endpoint.relayPin == nil && session.source != "daemon" && session.canResume == true,
                     isResuming: store.resumingSessions.contains(ResumeSessionKey(
