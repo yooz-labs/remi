@@ -83,6 +83,39 @@ private struct ComposerPreview: View {
     }
 }
 
+private struct SessionInteractionGallery: View {
+    @State private var draft = "Review the next change"
+
+    var body: some View {
+        VStack(spacing: RemiTheme.Spacing.l) {
+            RemiSessionInteractionBar(
+                draft: $draft,
+                state: .liveMain(promptWaiting: false),
+                onSend: { _ in },
+                onInterrupt: {}
+            )
+            RemiSessionInteractionBar(
+                draft: $draft,
+                state: .liveMain(promptWaiting: true),
+                onSend: { _ in },
+                onInterrupt: {}
+            )
+            RemiSessionInteractionBar(
+                draft: $draft,
+                state: .liveSubagent,
+                onSend: { _ in },
+                onInterrupt: {}
+            )
+            RemiSessionInteractionBar(
+                draft: $draft,
+                state: .finished,
+                onSend: { _ in },
+                onInterrupt: {}
+            )
+        }
+    }
+}
+
 #Preview("Question Cards · Light") {
     QuestionCardGallery().preferredColorScheme(.light)
 }
@@ -105,6 +138,18 @@ private struct ComposerPreview: View {
 
 #Preview("Components · Accessibility") {
     SupportingComponentsGallery().environment(\.dynamicTypeSize, .accessibility5)
+}
+
+#Preview("Session Interaction · Light") {
+    SessionInteractionGallery().preferredColorScheme(.light)
+}
+
+#Preview("Session Interaction · Dark") {
+    SessionInteractionGallery().preferredColorScheme(.dark)
+}
+
+#Preview("Session Interaction · Accessibility") {
+    SessionInteractionGallery().environment(\.dynamicTypeSize, .accessibility5)
 }
 
 #Preview("Generic decision") {

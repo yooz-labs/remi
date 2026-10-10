@@ -140,34 +140,13 @@ struct SessionScreen: View {
                 }
             }
 
-            Divider()
-
-            if !session.isLive {
-                Label("Finished conversation · Read only", systemImage: "checkmark.circle")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .padding(.horizontal, RemiTheme.Spacing.m)
-            } else if selectedViewID.isEmpty {
-                RemiComposer(
-                    text: $draft,
-                    promptWaiting: !questions.isEmpty,
-                    onSend: {
-                        let content = draft
-                        draft = ""
-                        onSend(content)
-                    },
-                    onInterrupt: {}
-                )
-                .padding(RemiTheme.Spacing.s)
-            } else {
-                Label("Subagent conversations are read-only", systemImage: "eye")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .padding(.horizontal, RemiTheme.Spacing.m)
-            }
         }
+        .remiSessionInteractionBar(
+            draft: $draft,
+            state: interactionState,
+            onSend: onSend,
+            onInterrupt: {}
+        )
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -241,6 +220,12 @@ struct SessionScreen: View {
 
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+
+    private var interactionState: RemiSessionInteractionState {
+        if !session.isLive { return .finished }
+        if !selectedViewID.isEmpty { return .liveSubagent }
+        return .liveMain(promptWaiting: !questions.isEmpty)
     }
 
     private var searchQueryBinding: Binding<String> {

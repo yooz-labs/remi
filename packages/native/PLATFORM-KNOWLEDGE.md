@@ -58,6 +58,8 @@ SwiftUI's standard navigation, toolbars, sheets, controls, and materials adopt t
 
 Remi's visual rule remains: glass belongs on important interactive cards and controls; repeated session and machine rows stay lightweight. Spacious layout means clear hierarchy and touch targets, not decorative empty areas. Every glass treatment must still pass light/dark contrast, Reduce Transparency, Reduce Motion, VoiceOver, and the app's supported Dynamic Type range.
 
+The iPhone and Mac conversation screens share one session interaction bar for live main conversations, read-only subagent conversations, and finished sessions. It is pinned with a vertical safe-area inset, which keeps transcript content and keyboard avoidance independent from the bar's height, and uses the system's soft bottom scroll-edge transition instead of a manual divider.
+
 Both app roots currently cap Dynamic Type at Accessibility 2 as a deliberate legibility/layout tradeoff. That is the shipping boundary, not full support for every system size. Revisit the global cap by testing and repairing individual layouts before claiming support through Accessibility 5; do not silently lower it further.
 
 ## iOS/macOS 27 watchlist
