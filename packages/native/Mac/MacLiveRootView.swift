@@ -867,7 +867,9 @@ private struct MacWorkspaceGroupLabel: View {
     }
 
     private var attentionLabel: String {
-        workspace.questionCount == 1 ? "1 needs attention" : "\(workspace.questionCount) need attention"
+        workspace.questionCount == 1
+            ? "1 question needs attention"
+            : "\(workspace.questionCount) questions need attention"
     }
 
     private var accessibilityLabel: String {
