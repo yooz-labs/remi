@@ -1,8 +1,11 @@
+import AppKit
 import RemiKit
 import RemiUI
 import SwiftUI
 
 struct MacLiveNeedsYouMenu: View {
+    @Environment(\.openWindow) private var openWindow
+    @State private var notificationRouter = MacNotificationRouter.shared
     let store: MachineStore
 
     var body: some View {
@@ -22,11 +25,12 @@ struct MacLiveNeedsYouMenu: View {
                 ScrollView {
                     LazyVStack(spacing: RemiTheme.Spacing.s) {
                         ForEach(items) { item in
-                            RemiQuestionCard(
+                            MacNeedsYouQuestionItem(
                                 model: item.model,
                                 onAnswer: { answer(item, value: $0) },
                                 onSubmit: { submit(item, selections: $0) },
-                                onCancel: { cancel(item) }
+                                onCancel: { cancel(item) },
+                                onOpen: { open(item.destination) }
                             )
                         }
                     }
@@ -34,6 +38,9 @@ struct MacLiveNeedsYouMenu: View {
                 }
                 .scrollIndicators(.visible)
             }
+
+            Divider()
+            MacNeedsYouFooter(onOpen: { open(nil) })
         }
         .frame(minWidth: 380, idealWidth: 420, maxWidth: 460)
         .frame(minHeight: 190, idealHeight: items.isEmpty ? 220 : 480, maxHeight: 620)
@@ -83,15 +90,31 @@ struct MacLiveNeedsYouMenu: View {
             cancel: true
         )
     }
+
+    private func open(_ destination: RemiNavigationDestination?) {
+        notificationRouter.destination = destination
+        openWindow(id: "main")
+        NSApp.activate()
+    }
 }
 
 private struct MacPendingQuestion: Identifiable {
     let model: RemiQuestionCardModel
     let sessionID: String
     let questionID: String
+    let agentID: String?
     let claudeSessionID: String?
 
     var id: String { model.id }
+
+    var destination: RemiNavigationDestination {
+        RemiNavigationDestination(
+            machineID: model.machineID,
+            sessionID: sessionID,
+            questionID: questionID,
+            agentID: agentID
+        )
+    }
 
     init(machine: MachineState, message: QuestionMessage) {
         let question = message.question
@@ -147,6 +170,7 @@ private struct MacPendingQuestion: Identifiable {
         )
         sessionID = message.sessionId
         questionID = question.id
+        agentID = question.agentId
         claudeSessionID = message.claudeSessionId
     }
 
@@ -156,6 +180,30 @@ private struct MacPendingQuestion: Identifiable {
         case .some(.keystroke): .keystroke
         case .some(.none): RemiAnswerPath.none
         case nil: nil
+        }
+    }
+}
+
+private struct MacNeedsYouQuestionItem: View {
+    let model: RemiQuestionCardModel
+    let onAnswer: (String) -> Void
+    let onSubmit: ([RemiQuestionStepSelection]) -> Void
+    let onCancel: () -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xs) {
+            RemiQuestionCard(
+                model: model,
+                onAnswer: onAnswer,
+                onSubmit: onSubmit,
+                onCancel: onCancel
+            )
+
+            Button("Open conversation", systemImage: "arrow.up.forward.app", action: onOpen)
+                .buttonStyle(.glass)
+                .accessibilityLabel("Open \(model.sessionName) conversation")
+                .accessibilityHint("Opens this exact request in the Remi window")
         }
     }
 }
@@ -194,7 +242,9 @@ private struct MacNeedsYouHeader: View {
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .foregroundStyle(RemiTheme.Color.attentionInk)
                     .background(RemiTheme.Color.attention, in: Capsule())
-                    .accessibilityLabel("\(questionCount) pending requests")
+                    .accessibilityLabel(
+                        questionCount == 1 ? "1 pending request" : "\(questionCount) pending requests"
+                    )
             }
         }
         .padding(RemiTheme.Spacing.m)
@@ -205,6 +255,21 @@ private struct MacNeedsYouHeader: View {
         let requestLabel = questionCount == 1 ? "request" : "requests"
         let machineLabel = machineCount == 1 ? "machine" : "machines"
         return "\(questionCount) \(requestLabel) across \(machineCount) \(machineLabel)"
+    }
+}
+
+private struct MacNeedsYouFooter: View {
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button("Open Remi", systemImage: "macwindow", action: onOpen)
+            .buttonStyle(.plain)
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+            .help("Open the Remi window (Shift-Command-O)")
+            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+            .padding(.horizontal, RemiTheme.Spacing.m)
+            .accessibilityHint("Opens the main Remi window")
     }
 }
 
