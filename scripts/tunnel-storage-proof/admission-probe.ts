@@ -9,7 +9,7 @@ export async function admissionProbe(
   temporary: string,
   nativeOpen: OpenAt,
   mkfifo: (pathname: string) => number,
-): Promise<string[]> {
+): Promise<{ checks: string[]; aliases: Record<string, boolean> }> {
   const area = path.join(fs.realpathSync(temporary), 'admission');
   const project = path.join(area, 'project');
   fs.mkdirSync(project, { recursive: true, mode: 0o700 });
@@ -27,16 +27,19 @@ export async function admissionProbe(
     return filename;
   };
   const checks: string[] = [];
+  const aliases: Record<string, boolean> = {};
   let server: net.Server | undefined;
   const leases: ReturnType<FileAdmission['open']>[] = [];
   try {
     const protectedPath = path.join(project, 'custom-config');
     put('custom-config/inner/data.txt');
+    put('secrét-config/inner/data.txt');
     put('custom-config-other/data.txt');
     put('custom-config-other/inner/data.txt');
     for (const directory of ['.remi', '.claude', '.codex']) put(`${directory}/data.txt`);
     const protectedRoots = [
       protectedPath,
+      path.join(project, 'secrét-config'),
       ...['.remi', '.claude', '.codex'].map((p) => path.join(project, p)),
     ].map((p) => capture(p));
     let opens = 0;
@@ -116,11 +119,63 @@ export async function admissionProbe(
     admit(['custom-config-other', 'data.txt']).close(); // Component boundary, not string prefix.
     fs.renameSync(protectedPath, path.join(project, 'renamed-config'));
     put('custom-config/inner/data.txt', 'replacement configuration');
+    opens = 0;
     assert.equal(
       admission.open(root, ['custom-config', 'inner', 'data.txt']),
       null,
       'credential path replacement refusal',
     );
+    assert.equal(opens, 0, 'configured credential path refused before open');
+    const alias = path.join(project, 'CUSTOM-CONFIG');
+    aliases['asciiCase'] = fs.existsSync(alias);
+    if (aliases['asciiCase']) {
+      assert.equal(
+        fs.statSync(alias, { bigint: true }).ino,
+        fs.statSync(protectedPath, { bigint: true }).ino,
+        'actual filesystem case alias',
+      );
+    } else {
+      put('CUSTOM-CONFIG/inner/data.txt', 'case-insensitive policy fixture');
+    }
+    opens = 0;
+    assert.equal(
+      admission.open(root, ['CUSTOM-CONFIG', 'inner', 'data.txt']),
+      null,
+      'credential replacement case alias refusal',
+    );
+    assert.equal(opens, 0, 'credential case alias refused before open');
+    assert.equal(
+      admission.open(capture(path.join(alias, 'inner')), ['data.txt']),
+      null,
+      'credential root case alias refusal',
+    );
+    const unicodePath = path.join(project, 'secrét-config');
+    fs.renameSync(unicodePath, path.join(project, 'unicode-kept'));
+    put('secrét-config/inner/data.txt', 'replacement Unicode configuration');
+    for (const [kind, spelling] of [
+      ['normalization', 'secre\u0301t-config'],
+      ['unicodeCase', 'SECRÉT-CONFIG'],
+    ]) {
+      assert(kind && spelling);
+      const pathname = path.join(project, spelling);
+      aliases[kind] = fs.existsSync(pathname);
+      if (!aliases[kind]) continue; // No such alias on this filesystem; do not claim one.
+      assert.equal(
+        fs.statSync(pathname, { bigint: true }).ino,
+        fs.statSync(unicodePath, { bigint: true }).ino,
+        'actual Unicode filesystem alias',
+      );
+      assert.equal(
+        admission.open(root, [spelling, 'inner', 'data.txt']),
+        null,
+        'current credential directory identity refusal',
+      );
+      assert.equal(
+        admission.open(capture(path.join(pathname, 'inner')), ['data.txt']),
+        null,
+        'current credential root identity refusal',
+      );
+    }
     assert.equal(
       admission.open(root, ['renamed-config', 'inner', 'data.txt']),
       null,
@@ -190,6 +245,12 @@ export async function admissionProbe(
     fs.linkSync(path.join(project, 'safe.txt'), path.join(project, 'late-hardlink'));
     assert.equal(linkLease.isCurrent(), false);
     linkLease.close();
+    const configurationLease = admit(['leaf-race.txt']);
+    fs.renameSync(unicodePath, path.join(project, 'configuration-unavailable'));
+    assert.equal(configurationLease.isCurrent(), false, 'missing configured root lease refusal');
+    assert.equal(admission.open(root, ['leaf-race.txt']), null, 'missing configured root refusal');
+    fs.renameSync(path.join(project, 'configuration-unavailable'), unicodePath);
+    configurationLease.close();
     checks.push('open descriptor lease revalidation');
 
     fs.mkdirSync(path.join(project, 'directory'));
@@ -235,7 +296,7 @@ export async function admissionProbe(
     assert.equal(admission.open(root, ['leaf-race.txt']), null);
     rootLease.close();
     checks.push('captured project root replacement refusal');
-    return checks;
+    return { checks, aliases };
   } finally {
     if (server?.listening)
       await new Promise<void>((resolve, reject) => {

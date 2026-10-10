@@ -20,6 +20,11 @@ the initial 10 MiB boundary, and captured-root replacement.
 The complete spelling is checked before any native open. Credential directories
 are denied both by component-aware configured paths and held device/inode
 identities, so custom names, replacements and renamed directories are covered.
+Current configured-directory identities are refreshed through real descriptor
+captures before admission and lease revalidation. This covers observed filesystem
+normalization/case aliases to replacement inodes; missing configured roots refuse.
+The receipt reports actual alias modes, rather than assuming every filesystem
+provides them. ASCII case aliases also refuse lexically before native opens.
 The corpus confirms a sibling prefix remains readable.
 Replacement checkpoints run after actual native opens and perform real renames;
 they do not substitute filesystem calls or metadata.
@@ -90,10 +95,11 @@ and [Bun FFI](https://bun.sh/docs/runtime/ffi).
 
 All six supported compiled executions passed the sixteen controls on Bun 1.3.11
 and 1.4.2: Apple Silicon Mac natively, Linux ARM64 in Docker's VM, Linux x64 under
-Docker Desktop emulation. Nine private guard variants on compiled Mac ARM each
-failed their expected assertion on both Bun gates (18/18): hidden components,
+Docker Desktop emulation. Eleven private guard variants on compiled Mac ARM each
+failed their expected assertion on both Bun gates (22/22): hidden components,
 credential path, credential directory/root identity, regular-file type,
-link count, initial size, name identity and no-follow flags. Mutation execution
+link count, initial size, name identity, no-follow flags, credential case folding
+and current configured-directory refresh. Mutation execution
 on Linux was not measured. This proves those controls detect the named guard
 removals; it does not prove every race or private-copy mutation is detected.
 
@@ -103,4 +109,10 @@ baseline reproduced that EEXIST failure; separating the two directories passed.
 The checked-in matrix already keeps them separate. A later mutation-selector
 ambiguity also stopped the private runner; neither failure counted as a detected
 mutation. Failed receipts remain under the private `remi-1170-admission-mutations`
-20261010 `-a`/`-b`/`-c` directories; the complete receipt is in `-d`.
+20261010 `-a`/`-b`/`-c` directories. The earlier complete `-d` receipt has nine
+variants; the review correction adds actual
+replacement case/normalization aliases and the current-directory refresh guard
+in `-e`/`-f`. The final `-f/combined-receipt.json` contains 22 independently
+verified named failures. It excludes the initial case-fold variant whose assertion
+witness did not match; removing both folds then caught the intended alias control.
+The ASCII-only fix alone was not adopted.

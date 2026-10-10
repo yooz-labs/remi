@@ -350,8 +350,13 @@ characters, components over 255 UTF-8 bytes and paths deeper than 64 components.
 Trusted absolute roots are walked from `/` without following symlinks; their
 canonical spelling is supplied by the owned fixture setup, never a client.
 Credential roots are represented by held directory identities plus their
-configured component boundaries. A rename keeps the identity denied; a
-replacement at the configured name keeps the path denied.
+configured component boundaries, compared with ASCII case folding.
+A rename keeps the identity denied; a replacement at the configured name keeps
+the path denied. The candidate also captures current configured-directory
+identities before admission and lease revalidation to cover actual filesystem
+normalization/non-ASCII case aliases without assuming string collation rules.
+It inspects directory metadata only; missing/unreadable configured roots refuse.
+Receipts report which actual alias modes the filesystem provided.
 The device control inspects `/dev/null` metadata without reading bytes or
 creating a device; every other content fixture is an owned temporary file.
 These admission checks detect the recorded name replacements, but do not

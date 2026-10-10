@@ -152,19 +152,18 @@ try {
   assert.equal(readBeneath(fd, ['final']), null);
   fs.unlinkSync(path.join(root, 'private', 'another-link'));
   record('multiply linked file refusal');
-  checks.push(
-    ...(await admissionProbe(
-      root,
-      (directory, component, flags) => {
-        const encoded = name(component);
-        return lib.symbols.openat(directory, ptr(encoded), flags);
-      },
-      (pathname) => {
-        const encoded = name(pathname);
-        return lib.symbols.mkfifo(ptr(encoded), 0o600);
-      },
-    )),
+  const admissionResult = await admissionProbe(
+    root,
+    (directory, component, flags) => {
+      const encoded = name(component);
+      return lib.symbols.openat(directory, ptr(encoded), flags);
+    },
+    (pathname) => {
+      const encoded = name(pathname);
+      return lib.symbols.mkfifo(ptr(encoded), 0o600);
+    },
   );
+  checks.push(...admissionResult.checks);
   fs.renameSync(path.join(root, 'private'), path.join(root, 'moved'));
   fs.symlinkSync(path.join(root, 'outside'), path.join(root, 'private'));
   assert.equal(lib.symbols.unlinkat(fd, ptr(final), 0), 0, 'captured directory unlink');
@@ -177,6 +176,7 @@ try {
       platform: process.platform,
       arch: process.arch,
       checks,
+      admissionAliases: admissionResult.aliases,
       scope:
         'storage primitives and admission candidate only; no transfer protocol, authority, decoder, quota or production integration',
     }),

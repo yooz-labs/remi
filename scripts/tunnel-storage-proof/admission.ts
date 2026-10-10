@@ -9,6 +9,7 @@ const DIRECTORY = C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW;
 const LEAF = C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK;
 const MAX_BYTES = 10n * 1024n * 1024n;
 const identity = (stat: fs.BigIntStats) => `${stat.dev}:${stat.ino}`;
+const asciiLower = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 const credentialNames = new Set([
   'node_modules',
   'id_rsa',
@@ -21,7 +22,7 @@ const unsafeText = /[/:\\\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u20
 
 function allowed(part: string): boolean {
   if (typeof part !== 'string' || !part || unsafeText.test(part)) return false;
-  const folded = part.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const folded = asciiLower(part);
   return (
     !folded.startsWith('.') &&
     !folded.endsWith('~') &&
@@ -154,11 +155,33 @@ export class FileAdmission {
   }
 
   private protectedPath(pathname: string): boolean {
-    return this.protectedRoots.some(
-      (root) =>
-        pathname === root.pathname ||
-        pathname.startsWith(root.pathname === '/' ? '/' : `${root.pathname}/`),
-    );
+    // #1170: a replacement inode must remain denied under Mac spelling aliases.
+    const candidate = asciiLower(pathname);
+    return this.protectedRoots.some((root) => {
+      const known = asciiLower(root.pathname);
+      return candidate === known || candidate.startsWith(known === '/' ? '/' : `${known}/`);
+    });
+  }
+
+  private protectedDirectory(root: DirectoryRoot, entries: readonly Entry[]): boolean {
+    // Original descriptors pin renamed roots. Fresh descriptors also pin replacements
+    // reached through filesystem normalization/case aliases; spelling is not authority.
+    const current: DirectoryRoot[] = [];
+    const identities = new Set(this.protectedIdentities);
+    try {
+      for (const known of this.protectedRoots) {
+        const captured = DirectoryRoot.capture(known.pathname, this.openAt);
+        if (!captured) return true;
+        current.push(captured);
+        identities.add(captured.identity);
+      }
+      return (
+        root.contains(identities) ||
+        entries.some((entry) => entry.stat.isDirectory() && identities.has(identity(entry.stat)))
+      );
+    } finally {
+      for (const captured of current.reverse()) captured.close();
+    }
   }
 
   open(
@@ -173,7 +196,8 @@ export class FileAdmission {
       this.protectedPath(pathname) ||
       root.contains(this.protectedIdentities) ||
       this.protectedRoots.some((item) => !item.active) ||
-      !root.isCurrent()
+      !root.isCurrent() ||
+      this.protectedDirectory(root, [])
     )
       return null;
     const entries: Entry[] = [];
@@ -208,7 +232,8 @@ export class FileAdmission {
         () =>
           this.protectedRoots.every((item) => item.active) &&
           root.isCurrent() &&
-          namesCurrent(entries, this.openAt),
+          namesCurrent(entries, this.openAt) &&
+          !this.protectedDirectory(root, entries),
       );
       if (!result.isCurrent()) return null;
       admitted = true;
