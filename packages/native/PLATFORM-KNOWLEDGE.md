@@ -32,7 +32,7 @@ Apple's iOS 27 Foundation Models additions include newer model capabilities and 
 
 ## Notifications and background execution
 
-The iPhone and Mac coordinators currently schedule immediate local notifications only after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. A tap decodes `RemiNavigationDestination`, selects the named machine and session, and may select the named agent conversation. The question ID is carried but is not currently consumed to focus or verify the question. A payload that cannot decode or names an unknown machine/session does not guess a destination; `questionID` and `agentID` are optional and their absence does not prevent routing.
+The iPhone and Mac coordinators currently schedule immediate local notifications only after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. On iPhone, a tap decodes `RemiNavigationDestination`, selects the named machine and session, and may select the named agent conversation. When the matching question is present, `SessionScreen` places that card before transcript history, scrolls to it, and moves VoiceOver focus to it. The focus survives an answered-on-another-device update while the short-lived resolved card remains, then clears when the question disappears. A payload that cannot decode or names an unknown machine/session does not guess a destination; `questionID` and `agentID` are optional and their absence does not prevent routing. Mac notification-focus behavior remains separately unverified.
 
 This does not wake a terminated app and is not remote push. Background notifications are low priority and are not guaranteed by the system, so they cannot be the sole transport for an urgent approval. A Notification Service Extension may decrypt or rewrite notification content before delivery, but it cannot dynamically redefine registered action titles and its work is time-limited.
 
@@ -78,7 +78,7 @@ Before declaring an Apple-platform capability complete:
 - Trace the user event to the real caller and transport; do not use this document as evidence that code ships.
 - Check the API's runtime availability and user authorization state.
 - Verify failure, cancellation, expiry, and resolution on another device.
-- Confirm navigation lands on the exact machine and session, not merely the app's root; separately verify question focus once that capability exists.
+- Confirm navigation lands on the exact machine, session, optional subagent conversation, and question card rather than merely the app's root.
 - Test through the documented Accessibility 2 shipping cap. Treat raising or removing the global cap as accessibility work that requires layout verification, not as a documentation-only claim.
 - Record which checks ran on simulator, which ran on a physical device, and which require owner provisioning.
 - Re-run this research when Xcode, the deployment target, or the Foundation Models system model changes.
