@@ -19,6 +19,7 @@ ROOT_PACKAGE = {"version": "0.7.17-dev.1", "scripts": {"test": "bun test",
                 "devDependencies": {"typescript": "5.7.0"}}
 WEB = {"web", "integration", "test", "relay"}
 METADATA = {"lint", "root", "notices", "test"}
+NATIVE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts"
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -64,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write("package.json", json.dumps(ROOT_PACKAGE))
         write("packages/daemon/src/relay/hub.ts", "export const initial = true;\n")
         write("docs/PROVISIONING.md", "# initial executable bootstrap fixture\n")
+        write(NATIVE_FIXTURE, "export const owned = true;\n")
         for name, text in WORKFLOWS.items():
             write(f".github/workflows/{name}", text)
         write(".github/actions/ci-scope/action.yml", ACTION)
@@ -79,6 +81,8 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("packages/native/Mac/Main.swift", "import SwiftUI\n", set()),
             ("packages/native/Mac/Assets.xcassets/Contents.json", "{}", {"lint"}),
             ("packages/native/RemiKit/Tests/Integration/relay-fixture.ts", "export {};", gates),
+            (NATIVE_FIXTURE, "export const changed = true;", {"lint"}),
+            ("packages/native/RemiKit/Tests/Integration/secure-push-neighbor.ts", "export {};", gates),
             ("scripts/tunnel-storage-proof/probe.ts", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.tsx", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.mts", "export {};", {"lint"}),
@@ -128,6 +132,55 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (path, expected, result)
             count += 1
+        # Real references in every nonnative scan domain remove the exact-path exemption.
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling",
+                          "packages/web", "packages/macos", "tests", "scripts",
+                          ".github/workflows", ".github/actions"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            if directory == ".github/workflows":
+                write(f"{directory}/consumer.yml", "name: Owned consumer\non: [push]\njobs:\n  fixture:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun " + NATIVE_FIXTURE + "\n")
+            elif directory == ".github/actions":
+                write(f"{directory}/consumer/action.yml", "name: Owned consumer\ndescription: Owned fixture consumer\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: bun " + NATIVE_FIXTURE + "\n")
+            else:
+                write(f"{directory}/consumer.ts", "import 'secure-push-fixture';")
+            consumer_base = commit()
+            write(NATIVE_FIXTURE, "export const changed = true;")
+            result = classify(consumer_base, commit())
+            assert selected(result) == gates and result["reason"].startswith("Native fixture reference")
+            count += 1
+        for context in ("new-head", "target-base-only", "removed-head"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            write("scripts/consumer.ts", "import 'secure-push-fixture';")
+            consumer_base = commit()
+            if context != "removed-head":
+                git("reset", "--hard", base)
+            if context == "new-head":
+                write("scripts/consumer.ts", "import 'secure-push-fixture';")
+            elif context == "removed-head":
+                Path("scripts/consumer.ts").unlink()
+            write(NATIVE_FIXTURE, "export const changed = true;")
+            result = classify(base if context == "new-head" else consumer_base, commit())
+            assert selected(result) == gates and result["reason"].startswith("Native fixture reference")
+            count += 1
+        for destination, expected in ((None, {"lint"}), ("docs/moved-fixture.md", {"lint"}),
+                                      ("packages/native/RemiKit/Tests/Integration/renamed-fixture.ts", gates)):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            if destination:
+                Path(NATIVE_FIXTURE).rename(destination)
+            else:
+                Path(NATIVE_FIXTURE).unlink()
+            assert selected(classify(base, commit())) == expected
+            count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(NATIVE_FIXTURE, "export const changed = true;")
+        scan_head = commit()
+        git("config", "grep.threads", "not-a-number")
+        try:
+            result = classify(base, scan_head)
+            assert selected(result) == gates and result["reason"].startswith("Native fixture reference")
+            count += 1
+        finally:
+            git("config", "--unset", "grep.threads")
         for field, expected in [("version", METADATA), ("build-targets", METADATA),
                                 ("dependencies", gates), ("test-script", gates),
                                 ("malformed", gates)]:

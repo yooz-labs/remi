@@ -14,6 +14,7 @@ BUILD_SCRIPTS = {
     "build:linux-x64", "build:all",
 }
 PROOFS = ("scripts/tunnel-storage-proof/", "scripts/tunnel-decoder-proof/")
+NATIVE_SECURE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts"
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -91,6 +92,19 @@ def classify(base, head):
                 if path.endswith("package.json") or "tsconfig" in path or "bunfig" in path:
                     return all_gates("Web dependency or tool configuration changed")
             elif path.startswith("packages/native/"):
+                if path == NATIVE_SECURE_FIXTURE:
+                    # Only the Swift integration suite consumes this exact standalone helper.
+                    # A nonnative reference at either end removes the exemption, even if removed.
+                    consumers = subprocess.run(
+                        ["git", "grep", "-F", "-q", "-e", "secure-push-fixture", base, head, "--",
+                         "packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                         "packages/macos", "tests", "scripts", ".github/workflows", ".github/actions"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    )
+                    if consumers.returncode != 1:
+                        return all_gates("Native fixture reference or scan failure; running all gates")
+                    gates["lint"] = True
+                    continue
                 # Swift/Xcode acceptance is separate; JSON is still covered by root Biome.
                 if not path.endswith((".swift", ".plist", ".pbxproj", ".xcscheme", ".entitlements",
                                       ".xcworkspacedata", ".xcsettings", ".json", ".png", ".md",

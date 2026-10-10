@@ -1154,7 +1154,7 @@ private struct MacAddMachineHeader: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.m))
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control))
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                 Text("Add machine")
@@ -1388,7 +1388,7 @@ private struct MacNewSessionHeader: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.m))
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control))
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                 Text("New session")

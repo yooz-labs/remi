@@ -62,6 +62,11 @@ const { MAX_APNS_PAYLOAD_BYTES, MAX_PUSH_SUBMIT_BYTES } = await import(
 const caCertificatePath = join(own, 'tls-ca.pem');
 const faultPath = join(own, 'transport-control.json');
 const receiptPath = join(own, 'transport-receipts.json');
+// Lifecycle probes inspect the real transport before the first native answer.
+fs.writeFileSync(receiptPath, JSON.stringify({ nativeForwards: 0, lostResults: 0 }), {
+  mode: 0o600,
+  flag: 'wx',
+});
 const out = (message: object) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const tunnels = new Set<Duplex>();
 // Owned transport fault only: discard upstream bytes after the real client

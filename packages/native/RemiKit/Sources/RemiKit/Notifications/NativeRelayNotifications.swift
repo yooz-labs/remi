@@ -93,7 +93,8 @@ public final class NativeRelayNotifications {
     /// The actual cold action caller can run against UUID Keychain/SQLite state.
     /// This entry point never reads configured app groups or standard preferences.
     public init(ownedPushStore: RemiPushStore, ownedIdentityStore: ClientIdentityStore,
-                defaultsSuite: String, ownedSession: URLSession? = nil) throws {
+                defaultsSuite: String, ownedSession: URLSession? = nil,
+                ownedForegroundEndpoints: [MachineEndpoint]? = nil) throws {
         let prefix = "live.yooz.remi.tests.notifications."
         guard ownedPushStore.isOwnedTestStore,
               ownedIdentityStore.isOwnedTestIdentity(for: ownedPushStore),
@@ -109,6 +110,19 @@ public final class NativeRelayNotifications {
         intents = Set((defaults.stringArray(forKey: intentKey) ?? []).prefix(128))
         do { _ = try ownedIdentityStore.loadCurrent() }
         catch { startupError = "The owned device identity is unavailable." }
+        if let ownedForegroundEndpoints {
+            guard let identity = try ownedIdentityStore.loadCurrent(),
+                  ownedForegroundEndpoints.allSatisfy({ endpoint in
+                      if let pin = endpoint.relayPin { return URLComponents(string: pin.relayURL)?.host == "127.0.0.1" }
+                      return endpoint.host == "127.0.0.1"
+                  })
+            else { throw RemiPushError.unavailable }
+            let current = MachineStore(endpoints: ownedForegroundEndpoints, identity: identity,
+                clientVersion: "owned-foreground-lifecycle", clientId: UUID().uuidString.lowercased(),
+                pushStore: ownedPushStore)
+            if let ownedSession { current.useOwnedTestSession(ownedSession) }
+            store = current
+        }
     }
     #endif
 
@@ -116,7 +130,8 @@ public final class NativeRelayNotifications {
     /// strict read; creation and legacy migration are confined to this boundary.
     public func activate() {
         #if DEBUG
-        guard !ownedTesting else { return }
+        // Cold owned callers still cannot bootstrap identity or OS configuration.
+        guard !ownedTesting || store != nil else { return }
         #endif
         guard !foreground else { return }
         foreground = true
@@ -172,9 +187,15 @@ public final class NativeRelayNotifications {
 
     /// Transient inactive scenes (including the permission dialog) retain the
     /// request. Background entry releases every bounded OS continuation.
-    public func background() {
+    public func background(suspendForegroundConnections: Bool = true) {
         foreground = false
         lifecycle = UUID()
+        // #1385: the phone relies on bounded push actions while idle. The Mac
+        // explicitly retains its continuous menu-bar monitoring instead.
+        if suspendForegroundConnections, started {
+            started = false
+            store?.suspendForegroundConnections()
+        }
         cancelEnable()
         tokenTask?.cancel(); tokenTask = nil
         finishPermission(false)
@@ -420,6 +441,9 @@ public final class NativeRelayNotifications {
         store.start()
     }
     private func registerWithAPNs() {
+        #if DEBUG
+        guard !ownedTesting else { return }
+        #endif
         #if os(iOS)
         UIApplication.shared.registerForRemoteNotifications()
         #elseif os(macOS)
