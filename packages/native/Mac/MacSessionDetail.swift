@@ -13,6 +13,7 @@ struct MacSessionDetail: View {
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
     let onSend: (String) -> Void
+    let onResume: (() -> Void)?
     let onTerminate: () -> Void
 
     @State private var draft = ""
@@ -34,6 +35,7 @@ struct MacSessionDetail: View {
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) -> Void = { _ in },
+        onResume: (() -> Void)? = nil,
         onTerminate: @escaping () -> Void = {}
     ) {
         self.session = session
@@ -48,6 +50,7 @@ struct MacSessionDetail: View {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onSend = onSend
+        self.onResume = onResume
         self.onTerminate = onTerminate
     }
 
@@ -55,6 +58,7 @@ struct MacSessionDetail: View {
         VStack(spacing: 0) {
             MacSessionToolbarHeader(
                 session: session,
+                onResume: onResume,
                 onTerminate: { confirmingTermination = true }
             )
             if !views.isEmpty {
@@ -99,7 +103,13 @@ struct MacSessionDetail: View {
             }
 
             Divider()
-            if selectedViewID.isEmpty {
+            if !session.isLive {
+                Label("Finished conversation · Read only", systemImage: "checkmark.circle")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                    .padding(.horizontal, RemiTheme.Spacing.m)
+            } else if selectedViewID.isEmpty {
                 RemiComposer(text: $draft, promptWaiting: !questions.isEmpty, onSend: {
                     let content = draft
                     draft = ""
@@ -318,6 +328,7 @@ private struct MacConversationEmptyState: View {
 private struct MacSessionToolbarHeader: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
+    let onResume: (() -> Void)?
     let onTerminate: () -> Void
 
     var body: some View {
@@ -353,6 +364,18 @@ private struct MacSessionToolbarHeader: View {
 
             HStack(spacing: RemiTheme.Spacing.s) {
                 RemiStatusBadge(status: session.status)
+                if let onResume {
+                    Button(action: onResume) {
+                        if session.isResuming {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Resume", systemImage: "play.fill")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(session.isResuming)
+                    .help("Resume this session")
+                }
                 if session.canTerminate {
                     Menu("Session actions", systemImage: "ellipsis.circle") {
                         Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
