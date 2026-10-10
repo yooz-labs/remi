@@ -131,11 +131,16 @@ the two together stay well inside the 5 s after which `remi stop` kills the hub.
 failure close stays immediate and carries no BYE; on 1.3.11 the client may
 get the Worker's `closed` reason instead of the hub's empty one, the same failure close
 either way. The client's verdict comes from the authenticated BYE, not from the close
-code; the web client reports that verdict and does not read the code. Each pipe close
+code; the web client reports that verdict and does not read the code. Linux R7 CI
+also observed a verified BYE and `clean` stream verdict followed by 4400 on Bun
+1.3.11 (run `38023193641`, #1234). The authority-retirement controls accept that
+runtime-specific close only after verifying the authenticated stream ending.
+Each pipe close
 is logged in a fixed form with no connection id (`Relay pipe closed by the hub (1000)`,
-or `by the far side`). Measured on macOS against the local workerd, where
+or `by the far side`). The loaded client-close runs were measured on macOS against the local workerd, where
 `relay-r3-transport-close.test.ts` pins the runtime's behavior (Bun 1.4.2 closes
-gracefully); not measured on Linux or against the deployed Worker.
+gracefully). The Linux authority-retirement observation above does not cover those
+loaded client-close runs or the deployed Worker.
 
 ## Connection heartbeats
 
