@@ -527,8 +527,7 @@ private struct MachinesSection: View {
                 }
                 if let state = states.first(where: { $0.id == machine.id }),
                    case .waitingForRelayConfirmation(let fingerprint) = state.status {
-                    Text("Compare \(fingerprint) in the machine's terminal before approving.")
-                        .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                    RelayConfirmationHelp(machineName: machine.name, fingerprint: fingerprint)
                 }
                 if machine.id != machines.last?.id { Divider() }
             }
@@ -549,6 +548,32 @@ private struct MachinesSection: View {
         } message: { machine in
             Text("Remi will forget \(machine.name) and its cached conversations on this device. Sessions on the machine keep running.")
         }
+    }
+}
+
+private struct RelayConfirmationHelp: View {
+    let machineName: String
+    let fingerprint: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label("Terminal confirmation needed", systemImage: "checkmark.shield")
+                .font(.headline)
+
+            Text("On \(machineName), compare this fingerprint before approving the relay connection.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Text(fingerprint)
+                .font(.system(.body, design: .monospaced, weight: .semibold))
+                .textSelection(.enabled)
+
+            Text("The pairing token does not authorize this phone by itself.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(RemiTheme.Spacing.m)
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: RemiTheme.Radius.control))
     }
 }
 
