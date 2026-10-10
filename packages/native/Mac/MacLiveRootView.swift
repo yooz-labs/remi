@@ -580,6 +580,7 @@ private struct MacFeedbackBanner: View {
 
 private struct MacAddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var host = "127.0.0.1"
     @State private var port = 18765
     @State private var relayMode = false
@@ -599,32 +600,47 @@ private struct MacAddMachineSheet: View {
                 TextField("Host or IP address", text: $host)
                 TextField("Port", value: $port, format: .number)
             }
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Add") {
-                    do {
-                        let endpoint = relayMode ? try MachineEndpoint.pairingOverRelay(relayToken) :
-                            MachineEndpoint(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
-                        relayToken = ""
-                        onAdd(endpoint)
-                        dismiss()
-                    } catch {
-                        relayError = "The relay token is invalid or expired. Create a new token on the machine."
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Spacer()
+                    actionButtons
                 }
-                .buttonStyle(.glassProminent)
-                .disabled(relayMode ? relayToken.isEmpty :
-                    host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+                VStack(alignment: .trailing, spacing: RemiTheme.Spacing.s) {
+                    actionButtons
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(24)
-        .frame(width: 420)
+        .frame(
+            minWidth: 360,
+            idealWidth: dynamicTypeSize.isAccessibilitySize ? 560 : 420,
+            maxWidth: 680
+        )
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        Button("Cancel", role: .cancel) { dismiss() }
+        Button("Add") {
+            do {
+                let endpoint = relayMode ? try MachineEndpoint.pairingOverRelay(relayToken) :
+                    MachineEndpoint(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
+                relayToken = ""
+                onAdd(endpoint)
+                dismiss()
+            } catch {
+                relayError = "The relay token is invalid or expired. Create a new token on the machine."
+            }
+        }
+        .buttonStyle(.glassProminent)
+        .disabled(relayMode ? relayToken.isEmpty :
+            host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
     }
 }
 
 private struct MacLiveNewSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let machines: [MachineState]
     let recentRepositories: [String: [RecentRepository]]
     let onCreate: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
@@ -690,35 +706,52 @@ private struct MacLiveNewSessionSheet: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Create") {
-                    guard let machine = machines.first(where: { $0.id == machineID }) else { return }
-                    let args = HarnessLaunchArguments.model(model)
-                    let workspace: WorkspaceRequest?
-                    if workspaceCapable {
-                        let worktree = createsWorktree
-                            ? WorktreeRequest(
-                                branch: trimmedBranch,
-                                base: base.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-                            )
-                            : nil
-                        workspace = WorkspaceRequest(repository: trimmedRepository, worktree: worktree)
-                    } else {
-                        workspace = nil
-                    }
-                    onCreate(machine.endpoint, trimmedRepository, harness, args, workspace)
-                    dismiss()
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Spacer()
+                    actionButtons
                 }
-                .buttonStyle(.glassProminent)
-                .disabled(!canCreate)
+                VStack(alignment: .trailing, spacing: RemiTheme.Spacing.s) {
+                    actionButtons
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(24)
-        .frame(width: 560)
+        .frame(
+            minWidth: 440,
+            idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 560,
+            maxWidth: 760,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 560 : 420,
+            idealHeight: dynamicTypeSize.isAccessibilitySize ? 680 : 520,
+            maxHeight: 760
+        )
         .onAppear { selectDefaultsForMachine() }
         .onChange(of: machineID) { _, _ in selectDefaultsForMachine() }
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        Button("Cancel", role: .cancel) { dismiss() }
+        Button("Create") {
+            guard let machine = machines.first(where: { $0.id == machineID }) else { return }
+            let args = HarnessLaunchArguments.model(model)
+            let workspace: WorkspaceRequest?
+            if workspaceCapable {
+                let worktree = createsWorktree
+                    ? WorktreeRequest(
+                        branch: trimmedBranch,
+                        base: base.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                    )
+                    : nil
+                workspace = WorkspaceRequest(repository: trimmedRepository, worktree: worktree)
+            } else {
+                workspace = nil
+            }
+            onCreate(machine.endpoint, trimmedRepository, harness, args, workspace)
+            dismiss()
+        }
+        .buttonStyle(.glassProminent)
+        .disabled(!canCreate)
     }
 
     private var selectedMachine: MachineState? {
@@ -805,5 +838,27 @@ private var workspacePreviewMachine: MachineState {
         ],
         onCreate: { _, _, _, _, _ in }
     )
+}
+
+#Preview("Workspace session · Accessibility") {
+    MacLiveNewSessionSheet(
+        machines: [workspacePreviewMachine],
+        recentRepositories: [
+            workspacePreviewMachine.id: [
+                RecentRepository(
+                    repository: "~/Documents/git/remi",
+                    name: "remi",
+                    lastUsedAt: "2026-10-07T12:00:00Z"
+                ),
+            ],
+        ],
+        onCreate: { _, _, _, _, _ in }
+    )
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
+
+#Preview("Add machine · Accessibility") {
+    MacAddMachineSheet(onAdd: { _ in })
+        .environment(\.dynamicTypeSize, .accessibility5)
 }
 #endif
