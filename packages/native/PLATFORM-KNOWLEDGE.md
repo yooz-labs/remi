@@ -10,7 +10,7 @@ This is the adoption guide for Apple APIs that affect Remi's native apps. It rec
 |---|---|---|---|
 | Foundation Models | On-device question summaries when `SystemLanguageModel.default` is available, with a deterministic fallback and a 900 ms deadline | A guarantee that Apple Intelligence is available, or a physical-device acceptance result | Keep the feature optional and presentation-only; never block a question notification on generation |
 | Notifications | Local notifications created by a running native app after its live connection observes a new question; taps carry a typed machine/session/question destination | Server-originated APNs delivery while the app is terminated, a Notification Service Extension, or lock-screen answer actions | Describe these as local alerts. Remote delivery waits for the secure push design and owner signing |
-| Liquid Glass | Native system navigation/materials plus selective custom glass on interactive controls and cards | A glass surface on every row or section | Let standard controls provide glass automatically; use custom effects sparingly |
+| Liquid Glass | Native system navigation/materials, semantic question-card content surfaces, and coordinated custom glass groups for question actions, the composer, and conversation selection | A glass surface on every row or section | Let standard controls provide glass automatically; use custom effects sparingly and group adjacent effects |
 | Live Activities | Design research only | Widget extension, activity lifecycle, ActivityKit push tokens, and App Intent answers | Build only after secure remote delivery and the signed-answer path are specified and testable |
 | App Intents | Design research only | Siri/Shortcuts/App Intent actions in either app | Any answer intent must call the same authenticated answer operation as the app; it must not become a second trust path |
 
@@ -54,7 +54,7 @@ Use an App Intent only when its input is sufficient to display and verify the ex
 
 ## Liquid Glass and SwiftUI
 
-SwiftUI's standard navigation, toolbars, sheets, controls, and materials adopt the current platform appearance automatically. Prefer those components before adding a custom `glassEffect`. When custom glass is necessary, group related effects in a `GlassEffectContainer`, preserve readable contrast, and avoid many simultaneous effects because they add rendering cost.
+SwiftUI's standard navigation, toolbars, sheets, controls, and materials adopt the current platform appearance automatically. Prefer those components before adding a custom `glassEffect`. Remi keeps question text on a lightweight semantic surface and uses `GlassEffectContainer` for adjacent question actions, composer controls, and conversation selectors. The composer substitutes an opaque background and hairline when Reduce Transparency is enabled, and question-state animation is disabled by Reduce Motion. Avoid many simultaneous effects because they add rendering cost.
 
 Remi's visual rule remains: glass belongs on important interactive cards and controls; repeated session and machine rows stay lightweight. Spacious layout means clear hierarchy and touch targets, not decorative empty areas. Every glass treatment must still pass light/dark contrast, Reduce Transparency, Reduce Motion, VoiceOver, and the app's supported Dynamic Type range.
 

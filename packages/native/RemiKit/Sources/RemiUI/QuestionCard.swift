@@ -1,6 +1,8 @@
 import SwiftUI
 
 public struct RemiQuestionCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private let model: RemiQuestionCardModel
     private let onAnswer: (String) -> Void
     private let onSubmit: ([RemiQuestionStepSelection]) -> Void
@@ -34,7 +36,12 @@ public struct RemiQuestionCard: View {
                     }
                     .frame(maxHeight: 240)
                     .padding(RemiTheme.Spacing.s)
-                    .background(RemiTheme.Color.surface, in: .rect(cornerRadius: RemiTheme.Radius.control))
+                    .background(
+                        reduceTransparency
+                            ? AnyShapeStyle(.background)
+                            : AnyShapeStyle(RemiTheme.Color.surface),
+                        in: .rect(cornerRadius: RemiTheme.Radius.control)
+                    )
                 }
                 QuestionCardContent(
                     model: model,
@@ -45,7 +52,12 @@ public struct RemiQuestionCard: View {
             }
             .padding(RemiTheme.Spacing.m)
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: RemiTheme.Radius.card))
+        .background(
+            reduceTransparency
+                ? AnyShapeStyle(.background)
+                : AnyShapeStyle(RemiTheme.Color.surface),
+            in: .rect(cornerRadius: RemiTheme.Radius.card)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: RemiTheme.Radius.card)
                 .stroke(
@@ -57,7 +69,7 @@ public struct RemiQuestionCard: View {
                 .allowsHitTesting(false)
         }
         .opacity(model.state == .stale ? 0.62 : 1)
-        .animation(RemiTheme.Motion.standard, value: model.state)
+        .animation(reduceMotion ? nil : RemiTheme.Motion.standard, value: model.state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Question from \(model.sessionName) on \(model.machineName)")
     }
@@ -72,6 +84,7 @@ public struct RemiQuestionCard: View {
 
 private struct QuestionCardHeader: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let kind: RemiQuestionKind
     let machineName: String
     let sessionName: String
@@ -95,9 +108,11 @@ private struct QuestionCardHeader: View {
         .padding(.vertical, RemiTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            requiresAttention
+            reduceTransparency
+                ? AnyShapeStyle(.background)
+                : requiresAttention
                 ? AnyShapeStyle(RemiTheme.Color.attention.opacity(0.1))
-                : AnyShapeStyle(.ultraThinMaterial)
+                : AnyShapeStyle(RemiTheme.Color.elevatedSurface)
         )
     }
 
@@ -156,14 +171,16 @@ private struct QuestionOptions: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(spacing: RemiTheme.Spacing.xs) {
-            ForEach(options) { option in QuestionOptionButton(option: option) { onAnswer(option.id) } }
-            Button(role: .cancel, action: onCancel) {
-                Text("Cancel")
-                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-                    .contentShape(.rect)
+        GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
+            VStack(spacing: RemiTheme.Spacing.xs) {
+                ForEach(options) { option in QuestionOptionButton(option: option) { onAnswer(option.id) } }
+                Button(role: .cancel, action: onCancel) {
+                    Text("Cancel")
+                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.glass)
             }
-            .buttonStyle(.glass)
         }
     }
 }
@@ -266,17 +283,21 @@ private struct QuestionSteps: View {
                     }
                 }
             }
-            Button("Submit") {
-                onSubmit(formSelections)
+            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
+                VStack(spacing: RemiTheme.Spacing.xs) {
+                    Button("Submit") {
+                        onSubmit(formSelections)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(!formIsComplete)
+                    Button(role: .cancel, action: onCancel) {
+                        Text("Cancel")
+                            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.glass)
+                }
             }
-            .buttonStyle(.glassProminent)
-            .disabled(!formIsComplete)
-            Button(role: .cancel, action: onCancel) {
-                Text("Cancel")
-                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.glass)
         }
     }
 

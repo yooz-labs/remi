@@ -171,19 +171,24 @@ struct SessionScreen: View {
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Search conversation", systemImage: "magnifyingglass") {
-                    isSearchPresented = true
-                    searchFocusRequest += 1
-                }
-                .disabled(visibleTranscript.isEmpty)
-            }
-            if session.canTerminate {
+            if #available(iOS 27.0, *) {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu("Session actions", systemImage: "ellipsis.circle") {
-                        Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
-                            confirmingTermination = true
-                        }
+                    searchButton
+                }
+                .visibilityPriority(.high)
+                if session.canTerminate {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        sessionActions
+                    }
+                    .visibilityPriority(.low)
+                }
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    searchButton
+                }
+                if session.canTerminate {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        sessionActions
                     }
                 }
             }
@@ -214,6 +219,22 @@ struct SessionScreen: View {
         .onChange(of: views.map(\.agentId)) { _, agentIDs in
             if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
                 selectedViewID = ""
+            }
+        }
+    }
+
+    private var searchButton: some View {
+        Button("Search conversation", systemImage: "magnifyingglass") {
+            isSearchPresented = true
+            searchFocusRequest += 1
+        }
+        .disabled(visibleTranscript.isEmpty)
+    }
+
+    private var sessionActions: some View {
+        Menu("Session actions", systemImage: "ellipsis.circle") {
+            Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                confirmingTermination = true
             }
         }
     }
@@ -297,6 +318,7 @@ private struct SessionNavigationBarBehavior: ViewModifier {
 
 private struct ConversationPicker: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Namespace private var glassNamespace
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
@@ -310,35 +332,43 @@ private struct ConversationPicker: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: RemiTheme.Spacing.xs) {
-                    ConversationButton(
-                        title: "Main",
-                        systemImage: "bubble.left.fill",
-                        active: true,
-                        selected: selectedViewID.isEmpty
-                    ) { selectedViewID = "" }
-                    ForEach(views) { view in
+            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: RemiTheme.Spacing.xs) {
                         ConversationButton(
-                            title: view.agentType,
-                            systemImage: "person.2.fill",
-                            active: view.active,
-                            selected: selectedViewID == view.agentId
-                        ) { selectedViewID = view.agentId }
+                            id: "main",
+                            title: "Main",
+                            systemImage: "bubble.left.fill",
+                            active: true,
+                            selected: selectedViewID.isEmpty,
+                            glassNamespace: glassNamespace
+                        ) { selectedViewID = "" }
+                        ForEach(views) { view in
+                            ConversationButton(
+                                id: view.agentId,
+                                title: view.agentType,
+                                systemImage: "person.2.fill",
+                                active: view.active,
+                                selected: selectedViewID == view.agentId,
+                                glassNamespace: glassNamespace
+                            ) { selectedViewID = view.agentId }
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
         }
     }
 }
 
 private struct ConversationButton: View {
+    let id: String
     let title: String
     let systemImage: String
     let active: Bool
     let selected: Bool
+    let glassNamespace: Namespace.ID
     let action: () -> Void
 
     var body: some View {
@@ -358,6 +388,7 @@ private struct ConversationButton: View {
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
+        .glassEffectID(id, in: glassNamespace)
         .overlay {
             Capsule()
                 .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)

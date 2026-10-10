@@ -188,16 +188,27 @@ struct MacSessionDetail: View {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
         .toolbar {
-            ToolbarItem {
-                Button("Search conversation", systemImage: "magnifyingglass") {
-                    isSearchPresented = true
-                    searchFocusRequest += 1
+            if #available(macOS 26.1, *) {
+                ToolbarItem {
+                    searchButton
                 }
-                .keyboardShortcut("f", modifiers: .command)
-                .disabled(visibleTranscript.isEmpty)
-                .help("Search conversation")
+                .visibilityPriority(.high)
+            } else {
+                ToolbarItem {
+                    searchButton
+                }
             }
         }
+    }
+
+    private var searchButton: some View {
+        Button("Search conversation", systemImage: "magnifyingglass") {
+            isSearchPresented = true
+            searchFocusRequest += 1
+        }
+        .keyboardShortcut("f", modifiers: .command)
+        .disabled(visibleTranscript.isEmpty)
+        .help("Search conversation")
     }
 
     private var visibleTranscript: [RemiTranscriptEntry] {
@@ -273,6 +284,7 @@ struct MacSessionDetail: View {
 
 private struct MacConversationPicker: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Namespace private var glassNamespace
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
@@ -286,41 +298,49 @@ private struct MacConversationPicker: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: RemiTheme.Spacing.xs) {
-                    MacConversationButton(
-                        title: "Main",
-                        systemImage: "bubble.left.fill",
-                        active: true,
-                        selected: selectedViewID.isEmpty
-                    ) { selectedViewID = "" }
-
-                    ForEach(views) { view in
+            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: RemiTheme.Spacing.xs) {
                         MacConversationButton(
-                            title: view.agentType,
-                            systemImage: "person.2.fill",
-                            active: view.active,
-                            selected: selectedViewID == view.agentId
-                        ) { selectedViewID = view.agentId }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
+                            id: "main",
+                            title: "Main",
+                            systemImage: "bubble.left.fill",
+                            active: true,
+                            selected: selectedViewID.isEmpty,
+                            glassNamespace: glassNamespace
+                        ) { selectedViewID = "" }
 
-            HStack(spacing: RemiTheme.Spacing.xxs) {
-                conversationNavigationButton(
-                    title: "Previous conversation",
-                    systemImage: "chevron.left",
-                    key: .leftArrow,
-                    offset: -1
-                )
-                conversationNavigationButton(
-                    title: "Next conversation",
-                    systemImage: "chevron.right",
-                    key: .rightArrow,
-                    offset: 1
-                )
+                        ForEach(views) { view in
+                            MacConversationButton(
+                                id: view.agentId,
+                                title: view.agentType,
+                                systemImage: "person.2.fill",
+                                active: view.active,
+                                selected: selectedViewID == view.agentId,
+                                glassNamespace: glassNamespace
+                            ) { selectedViewID = view.agentId }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .scrollIndicators(.hidden)
+            }
+
+            GlassEffectContainer(spacing: RemiTheme.Spacing.xxs) {
+                HStack(spacing: RemiTheme.Spacing.xxs) {
+                    conversationNavigationButton(
+                        title: "Previous conversation",
+                        systemImage: "chevron.left",
+                        key: .leftArrow,
+                        offset: -1
+                    )
+                    conversationNavigationButton(
+                        title: "Next conversation",
+                        systemImage: "chevron.right",
+                        key: .rightArrow,
+                        offset: 1
+                    )
+                }
             }
         }
     }
@@ -353,10 +373,12 @@ private struct MacConversationPicker: View {
 }
 
 private struct MacConversationButton: View {
+    let id: String
     let title: String
     let systemImage: String
     let active: Bool
     let selected: Bool
+    let glassNamespace: Namespace.ID
     let action: () -> Void
 
     var body: some View {
@@ -376,6 +398,7 @@ private struct MacConversationButton: View {
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
+        .glassEffectID(id, in: glassNamespace)
         .overlay {
             Capsule()
                 .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
