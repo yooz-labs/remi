@@ -163,7 +163,48 @@ private struct MacConversationPicker: View {
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
+
+            HStack(spacing: RemiTheme.Spacing.xxs) {
+                conversationNavigationButton(
+                    title: "Previous conversation",
+                    systemImage: "chevron.left",
+                    key: .leftArrow,
+                    offset: -1
+                )
+                conversationNavigationButton(
+                    title: "Next conversation",
+                    systemImage: "chevron.right",
+                    key: .rightArrow,
+                    offset: 1
+                )
+            }
         }
+    }
+
+    private func conversationNavigationButton(
+        title: LocalizedStringKey,
+        systemImage: String,
+        key: KeyEquivalent,
+        offset: Int
+    ) -> some View {
+        Button {
+            selectConversation(offsetBy: offset)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .keyboardShortcut(key, modifiers: [.command, .option])
+        .help(title)
+    }
+
+    private func selectConversation(offsetBy offset: Int) {
+        let conversationIDs = [""] + views.map(\.agentId)
+        let currentIndex = conversationIDs.firstIndex(of: selectedViewID) ?? 0
+        let nextIndex = (currentIndex + offset + conversationIDs.count) % conversationIDs.count
+        selectedViewID = conversationIDs[nextIndex]
     }
 }
 
