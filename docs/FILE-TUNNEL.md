@@ -394,15 +394,28 @@ It does not prove atomic source snapshots or complete concurrent-edit detection.
 Durable reservations, recovery, production-helper selection, transfer authority
 and the attachment capability remain later gates.
 
-The private-copy candidate passed six builds and six executions on 2026-10-10
-with all 26 primitive/admission/copy controls and no cleanup errors. Nine
-removed-guard variants failed their exact named assertions on both compiled
-Mac ARM Bun gates (18/18); Linux mutation execution and forced partial writes
-are unmeasured. Final source snapshots, binaries and logs are retained in
-`/private/tmp/remi-1170-copy-20261010-e/` and
-`/private/tmp/remi-1170-copy-mutations-20261010-b/`.
-Earlier copy receipts remain historical snapshots; one targeted typecheck
-found a fixture type-annotation shadowing error, corrected before this result.
+Independent review of the initial E/B candidate found destination mutations
+after validation and private name replacement missing from its controls.
+The corrected candidate repeats destination validation at publication and
+binds generated names to the held private device/inode before publication and
+cleanup. Replaced names refuse cleanup without deleting the replacement.
+New controls alter destination bytes/mode at publication and replace actual
+partial/completed names. This detects the recorded replacements; name checks
+and subsequent effects are not atomic against every concurrent edit.
+
+The corrected private-copy candidate passed six builds and six executions on
+2026-10-10 with all 27 primitive/admission/copy controls and no cleanup errors.
+Twelve removed-guard variants failed their exact named assertions on both
+compiled Mac ARM Bun gates (24/24); Linux mutation execution and forced partial
+writes are unmeasured. Final source snapshots, binaries and logs are retained
+in `/private/tmp/remi-1170-copy-20261010-f/` and
+`/private/tmp/remi-1170-copy-mutations-20261010-d/`.
+Earlier copy receipts remain historical snapshots. A targeted typecheck found
+a fixture type-annotation shadowing error, corrected before the final result.
+Mutation receipt C caught the new name guards but failed exact witness matching
+because `assert.throws` prepends `Missing expected exception:`. D registers that
+full message; no source, corpus, mutation or exit condition changed. C remains
+failed evidence, rather than acceptance.
 
 | Next PR | Existing code and proposed files | Prerequisite and exit gate |
 |---|---|---|

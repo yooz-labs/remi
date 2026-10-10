@@ -18,6 +18,17 @@ const CHUNK = 32 * 1024;
 const LIMIT = 10n * 1024n * 1024n;
 const DIRECTORY = C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW;
 
+function sameName(directory: number, name: string, owned: fs.BigIntStats, openAt: OpenAt): boolean {
+  const fd = openAt(directory, name, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK);
+  if (fd < 0) return false;
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    return stat.isFile() && stat.dev === owned.dev && stat.ino === owned.ino;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function digest(fd: number, size: number): string {
   const hash = createHash('sha256');
   const buffer = Buffer.alloc(CHUNK);
@@ -39,7 +50,8 @@ export class PrivateCopy {
     private readonly name: string,
     readonly size: number,
     readonly sha256: string,
-    private readonly unlink: PrivateOps['unlink'],
+    private readonly owned: fs.BigIntStats,
+    private readonly ops: PrivateOps,
   ) {}
 
   read(buffer: Buffer, offset: number): number {
@@ -51,7 +63,11 @@ export class PrivateCopy {
   close(): void {
     if (this.closed) return;
     // A failed unlink remains visible and retryable; future quota accounting must retain it.
-    if (this.unlink(this.directory, this.name) !== 0) throw new Error('private cleanup failed');
+    if (
+      !sameName(this.directory, this.name, this.owned, this.ops.openAt) ||
+      this.ops.unlink(this.directory, this.name) !== 0
+    )
+      throw new Error('private cleanup failed');
     this.closed = true;
     try {
       fs.closeSync(this.fd);
@@ -72,14 +88,25 @@ export function copyToPrivate(
   let partialOwned = false;
   let finalOwned = false;
   let completed = false;
+  let owned: fs.BigIntStats | undefined;
   const token = randomBytes(16).toString('hex');
   const partial = `${token}.partial`;
   const final = `${token}.complete`;
   const discard = () => {
     let cleanupFailed = false;
     try {
-      if (finalOwned && ops.unlink(directory, final) !== 0) cleanupFailed = true;
-      if (partialOwned && ops.unlink(directory, partial) !== 0) cleanupFailed = true;
+      for (const [present, name] of [
+        [finalOwned, final],
+        [partialOwned, partial],
+      ] as const) {
+        if (!present) continue;
+        if (
+          !owned ||
+          !sameName(directory, name, owned, ops.openAt) ||
+          ops.unlink(directory, name) !== 0
+        )
+          cleanupFailed = true;
+      }
     } finally {
       try {
         if (fd >= 0) fs.closeSync(fd);
@@ -107,6 +134,7 @@ export function copyToPrivate(
     fd = ops.create(directory, partial, C.O_RDWR | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o600);
     if (fd < 0) return null;
     partialOwned = true;
+    owned = fs.fstatSync(fd, { bigint: true });
     checkpoint?.({ stage: 'created', directory, partial, final, fd });
     const created = fs.fstatSync(fd, { bigint: true });
     if (
@@ -138,16 +166,20 @@ export function copyToPrivate(
     const after = fs.fstatSync(source.fd, { bigint: true });
     if (!source.matchesMetadata(after) || !source.isCurrent() || !root.isCurrent()) return null;
     fs.fsyncSync(fd);
-    const copied = fs.fstatSync(fd, { bigint: true });
     const sha256 = hash.digest('hex');
-    if (
-      !copied.isFile() ||
-      copied.nlink !== 1n ||
-      copied.size !== source.size ||
-      (copied.mode & 0o777n) !== 0o600n ||
-      digest(fd, size) !== sha256
-    )
-      return null;
+    const validCopy = () => {
+      const copied = fs.fstatSync(fd, { bigint: true });
+      return (
+        copied.isFile() &&
+        copied.dev === owned?.dev &&
+        copied.ino === owned.ino &&
+        copied.nlink === 1n &&
+        copied.size === source.size &&
+        (copied.mode & 0o777n) === 0o600n &&
+        digest(fd, size) === sha256
+      );
+    };
+    if (!validCopy()) return null;
     checkpoint?.({ stage: 'validated', directory, partial, final });
     // A checkpoint may mutate real filesystem state; validate again at the effect.
     if (
@@ -156,13 +188,15 @@ export function copyToPrivate(
       !root.isCurrent()
     )
       return null;
+    if (!validCopy() || !sameName(directory, partial, owned, ops.openAt)) return null;
     if (ops.link(directory, partial, final) !== 0) return null;
     finalOwned = true;
-    if (ops.unlink(directory, partial) !== 0) return null;
+    if (!sameName(directory, partial, owned, ops.openAt) || ops.unlink(directory, partial) !== 0)
+      return null;
     partialOwned = false;
-    if (fs.fstatSync(fd, { bigint: true }).nlink !== 1n) return null;
+    if (!validCopy() || !sameName(directory, final, owned, ops.openAt)) return null;
     completed = true;
-    return new PrivateCopy(fd, directory, final, size, sha256, ops.unlink);
+    return new PrivateCopy(fd, directory, final, size, sha256, owned, ops);
   } catch {
     return null; // Actual native/read/write failures refuse; no project-path fallback.
   } finally {

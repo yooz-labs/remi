@@ -42,6 +42,7 @@ CHECKS = {
     "private root replacement cleanup through captured directory",
     "completed private descriptor survives source and root changes",
     "actual completed cleanup failure remains visible and retryable",
+    "partial and completed name replacement refuses owned cleanup",
 }
 
 
@@ -114,7 +115,7 @@ def main():
             "cleanupErrors": cleanup_errors,
             "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(TARGETS) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
-            "scope": "Seven primitives plus nine admission and ten private-copy controls; production helper, quotas, recovery and full T0a remain pending",
+            "scope": "Seven primitives plus nine admission and eleven private-copy controls; production helper, quotas, recovery and full T0a remain pending",
             "results": results,
         }, indent=2) + "\n")
 

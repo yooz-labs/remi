@@ -191,6 +191,29 @@ export function copyProbe(temporary: string, ops: PrivateOps): string[] {
     },
     'validated',
   );
+  refusal(
+    'copy effect-time private-byte mutation',
+    (f) => {
+      const partial = fs.readdirSync(f.privatePath)[0];
+      assert(partial, 'effect-time private partial exists');
+      const fd = fs.openSync(path.join(f.privatePath, partial), 'r+');
+      try {
+        fs.writeSync(fd, 'private mutation', 0, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    },
+    'validated',
+  );
+  refusal(
+    'copy effect-time private mode',
+    (f) => {
+      const partial = fs.readdirSync(f.privatePath)[0];
+      assert(partial, 'effect-time mode partial exists');
+      fs.chmodSync(path.join(f.privatePath, partial), 0o644);
+    },
+    'validated',
+  );
   checks.push('private bytes mode and effect-time source validation');
 
   refusal(
@@ -375,5 +398,73 @@ export function copyProbe(temporary: string, ops: PrivateOps): string[] {
     cleanup.close();
   }
   checks.push('actual completed cleanup failure remains visible and retryable');
+
+  const replacedPartial = fixture();
+  let partialName = '';
+  try {
+    assert.throws(
+      () =>
+        copyToPrivate(replacedPartial.source, replacedPartial.scratch, ops, (event) => {
+          if (event.stage !== 'validated') return;
+          partialName = event.partial;
+          fs.renameSync(
+            path.join(replacedPartial.privatePath, partialName),
+            path.join(replacedPartial.privatePath, 'kept'),
+          );
+          fs.writeFileSync(
+            path.join(replacedPartial.privatePath, partialName),
+            'replacement marker',
+            { flag: 'wx' },
+          );
+        }),
+      /private cleanup failed/,
+      'replaced partial refuses without deleting replacement',
+    );
+    assert(partialName, 'partial replacement checkpoint completed');
+    assert.deepEqual(
+      fs.readdirSync(replacedPartial.privatePath).sort(),
+      [partialName, 'kept'].sort(),
+      'no replacement publication',
+    );
+    assert.equal(
+      fs.readFileSync(path.join(replacedPartial.privatePath, partialName), 'utf8'),
+      'replacement marker',
+      'partial replacement untouched',
+    );
+  } finally {
+    replacedPartial.close();
+  }
+  const replacedComplete = fixture();
+  try {
+    const artifact = copyToPrivate(replacedComplete.source, replacedComplete.scratch, ops);
+    assert(artifact, 'owned cleanup completed copy');
+    const name = fs.readdirSync(replacedComplete.privatePath)[0];
+    assert(name, 'owned completed name');
+    const original = path.join(replacedComplete.privatePath, name);
+    const kept = path.join(replacedComplete.privatePath, 'kept');
+    fs.renameSync(original, kept);
+    fs.writeFileSync(original, 'replacement marker', { flag: 'wx' });
+    assert.throws(
+      () => artifact.close(),
+      /private cleanup failed/,
+      'completed replacement cleanup refused',
+    );
+    assert.equal(
+      fs.readFileSync(original, 'utf8'),
+      'replacement marker',
+      'completed replacement untouched',
+    );
+    fs.unlinkSync(original);
+    fs.renameSync(kept, original);
+    artifact.close();
+    assert.deepEqual(
+      fs.readdirSync(replacedComplete.privatePath),
+      [],
+      'owned cleanup after restoration',
+    );
+  } finally {
+    replacedComplete.close();
+  }
+  checks.push('partial and completed name replacement refuses owned cleanup');
   return checks;
 }
