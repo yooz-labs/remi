@@ -75,7 +75,7 @@ public enum RemiConnectionError: Error, Sendable, Equatable {
 }
 
 /// One authenticated daemon connection with bounded exponential reconnect.
-/// Unknown client keys pause in `awaitingLocalApproval` until `retryAfterApproval()` is called.
+/// Unknown client keys pause in `awaitingLocalApproval` until a manual retry is requested.
 public actor RemiConnection {
     public typealias StateHandler = @Sendable (RemiConnectionState) -> Void
     public typealias EventHandler = @Sendable (RemiInboundEvent) -> Void
@@ -214,6 +214,25 @@ public actor RemiConnection {
     /// Call after the user has run the displayed `remi authorize …` command locally.
     public func retryAfterApproval() {
         guard case .awaitingLocalApproval = state else { return }
+        restart()
+    }
+
+    /// Restarts a direct connection the user explicitly chose to retry after it stopped or was rejected.
+    public func retry() {
+        guard configuration.relayPin == nil, Self.allowsManualRetry(state) else { return }
+        restart()
+    }
+
+    static func allowsManualRetry(_ state: RemiConnectionState) -> Bool {
+        switch state {
+        case .stopped, .awaitingLocalApproval, .rejected:
+            true
+        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying:
+            false
+        }
+    }
+
+    private func restart() {
         shouldRun = true
         runTask?.cancel()
         runTask = Task { await run() }

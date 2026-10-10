@@ -70,8 +70,10 @@ struct MacLiveRootView: View {
                         machine: selectedMachine,
                         sessions: visibleSessions,
                         selection: sessionSelection,
+                        publicIdentity: store.publicIdentity,
                         onResume: resume,
                         onRetryApproval: store.retryApproval,
+                        onRetryConnection: store.retryConnection,
                         onNewSession: { showingNewSession = true }
                     )
                     .navigationSplitViewColumnWidth(min: 380, ideal: 440, max: 540)
@@ -379,7 +381,8 @@ struct MacLiveRootView: View {
             reachability: reachability(machine.status),
             transport: machine.endpoint.relayPin != nil ? .relay
                 : isLoopback(machine.endpoint.host) ? .local : .direct,
-            sessionCount: machine.activeSessions.count
+            sessionCount: machine.activeSessions.count,
+            openQuestionCount: machine.questions.count
         )
     }
 
@@ -597,8 +600,10 @@ private struct MacSessionsColumn: View {
     let machine: MachineState?
     let sessions: [RemiSessionSummary]
     @Binding var selection: String?
+    let publicIdentity: PublicClientIdentity
     let onResume: (RemiSessionSummary) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
+    let onRetryConnection: (MachineEndpoint) -> Void
     let onNewSession: () -> Void
 
     var body: some View {
@@ -617,7 +622,9 @@ private struct MacSessionsColumn: View {
             } else if let machine {
                 MacMachineConnectionState(
                     machine: machine,
-                    onRetryApproval: { onRetryApproval(machine.endpoint) }
+                    publicIdentity: publicIdentity,
+                    onRetryApproval: { onRetryApproval(machine.endpoint) },
+                    onRetryConnection: { onRetryConnection(machine.endpoint) }
                 )
             } else {
                 ContentUnavailableView("Select a machine", systemImage: "desktopcomputer")
@@ -952,7 +959,9 @@ private struct MacSelectSessionState: View {
 
 private struct MacMachineConnectionState: View {
     let machine: MachineState
+    let publicIdentity: PublicClientIdentity
     let onRetryApproval: () -> Void
+    let onRetryConnection: () -> Void
 
     var body: some View {
         switch machine.status {
@@ -967,27 +976,55 @@ private struct MacMachineConnectionState: View {
         case .waitingForApproval(let fingerprint):
             MacAuthorizationState(
                 title: "Authorization needed",
-                detail: "Approve this Mac on \(machine.displayName) with fingerprint \(fingerprint), then retry the connection.",
+                detail: "Compare the client fingerprint, run the exact command on \(machine.displayName), then retry the connection.",
+                machineName: machine.displayName,
+                endpoint: machine.endpoint.displayAddress,
+                fingerprint: fingerprint,
+                authorizeCommand: publicIdentity.authorizeCommand(
+                    label: Host.current().localizedName ?? "Mac"
+                ),
                 onRetry: onRetryApproval
             )
         case .waitingForRelayConfirmation(let fingerprint):
             MacAuthorizationState(
                 title: "Confirm this Mac",
-                detail: "Compare fingerprint \(fingerprint) in the terminal on \(machine.displayName) and complete the pairing approval there.",
+                detail: "Compare this machine fingerprint in the terminal on \(machine.displayName) and complete the pairing approval there.",
+                machineName: machine.displayName,
+                endpoint: machine.endpoint.displayAddress,
+                fingerprint: fingerprint,
+                authorizeCommand: nil,
                 onRetry: nil
             )
         case .unavailable(let reason):
-            ContentUnavailableView(
-                "Machine unavailable",
-                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                description: Text(reason ?? "Remi will keep trying to reconnect to \(machine.displayName).")
-            )
+            if machine.endpoint.relayPin == nil {
+                MacConnectionUnavailableState(
+                    title: "Machine unavailable",
+                    detail: reason ?? "Remi could not connect to \(machine.displayName).",
+                    endpoint: machine.endpoint.displayAddress,
+                    onRetry: onRetryConnection
+                )
+            } else {
+                ContentUnavailableView(
+                    "Relay machine unavailable",
+                    systemImage: "network.slash",
+                    description: Text(reason ?? "Pair again with a fresh relay token from \(machine.displayName).")
+                )
+            }
         case .disconnected:
-            ContentUnavailableView(
-                "Machine offline",
-                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
-                description: Text("Remi will keep trying to reconnect to \(machine.displayName).")
-            )
+            if machine.endpoint.relayPin == nil {
+                MacConnectionUnavailableState(
+                    title: "Machine offline",
+                    detail: "Remi is not connected to \(machine.displayName).",
+                    endpoint: machine.endpoint.displayAddress,
+                    onRetry: onRetryConnection
+                )
+            } else {
+                ContentUnavailableView(
+                    "Relay machine offline",
+                    systemImage: "network.slash",
+                    description: Text("Remi will reconnect through the relay when the machine becomes available.")
+                )
+            }
         case .connected:
             ContentUnavailableView {
                 Label("Loading sessions", systemImage: "clock")
@@ -1003,19 +1040,133 @@ private struct MacMachineConnectionState: View {
 private struct MacAuthorizationState: View {
     let title: LocalizedStringKey
     let detail: String
+    let machineName: String
+    let endpoint: String
+    let fingerprint: String
+    let authorizeCommand: String?
     let onRetry: (() -> Void)?
+    @State private var copiedValue: CopiedAuthorizationValue?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.l) {
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    Label(title, systemImage: "person.badge.clock")
+                        .font(.title2.weight(.semibold))
+                    Text(detail)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                    LabeledContent("Machine", value: machineName)
+                    LabeledContent("Endpoint", value: endpoint)
+                    Divider()
+                    Text("Fingerprint")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(fingerprint)
+                        .font(.system(.body, design: .monospaced).weight(.semibold))
+                        .textSelection(.enabled)
+
+                    if let authorizeCommand {
+                        Text("Run on the machine")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(authorizeCommand)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(RemiTheme.Spacing.s)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
+                    }
+                }
+                .padding(RemiTheme.Spacing.m)
+                .background(.regularMaterial, in: .rect(cornerRadius: RemiTheme.Radius.card))
+
+                if authorizeCommand != nil {
+                    Label(
+                        "Authorization lets this Mac view conversations, answer prompts, send chat, and manage sessions exposed by this Remi machine. The private key stays in this Mac’s Keychain.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                } else {
+                    Label(
+                        "Relay confirmation happens only in the machine’s terminal. Create a new relay token if this pairing expires.",
+                        systemImage: "network"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: RemiTheme.Spacing.s) { actionButtons }
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) { actionButtons }
+                }
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(RemiTheme.Spacing.l)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        Button(
+            copiedValue == .fingerprint ? "Fingerprint copied" : "Copy fingerprint",
+            systemImage: copiedValue == .fingerprint ? "checkmark" : "number"
+        ) {
+            copy(fingerprint, value: .fingerprint)
+        }
+        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+
+        if let authorizeCommand {
+            Button(
+                copiedValue == .command ? "Command copied" : "Copy authorization command",
+                systemImage: copiedValue == .command ? "checkmark" : "doc.on.doc"
+            ) {
+                copy(authorizeCommand, value: .command)
+            }
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        }
+
+        if let onRetry {
+            Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
+                .buttonStyle(.borderedProminent)
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        }
+    }
+
+    private func copy(_ text: String, value: CopiedAuthorizationValue) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedValue = value
+    }
+}
+
+private enum CopiedAuthorizationValue {
+    case fingerprint
+    case command
+}
+
+private struct MacConnectionUnavailableState: View {
+    let title: LocalizedStringKey
+    let detail: String
+    let endpoint: String
+    let onRetry: () -> Void
 
     var body: some View {
         ContentUnavailableView {
-            Label(title, systemImage: "person.badge.clock")
+            Label(title, systemImage: "desktopcomputer.trianglebadge.exclamationmark")
         } description: {
-            Text(detail)
-                .textSelection(.enabled)
-        } actions: {
-            if let onRetry {
-                Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
-                    .buttonStyle(.borderedProminent)
+            VStack(spacing: RemiTheme.Spacing.xs) {
+                Text(detail)
+                Text(endpoint)
+                    .font(RemiTheme.Typography.code)
+                    .textSelection(.enabled)
             }
+        } actions: {
+            Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
+                .buttonStyle(.borderedProminent)
         }
     }
 }

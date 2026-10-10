@@ -30,6 +30,7 @@ struct HomeScreen: View {
     let onAddMachine: (MachineEndpoint) -> Void
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
+    let onRetryConnection: (MachineEndpoint) -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     let onDismissError: () -> Void
@@ -59,6 +60,7 @@ struct HomeScreen: View {
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
+        onRetryConnection: @escaping (MachineEndpoint) -> Void = { _ in },
         onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
         enablingRelayNotifications: Bool = false,
         onDismissError: @escaping () -> Void = {},
@@ -87,6 +89,7 @@ struct HomeScreen: View {
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
         self.onRetryApproval = onRetryApproval
+        self.onRetryConnection = onRetryConnection
         self.onEnableRelayNotifications = onEnableRelayNotifications
         self.enablingRelayNotifications = enablingRelayNotifications
         self.onDismissError = onDismissError
@@ -145,6 +148,7 @@ struct HomeScreen: View {
                         publicIdentity: publicIdentity,
                         onRemove: onRemoveMachine,
                         onRetryApproval: onRetryApproval,
+                        onRetryConnection: onRetryConnection,
                         onEnableRelayNotifications: onEnableRelayNotifications,
                         enablingRelayNotifications: enablingRelayNotifications
                     )
@@ -856,6 +860,7 @@ private struct MachinesSection: View {
     let publicIdentity: PublicClientIdentity?
     let onRemove: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
+    let onRetryConnection: (MachineEndpoint) -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     @State private var pendingRemoval: RemiMachineSummary?
@@ -870,6 +875,7 @@ private struct MachinesSection: View {
                     state: state,
                     enablingRelayNotifications: enablingRelayNotifications,
                     onEnableRelayNotifications: onEnableRelayNotifications,
+                    onRetryConnection: onRetryConnection,
                     onRemove: { pendingRemoval = machine }
                 )
                 if let state = states.first(where: { $0.id == machine.id }),
@@ -939,6 +945,7 @@ private struct PhoneMachineManagementRow: View {
     let state: MachineState?
     let enablingRelayNotifications: Bool
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let onRetryConnection: (MachineEndpoint) -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -952,6 +959,11 @@ private struct PhoneMachineManagementRow: View {
                 .layoutPriority(1)
 
             Menu {
+                if let state, canRetryConnection(state) {
+                    Button("Retry connection", systemImage: "arrow.clockwise") {
+                        onRetryConnection(state.endpoint)
+                    }
+                }
                 if let state, state.endpoint.relayPin != nil {
                     Button("Enable relay notifications", systemImage: "bell.badge") {
                         onEnableRelayNotifications(state.endpoint)
@@ -975,6 +987,16 @@ private struct PhoneMachineManagementRow: View {
                         .contentShape(.rect)
                 }
             }
+        }
+    }
+
+    private func canRetryConnection(_ state: MachineState) -> Bool {
+        guard state.endpoint.relayPin == nil else { return false }
+        switch state.status {
+        case .disconnected, .unavailable:
+            true
+        default:
+            false
         }
     }
 }

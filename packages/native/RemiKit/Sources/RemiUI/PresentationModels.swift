@@ -209,14 +209,24 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     public let reachability: RemiMachineReachability
     public let transport: RemiTransport
     public let sessionCount: Int
+    public let openQuestionCount: Int
 
-    public init(id: String, name: String, address: String, reachability: RemiMachineReachability, transport: RemiTransport, sessionCount: Int) {
+    public init(
+        id: String,
+        name: String,
+        address: String,
+        reachability: RemiMachineReachability,
+        transport: RemiTransport,
+        sessionCount: Int,
+        openQuestionCount: Int = 0
+    ) {
         self.id = id
         self.name = name
         self.address = address
         self.reachability = reachability
         self.transport = transport
         self.sessionCount = sessionCount
+        self.openQuestionCount = openQuestionCount
     }
 }
 

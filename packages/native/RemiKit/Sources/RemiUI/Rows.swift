@@ -110,7 +110,11 @@ public struct RemiMachineRow: View {
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
 
                 if dynamicTypeSize.isAccessibilitySize {
-                    MachineMetadata(transport: machine.transport, sessionCount: machine.sessionCount)
+                    MachineMetadata(
+                        transport: machine.transport,
+                        sessionCount: machine.sessionCount,
+                        openQuestionCount: machine.openQuestionCount
+                    )
                         .padding(.top, RemiTheme.Spacing.xxs)
                 }
             }
@@ -118,11 +122,16 @@ public struct RemiMachineRow: View {
             Spacer(minLength: RemiTheme.Spacing.xs)
 
             if !dynamicTypeSize.isAccessibilitySize {
-                MachineMetadata(transport: machine.transport, sessionCount: machine.sessionCount)
+                MachineMetadata(
+                    transport: machine.transport,
+                    sessionCount: machine.sessionCount,
+                    openQuestionCount: machine.openQuestionCount
+                )
             }
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var icon: String {
@@ -142,11 +151,34 @@ public struct RemiMachineRow: View {
         case .waitingForApproval: "Waiting for approval"
         }
     }
+
+    private var accessibilityLabel: String {
+        var parts = [machine.name, machine.address, statusAccessibilityText]
+        parts.append(machine.sessionCount == 1 ? "1 session" : "\(machine.sessionCount) sessions")
+        if machine.openQuestionCount > 0 {
+            parts.append(
+                machine.openQuestionCount == 1
+                    ? "1 question needs attention"
+                    : "\(machine.openQuestionCount) questions need attention"
+            )
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private var statusAccessibilityText: String {
+        switch machine.reachability {
+        case .connected: String(localized: "Connected")
+        case .connecting: String(localized: "Connecting")
+        case .unreachable: String(localized: "Unreachable")
+        case .waitingForApproval: String(localized: "Waiting for approval")
+        }
+    }
 }
 
 private struct MachineMetadata: View {
     let transport: RemiTransport
     let sessionCount: Int
+    let openQuestionCount: Int
 
     var body: some View {
         VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xxs) {
@@ -154,6 +186,18 @@ private struct MachineMetadata: View {
             Text(sessionCount == 1 ? "1 session" : "\(sessionCount) sessions")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if openQuestionCount > 0 {
+                Label(questionCountLabel, systemImage: "questionmark.bubble.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(RemiTheme.Color.attentionInk)
+                    .padding(.horizontal, RemiTheme.Spacing.xs)
+                    .padding(.vertical, RemiTheme.Spacing.xxxs)
+                    .background(RemiTheme.Color.attention, in: Capsule())
+            }
         }
+    }
+
+    private var questionCountLabel: String {
+        openQuestionCount == 1 ? "1 pending" : "\(openQuestionCount) pending"
     }
 }

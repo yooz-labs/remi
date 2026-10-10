@@ -41,6 +41,7 @@ struct PhoneLiveRootView: View {
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
+                onRetryConnection: store.retryConnection,
                 onEnableRelayNotifications: relayNotifications.enable,
                 enablingRelayNotifications: relayNotifications.enabling,
                 onDismissError: store.clearLatestError,
@@ -130,7 +131,8 @@ struct PhoneLiveRootView: View {
                 reachability: reachability(machine.status),
                 transport: machine.endpoint.relayPin != nil ? .relay :
                     machine.endpoint.host == "127.0.0.1" ? .local : .direct,
-                sessionCount: machine.activeSessions.count
+                sessionCount: machine.activeSessions.count,
+                openQuestionCount: machine.questions.count
             )
         }
     }
