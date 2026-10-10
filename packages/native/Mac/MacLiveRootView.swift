@@ -797,6 +797,9 @@ private struct MacWorkspaceGroupLabel: View {
                 Label("\(workspace.questionCount) need attention", systemImage: "questionmark.bubble.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(RemiTheme.Color.attentionInk)
+                    .padding(.horizontal, RemiTheme.Spacing.xs)
+                    .padding(.vertical, RemiTheme.Spacing.xxxs)
+                    .background(RemiTheme.Color.attention, in: Capsule())
             }
         }
         .padding(.vertical, RemiTheme.Spacing.xxs)
