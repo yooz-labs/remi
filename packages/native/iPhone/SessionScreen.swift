@@ -66,14 +66,8 @@ struct SessionScreen: View {
                         )
                     }
 
-                    if !selectedViewID.isEmpty, visibleTranscript.isEmpty {
-                        ContentUnavailableView(
-                            "Conversation not available yet",
-                            systemImage: "bubble.left.and.bubble.right",
-                            description: Text("The subagent may not have written its first message.")
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, RemiTheme.Spacing.l)
+                    if visibleTranscript.isEmpty, selectedViewID.isEmpty ? questions.isEmpty : true {
+                        PhoneConversationEmptyState(isSubagent: !selectedViewID.isEmpty)
                     }
 
                     ForEach(visibleTranscript) { entry in
@@ -144,6 +138,9 @@ struct SessionScreen: View {
         .onChange(of: selectedViewID) { _, newValue in
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
+        .onChange(of: session.id) { _, _ in
+            selectedViewID = ""
+        }
         .onChange(of: views.map(\.agentId)) { _, agentIDs in
             if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
                 selectedViewID = ""
@@ -168,24 +165,32 @@ private struct SessionNavigationBarBehavior: ViewModifier {
 }
 
 private struct ConversationPicker: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Conversation")
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xs))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            Label("Conversations", systemImage: "bubble.left.and.bubble.right")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
+
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
                     ConversationButton(
                         title: "Main",
+                        systemImage: "bubble.left.fill",
                         active: true,
                         selected: selectedViewID.isEmpty
                     ) { selectedViewID = "" }
                     ForEach(views) { view in
                         ConversationButton(
                             title: view.agentType,
+                            systemImage: "person.2.fill",
                             active: view.active,
                             selected: selectedViewID == view.agentId
                         ) { selectedViewID = view.agentId }
@@ -200,27 +205,54 @@ private struct ConversationPicker: View {
 
 private struct ConversationButton: View {
     let title: String
+    let systemImage: String
     let active: Bool
     let selected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: RemiTheme.Spacing.xxs) {
+            HStack(spacing: RemiTheme.Spacing.xs) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(selected ? Color.primary : .secondary)
+                Text(title).lineLimit(1)
                 Circle()
-                    .fill(active ? Color.green : Color.secondary.opacity(0.5))
-                    .frame(width: 7, height: 7)
-                Text(title).fixedSize(horizontal: false, vertical: true)
+                    .fill(active ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.35))
+                    .frame(width: 6, height: 6)
             }
             .font(.subheadline.weight(.semibold))
-            .frame(minHeight: 44)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
             .padding(.horizontal, RemiTheme.Spacing.s)
             .contentShape(.rect)
         }
         .buttonStyle(.glass)
-        .tint(selected ? RemiTheme.Color.attention : nil)
+        .buttonBorderShape(.capsule)
+        .overlay {
+            Capsule()
+                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
+                .allowsHitTesting(false)
+        }
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("\(title), \(active ? "active" : "finished")")
         .accessibilityHint(active ? "Active conversation" : "Finished conversation")
+    }
+}
+
+private struct PhoneConversationEmptyState: View {
+    let isSubagent: Bool
+
+    var body: some View {
+        ContentUnavailableView(
+            isSubagent ? "Conversation not available yet" : "Waiting for activity",
+            systemImage: isSubagent ? "person.2" : "bubble.left.and.bubble.right",
+            description: Text(
+                isSubagent
+                    ? "This subagent has not written its first message yet."
+                    : "Agent messages, tool activity, and questions will appear here."
+            )
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.xl)
     }
 }
 
