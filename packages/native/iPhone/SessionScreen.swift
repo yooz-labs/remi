@@ -72,7 +72,10 @@ struct SessionScreen: View {
                         }
 
                         if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
-                            PhoneConversationEmptyState(isSubagent: !selectedViewID.isEmpty)
+                            PhoneConversationEmptyState(
+                                isSubagent: !selectedViewID.isEmpty,
+                                isFinished: !session.isLive
+                            )
                         }
 
                         ForEach(focusedQuestions) { question in
@@ -300,19 +303,33 @@ private struct ConversationButton: View {
 
 private struct PhoneConversationEmptyState: View {
     let isSubagent: Bool
+    let isFinished: Bool
 
     var body: some View {
         ContentUnavailableView(
-            isSubagent ? "Conversation not available yet" : "Waiting for activity",
-            systemImage: isSubagent ? "person.2" : "bubble.left.and.bubble.right",
-            description: Text(
-                isSubagent
-                    ? "This subagent has not written its first message yet."
-                    : "Agent messages, tool activity, and questions will appear here."
-            )
+            title,
+            systemImage: systemImage,
+            description: Text(description)
         )
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.xl)
+    }
+
+    private var title: String {
+        if isFinished { return "No recorded conversation" }
+        return isSubagent ? "Conversation not available yet" : "Waiting for activity"
+    }
+
+    private var systemImage: String {
+        if isFinished { return "checkmark.circle" }
+        return isSubagent ? "person.2" : "bubble.left.and.bubble.right"
+    }
+
+    private var description: String {
+        if isFinished { return "This finished session has no transcript entries to review." }
+        return isSubagent
+            ? "This subagent has not written its first message yet."
+            : "Agent messages, tool activity, and questions will appear here."
     }
 }
 
