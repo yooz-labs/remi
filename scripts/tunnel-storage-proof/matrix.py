@@ -172,15 +172,23 @@ def main():
                 else:
                     image = options.linux_arm64_image if architecture == "arm64" else options.linux_x64_image
                     docker_platform = "linux/" + ("amd64" if architecture == "x64" else "arm64")
+                    # Pin the locally addressable image/index before selecting its platform.
+                    # Docker's containerd store can expose a platform configuration digest
+                    # via inspect --platform that docker run cannot resolve as an image.
+                    image_id = subprocess.check_output([
+                        "docker", "image", "inspect", "--format", "{{.Id}}", "--", image],
+                        env=environment, text=True, timeout=30).strip()
+                    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                        raise RuntimeError("Cached Linux image has no canonical local ID")
                     image_info = subprocess.check_output([
                         "docker", "image", "inspect", "--platform", docker_platform,
-                        "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image],
+                        "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image_id],
                         env=environment, text=True, timeout=30).strip().split()
                     if (len(image_info) != 3 or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_info[0])
                             or "/".join(image_info[1:]) != docker_platform):
                         raise RuntimeError("Cached Linux image does not match " + docker_platform)
-                    image_id = image_info[0]
-                    images[architecture] = {"reference": image, "id": image_id, "platform": docker_platform}
+                    images[architecture] = {"reference": image, "id": image_id,
+                                            "platformImageId": image_info[0], "platform": docker_platform}
                     container_name = "remi-storage-proof-" + run_id + "-" + label + "-" + architecture
                     container = {"name": container_name, "cidfile": output / (container_name + ".cid")}
                     run("run-" + label + "-" + target, ["docker", "run", "--rm", "--pull=never",

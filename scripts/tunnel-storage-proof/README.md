@@ -19,8 +19,12 @@ No helper or decoder is selected for production by this spike.
 Use the project's Bun 1.3.11 pin and the installed current Bun.
 Supply existing Docker image references with suitable Linux runtimes; the
 runner uses `--pull=never` and records the executable's actual architecture.
-Linux execution requires Docker's platform-specific image inspection support;
-the selected local image ID is recorded and used, even when you supply a tag.
+Linux execution requires Docker's platform-specific image inspection support.
+The runner resolves a tag once to a local immutable image/index ID, inspects
+the requested platform through that ID, then executes the same ID with the
+explicit platform. Both the runnable ID and selected platform's ID are recorded.
+With Docker's containerd store, a platform inspection can report a configuration
+digest that is not itself a runnable image reference.
 Choose a new private output directory outside the checkout.
 
 ```sh

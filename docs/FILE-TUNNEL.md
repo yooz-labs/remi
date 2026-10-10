@@ -268,7 +268,7 @@ Run each implementation spike on `bun-darwin-arm64`, `bun-darwin-x64`, `bun-linu
 Private feasibility probes used owned temporary files and containers; no production handler, dependency, capability or native control changed.
 The storage prototype passed seven primitive controls on Bun 1.3.11 and 1.4.2: exclusive private creation/publication, same-descriptor inspection/read, component validation, symlink and hardlink refusal, and cleanup through a captured directory after path replacement.
 All eight target binaries built; six executions passed: Mac ARM natively, Linux ARM in a Docker VM and Linux x64 under Docker Desktop emulation, on both Bun versions.
-Mac x64 execution remains unmeasured because Rosetta was unavailable.
+At that checkpoint Mac x64 execution was unmeasured because Rosetta was unavailable.
 These primitive controls do not establish the full race/credential corpus, durable quotas, recovery or transfer authority.
 
 The final experiment used a small C wrapper and checked native symbols with Bun's experimental compiler/FFI APIs.
@@ -285,10 +285,31 @@ executable hashes, and accepts a runtime result only when its version,
 platform, architecture and named controls match.
 Missing executions remain explicit failures; `--build-only` exits 2 with an
 incomplete receipt. This tool neither installs Rosetta nor selects a production
-helper. The checked-in source has only build preparation in this change;
+helper. Its initial tooling PR (#1343) carried build preparation;
 the historical runtime results above belong to the earlier private source.
-The full T0a corpus and eight target/version executions remain gates before
-production storage is selected.
+
+On 2026-10-10, after the owner approved installing Rosetta, the checked-in
+seven-control probe built and executed successfully on all eight target/version
+combinations: Mac ARM natively, Mac x64 through Rosetta, Linux ARM in Docker's VM
+and Linux x64 through emulation, on Bun 1.3.11 and 1.4.2.
+The first repeat stopped before Linux execution: Docker's platform inspection
+returned a configuration digest that `docker run` could not address.
+The corrected runner pins a local image/index ID, inspects the requested platform
+through that immutable ID, records both IDs, and runs it with the explicit platform.
+The original failure and successful unchanged primitive controls are retained in
+`/private/tmp/remi-1170-packaging-20261010-a/` and sibling `-b/` receipts.
+The full path-race, nonregular-file and credential-overlap corpus remains a T0a
+gate before production storage is selected.
+
+The private T0b candidate pins `pngjs` 7.0.0 and `jpeg-js` 0.4.4 and adds admission
+before full decoding; neither dependency is selected for the daemon.
+Its eight standalone executions decoded the same two owned sample inputs and
+reported matching dimensions, pixel lengths and pixel hashes on all target/version
+combinations. The revised candidate, input/dependency hashes, initial static
+finding and runtime receipts are in `/private/tmp/remi-1170-decoder-20261009-b/`.
+This establishes valid-sample packaging only; malformed/decompression handling,
+hard process budgets, cancellation, concurrency and actual held-approval
+responsiveness remain unproved T0b gates.
 
 ### Next independently reviewable changes
 
