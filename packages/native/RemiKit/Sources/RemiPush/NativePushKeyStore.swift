@@ -43,13 +43,21 @@ final class NativePushKeyStore {
         let publicKey: Data
         let keyVersion: Int
     }
-    private var query: [String: Any] {
+    var query: [String: Any] {
         var value: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: account]
-        if let accessGroup { value[kSecAttrAccessGroup as String] = accessGroup }
+        if let accessGroup {
+            value[kSecAttrAccessGroup as String] = accessGroup
+            #if os(macOS)
+            value[kSecUseDataProtectionKeychain as String] = true
+            #endif
+        }
         return value
     }
     private func read() throws -> Data? {
+        try read(query: query)
+    }
+    private func read(query: [String: Any]) throws -> Data? {
         var request = query
         let context = LAContext()
         context.interactionNotAllowed = true
@@ -97,6 +105,30 @@ final class NativePushKeyStore {
     }
     func loadOrCreate() throws -> Key {
         if let existing = try load() { return existing }
+        #if os(macOS)
+        if accessGroup != nil {
+            var legacy = query
+            legacy.removeValue(forKey: kSecAttrAccessGroup as String)
+            legacy[kSecUseDataProtectionKeychain as String] = false
+            if let bytes = try read(query: legacy) {
+                let existing = try Self.parse(bytes)
+                guard try read(query: legacy) == bytes else { throw NativePushStateError.changed }
+                // Copy into the configured group; never modify the legacy item.
+                var attributes = query
+                attributes[kSecValueData as String] = bytes
+                attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                let status = operations.add(attributes as CFDictionary, nil)
+                if status == errSecDuplicateItem {
+                    guard let winner = try load() else { throw NativePushStateError.changed }
+                    return winner
+                }
+                guard status == errSecSuccess else { throw NativePushKeyError.keychain(status) }
+                guard try read() == bytes, let verified = try load(), verified.publicKey == existing.publicKey,
+                      verified.keyVersion == existing.keyVersion else { throw NativePushStateError.changed }
+                return verified
+            }
+        }
+        #endif
         let key = P256.KeyAgreement.PrivateKey()
         let data = try encoded(key, version: nextVersion(after: 0))
         var attributes = query
