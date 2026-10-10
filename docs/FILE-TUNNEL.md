@@ -417,6 +417,45 @@ because `assert.throws` prepends `Missing expected exception:`. D registers that
 full message; no source, corpus, mutation or exit condition changed. C remains
 failed evidence, rather than acceptance.
 
+Private-copy preparation landed in #1381 at `0ebbcc92`; no storage helper or
+attachment capability is selected. The next bounded T0b change reuses the
+existing private pngjs 7.0.0/jpeg-js 0.4.4 admission candidate and valid-sample
+proofs under `scripts/tunnel-decoder-proof/`, sharing the supported-target
+runner with storage rather than duplicating its Docker/platform logic.
+Before execution its gate is: six compiled runs reproduce exact owned PNG/JPEG
+input and pixel hashes; reject malformed/truncated headers, excessive input,
+sides and pixels, PNG animation/interlace and duplicate/end/chunk errors,
+JPEG frame/table/segment/scan/end errors; full decoding rejects CRC and entropy
+damage. A header check alone never declares valid pixels. Relevant removed
+admission guards must fail exact named assertions on both compiled Mac ARM gates.
+Preserve all six storage proof executions when adapting the shared runner.
+Dependency files and helper/source inputs must be snapshotted and hashed.
+
+The current pngjs synchronous interlaced path calls `zlib.inflateSync` without
+an output limit (`pngjs/lib/parser-sync.js`); this feasibility candidate will
+refuse interlace before calling it. This is a candidate subset, not a selected
+production format policy. Hard process budgets, cancellation/concurrency and
+actual held-approval responsiveness remain the subsequent T0b gate; this
+header/corpus preparation cannot clear them or advertise upload support.
+
+Decoder admission preparation passed six builds and six executions on
+2026-10-10 with ten exact header/malformed/full-decode control groups and
+matching owned input/pixel hashes. Eighteen removed-guard variants failed
+their exact named assertions on both compiled Mac ARM Bun versions (36/36);
+Linux mutations remain unmeasured. The shared runner's default storage proof
+also passed six builds/executions with all 27 controls.
+Independent review found that initially enumerated dependency hashes missed
+added files. The runner now compares exact entry types/names/hashes in both
+installed and captured trees, verifies the copied manifest and archives its
+own input. Actual extensionless-file additions in each tree invalidated the
+receipt before the second compiler's first build started; owned dependency
+copies were used.
+Final evidence is retained in `/private/tmp/remi-1170-decoder-20261010-corpus-e/`,
+`-storage-e/`, `-mutations-b/` and `-tree-control/`.
+Earlier receipts remain historical snapshots. The first private tree-control
+driver failed parsing before execution; its corrected driver and failure are
+retained separately, and only the executed controls count as acceptance.
+
 | Next PR | Existing code and proposed files | Prerequisite and exit gate |
 |---|---|---|
 | T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
