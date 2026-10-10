@@ -31,18 +31,22 @@ struct PhoneNewSessionSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Machine") {
+                Section {
                     Picker("Machine", selection: $machineID) {
                         ForEach(machines) { machine in
                             Text(machine.displayName).tag(machine.id)
                         }
                     }
                     .onChange(of: machineID) { _, _ in
-                        selectDefaultsForMachine()
+                        selectDefaultsForMachine(resetRepository: true)
                     }
+                } header: {
+                    Label("Machine", systemImage: "desktopcomputer")
+                } footer: {
+                    Text("The selected machine provides the available repositories, harnesses, and workspace features.")
                 }
 
-                Section(workspaceCapable ? "Repository" : "Directory") {
+                Section {
                     if !repositories.isEmpty {
                         Picker("Recent", selection: $repository) {
                             Text("Choose a repository").tag("")
@@ -56,23 +60,32 @@ struct PhoneNewSessionSheet: View {
                         }
                     }
 
-                    TextField(
-                        workspaceCapable ? "Repository path" : "Existing directory",
-                        text: $repository
-                    )
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                    Text(workspaceCapable
-                         ? "Use an absolute path or a path under ~ on this machine."
-                         : "This machine does not support workspaces yet, so Remi will start in this existing directory.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    if workspaceCapable {
+                        TextField("Repository path", text: $repository)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else {
+                        TextField("Existing directory", text: $repository)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } header: {
+                    if workspaceCapable {
+                        Label("Repository", systemImage: "folder")
+                    } else {
+                        Label("Directory", systemImage: "folder")
+                    }
+                } footer: {
+                    if workspaceCapable {
+                        Text("Use an absolute path or a path under ~ on this machine.")
+                    } else {
+                        Text("This machine does not support workspaces yet, so Remi will start in this existing directory.")
+                    }
                 }
 
                 if workspaceCapable {
-                    Section("Worktree") {
-                        Toggle("Create a new branch", isOn: $createsWorktree)
+                    Section {
+                        Toggle("Create a new branch and worktree", isOn: $createsWorktree)
                         if createsWorktree {
                             TextField("Branch name", text: $branch)
                                 .textInputAutocapitalization(.never)
@@ -80,14 +93,19 @@ struct PhoneNewSessionSheet: View {
                             TextField("Base (optional)", text: $base)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
+                        }
+                    } header: {
+                        Label("Workspace", systemImage: "arrow.triangle.branch")
+                    } footer: {
+                        if createsWorktree {
                             Text("The machine creates a separate worktree next to the repository. Remi does not delete it when the session ends.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("The session starts in the repository’s main worktree.")
                         }
                     }
                 }
 
-                Section("Agent") {
+                Section {
                     Picker("Harness", selection: $harness) {
                         ForEach(harnesses, id: \.self) { value in
                             Text(Self.harnessName(value)).tag(value)
@@ -97,10 +115,10 @@ struct PhoneNewSessionSheet: View {
                     TextField("Model (optional)", text: $model)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-
+                } header: {
+                    Label("Agent", systemImage: "sparkles")
+                } footer: {
                     Text("Leave this empty to use the harness default configured on the machine.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("New session")
@@ -114,7 +132,7 @@ struct PhoneNewSessionSheet: View {
                         .disabled(!canCreate)
                 }
             }
-            .onAppear { selectDefaultsForMachine() }
+            .onAppear { selectDefaultsForMachine(resetRepository: repository.isEmpty) }
         }
     }
 
@@ -144,12 +162,12 @@ struct PhoneNewSessionSheet: View {
         return !createsWorktree || !branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func selectDefaultsForMachine() {
+    private func selectDefaultsForMachine(resetRepository: Bool) {
         if !harnesses.contains(harness) {
             harness = harnesses[0]
         }
-        if repository.isEmpty, let recent = repositories.first {
-            repository = recent.repository
+        if resetRepository {
+            repository = repositories.first?.repository ?? ""
         }
         if !workspaceCapable {
             createsWorktree = false

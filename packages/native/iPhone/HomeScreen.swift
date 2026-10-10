@@ -116,10 +116,10 @@ struct HomeScreen: View {
                 }
 
                 if visibleSessions.isEmpty {
-                    PhoneEmptyState(
-                        systemImage: "rectangle.stack",
-                        title: "No sessions",
-                        message: emptySessionsMessage
+                    PhoneNoSessionsState(
+                        message: emptySessionsMessage,
+                        canCreateSession: !availableSessionMachines.isEmpty,
+                        onNewSession: { showingNewSession = true }
                     )
                 } else {
                     SessionsSection(
@@ -262,6 +262,27 @@ struct HomeScreen: View {
     }
 }
 
+private struct PhoneNoSessionsState: View {
+    let message: LocalizedStringKey
+    let canCreateSession: Bool
+    let onNewSession: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("No sessions", systemImage: "rectangle.stack")
+        } description: {
+            Text(message)
+        } actions: {
+            if canCreateSession {
+                Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
+                    .buttonStyle(.glassProminent)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.l)
+    }
+}
+
 private struct ErrorBanner: View {
     let message: String
     let onDismiss: () -> Void
@@ -270,6 +291,7 @@ private struct ErrorBanner: View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -279,7 +301,6 @@ private struct ErrorBanner: View {
         }
         .padding(RemiTheme.Spacing.m)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -291,6 +312,7 @@ private struct NoticeBanner: View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
             Image(systemName: "info.circle.fill")
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -300,7 +322,6 @@ private struct NoticeBanner: View {
         }
         .padding(RemiTheme.Spacing.m)
         .background(.blue.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -358,8 +379,14 @@ private struct ScopeButton: View {
             .contentShape(.rect)
         }
         .buttonStyle(.glass)
-        .tint(selected ? RemiTheme.Color.attention : nil)
+        .overlay {
+            RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
+                .allowsHitTesting(false)
+        }
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityHint(selected ? "Selected session scope" : "Filter sessions to this scope")
     }
 }
 
@@ -403,23 +430,8 @@ private struct SessionsSection: View {
 
                     ForEach(machineSessions) { session in
                         if session.canResume {
-                            HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
-                                RemiSessionRow(session: session)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                Button {
-                                    onResumeSession(session.machineID, session.id)
-                                } label: {
-                                    if session.isResuming {
-                                        ProgressView().controlSize(.small)
-                                    } else {
-                                        Label("Resume", systemImage: "play.fill")
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                                .contentShape(.rect)
-                                .disabled(session.isResuming)
-                                .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
+                            PhoneResumableSessionRow(session: session) {
+                                onResumeSession(session.machineID, session.id)
                             }
                         } else {
                             NavigationLink {
@@ -447,6 +459,37 @@ private struct SessionsSection: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct PhoneResumableSessionRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let session: RemiSessionSummary
+    let onResume: () -> Void
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            RemiSessionRow(session: session)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
+            Button(action: onResume) {
+                if session.isResuming {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Resume", systemImage: "play.fill")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+            .disabled(session.isResuming)
+            .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
         }
     }
 }
