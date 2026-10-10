@@ -197,11 +197,11 @@ struct MacLiveRootView: View {
                         Button {
                             toggleSessionColumn()
                         } label: {
-                            Label("Toggle sessions", systemImage: "rectangle.split.3x1")
+                            Label("Focus conversation", systemImage: "rectangle.split.3x1")
                         }
                         .labelStyle(.iconOnly)
                         .keyboardShortcut("2", modifiers: [.command, .control])
-                        .help("Show or hide the session list (Control-Command-2)")
+                        .help("Show or hide both navigation columns (Control-Command-2)")
                     }
                 }
             }
