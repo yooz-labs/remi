@@ -21,7 +21,7 @@ public struct RelayNotificationPanel: View {
                         RelayNotificationHeader(
                             kind: card.kind,
                             title: card.title,
-                            body: card.body,
+                            messageBody: card.body,
                             origin: card.machine.origin
                         )
 
@@ -71,7 +71,7 @@ public struct RelayNotificationPanel: View {
 private struct RelayNotificationHeader: View {
     let kind: VerifiedPushNotification.Kind
     let title: String
-    let body: String
+    let messageBody: String
     let origin: String
 
     var body: some View {
@@ -96,7 +96,7 @@ private struct RelayNotificationHeader: View {
                 }
             }
 
-            Text(body)
+            Text(messageBody)
                 .font(.body)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
