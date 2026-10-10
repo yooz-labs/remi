@@ -167,9 +167,9 @@ public enum RemiPreviewData {
     ]
 
     public static let transcript: [RemiTranscriptEntry] = [
-        .user(id: "u1", text: "Start with the native iOS app."),
-        .agent(id: "a1", text: "I’ll establish the design system and shared components first."),
-        .tool(id: "t1", name: "Build project", summary: "Compiled the RemiPhone scheme."),
+        .user(id: "u1", text: "Please inspect the session state and verify the interaction at large text sizes."),
+        .agent(id: "a1", text: "I found **one approval** waiting on the Mac build. Review the [build notes](https://example.com) before continuing.\n\nThe spacing in this response is preserved."),
+        .tool(id: "t1", name: "Build project", summary: "xcodebuild -scheme RemiPhone\n\nCompileSwift normal arm64\nLink RemiPhone\nBuild succeeded"),
     ]
 
     private static func decodeFixture<Value: Decodable>(_ name: String) -> Value {

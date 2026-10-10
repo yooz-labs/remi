@@ -60,6 +60,8 @@ Remi's visual rule remains: glass belongs on important interactive cards and con
 
 The iPhone and Mac conversation screens share one session interaction bar for live main conversations, read-only subagent conversations, and finished sessions. It is pinned with a vertical safe-area inset, which keeps transcript content and keyboard avoidance independent from the bar's height, and uses the system's soft bottom scroll-edge transition instead of a manual divider.
 
+Transcript entries use one shared presentation on both platforms: constrained trailing user messages, document-like agent responses, compact expandable tool activity, and semantic error surfaces. Dynamic agent text uses Foundation's inline-only Markdown parser with whitespace preservation; only `http`, `https`, and `mailto` links remain interactive. This is deliberately not a full block-Markdown renderer, so headings, lists, tables, and fenced code blocks retain readable source structure rather than receiving custom block layout.
+
 Both app roots currently cap Dynamic Type at Accessibility 2 as a deliberate legibility/layout tradeoff. That is the shipping boundary, not full support for every system size. Revisit the global cap by testing and repairing individual layouts before claiming support through Accessibility 5; do not silently lower it further.
 
 ## iOS/macOS 27 watchlist
