@@ -58,7 +58,11 @@ def classify(base, head):
             return all_gates("Empty diff; scope cannot justify skipping")
         gates = dict.fromkeys(GATES, False)
         for path in paths:
-            if path == "package.json":
+            # Bun discovers tests even in documentation, metadata and standalone proof dirs.
+            if path.startswith(("docs/", "npm/", *PROOFS)) and re.search(
+                    r"[._](test|spec)\.[cm]?[jt]sx?$", path):
+                return all_gates("Discovered Bun test changed; running all gates")
+            elif path == "package.json":
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
@@ -84,8 +88,6 @@ def classify(base, head):
             elif path.startswith("packages/macos/"):
                 gates.update(lint=True, root=True, web=True, integration=True, test=True)
             elif path.startswith(PROOFS):
-                if re.search(r"[._](test|spec)\.[cm]?[jt]sx?$", path):
-                    return all_gates("Proof test is discovered by Bun; running all gates")
                 # The exemption belongs only to standalone proofs. A new source/test
                 # consumer must not leave later proof edits outside runtime coverage.
                 consumers = subprocess.run(

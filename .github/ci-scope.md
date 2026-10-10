@@ -29,8 +29,9 @@ dependency trace supports a narrower classification.
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
 Moving a candidate into a live caller cannot preserve its standalone exemption.
-Proof files with Bun test/spec names also run full gates, because suite discovery
-does not require an explicit import. CSS exemptions cover web source, not tests.
+Files with Bun test/spec names under docs, npm metadata or proof directories also
+run full gates, because suite discovery does not require an explicit import.
+CSS exemptions cover web source, not tests.
 
 `docs/PROVISIONING.md` is an explicit Markdown exception: the existing
 `packages/daemon/tests/integration/key-provisioning.test.ts` reads its actual
