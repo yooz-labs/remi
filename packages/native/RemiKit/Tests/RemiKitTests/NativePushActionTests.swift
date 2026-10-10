@@ -20,17 +20,33 @@ struct NativePushActionTests {
             var yes: [String: Any] = ["value": "yes", "label": "Yes", "isYes": true, "isNo": false, "description": NSNull(), "standingGrant": NSNull()]
             var no: [String: Any] = ["value": "no", "label": "No", "isYes": false, "isNo": true, "description": NSNull(), "standingGrant": NSNull()]
             var standing: [String: Any] = ["value": "always", "label": "Allow", "isYes": true, "isNo": false, "description": "x", "standingGrant": "addRules"]
-            if change == "long" { yes["label"] = String(repeating: "Y", count: 25) }
-            if change == "boundary" { yes["label"] = String(repeating: "Y", count: 24) }
+            if change == "long" { yes["label"] = String(repeating: "Y", count: 81) }
+            if change == "boundary" { yes["label"] = String(repeating: "Y", count: 80) }
             if change == "control" { no["description"] = "\u{202e}" }
             if change == "empty" { yes["description"] = " " }
             if change == "duplicate" { no["value"] = "yes" }
             if change == "setMode" { standing["standingGrant"] = "setMode" }
+            if change == "daemonStanding" {
+                standing["label"] = "Yes, allow x for this session"
+                standing["description"] = NSNull()
+            }
+            if change == "missingStandingScope" { standing["description"] = NSNull() }
             payload["options"] = category == "REMI_YNA" ? [yes, standing, no] : [yes, no]
             let carrier = try OwnedPushContext.resealed(vector, oracle: oracle,
                 payload: JSONSerialization.data(withJSONObject: payload), now: UInt64(Date().timeIntervalSince1970))
             return (context, carrier)
         } catch { try? context.cleanup(); throw error }
+    }
+
+    @Test func daemonStandingGrantShapeKeepsItsFullSignedTitleAndRequiresUnlock() throws {
+        let (context, carrier) = try inputs(category: "REMI_YNA", change: "daemonStanding")
+        defer { try? context.cleanup() }
+        let opened = try context.store.open(carrier: carrier)
+        let set = try #require(try context.store.actionSet(for: opened))
+        let standing = try #require(set.actions.first { $0.value == "always" })
+        #expect(standing.title == "Yes, allow x for this session")
+        #expect(standing.authenticationRequired)
+        #expect(opened.nativeAnswerChoices.count == 3)
     }
     static func content(_ notification: VerifiedPushNotification, set: VerifiedPushActionSet) throws -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
@@ -76,9 +92,9 @@ struct NativePushActionTests {
         #expect(!context.store.allowsPresentation(content))
     }
 
-    @Test(arguments: ["long", "control", "empty", "duplicate", "setMode", "multi"])
+    @Test(arguments: ["long", "control", "empty", "duplicate", "setMode", "multi", "missingStandingScope"])
     func unsupportedSignedShapesHaveNoCategory(change: String) throws {
-        let category = change == "setMode" ? "REMI_YNA" : change == "multi" ? "REMI_MULTI" : "REMI_YN"
+        let category = ["setMode", "missingStandingScope"].contains(change) ? "REMI_YNA" : change == "multi" ? "REMI_MULTI" : "REMI_YN"
         let (context, carrier) = try inputs(category: category, change: change); defer { try? context.cleanup() }
         let opened = try context.store.open(carrier: carrier)
         #expect(try context.store.actionSet(for: opened) == nil)
@@ -92,7 +108,7 @@ struct NativePushActionTests {
         let set = try context.store.actionSet(for: opened)
         if change == "boundary" {
             let yes = try #require(set?.actions.first { $0.value == "yes" })
-            #expect(yes.title == String(repeating: "Y", count: 24))
+            #expect(yes.title == String(repeating: "Y", count: 80))
         } else { #expect(set == nil) }
     }
 
