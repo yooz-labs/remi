@@ -504,8 +504,19 @@ public final class MachineStore {
     }
 
     public func stop() {
+        retireForeground(invalidateAnswers: true)
+    }
+
+    /// #1385: background suspension retires foreground sockets and prevents their
+    /// restoration, while an independently owned, deadline-bound push action finishes.
+    public func suspendForegroundConnections() {
+        retireForeground(invalidateAnswers: false)
+    }
+
+    private func retireForeground(invalidateAnswers: Bool) {
         running = false
-        registrationEpoch.replace(); answerEpoch.replace()
+        registrationEpoch.replace()
+        if invalidateAnswers { answerEpoch.replace() }
         for (endpoint, generation) in connectionGenerations {
             if let key = brokerKey(endpoint) { RelayChannelBroker.shared.retire(key: key, id: generation) }
         }

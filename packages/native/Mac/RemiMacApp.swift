@@ -25,7 +25,7 @@ struct RemiMacApp: App {
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }
-                else if phase == .background { notifications.background() }
+                else if phase == .background { notifications.background(suspendForegroundConnections: false) }
             }
         }
         .defaultSize(width: 1280, height: 800)

@@ -128,7 +128,144 @@ private final class OwnedFinalSignatureDismissal: @unchecked Sendable {
 }
 
 @MainActor
+private final class OwnedBackgroundTransition {
+    var entered = false
+}
+
+@MainActor
 struct NativeSecureSourceIntegrationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"] != nil))
+    func phoneBackgroundRetiresHotConnectionsWithoutLosingSignedActions() async throws {
+        let fixture = try SecureFixtureIPC(reference: #require(ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"]))
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        var pairing: MachineStore?
+        var coordinator: NativeRelayNotifications?
+        do {
+            let offer = try await fixture.message()
+            try #require(offer["kind"] as? String == "offer")
+            let identity = try context.store.loadOrCreate()
+            let endpoint = try MachineEndpoint.pairingOverRelay(#require(offer["token"] as? String))
+            let session = URLSession(configuration: .ephemeral,
+                delegate: try OwnedRelayCA(path: #require(offer["caCertificatePath"] as? String)), delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let client = MachineStore(endpoints: [], identity: identity, clientVersion: "owned-background-pair",
+                clientId: "owned-device", pushStore: context.push)
+            pairing = client; client.useOwnedTestSession(session); client.addMachine(endpoint)
+            let comparison = try await fixture.message()
+            let fingerprint = try #require(comparison["fingerprint"] as? String)
+            try await until("lifecycle pairing comparison") { client.machines.first?.status == .waitingForRelayConfirmation(fingerprint: fingerprint) }
+            try fixture.send(["kind": "confirm", "fingerprint": fingerprint, "devicePublicKey": identity.publicKeyBase64])
+            try await until("lifecycle real trust commit") { client.machines.first?.status == .connected }
+            let saved = try #require(client.persistableEndpoints.first)
+            client.updateRelayPushToken(Data(repeating: 0x18, count: 32), environment: "sandbox")
+            await client.enableRelayNotifications(on: saved)
+            try await until("lifecycle real subscription") { client.relayNotificationNotice == "Relay notifications enabled." }
+            client.createSession(on: saved, directory: try #require(offer["directory"] as? String), harness: "claude")
+            try await until("lifecycle real child") { client.machines.first?.activeSessions.count == 1 }
+            client.stop()
+            let notifications = try NativeRelayNotifications(ownedPushStore: context.push,
+                ownedIdentityStore: context.store, defaultsSuite: suite, ownedSession: session,
+                ownedForegroundEndpoints: [saved])
+            coordinator = notifications
+            notifications.activate()
+            let hot = try #require(notifications.store)
+            try await until("lifecycle hot store connected") { hot.machines.first?.status == .connected }
+            let generations = hot.connectionGenerations
+            notifications.activate()
+            #expect(hot.connectionGenerations == generations, "Repeated active callbacks do not create another connection")
+
+            notifications.background()
+            #expect(hot.connectionGenerations.isEmpty, "Phone background entry must retire all foreground connections")
+            // Capture the original failure without waiting for a nonexistent retirement.
+            guard hot.connectionGenerations.isEmpty else {
+                try fixture.send(["kind": "receipts"])
+                let before = try await receipts(fixture, push: context.push)
+                #expect(before["activeClients"] as? Int == 0, "The real source still sees a client after phone background entry")
+                hot.stop(); try await fixture.stop(); return
+            }
+            try await Task.sleep(for: .seconds(2))
+            try fixture.send(["kind": "receipts"])
+            let stopped = try await receipts(fixture, push: context.push)
+            #expect(stopped["activeClients"] as? Int == 0, "Background store has no live relay transport")
+            let count = try #require(stopped["clientConnections"] as? Int)
+            try await Task.sleep(for: .seconds(4))
+            try fixture.send(["kind": "receipts"])
+            let idle = try await receipts(fixture, push: context.push)
+            #expect(idle["activeClients"] as? Int == 0 && idle["clientConnections"] as? Int == count,
+                "An idle background store never reconnects")
+
+            try fixture.send(["kind": "question"])
+            let carrier = try await question(fixture, push: context.push)
+            let opened = try context.push.open(carrier: carrier)
+            let set = try #require(try context.push.actionSet(for: opened))
+            let no = try #require(set.actions.first)
+            let content = try NativePushActionTests.content(opened, set: set)
+            #expect(await notifications.receiveAction(content: content, identifier: no.identifier) == .delivered)
+            try await denyEffect(fixture, push: context.push)
+            try await Task.sleep(for: .seconds(2))
+            try fixture.send(["kind": "receipts"])
+            let answered = try await receipts(fixture, push: context.push)
+            #expect(answered["activeClients"] as? Int == 0 && answered["clientConnections"] as? Int == count + 1,
+                "A bounded signed background action closes without restoring foreground transport")
+            #expect(hot.connectionGenerations.isEmpty)
+
+            notifications.activate()
+            try await until("lifecycle resume connected") { hot.machines.first?.status == .connected && !hot.connectionGenerations.isEmpty }
+            try await Task.sleep(for: .seconds(2))
+            try fixture.send(["kind": "receipts"])
+            let reconnected = try await receipts(fixture, push: context.push)
+            #expect(reconnected["activeClients"] as? Int == 1 && reconnected["clientConnections"] as? Int == count + 2,
+                "Foreground resume creates exactly one actual source connection")
+            let resumed = hot.connectionGenerations
+            notifications.activate()
+            #expect(hot.connectionGenerations == resumed, "Resuming starts once")
+            // Exercise an actual phase transition after signing starts, before send.
+            try fixture.send(["kind": "question"])
+            let crossingCarrier = try await question(fixture, push: context.push)
+            let crossing = try context.push.open(carrier: crossingCarrier)
+            let crossingSet = try #require(try context.push.actionSet(for: crossing))
+            let crossingContent = try NativePushActionTests.content(crossing, set: crossingSet)
+            let crossingNo = try #require(crossingSet.actions.first)
+            let transition = OwnedBackgroundTransition()
+            notifications.ownedBeforeActionSend = { _ in
+                await MainActor.run {
+                    notifications.background()
+                    transition.entered = true
+                }
+            }
+            let crossingOutcome = await notifications.receiveAction(content: crossingContent, identifier: crossingNo.identifier)
+            #expect(transition.entered, "The real send checkpoint entered background")
+            #expect(crossingOutcome == .delivered, "Backgrounding during a bounded action must preserve its signed No")
+            guard crossingOutcome == .delivered else {
+                hot.stop(); try await fixture.stop(); return
+            }
+            try await denyEffect(fixture, push: context.push)
+            notifications.ownedBeforeActionSend = nil
+            try await Task.sleep(for: .seconds(2))
+            try fixture.send(["kind": "receipts"])
+            let crossed = try await receipts(fixture, push: context.push)
+            #expect(hot.connectionGenerations.isEmpty && crossed["activeClients"] as? Int == 0 &&
+                crossed["clientConnections"] as? Int == count + 3,
+                "An in-flight action cannot restore a background store")
+            notifications.activate()
+            try await until("lifecycle after crossing reconnect") { !hot.connectionGenerations.isEmpty && hot.machines.first?.status == .connected }
+            try await Task.sleep(for: .seconds(2))
+            let desktopGenerations = hot.connectionGenerations
+            notifications.background(suspendForegroundConnections: false)
+            try await Task.sleep(for: .seconds(2))
+            try fixture.send(["kind": "receipts"])
+            let desktop = try await receipts(fixture, push: context.push)
+            #expect(hot.connectionGenerations == desktopGenerations && desktop["activeClients"] as? Int == 1 &&
+                desktop["clientConnections"] as? Int == count + 4,
+                "The Mac policy preserves continuous monitoring without reconnecting")
+            hot.stop(); try await fixture.stop()
+        } catch {
+            coordinator?.store?.stop(); pairing?.stop(); try await fixture.stop(); throw error
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"] != nil))
     func actualColdNotificationActionUsesOriginalCapsuleAndSignedNo() async throws {
         let reference = try #require(ProcessInfo.processInfo.environment["REMI_NATIVE_SECURE_SOURCE_ROOT"])
