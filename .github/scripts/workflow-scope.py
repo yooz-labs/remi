@@ -33,12 +33,18 @@ def load(text):
     return value
 
 
-def execution(value):
+def execution(value, path):
     result = copy.deepcopy(value)
-    for key in ("name", "on", "concurrency"):
-        result.pop(key, None)
-    result["jobs"].pop("scope", None)
-    for job in result["jobs"].values():
+    scoped = {"ci.yml": {"lint": "lint", "typecheck": "typecheck", "test": "test"},
+              "relay-r7.yml": {"local-relay": "relay"},
+              "macos-app.yml": {"build-test": "macos"}}.get(Path(path).name, {})
+    if scoped:
+        for key in ("name", "on", "concurrency"):
+            result.pop(key, None)
+        result["jobs"].pop("scope", None)
+    for name, job in result["jobs"].items():
+        if name not in scoped:
+            continue  # Publication/admin prerequisites and step conditions are execution inputs.
         for key in ("if", "needs"):
             job.pop(key, None)
         steps = []
@@ -46,7 +52,8 @@ def execution(value):
             step = dict(original)
             step.pop("if", None)
             # Only the exact inert reporting step is routing, never an arbitrary named command.
-            if step.get("name") == "Report scoped skip" and set(step) == {"name", "run"}:
+            if step.get("name") == "Report scoped skip" and set(step) == {"name", "run"} and original.get("if") == (
+                    f"needs.scope.result == 'success' && needs.scope.outputs.{scoped[name]} == 'false'"):
                 if step["run"] in {
                     f'echo "{label} skipped; no relevant inputs changed." >> "$GITHUB_STEP_SUMMARY"'
                     for label in ("lint", "typecheck", "test", "macOS build")
@@ -58,9 +65,11 @@ def execution(value):
 
 
 def changed_gates(path, before, after):
-    left, right = execution(load(before)), execution(load(after))
+    left, right = execution(load(before), path), execution(load(after), path)
     if left == right:
         return set()
+    if Path(path).name not in {"ci.yml", "relay-r7.yml", "macos-app.yml"}:
+        return {"lint", "root", "notices", "test"}
     if {key: value for key, value in left.items() if key != "jobs"} != {
             key: value for key, value in right.items() if key != "jobs"}:
         raise ValueError("global execution configuration changed")
@@ -112,6 +121,12 @@ def validate():
     names = {"spelling": "Spelling", "lint": "Lint", "typecheck": "Type Check", "test": "Test"}
     for key, name in names.items():
         assert ci["jobs"][key]["name"] == name, key
+    assert ci["jobs"]["auto-release"]["needs"] == ["spelling", "lint", "typecheck", "test"]
+    assert ci["jobs"]["auto-release"]["if"] == "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert ci["jobs"]["release-guard"]["needs"] == ["spelling", "lint", "typecheck", "test", "auto-release"]
+    assert ci["jobs"]["release-guard"]["if"] == "always() && github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert ci["jobs"]["sync-develop"]["needs"] == ["auto-release"]
+    assert ci["jobs"]["sync-develop"]["if"] == "needs.auto-release.outputs.released == 'true'"
     for workflow, job_name, flag in ((ci, "lint", "lint"), (ci, "typecheck", "typecheck"),
                                     (ci, "test", "test"), (relay, "local-relay", "relay"),
                                     (workflows["macos-app.yml"], "build-test", "macos")):

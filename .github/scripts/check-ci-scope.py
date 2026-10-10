@@ -174,6 +174,27 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         workflow_case("ci.yml", lambda w: w["jobs"]["typecheck"].update(**{"runs-on": "ubuntu-24.04"}), {"root", "web", "signaling", "integration", "notices"})
         workflow_case("ci.yml", lambda w: w["env"].update(BUN_VERSION="1.4.2"), gates)
         workflow_case("ci.yml", lambda w: w["jobs"].update(unknown={"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}), gates)
+        workflow_case("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}), METADATA)
+        workflow_case("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]), METADATA)
+        workflow_case("release.yml", lambda w: next(iter(w["jobs"].values()))["steps"][0].update(**{"if": "false"}), METADATA)
+        workflow_case("release.yml", lambda w: w["on"].update(workflow_dispatch={}), METADATA)
+        workflow_case("release.yml", lambda w: w["jobs"].update(test={"runs-on": "ubuntu-latest", "needs": ["build"], "steps": [{"run": "echo owned", "if": "true"}]}), METADATA)
+        for target in ("job-if", "job-needs", "step-if"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            value = WORKFLOW_TOOLS["load"](WORKFLOWS["release.yml"])
+            value["jobs"]["test"] = {"runs-on": "ubuntu-latest", "needs": ["build"],
+                "if": "github.event_name == 'push'", "steps": [{"run": "echo owned", "if": "success()"}]}
+            write(".github/workflows/release.yml", yaml.safe_dump(value, sort_keys=False))
+            alias_base = commit()
+            if target == "job-if":
+                value["jobs"]["test"]["if"] = "github.event_name == 'workflow_dispatch'"
+            elif target == "job-needs":
+                value["jobs"]["test"]["needs"] = []
+            else:
+                value["jobs"]["test"]["steps"][0]["if"] = "always()"
+            write(".github/workflows/release.yml", yaml.safe_dump(value, sort_keys=False))
+            assert selected(classify(alias_base, commit())) == METADATA
+            count += 1
         # The real validator must reject coverage removal, rather than calling a no-op covered.
         git("reset", "--hard", base); git("clean", "-fdq")
         value = WORKFLOW_TOOLS["load"](WORKFLOWS["ci.yml"])
@@ -206,6 +227,8 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["permissions"].update(contents="write"))
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["steps"].append({"run": "true"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]))
         for destination in (None, "docs/moved.md"):
             git("reset", "--hard", base)
             git("clean", "-fdq")

@@ -60,9 +60,12 @@ changes while retaining its actual build/test steps for affected inputs.
 CI classifier/action/workflow configuration changes run the actual git-diff
 corpus and workflow validator, rather than unrelated Bun runtime tests or R7.
 Parsed YAML execution comparisons include job commands/actions, runner, timeout,
-environment and global inputs. Only recognized routing fields (`on`, concurrency,
-`needs`, `if`), the self-validation scope job and exact inert scoped-report steps
-are excluded. Unknown jobs/fields, malformed YAML or missing comparison data
+environment and global inputs. Only validated routing fields in CI/R7/macOS and
+their exact scoped gate jobs, the self-validation scope job and exact inert
+scoped-report steps are excluded. Publication/admin jobs retain their `if`/`needs`
+and step conditions as execution inputs; release/admin workflows also retain
+their triggers and concurrency. Auto-release/release-guard/sync prerequisites
+are explicitly validated. Unknown jobs/fields, malformed YAML or missing comparison data
 select full gates. Normal CI execution changes select the affected gate; R7
 execution changes select R7. Main push/manual R7 remain full.
 
