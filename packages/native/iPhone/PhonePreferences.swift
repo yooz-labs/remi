@@ -64,7 +64,7 @@ struct PhonePreferencesSheet: View {
                         }
                     }
                 } header: {
-                    Text("Notifications")
+                    Label("Notifications", systemImage: "bell.badge")
                 } footer: {
                     Text(notificationFooter)
                 }
@@ -86,7 +86,7 @@ struct PhonePreferencesSheet: View {
                             Label("Share public identity", systemImage: "square.and.arrow.up")
                         }
                     } header: {
-                        Text("Device identity")
+                        Label("Device identity", systemImage: "key.horizontal")
                     } footer: {
                         Text("This contains no private key. Installing it on a machine authorizes this device to connect there.")
                     }
@@ -94,6 +94,8 @@ struct PhonePreferencesSheet: View {
 
                 Section {
                     Toggle("Haptic feedback", isOn: $hapticsEnabled)
+                } header: {
+                    Label("Feedback", systemImage: "iphone.radiowaves.left.and.right")
                 } footer: {
                     Text("Use subtle feedback for new questions and answers.")
                 }
@@ -117,7 +119,7 @@ struct PhonePreferencesSheet: View {
         }
     }
 
-    private var notificationFooter: String {
+    private var notificationFooter: LocalizedStringResource {
         if !notificationsEnabled {
             return "Remi will not show local question alerts on this device."
         }
