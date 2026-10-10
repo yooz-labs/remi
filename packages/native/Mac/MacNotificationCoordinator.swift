@@ -240,13 +240,15 @@ struct MacMenuBarLabel: View {
     @State private var relayNotifications = NativeRelayNotifications.shared
 
     var body: some View {
-        Image(systemName: "questionmark.bubble")
+        MacMenuBarStatusLabel(
+            pendingCount: pendingCount,
+            identityAvailable: store != nil
+        )
             .background {
                 if let store {
                     MacQuestionNotificationMonitor(store: store)
                 }
             }
-            .accessibilityLabel("Remi")
             .onChange(of: notificationRouter.destination, initial: true) { _, destination in
                 guard destination != nil else { return }
                 openWindow(id: "main")
@@ -257,6 +259,40 @@ struct MacMenuBarLabel: View {
                 openWindow(id: "main")
                 NSApp.activate()
             }
+    }
+
+    private var pendingCount: Int {
+        store?.machines.reduce(0) { $0 + $1.questions.count } ?? 0
+    }
+}
+
+private struct MacMenuBarStatusLabel: View {
+    let pendingCount: Int
+    let identityAvailable: Bool
+
+    var body: some View {
+        HStack(spacing: RemiTheme.Spacing.xxs) {
+            Image(systemName: systemImage)
+            if identityAvailable && pendingCount > 0 {
+                Text(pendingCount, format: .number)
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(accessibilityLabel))
+    }
+
+    private var systemImage: String {
+        guard identityAvailable else { return "exclamationmark.triangle" }
+        return pendingCount > 0 ? "questionmark.bubble.fill" : "questionmark.bubble"
+    }
+
+    private var accessibilityLabel: LocalizedStringResource {
+        guard identityAvailable else { return "Remi unavailable" }
+        if pendingCount == 0 { return "Remi, no pending requests" }
+        if pendingCount == 1 { return "Remi, 1 pending request" }
+        return "Remi, \(pendingCount) pending requests"
     }
 }
 
