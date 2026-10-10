@@ -16,6 +16,9 @@ private struct HomePreview: View {
 }
 
 private struct SessionPreview: View {
+    var initialConversationID: String? = nil
+    var initialQuestionID: String? = nil
+
     var body: some View {
         NavigationStack {
             SessionScreen(
@@ -26,6 +29,8 @@ private struct SessionPreview: View {
                     SessionViewMeta(agentId: "explore", agentType: "Explore", active: true),
                     SessionViewMeta(agentId: "review", agentType: "code-reviewer", active: false),
                 ],
+                initialConversationID: initialConversationID,
+                initialQuestionID: initialQuestionID,
                 transcriptForView: { _ in RemiPreviewData.transcript }
             )
         }
@@ -58,6 +63,15 @@ private struct EmptyHomePreview: View {
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
 #Preview("Session · Dark") { SessionPreview().preferredColorScheme(.dark) }
 #Preview("Session · Accessibility") { SessionPreview().environment(\.dynamicTypeSize, .accessibility5) }
+#Preview("Session · Notification focus") {
+    SessionPreview(initialQuestionID: RemiPreviewData.binaryQuestion.questionID)
+}
+#Preview("Session · Subagent question focus") {
+    SessionPreview(
+        initialConversationID: "explore",
+        initialQuestionID: RemiPreviewData.binaryQuestion.questionID
+    )
+}
 
 #Preview("Pairing · Light") { PairingPreview().preferredColorScheme(.light) }
 #Preview("Pairing · Dark") { PairingPreview().preferredColorScheme(.dark) }
