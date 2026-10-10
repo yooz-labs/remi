@@ -24,4 +24,14 @@ struct RemiConnectionTests {
         #expect(!RemiConnection.shouldRetryAuthentication("PAIRING_REJECTED"))
         #expect(!RemiConnection.shouldRetryAuthentication("PAIRING_EXPIRED"))
     }
+
+    @Test func manualRetryOnlyRestartsTerminalDirectStates() {
+        #expect(RemiConnection.allowsManualRetry(.stopped))
+        #expect(RemiConnection.allowsManualRetry(.awaitingLocalApproval(fingerprint: "client")))
+        #expect(RemiConnection.allowsManualRetry(.rejected(reason: "refused")))
+        #expect(!RemiConnection.allowsManualRetry(.connecting(attempt: 1)))
+        #expect(!RemiConnection.allowsManualRetry(.awaitingRelayConfirmation(fingerprint: "host")))
+        #expect(!RemiConnection.allowsManualRetry(.connected(sessionId: nil)))
+        #expect(!RemiConnection.allowsManualRetry(.retrying(attempt: 2, delaySeconds: 2)))
+    }
 }

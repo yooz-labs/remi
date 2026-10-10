@@ -637,6 +637,11 @@ public final class MachineStore {
         Task { await connection.retryAfterApproval() }
     }
 
+    public func retryConnection(for endpoint: MachineEndpoint) {
+        guard endpoint.relayPin == nil, let connection = connections[endpoint] else { return }
+        Task { await connection.retry() }
+    }
+
     public func clearLatestError() {
         latestError = nil
         latestOperationError = nil
