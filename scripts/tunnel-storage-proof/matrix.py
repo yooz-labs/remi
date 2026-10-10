@@ -14,7 +14,7 @@ import subprocess
 import sys
 import uuid
 
-TARGETS = ("bun-darwin-arm64", "bun-darwin-x64", "bun-linux-arm64", "bun-linux-x64")
+TARGETS = ("bun-darwin-arm64", "bun-linux-arm64", "bun-linux-x64")
 CHECKS = {
     "exclusive 0600 creation",
     "exclusive descriptor-relative publication and retirement",
@@ -41,9 +41,9 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--linux-arm64-image", required=True)
     parser.add_argument("--linux-x64-image", required=True)
-    parser.add_argument("--skip-mac-x64", action="store_true")
     parser.add_argument("--build-only", action="store_true")
     options = parser.parse_args()
+    compilers = (("1311", options.bun_1311), ("current", options.bun_current))
     source = Path(__file__).resolve().parent
     source_hashes = {name: digest(source / name) for name in ("probe.ts", "openat.c", "matrix.py")}
     output = options.out.resolve()
@@ -67,6 +67,7 @@ def main():
     run_id = uuid.uuid4().hex[:12]
     versions = {}
     images = {}
+    image_pins = {}
     cleanup_errors = []
 
     def interrupted(_signal, _frame):
@@ -86,11 +87,12 @@ def main():
         (output / "receipt.json").write_text(json.dumps({
             "host": {"system": platform.system(), "machine": platform.machine()},
             "sourceHashes": source_hashes,
+            "targets": list(TARGETS),
             "sourceUnchanged": unchanged,
             "compilerVersions": versions,
             "linuxImages": images,
             "cleanupErrors": cleanup_errors,
-            "complete": (unchanged and not cleanup_errors and len(results) == 16 and all(item.get("passed") for item in results)
+            "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(TARGETS) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
             "scope": "Existing seven primitive controls and compiled distribution only; full T0a corpus is pending",
             "results": results,
@@ -137,7 +139,7 @@ def main():
             raise RuntimeError(label + " failed; inspect its retained log")
 
     try:
-        for label, executable in (("1311", options.bun_1311), ("current", options.bun_current)):
+        for label, executable in compilers:
             executable = executable.resolve()
             version = subprocess.check_output([str(executable), "--version"], env=environment,
                                               text=True, timeout=30).strip()
@@ -160,11 +162,10 @@ def main():
                 if operating_system == "darwin":
                     host_arch = platform.machine().lower()
                     unavailable = (platform.system() != "Darwin"
-                                   or (architecture == "arm64" and host_arch not in ("arm64", "aarch64"))
-                                   or (architecture == "x64" and options.skip_mac_x64))
+                                   or host_arch not in ("arm64", "aarch64"))
                     if unavailable:
                         results.append({"label": "run-" + label + "-" + target, "passed": False,
-                                        "executed": False, "reason": "Mac execution unavailable or explicitly deferred"})
+                                        "executed": False, "reason": "Apple Silicon Mac execution unavailable"})
                         save()
                         continue
                     run("run-" + label + "-" + target, [artifact, "--owned-spike"],
@@ -172,15 +173,29 @@ def main():
                 else:
                     image = options.linux_arm64_image if architecture == "arm64" else options.linux_x64_image
                     docker_platform = "linux/" + ("amd64" if architecture == "x64" else "arm64")
+                    # Pin the locally addressable image/index before selecting its platform.
+                    # Docker's containerd store can expose a platform manifest digest
+                    # via inspect --platform that docker run cannot resolve as an image.
+                    if image not in image_pins:
+                        image_id = subprocess.check_output([
+                            "docker", "image", "inspect", "--format", "{{.Id}}", "--", image],
+                            env=environment, text=True, timeout=30).strip()
+                        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                            raise RuntimeError("Cached Linux image has no canonical local ID")
+                        image_pins[image] = image_id
+                    image_id = image_pins[image]
                     image_info = subprocess.check_output([
                         "docker", "image", "inspect", "--platform", docker_platform,
-                        "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image],
+                        "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image_id],
                         env=environment, text=True, timeout=30).strip().split()
                     if (len(image_info) != 3 or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_info[0])
                             or "/".join(image_info[1:]) != docker_platform):
                         raise RuntimeError("Cached Linux image does not match " + docker_platform)
-                    image_id = image_info[0]
-                    images[architecture] = {"reference": image, "id": image_id, "platform": docker_platform}
+                    selected = {"reference": image, "id": image_id,
+                                "platformImageId": image_info[0], "platform": docker_platform}
+                    if architecture in images and images[architecture] != selected:
+                        raise RuntimeError("Linux platform selection changed during the matrix")
+                    images[architecture] = selected
                     container_name = "remi-storage-proof-" + run_id + "-" + label + "-" + architecture
                     container = {"name": container_name, "cidfile": output / (container_name + ".cid")}
                     run("run-" + label + "-" + target, ["docker", "run", "--rm", "--pull=never",

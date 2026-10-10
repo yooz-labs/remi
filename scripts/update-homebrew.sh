@@ -9,7 +9,7 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
   exit 1
 fi
 
-PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
+PLATFORMS=("darwin-arm64" "linux-arm64" "linux-x64")
 declare -A SHAS
 
 echo "==> Fetching SHA-256 hashes from npm registry..." >&2
@@ -31,13 +31,9 @@ FORMULA="class Remi < Formula
   license \"Apache-2.0\"
 
   on_macos do
-    if Hardware::CPU.arm?
-      url \"https://registry.npmjs.org/@yooz-labs/remi-darwin-arm64/-/remi-darwin-arm64-${VERSION}.tgz\"
-      sha256 \"${SHAS[darwin-arm64]}\"
-    else
-      url \"https://registry.npmjs.org/@yooz-labs/remi-darwin-x64/-/remi-darwin-x64-${VERSION}.tgz\"
-      sha256 \"${SHAS[darwin-x64]}\"
-    end
+    depends_on arch: :arm64
+    url \"https://registry.npmjs.org/@yooz-labs/remi-darwin-arm64/-/remi-darwin-arm64-${VERSION}.tgz\"
+    sha256 \"${SHAS[darwin-arm64]}\"
   end
 
   on_linux do

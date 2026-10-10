@@ -15,7 +15,6 @@
   "files": ["bin/remi", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES"],
   "optionalDependencies": {
     "@yooz-labs/remi-darwin-arm64": "0.1.0",
-    "@yooz-labs/remi-darwin-x64": "0.1.0",
     "@yooz-labs/remi-linux-arm64": "0.1.0",
     "@yooz-labs/remi-linux-x64": "0.1.0"
   },

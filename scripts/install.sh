@@ -26,6 +26,11 @@ case "${ARCH}" in
     ;;
 esac
 
+if [[ "${PLATFORM}-${ARCH_SUFFIX}" == "darwin-x64" ]]; then
+  echo "Remi for macOS requires an Apple Silicon Mac (M1 or later)." >&2
+  exit 1
+fi
+
 BINARY_NAME="remi-${PLATFORM}-${ARCH_SUFFIX}"
 
 # Get latest release tag if not specified

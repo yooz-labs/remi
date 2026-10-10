@@ -26,9 +26,6 @@ jobs:
           - target: bun-darwin-arm64
             artifact: remi-darwin-arm64
             os: macos-latest
-          - target: bun-darwin-x64
-            artifact: remi-darwin-x64
-            os: macos-latest
           - target: bun-linux-x64
             artifact: remi-linux-x64
             os: ubuntu-latest
@@ -125,7 +122,6 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/remi-darwin-arm64/remi-darwin-arm64
-            artifacts/remi-darwin-x64/remi-darwin-x64
             artifacts/remi-linux-x64/remi-linux-x64
             artifacts/remi-linux-arm64/remi-linux-arm64
             THIRD_PARTY_NOTICES
@@ -184,7 +180,7 @@ jobs:
           fi
           echo "Publishing version: $VERSION (tag: ${{ needs.release.outputs.npm_tag }})"
           REPO_ROOT="$(pwd)"
-          for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+          for PLAT in darwin-arm64 linux-arm64 linux-x64; do
             mkdir -p npm/remi-$PLAT/bin
             cp "artifacts/remi-$PLAT/remi-$PLAT" "npm/remi-$PLAT/bin/remi"
             cp THIRD_PARTY_NOTICES "npm/remi-$PLAT/THIRD_PARTY_NOTICES"
@@ -213,7 +209,7 @@ jobs:
           REPO_ROOT="$(pwd)"
           NPM_TAG="${{ needs.release.outputs.npm_tag }}"
           VERSION="${GITHUB_REF_NAME#v}"
-          for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+          for PLAT in darwin-arm64 linux-arm64 linux-x64; do
             PKG_NAME="@yooz-labs/remi-$PLAT"
             # Skip if this version is already published (idempotent for re-runs)
             if npm view "${PKG_NAME}@${VERSION}" version >/dev/null 2>&1; then
@@ -242,7 +238,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
+          PLATFORMS=("darwin-arm64" "linux-arm64" "linux-x64")
           echo "Waiting for all platform tarballs on npm..."
           for i in $(seq 1 30); do
             ALL_READY=true
