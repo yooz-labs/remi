@@ -278,6 +278,18 @@ The existing development dependency `sharp` 0.33.5 passed five tiny source decod
 That candidate has no distributable or bounded-resource acceptance yet.
 Receipts and exact input hashes are retained in `/private/tmp/remi-1284-77yRf87N/tunnel-probe/`; these are local evidence, not repository dependencies.
 
+The existing seven-control source is now reproducible through
+[`scripts/tunnel-storage-proof/`](../scripts/tunnel-storage-proof/README.md).
+Its runner builds both Bun versions for the four targets, records source and
+executable hashes, and accepts a runtime result only when its version,
+platform, architecture and named controls match.
+Missing executions remain explicit failures; `--build-only` exits 2 with an
+incomplete receipt. This tool neither installs Rosetta nor selects a production
+helper. The checked-in source has only build preparation in this change;
+the historical runtime results above belong to the earlier private source.
+The full T0a corpus and eight target/version executions remain gates before
+production storage is selected.
+
 ### Next independently reviewable changes
 
 Continue #1170 and this proposal; do not start another tunnel plan or duplicate native X2.

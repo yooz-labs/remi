@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Reproduce the existing owned storage packaging spike; no daemon integration."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import signal
+import subprocess
+import sys
+import uuid
+
+TARGETS = ("bun-darwin-arm64", "bun-darwin-x64", "bun-linux-arm64", "bun-linux-x64")
+CHECKS = {
+    "exclusive 0600 creation",
+    "exclusive descriptor-relative publication and retirement",
+    "same regular descriptor read",
+    "component policy",
+    "leaf and ancestor symlink refusal",
+    "multiply linked file refusal",
+    "captured directory survives path replacement; outside untouched",
+}
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as source:
+        for part in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(part)
+    return value.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bun-1311", type=Path, required=True)
+    parser.add_argument("--bun-current", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--linux-arm64-image", required=True)
+    parser.add_argument("--linux-x64-image", required=True)
+    parser.add_argument("--skip-mac-x64", action="store_true")
+    parser.add_argument("--build-only", action="store_true")
+    options = parser.parse_args()
+    source = Path(__file__).resolve().parent
+    source_hashes = {name: digest(source / name) for name in ("probe.ts", "openat.c", "matrix.py")}
+    output = options.out.resolve()
+    output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    snapshot = output / "source"
+    snapshot.mkdir(mode=0o700)
+    for name in source_hashes:
+        (snapshot / name).write_bytes((source / name).read_bytes())
+        if digest(snapshot / name) != source_hashes[name]:
+            raise RuntimeError("Source changed while taking the snapshot; start a new run")
+    compiler_cwd = output / "compiler-cwd"
+    compiler_cwd.mkdir(mode=0o700)
+    temporary = output / "tmp"
+    temporary.mkdir(mode=0o700)
+    runtime_cwd = output / "empty-cwd"
+    runtime_cwd.mkdir(mode=0o700)
+    environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "LANG": "en_US.UTF-8", "TMPDIR": str(temporary)}
+    results = []
+    container = None
+    run_id = uuid.uuid4().hex[:12]
+    versions = {}
+    images = {}
+    cleanup_errors = []
+
+    def interrupted(_signal, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+
+    def source_unchanged():
+        try:
+            return all(digest(directory / name) == value
+                       for directory in (source, snapshot) for name, value in source_hashes.items())
+        except OSError:
+            return False
+
+    def save():
+        unchanged = source_unchanged()
+        (output / "receipt.json").write_text(json.dumps({
+            "host": {"system": platform.system(), "machine": platform.machine()},
+            "sourceHashes": source_hashes,
+            "sourceUnchanged": unchanged,
+            "compilerVersions": versions,
+            "linuxImages": images,
+            "cleanupErrors": cleanup_errors,
+            "complete": (unchanged and not cleanup_errors and len(results) == 16 and all(item.get("passed") for item in results)
+                         and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
+            "scope": "Existing seven primitive controls and compiled distribution only; full T0a corpus is pending",
+            "results": results,
+        }, indent=2) + "\n")
+
+    def run(label, arguments, expected=None, cwd=None):
+        if not source_unchanged():
+            raise RuntimeError("Source changed during the matrix; start a new run")
+        item = {"label": label, "command": [str(value) for value in arguments],
+                "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        log = output / (label + ".log")
+        print(label, flush=True)
+        with log.open("w") as stream:
+            child = subprocess.Popen(item["command"], cwd=cwd or compiler_cwd, env=environment,
+                                     stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                item["exit"] = child.wait(timeout=120)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # The owned child exited between timeout and cleanup.
+                child.wait()
+                item["exit"] = -signal.SIGKILL
+                item["timedOutOrInterrupted"] = True
+        item["passed"] = item["exit"] == 0
+        if expected is not None and item["passed"]:
+            receipts = []
+            for line in log.read_text().splitlines():
+                try:
+                    receipts.append(json.loads(line))
+                except ValueError:
+                    pass
+            value = receipts[-1] if receipts else {}
+            item["probe"] = value
+            item["passed"] = (value.get("bun") == expected[0] and
+                              value.get("platform") == expected[1] and
+                              value.get("arch") == expected[2] and
+                              value.get("checks") is not None and
+                              len(value["checks"]) == len(CHECKS) and set(value["checks"]) == CHECKS)
+        results.append(item)
+        save()
+        if not item["passed"]:
+            raise RuntimeError(label + " failed; inspect its retained log")
+
+    try:
+        for label, executable in (("1311", options.bun_1311), ("current", options.bun_current)):
+            executable = executable.resolve()
+            version = subprocess.check_output([str(executable), "--version"], env=environment,
+                                              text=True, timeout=30).strip()
+            if label == "1311" and version != "1.3.11":
+                raise RuntimeError("The pinned compiler must be Bun 1.3.11")
+            versions[label] = version
+            for target in TARGETS:
+                artifact = output / (label + "-" + target)
+                run("build-" + label + "-" + target, [executable, "--no-env-file", "build", "--compile",
+                    "--target=" + target, "--outfile=" + str(artifact), snapshot / "probe.ts"])
+                results[-1]["artifactSha256"] = digest(artifact)
+                save()
+                if options.build_only:
+                    results.append({"label": "run-" + label + "-" + target, "passed": False,
+                                    "executed": False, "reason": "Build-only preparation"})
+                    save()
+                    continue
+                operating_system, architecture = target.removeprefix("bun-").split("-")
+                expected_arch = "x64" if architecture == "x64" else "arm64"
+                if operating_system == "darwin":
+                    host_arch = platform.machine().lower()
+                    unavailable = (platform.system() != "Darwin"
+                                   or (architecture == "arm64" and host_arch not in ("arm64", "aarch64"))
+                                   or (architecture == "x64" and options.skip_mac_x64))
+                    if unavailable:
+                        results.append({"label": "run-" + label + "-" + target, "passed": False,
+                                        "executed": False, "reason": "Mac execution unavailable or explicitly deferred"})
+                        save()
+                        continue
+                    run("run-" + label + "-" + target, [artifact, "--owned-spike"],
+                        (version, "darwin", expected_arch), cwd=runtime_cwd)
+                else:
+                    image = options.linux_arm64_image if architecture == "arm64" else options.linux_x64_image
+                    docker_platform = "linux/" + ("amd64" if architecture == "x64" else "arm64")
+                    image_info = subprocess.check_output([
+                        "docker", "image", "inspect", "--platform", docker_platform,
+                        "--format", "{{.Id}} {{.Os}} {{.Architecture}}", "--", image],
+                        env=environment, text=True, timeout=30).strip().split()
+                    if (len(image_info) != 3 or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_info[0])
+                            or "/".join(image_info[1:]) != docker_platform):
+                        raise RuntimeError("Cached Linux image does not match " + docker_platform)
+                    image_id = image_info[0]
+                    images[architecture] = {"reference": image, "id": image_id, "platform": docker_platform}
+                    container_name = "remi-storage-proof-" + run_id + "-" + label + "-" + architecture
+                    container = {"name": container_name, "cidfile": output / (container_name + ".cid")}
+                    run("run-" + label + "-" + target, ["docker", "run", "--rm", "--pull=never",
+                        "--name", container_name, "--cidfile", container["cidfile"], "--platform", docker_platform,
+                        "--network", "none", "--read-only", "--memory", "256m", "--pids-limit", "32",
+                        "--cpus", "1", "--tmpfs", "/tmp:rw,nosuid,size=32m", "--workdir", "/tmp",
+                        "--mount", "type=bind,src=" + str(output) + ",dst=/proof,readonly",
+                        "--env", "TMPDIR=/tmp", image_id, "/proof/" + artifact.name, "--owned-spike"],
+                        (version, "linux", expected_arch))
+                    container = None
+        save()
+        complete = json.loads((output / "receipt.json").read_text())["complete"]
+        print("Complete packaging matrix" if complete else "Partial matrix; missing executions remain unaccepted")
+        return 0 if complete else 2
+    finally:
+        if container:
+            try:
+                container_id = container["cidfile"].read_text().strip()
+                if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+                    raise ValueError("Invalid owned container ID")
+                cleanup = subprocess.run(["docker", "rm", "--force", container_id], env=environment,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+                if cleanup.returncode:
+                    cleanup_errors.append({"container": container_id, "exit": cleanup.returncode})
+            except FileNotFoundError:
+                pass  # Docker never wrote this run's cidfile; ownership is unproven.
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                cleanup_errors.append({"container": container["name"], "error": type(error).__name__})
+        save()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
