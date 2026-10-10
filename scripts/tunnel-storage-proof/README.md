@@ -1,7 +1,9 @@
 # File storage packaging spike (#1170)
 
 This reproduces the existing T0 experiment from `docs/FILE-TUNNEL.md`.
-The probe uses only newly created temporary files and closes its descriptors.
+The probe uses newly created temporary content files and closes its descriptors.
+Its nonregular-file control also opens `/dev/null` for metadata inspection;
+it reads no device bytes and creates no device.
 The C source is embedded in the compiled executable, then materialized into
 a private temporary directory for Bun's experimental C compiler.
 The native `openat` address is resolved explicitly; its variadic creation
@@ -10,8 +12,23 @@ call is made through a fixed C wrapper.
 The seven existing primitive controls cover exclusive creation/publication,
 same-descriptor inspection/read, invalid components, leaf/ancestor symlinks,
 hardlinks and cleanup through a captured directory after path replacement.
-This is a packaging experiment. Full race/credential/nonregular-file controls,
-reservations, recovery and transfer lifecycle are subsequent T0a work.
+The candidate now adds nine admission controls with a real descriptor walk from
+`/`: hidden/credential components before opening, configured credential-root
+overlap and replacements, symlink/hardlink refusal, deterministic ancestor/leaf
+replacement, descriptor lease revalidation, directory/FIFO/socket/device refusal,
+the initial 10 MiB boundary, and captured-root replacement.
+The complete spelling is checked before any native open. Credential directories
+are denied both by component-aware configured paths and held device/inode
+identities, so custom names, replacements and renamed directories are covered.
+The corpus confirms a sibling prefix remains readable.
+Replacement checkpoints run after actual native opens and perform real renames;
+they do not substitute filesystem calls or metadata.
+
+This is a packaging/admission experiment. Private-copy validation, detected
+growth/truncation/mutation, reservations, recovery and transfer lifecycle remain
+subsequent work. Name revalidation is not an atomic snapshot and does not prove
+that every concurrent edit was detected. Bun's compiler/FFI APIs remain candidate
+mechanisms; no production helper has been selected.
 No helper or decoder is selected for production by this spike.
 
 ## Run
@@ -41,7 +58,7 @@ uv run python scripts/tunnel-storage-proof/matrix.py \
 
 The Mac execution requires an Apple Silicon host; if unavailable, it is recorded
 as missing and the matrix remains incomplete. There is no Intel Mac target.
-The scope of a 6/6 execution result is these seven primitive controls.
+The scope of a 6/6 execution result is seven primitive and nine admission controls.
 `--build-only` prepares all six executables, records their hashes and exits 2
 with every runtime execution explicitly unmeasured.
 
@@ -58,7 +75,7 @@ it does not replace HOME or pass the parent's credential variables.
 The output must report six successful builds and six matching runtime
 executions before `complete` is true. A build alone proves no execution.
 Missing or mismatched probe output fails the stage.
-The runner records the compiler versions, checks the seven named controls,
+The runner records the compiler versions, checks all sixteen named controls,
 and refuses to advance if its source changes during a run. Mac binaries run
 from a newly created empty working directory to check their embedded source.
 Compilation uses a captured source snapshot and a private working directory;
@@ -68,3 +85,22 @@ cleanup is recorded with the owned container name for a later retry.
 
 API references: [Bun C compiler](https://bun.sh/docs/runtime/c-compiler)
 and [Bun FFI](https://bun.sh/docs/runtime/ffi).
+
+## Admission checkpoint (2026-10-10)
+
+All six supported compiled executions passed the sixteen controls on Bun 1.3.11
+and 1.4.2: Apple Silicon Mac natively, Linux ARM64 in Docker's VM, Linux x64 under
+Docker Desktop emulation. Nine private guard variants on compiled Mac ARM each
+failed their expected assertion on both Bun gates (18/18): hidden components,
+credential path, credential directory/root identity, regular-file type,
+link count, initial size, name identity and no-follow flags. Mutation execution
+on Linux was not measured. This proves those controls detect the named guard
+removals; it does not prove every race or private-copy mutation is detected.
+
+The initial private mutation runner failed compiling Bun 1.4.2 before running
+its variant because its compiler working directory equaled TMPDIR. The unchanged
+baseline reproduced that EEXIST failure; separating the two directories passed.
+The checked-in matrix already keeps them separate. A later mutation-selector
+ambiguity also stopped the private runner; neither failure counted as a detected
+mutation. Failed receipts remain under the private `remi-1170-admission-mutations`
+20261010 `-a`/`-b`/`-c` directories; the complete receipt is in `-d`.

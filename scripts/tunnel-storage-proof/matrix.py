@@ -23,6 +23,15 @@ CHECKS = {
     "leaf and ancestor symlink refusal",
     "multiply linked file refusal",
     "captured directory survives path replacement; outside untouched",
+    "hidden and credential components rejected before open",
+    "protected directory overlap and replacement refusal",
+    "candidate symlink and hardlink refusal",
+    "deterministic ancestor replacement refusal",
+    "deterministic final component replacement refusal",
+    "open descriptor lease revalidation",
+    "directory FIFO socket and device refusal",
+    "initial 10 MiB size admission",
+    "captured project root replacement refusal",
 }
 
 
@@ -45,7 +54,8 @@ def main():
     options = parser.parse_args()
     compilers = (("1311", options.bun_1311), ("current", options.bun_current))
     source = Path(__file__).resolve().parent
-    source_hashes = {name: digest(source / name) for name in ("probe.ts", "openat.c", "matrix.py")}
+    source_hashes = {name: digest(source / name) for name in (
+        "probe.ts", "admission.ts", "admission-probe.ts", "openat.c", "matrix.py")}
     output = options.out.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     snapshot = output / "source"
@@ -94,7 +104,7 @@ def main():
             "cleanupErrors": cleanup_errors,
             "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(TARGETS) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))),
-            "scope": "Existing seven primitive controls and compiled distribution only; full T0a corpus is pending",
+            "scope": "Seven primitives plus nine admission controls; private-copy validation and full T0a remain pending",
             "results": results,
         }, indent=2) + "\n")
 
