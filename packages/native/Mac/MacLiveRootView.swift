@@ -887,46 +887,65 @@ private struct MacLiveNewSessionSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-            Text("New session").font(.title2.weight(.semibold))
+        VStack(spacing: 0) {
+            MacNewSessionHeader()
+                .padding(.horizontal, RemiTheme.Spacing.l)
+                .padding(.top, RemiTheme.Spacing.l)
+                .padding(.bottom, RemiTheme.Spacing.m)
 
             Form {
-                Picker("Machine", selection: $machineID) {
-                    ForEach(machines) { machine in
-                        Text(machine.displayName).tag(Optional(machine.id))
-                    }
-                }
-
-                if !repositories.isEmpty {
-                    Picker("Recent repository", selection: $repository) {
-                        Text("Choose a repository").tag("")
-                        ForEach(repositories) { item in
-                            Text("\(item.name) — \(item.repository)").tag(item.repository)
+                Section {
+                    Picker("Machine", selection: $machineID) {
+                        ForEach(machines) { machine in
+                            Text(machine.displayName).tag(Optional(machine.id))
                         }
                     }
-                }
 
-                TextField(workspaceCapable ? "Repository" : "Existing directory", text: $repository)
-
-                if workspaceCapable {
-                    Toggle("Create a new branch", isOn: $createsWorktree)
-                    if createsWorktree {
-                        TextField("Branch", text: $branch)
-                        TextField("Base (optional)", text: $base)
+                    if !repositories.isEmpty {
+                        Picker("Recent repository", selection: $repository) {
+                            Text("Choose a repository").tag("")
+                            ForEach(repositories) { item in
+                                Text("\(item.name) — \(item.repository)").tag(item.repository)
+                            }
+                        }
                     }
+
+                    TextField(workspaceCapable ? "Repository" : "Existing directory", text: $repository)
+                } header: {
+                    Label("Location", systemImage: "desktopcomputer")
                 }
 
-                Picker("Harness", selection: $harness) {
-                    ForEach(harnesses, id: \.self) { value in
-                        Text(harnessName(value)).tag(value)
+                Section {
+                    if workspaceCapable {
+                        Toggle("Create a new branch and worktree", isOn: $createsWorktree)
+                        if createsWorktree {
+                            TextField("Branch", text: $branch)
+                            TextField("Base branch (optional)", text: $base)
+                        }
+                    } else {
+                        Label("Existing directory", systemImage: "folder")
+                            .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Label("Workspace", systemImage: "arrow.triangle.branch")
+                } footer: {
+                    Text(helperText)
                 }
-                TextField("Model (optional)", text: $model)
+
+                Section {
+                    Picker("Harness", selection: $harness) {
+                        ForEach(harnesses, id: \.self) { value in
+                            Text(harnessName(value)).tag(value)
+                        }
+                    }
+                    TextField("Model (optional)", text: $model)
+                } header: {
+                    Label("Agent", systemImage: "sparkles")
+                }
             }
+            .formStyle(.grouped)
 
-            Text(helperText)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            Divider()
 
             ViewThatFits(in: .horizontal) {
                 HStack {
@@ -938,14 +957,14 @@ private struct MacLiveNewSessionSheet: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            .padding(RemiTheme.Spacing.m)
         }
-        .padding(24)
         .frame(
-            minWidth: 440,
-            idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 560,
+            minWidth: 520,
+            idealWidth: dynamicTypeSize.isAccessibilitySize ? 720 : 620,
             maxWidth: 760,
-            minHeight: dynamicTypeSize.isAccessibilitySize ? 560 : 420,
-            idealHeight: dynamicTypeSize.isAccessibilitySize ? 680 : 520,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 620 : 560,
+            idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 620,
             maxHeight: 760
         )
         .onAppear { selectDefaultsForMachine() }
@@ -1006,7 +1025,7 @@ private struct MacLiveNewSessionSheet: View {
         selectedMachine != nil && !trimmedRepository.isEmpty && (!createsWorktree || !trimmedBranch.isEmpty)
     }
 
-    private var helperText: String {
+    private var helperText: LocalizedStringResource {
         if !workspaceCapable {
             return "This machine does not support workspaces yet. Remi will start in the existing directory."
         }
@@ -1026,6 +1045,28 @@ private struct MacLiveNewSessionSheet: View {
         case "claude": "Claude Code"
         case "codex": "Codex"
         default: value.capitalized
+        }
+    }
+}
+
+private struct MacNewSessionHeader: View {
+    var body: some View {
+        HStack(spacing: RemiTheme.Spacing.m) {
+            Image(systemName: "plus.bubble")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: RemiTheme.Radius.m))
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                Text("New session")
+                    .font(.title2.weight(.semibold))
+                Text("Choose where the agent works and how it starts.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
         }
     }
 }
