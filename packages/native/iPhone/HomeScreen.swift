@@ -508,29 +508,14 @@ private struct MachinesSection: View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             Text("Machines").font(.title2.weight(.bold))
             ForEach(machines) { machine in
-                HStack(spacing: RemiTheme.Spacing.s) {
-                    RemiMachineRow(machine: machine)
-                    Menu {
-                        if let state = states.first(where: { $0.id == machine.id }), state.endpoint.relayPin != nil {
-                            Button("Enable relay notifications", systemImage: "bell.badge") {
-                                onEnableRelayNotifications(state.endpoint)
-                            }
-                            .disabled(enablingRelayNotifications || state.status != .connected)
-                        }
-                        Button("Remove machine", systemImage: "trash", role: .destructive) {
-                            pendingRemoval = machine
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.title3)
-                            .frame(
-                                width: RemiTheme.Size.minimumTapTarget,
-                                height: RemiTheme.Size.minimumTapTarget
-                            )
-                            .contentShape(.rect)
-                    }
-                    .accessibilityLabel("Machine actions")
-                }
+                let state = states.first { $0.id == machine.id }
+                PhoneMachineManagementRow(
+                    machine: machine,
+                    state: state,
+                    enablingRelayNotifications: enablingRelayNotifications,
+                    onEnableRelayNotifications: onEnableRelayNotifications,
+                    onRemove: { pendingRemoval = machine }
+                )
                 if let state = states.first(where: { $0.id == machine.id }),
                    case .waitingForApproval(let fingerprint) = state.status {
                     ApprovalHelp(
@@ -542,8 +527,7 @@ private struct MachinesSection: View {
                 }
                 if let state = states.first(where: { $0.id == machine.id }),
                    case .waitingForRelayConfirmation(let fingerprint) = state.status {
-                    Text("Compare \(fingerprint) in the machine's terminal before approving.")
-                        .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                    RelayConfirmationHelp(machineName: machine.name, fingerprint: fingerprint)
                 }
                 if machine.id != machines.last?.id { Divider() }
             }
@@ -567,6 +551,78 @@ private struct MachinesSection: View {
     }
 }
 
+private struct RelayConfirmationHelp: View {
+    let machineName: String
+    let fingerprint: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label("Terminal confirmation needed", systemImage: "checkmark.shield")
+                .font(.headline)
+
+            Text("On \(machineName), compare this fingerprint before approving the relay connection.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Text(fingerprint)
+                .font(.system(.body, design: .monospaced, weight: .semibold))
+                .textSelection(.enabled)
+
+            Text("The pairing token does not authorize this phone by itself.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(RemiTheme.Spacing.m)
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: RemiTheme.Radius.control))
+    }
+}
+
+private struct PhoneMachineManagementRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let machine: RemiMachineSummary
+    let state: MachineState?
+    let enablingRelayNotifications: Bool
+    let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            RemiMachineRow(machine: machine)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
+            Menu {
+                if let state, state.endpoint.relayPin != nil {
+                    Button("Enable relay notifications", systemImage: "bell.badge") {
+                        onEnableRelayNotifications(state.endpoint)
+                    }
+                    .disabled(enablingRelayNotifications || state.status != .connected)
+                }
+                Button("Remove machine", systemImage: "trash", role: .destructive) {
+                    onRemove()
+                }
+            } label: {
+                if dynamicTypeSize.isAccessibilitySize {
+                    Label("Machine actions", systemImage: "ellipsis.circle")
+                } else {
+                    Label("Machine actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .font(.title3)
+                        .frame(
+                            width: RemiTheme.Size.minimumTapTarget,
+                            height: RemiTheme.Size.minimumTapTarget
+                        )
+                        .contentShape(.rect)
+                }
+            }
+        }
+    }
+}
+
 private struct ApprovalHelp: View {
     let machineName: String
     let fingerprint: String
@@ -586,6 +642,13 @@ private struct ApprovalHelp: View {
                 .textSelection(.enabled)
 
             if let command {
+                Text(command)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(RemiTheme.Spacing.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
+
                 Button(copied ? "Command copied" : "Copy authorization command", systemImage: copied ? "checkmark" : "doc.on.doc") {
                     UIPasteboard.general.string = command
                     copied = true

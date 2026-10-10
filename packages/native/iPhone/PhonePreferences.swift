@@ -64,7 +64,7 @@ struct PhonePreferencesSheet: View {
                         }
                     }
                 } header: {
-                    Text("Notifications")
+                    Label("Notifications", systemImage: "bell.badge")
                 } footer: {
                     Text(notificationFooter)
                 }
@@ -85,8 +85,9 @@ struct PhonePreferencesSheet: View {
                         ) {
                             Label("Share public identity", systemImage: "square.and.arrow.up")
                         }
+                        PhoneIdentityAccessNotice()
                     } header: {
-                        Text("Device identity")
+                        Label("Device identity", systemImage: "key.horizontal")
                     } footer: {
                         Text("This contains no private key. Installing it on a machine authorizes this device to connect there.")
                     }
@@ -94,6 +95,8 @@ struct PhonePreferencesSheet: View {
 
                 Section {
                     Toggle("Haptic feedback", isOn: $hapticsEnabled)
+                } header: {
+                    Label("Feedback", systemImage: "iphone.radiowaves.left.and.right")
                 } footer: {
                     Text("Use subtle feedback for new questions and answers.")
                 }
@@ -117,7 +120,7 @@ struct PhonePreferencesSheet: View {
         }
     }
 
-    private var notificationFooter: String {
+    private var notificationFooter: LocalizedStringResource {
         if !notificationsEnabled {
             return "Remi will not show local question alerts on this device."
         }
@@ -141,5 +144,35 @@ struct PhonePreferencesSheet: View {
 
     private func refreshAuthorizationState() async {
         authorizationState = await PhoneNotificationCoordinator.authorizationState()
+    }
+}
+
+private struct PhoneIdentityAccessNotice: View {
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+                accessRow("View sessions, transcripts, and questions", systemImage: "rectangle.stack")
+                accessRow("Answer prompts and send chat messages", systemImage: "bubble.left.and.bubble.right")
+                accessRow("Create, resume, and stop sessions", systemImage: "playpause")
+
+                Text("Authorization applies only to Remi on that machine. The shared public identity contains no private key.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, RemiTheme.Spacing.xs)
+        } label: {
+            Label("What machine access allows", systemImage: "info.circle")
+        }
+    }
+
+    private func accessRow(_ title: LocalizedStringResource, systemImage: String) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+        .font(.subheadline)
     }
 }
