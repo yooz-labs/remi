@@ -29,6 +29,7 @@ CI_TOOLS = {
     ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
     ".github/scripts/workflow-scope.py", ".github/actions/ci-scope/action.yml",
     ".github/scripts/workflow-contracts.json",
+    ".github/scripts/check-scope-output.py",
     ".github/ci-scope.md",
 }
 

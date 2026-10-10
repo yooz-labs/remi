@@ -51,6 +51,7 @@ runs:
       shell: bash
       env:
         PYTHONPATH: ${{ runner.temp }}/remi-ci-python
+        ACTIONLINT: ${{ runner.temp }}/remi-ci-tools/actionlint
       run: python3 .github/scripts/check-ci-scope.py
     - name: Validate workflow YAML and execution contracts
       shell: bash
@@ -64,3 +65,17 @@ runs:
       env:
         PYTHONPATH: ${{ runner.temp }}/remi-ci-python
       run: python3 .github/scripts/ci-scope.py
+    - name: Validate mandatory scope outputs
+      shell: bash
+      env:
+        CI_SCOPE_LINT: ${{ steps.scope.outputs.lint }}
+        CI_SCOPE_TYPECHECK: ${{ steps.scope.outputs.typecheck }}
+        CI_SCOPE_ROOT: ${{ steps.scope.outputs.root }}
+        CI_SCOPE_WEB: ${{ steps.scope.outputs.web }}
+        CI_SCOPE_SIGNALING: ${{ steps.scope.outputs.signaling }}
+        CI_SCOPE_INTEGRATION: ${{ steps.scope.outputs.integration }}
+        CI_SCOPE_NOTICES: ${{ steps.scope.outputs.notices }}
+        CI_SCOPE_TEST: ${{ steps.scope.outputs.test }}
+        CI_SCOPE_RELAY: ${{ steps.scope.outputs.relay }}
+        CI_SCOPE_MACOS: ${{ steps.scope.outputs.macos }}
+      run: python3 .github/scripts/check-scope-output.py

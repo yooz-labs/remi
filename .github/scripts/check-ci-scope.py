@@ -4,6 +4,7 @@ import json
 import os
 import runpy
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -224,7 +225,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         routing_refusal("ci.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]))
         routing_refusal("relay-r7.yml", lambda w: w["on"].pop("workflow_dispatch"))
         routing_refusal("ci.yml", lambda w: w["concurrency"].update(**{"cancel-in-progress": "true"}))
-        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["typecheck"]["steps"] if s.get("run") == "bun run typecheck").update(**{"if": "needs.scope.result != 'success' || needs.scope.outputs.web != 'false'"}))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["typecheck"]["steps"] if s.get("run") == "bun run typecheck").update(**{"if": "needs.scope.result == 'success' && needs.scope.outputs.web != 'false'"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["permissions"].update(contents="write"))
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["steps"].append({"run": "true"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
@@ -267,6 +268,36 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 count += 1
             else:
                 raise AssertionError("actual actionlint tool/format failure accepted")
+        outputs = runpy.run_path(str(SCRIPT.with_name("check-scope-output.py")))["OUTPUTS"]
+        for change, expected in (("valid-false", 0), ("valid-unknown-full", 0), ("missing", 1),
+                                 ("blank", 1), ("invalid", 1), ("none", 1)):
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CI_SCOPE_")}
+            if change != "none":
+                env.update({f"CI_SCOPE_{key.upper()}": "true" if change == "valid-unknown-full" else "false" for key in outputs})
+            if change == "missing":
+                env.pop("CI_SCOPE_RELAY")
+            elif change == "blank":
+                env["CI_SCOPE_TEST"] = ""
+            elif change == "invalid":
+                env["CI_SCOPE_MACOS"] = "True"
+            result = subprocess.run([sys.executable, str(SCRIPT.with_name("check-scope-output.py"))],
+                                    env=env, capture_output=True, text=True)
+            assert (result.returncode == 0) == (expected == 0), (change, result)
+            count += 1
+        # Execute the actual stable-job failure body. Exact validated conditions keep every
+        # following runtime step inactive for tool, validator or mandatory-output failure.
+        for filename, names in (("ci.yml", ("lint", "typecheck", "test")),
+                                ("relay-r7.yml", ("local-relay",)),
+                                ("macos-app.yml", ("build-test",))):
+            workflow = WORKFLOW_TOOLS["load"](WORKFLOWS[filename])
+            for name in names:
+                steps = workflow["jobs"][name]["steps"]
+                for failure in ("tool-setup", "validator", "mandatory-outputs"):
+                    assert steps[0] == WORKFLOW_TOOLS["FAIL_SCOPE"]
+                    actual = subprocess.run(["bash", "-ec", steps[0]["run"]], capture_output=True, text=True)
+                    assert actual.returncode == 1
+                    assert all("needs.scope.result == 'success'" in step["if"] for step in steps[1:])
+                    count += 1
         for destination in (None, "docs/moved.md"):
             git("reset", "--hard", base)
             git("clean", "-fdq")

@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 
 CONTRACTS = json.loads(Path(__file__).with_name("workflow-contracts.json").read_text())
+FAIL_SCOPE = {"name": "Fail unvalidated scope", "if": "needs.scope.result != 'success'",
+              "run": 'echo "CI scope validation failed; runtime checks were not started." >&2\nexit 1\n'}
 
 
 def validate_action(action):
@@ -69,6 +71,8 @@ def execution(value, path):
             job.pop(key, None)
         steps = []
         for original in job["steps"]:
+            if original == FAIL_SCOPE:
+                continue  # Dedicated cheap failure routing, with no runtime execution.
             step = dict(original)
             step.pop("if", None)
             # Only the exact inert reporting step is routing, never an arbitrary named command.
@@ -152,9 +156,12 @@ def validate():
                                     (workflows["macos-app.yml"], "build-test", "macos")):
         job = workflow["jobs"][job_name]
         assert job["needs"] == ["scope"] and job["if"] == "${{ !cancelled() }}"
+        assert job["steps"][0] == FAIL_SCOPE
         for step in job["steps"]:
             condition = step.get("if", "")
-            if step.get("name") == "Report scoped skip":
+            if step.get("name") == "Fail unvalidated scope":
+                assert step == FAIL_SCOPE
+            elif step.get("name") == "Report scoped skip":
                 assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
             else:
                 step_flag = flag
@@ -163,7 +170,7 @@ def validate():
                         "bun run typecheck:web-tests": "web", "bun run typecheck:signaling": "signaling",
                         "node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json": "integration",
                         "bun scripts/third-party-notices.ts --check": "notices"}.get(step.get("run"), flag)
-                expected = f"needs.scope.result != 'success' || needs.scope.outputs.{step_flag} != 'false'"
+                expected = f"needs.scope.result == 'success' && needs.scope.outputs.{step_flag} != 'false'"
                 if step.get("uses") == "actions/upload-artifact@v4":
                     expected = f"always() && ({expected})"
                 assert condition == expected, (job_name, step)

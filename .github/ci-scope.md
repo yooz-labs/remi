@@ -3,8 +3,10 @@
 CI and Relay R7 always start on PRs to develop/main. A shared Python classifier
 reads the complete merge-base-to-head git diff, with deleted paths and both sides
 of renames. The existing check names remain present: unrelated steps report a
-successful scoped skip. Missing history/event data, unknown paths, classifier
-failure or missing output selects full gates. Main pushes and manual R7 runs
+successful scoped skip. A successful classifier selects full gates for missing history/event data or
+unknown inputs. Tool/setup/validator failure fast-fails the stable checks and
+blocks merge without starting runtime work. Missing or invalid mandatory outputs
+fail the action before a scope job can succeed. Main pushes and manual R7 runs
 always select their existing full gates.
 
 | Inputs | Ordinary gates | R7 |
@@ -87,3 +89,18 @@ policy revision.
 Run `uv run --with pyyaml==6.0.3 python .github/scripts/check-ci-scope.py` for real temporary-git controls,
 or `python3 .github/scripts/ci-scope.py --base <sha> --head <sha>` for a complete
 existing PR diff. The controls run before classification in both workflows.
+
+## Actual setup failure and corrected failure routing
+
+At 259f66af, the actual Ubuntu corpus lacked ACTIONLINT in its environment, even
+though the pinned binary had installed successfully. Scope failures accidentally
+activated the previous runtime fallback. The owned runs were cancelled and remain
+failed/cancelled evidence. The control step now receives the explicit installed
+binary path, verified with PATH excluding globally installed actionlint.
+
+Every stable gate begins with the actual `Fail unvalidated scope` shell step;
+a scope failure exits 1 before any runtime command. Runtime steps require scope
+success. An action step validates every mandatory output as explicit true/false.
+The corpus executes the actual failure shell and output-validator subprocesses,
+while dedicated YAML checks enforce every runtime condition. Valid unknown input
+classification still selects full relevant runtime checks.

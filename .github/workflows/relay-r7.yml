@@ -37,16 +37,21 @@ jobs:
       BUN_VERSION: 1.3.11
       E2E_BUNDLER: esbuild
     steps:
+      - name: Fail unvalidated scope
+        if: needs.scope.result != 'success'
+        run: |
+          echo "CI scope validation failed; runtime checks were not started." >&2
+          exit 1
       - uses: actions/checkout@v5
-        if: needs.scope.result != 'success' || needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
       - uses: oven-sh/setup-bun@v2
-        if: needs.scope.result != 'success' || needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-        if: needs.scope.result != 'success' || needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
       - name: Existing actual wire and authority controls
-        if: needs.scope.result != 'success' || needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         shell: bash
         run: |
           set -o pipefail
@@ -60,7 +65,7 @@ jobs:
             tests/integration/relay-r6-ingress.test.ts \
             tests/integration/relay-r7*.test.ts 2>&1 | tee r7-receipts/controls.log
       - name: Same attached session for 61 actual minutes
-        if: needs.scope.result != 'success' || needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         shell: bash
         env:
           REMI_RELAY_R7_SOAK: '1'
@@ -68,7 +73,7 @@ jobs:
           set -o pipefail
           bun test --timeout 4500000 packages/web/tests/relay-r7-soak.test.ts 2>&1 | tee r7-receipts/soak.log
       - uses: actions/upload-artifact@v4
-        if: always() && (needs.scope.result != 'success' || needs.scope.outputs.relay != 'false')
+        if: always() && (needs.scope.result == 'success' && needs.scope.outputs.relay != 'false')
         with:
           name: relay-r7-local-${{ github.run_id }}
           path: r7-receipts/
