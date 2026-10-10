@@ -17,7 +17,9 @@ struct MacSessionDetail: View {
 
     @State private var draft = ""
     @State private var selectedViewID = ""
+    @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
+    @AccessibilityFocusState private var accessibilityQuestionID: String?
 
     init(
         session: RemiSessionSummary,
@@ -25,6 +27,7 @@ struct MacSessionDetail: View {
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
         initialConversationID: String? = nil,
+        initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
         onSelectView: @escaping (String) -> Void = { _ in },
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
@@ -38,6 +41,7 @@ struct MacSessionDetail: View {
         self.questions = questions
         self.views = views
         _selectedViewID = State(initialValue: initialConversationID ?? "")
+        _focusedQuestionID = State(initialValue: initialQuestionID)
         self.transcriptForView = transcriptForView
         self.onSelectView = onSelectView
         self.onAnswer = onAnswer
@@ -60,27 +64,38 @@ struct MacSessionDetail: View {
             }
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-                    if visibleTranscript.isEmpty, selectedViewID.isEmpty ? questions.isEmpty : true {
-                        MacConversationEmptyState(isSubagent: !selectedViewID.isEmpty)
-                    }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                        if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                            MacConversationEmptyState(isSubagent: !selectedViewID.isEmpty)
+                        }
 
-                    ForEach(visibleTranscript) { entry in
-                        RemiTranscriptEntryView(entry: entry)
+                        ForEach(focusedQuestions) { question in
+                            questionCard(question)
+                        }
+
+                        ForEach(visibleTranscript) { entry in
+                            RemiTranscriptEntryView(entry: entry)
+                        }
+                        ForEach(remainingQuestions) { question in
+                            questionCard(question)
+                        }
                     }
-                    ForEach(selectedViewID.isEmpty ? questions : []) { question in
-                        RemiQuestionCard(
-                            model: question,
-                            onAnswer: { onAnswer(question.questionID, $0) },
-                            onSubmit: { onSubmit(question.questionID, $0) },
-                            onCancel: { onCancel(question.questionID) }
-                        )
+                    .frame(maxWidth: 760)
+                    .padding(RemiTheme.Spacing.l)
+                    .frame(maxWidth: .infinity)
+                }
+                .onAppear { focusQuestion(using: proxy) }
+                .onChange(of: questions.map(\.questionID)) { _, questionIDs in
+                    guard let focusedQuestionID else { return }
+                    if questionIDs.contains(focusedQuestionID) {
+                        focusQuestion(using: proxy)
+                    } else {
+                        self.focusedQuestionID = nil
+                        accessibilityQuestionID = nil
                     }
                 }
-                .frame(maxWidth: 760)
-                .padding(RemiTheme.Spacing.l)
-                .frame(maxWidth: .infinity)
             }
 
             Divider()
@@ -100,6 +115,8 @@ struct MacSessionDetail: View {
             }
         }
         .onChange(of: selectedViewID) { _, newValue in
+            focusedQuestionID = nil
+            accessibilityQuestionID = nil
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
         .onChange(of: session.id) { _, _ in
@@ -124,6 +141,43 @@ struct MacSessionDetail: View {
 
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+
+    private var visibleQuestions: [RemiQuestionCardModel] {
+        guard !selectedViewID.isEmpty else { return questions }
+        guard let focusedQuestionID else { return [] }
+        return questions.filter { $0.questionID == focusedQuestionID }
+    }
+
+    private var focusedQuestions: [RemiQuestionCardModel] {
+        guard let focusedQuestionID else { return [] }
+        return visibleQuestions.filter { $0.questionID == focusedQuestionID }
+    }
+
+    private var remainingQuestions: [RemiQuestionCardModel] {
+        guard let focusedQuestionID else { return visibleQuestions }
+        return visibleQuestions.filter { $0.questionID != focusedQuestionID }
+    }
+
+    private func questionCard(_ question: RemiQuestionCardModel) -> some View {
+        RemiQuestionCard(
+            model: question,
+            onAnswer: { onAnswer(question.questionID, $0) },
+            onSubmit: { onSubmit(question.questionID, $0) },
+            onCancel: { onCancel(question.questionID) }
+        )
+        .id(question.questionID)
+        .accessibilityFocused($accessibilityQuestionID, equals: question.questionID)
+    }
+
+    private func focusQuestion(using proxy: ScrollViewProxy) {
+        guard let focusedQuestionID,
+              questions.contains(where: { $0.questionID == focusedQuestionID })
+        else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(focusedQuestionID, anchor: .center)
+        }
+        accessibilityQuestionID = focusedQuestionID
     }
 }
 
