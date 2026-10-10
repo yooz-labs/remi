@@ -28,6 +28,8 @@ dependency trace supports a narrower classification.
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
 Moving a candidate into a live caller cannot preserve its standalone exemption.
+Proof files with Bun test/spec names also run full gates, because suite discovery
+does not require an explicit import. CSS exemptions cover web source, not tests.
 
 When Test is selected it still runs the entire existing suite once, with its
 global 60% line threshold. R7 still uses the same actual wire controls and one

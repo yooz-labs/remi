@@ -66,7 +66,8 @@ def classify(base, head):
                 # Cross-package conformance tests import both endpoints: retain all TS gates.
                 gates.update(dict.fromkeys(GATES, True))
             elif path.startswith("packages/web/"):
-                if path.endswith(".css") or (path.startswith("packages/web/src/assets/")
+                if (path.startswith("packages/web/src/") and path.endswith(".css")) or (
+                        path.startswith("packages/web/src/assets/")
                         and path.endswith((".svg", ".png", ".jpg", ".webp", ".woff2"))):
                     continue
                 # Root Biome excludes all of packages/web; its config changes run all gates.
@@ -83,6 +84,8 @@ def classify(base, head):
             elif path.startswith("packages/macos/"):
                 gates.update(lint=True, root=True, web=True, integration=True, test=True)
             elif path.startswith(PROOFS):
+                if re.search(r"[._](test|spec)\.[cm]?[jt]sx?$", path):
+                    return all_gates("Proof test is discovered by Bun; running all gates")
                 # The exemption belongs only to standalone proofs. A new source/test
                 # consumer must not leave later proof edits outside runtime coverage.
                 consumers = subprocess.run(
