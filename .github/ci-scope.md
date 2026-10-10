@@ -12,6 +12,7 @@ always select their existing full gates.
 | Inputs | Ordinary gates | R7 |
 | --- | --- | --- |
 | Docs, native Swift/Xcode files, web CSS/assets | Spelling; native JSON also Biome | Skip |
+| Exact Swift-owned `secure-push-fixture.ts` helper | Spelling + Biome | Skip unless a nonnative reference exists |
 | `docs/PROVISIONING.md` executable bootstrap fixture | Spelling + full coverage | Skip |
 | Owned tunnel proof scripts | Spelling; TS/JS/JSON also Biome | Skip |
 | Web TS source/tests | Web source/tests and relay integration type checks, full coverage | Run |
@@ -30,6 +31,14 @@ x64 declaration is recognized to allow its removal, not to add Intel acceptance.
 Biome already excludes packages/web; web-only changes do not install it to check
 an ignored directory. Web TS retains conservative R7 coverage until a verified
 dependency trace supports a narrower classification.
+
+Only `packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts` has a native
+TypeScript exemption: `NativeSecureSourceIntegrationTests.swift` launches it for
+the Swift suite. It still selects Biome. A fixed-string basename scan at both base
+and head covers daemon/shared/signaling/web/macos packages, root tests/scripts
+and GitHub workflow/action directories (excluding the classifier and these docs);
+any reference or scan failure selects full gates. Unknown native TS neighbors
+remain full-gate inputs. Native acceptance stays separate.
 
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
