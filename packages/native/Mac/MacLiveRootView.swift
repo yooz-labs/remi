@@ -304,9 +304,10 @@ struct MacLiveRootView: View {
             MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
         } else if let message = store.latestOperationNotice {
             MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
-        } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
-            Text(message).font(.callout).padding(RemiTheme.Spacing.s)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let message = relayNotifications.notice {
+            MacFeedbackBanner(message: message, isError: false, onDismiss: relayNotifications.clearNotice)
+        } else if let message = store.relayNotificationNotice {
+            MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearRelayNotificationNotice)
         }
     }
 

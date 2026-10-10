@@ -182,6 +182,10 @@ public final class NativeRelayNotifications {
         enabling = false
     }
 
+    public func clearNotice() {
+        notice = nil
+    }
+
     /// Local categories share the app/NSE publication lease and preserve secure IDs.
     public func mergeLocalNotificationCategories(_ categories: Set<UNNotificationCategory>) async -> Bool {
         guard let pushStore else { return false }

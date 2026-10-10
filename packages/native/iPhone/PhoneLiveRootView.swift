@@ -43,7 +43,8 @@ struct PhoneLiveRootView: View {
                 onRetryApproval: store.retryApproval,
                 onEnableRelayNotifications: relayNotifications.enable,
                 enablingRelayNotifications: relayNotifications.enabling,
-                onDismissError: store.clearLatestError
+                onDismissError: store.clearLatestError,
+                onDismissNotice: dismissNotice
             )
             .navigationDestination(for: RemiNavigationDestination.self) { destination in
                 notificationDestination(destination)
@@ -107,6 +108,16 @@ struct PhoneLiveRootView: View {
                 sessionID: destination.sessionID
             )]
             store.consumeResumedSessionDestination(id: destination.id)
+        }
+    }
+
+    private func dismissNotice() {
+        if store.latestOperationNotice != nil {
+            store.clearLatestError()
+        } else if relayNotifications.notice != nil {
+            relayNotifications.clearNotice()
+        } else {
+            store.clearRelayNotificationNotice()
         }
     }
 
