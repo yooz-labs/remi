@@ -71,9 +71,12 @@ execution changes select R7. Main push/manual R7 remain full.
 
 Both workflows and the macOS scope execute pinned PyYAML 6.0.3, checksum-verified
 actionlint 1.7.12, YAML contract checks and the real diff corpus in actual CI.
-Validation checks stable names, gate conditions, selected command preservation,
-the 60% coverage threshold, original wire-control list and 61-minute soak command;
-a no-op coverage body is refused. Validator/tool changes execute these tools as
+Validation checks stable names, gate conditions and selected command preservation.
+The complete coverage/threshold/wire/soak bodies match SHA-256 contracts captured
+from the original d2e90a89 workflow source, so comment-only marker no-ops are refused.
+The full composite action order/commands/IDs/environment/output maps/pins also
+match a reviewed canonical contract. The independent corpus validates this action
+wiring before its scenarios, so deleting the standalone validator step fails too. Validator/tool changes execute these tools as
 well as the classifier controls. No runtime result is inferred from a scope skip.
 
 The owner cancelled R7 run 38040382125 at f2703da1. Test run 38040382107 also has an

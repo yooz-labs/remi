@@ -1,12 +1,32 @@
 """Compare actual execution instructions separately from workflow routing (#1359)."""
 
 import copy
+import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
 
 import yaml
+
+CONTRACTS = json.loads(Path(__file__).with_name("workflow-contracts.json").read_text())
+
+
+def validate_action(action):
+    # The independent corpus invokes this too; deleting the validator step cannot evade it.
+    assert action == CONTRACTS["scope_action"], "scope action order/commands/IDs/env/pins/outputs changed"
+
+
+def lint_result(proc):
+    findings = json.loads(proc.stdout or "[]")
+    assert isinstance(findings, list)
+    allowed = [{"kind": item["kind"], "message": item["message"], "filepath": item["filepath"]}
+               for item in findings]
+    assert all(item["kind"] == "if-cond" and 'constant expression "false"' in item["message"]
+               and item["filepath"].endswith("ci.yml") for item in allowed), findings
+    assert len(allowed) <= 1, findings
+    assert proc.returncode == 0 or (proc.returncode == 1 and len(allowed) == 1), proc.stderr
+    return allowed
 
 
 class UniqueLoader(yaml.BaseLoader):
@@ -158,6 +178,11 @@ def validate():
             {"uses": "./.github/actions/ci-scope", "id": "scope"},
         ]
     test_runs = [step.get("run", "") for step in ci["jobs"]["test"]["steps"]]
+    for key, expected in CONTRACTS["measurement_sha256"].items():
+        file, job, name = key.split("/", 2)
+        run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
+                   if step.get("name") == name)
+        assert hashlib.sha256(run.encode()).hexdigest() == expected, key
     assert any("bun test --coverage --coverage-reporter=text --coverage-reporter=lcov" in run for run in test_runs)
     assert any('"$COVERAGE < 60"' in run and 'exit 1' in run for run in test_runs)
     for command in ("bun run typecheck", "bun run typecheck:web", "bun run typecheck:web-tests",
@@ -176,6 +201,7 @@ def validate():
         "tests/integration/relay-r3*.test.ts", "tests/integration/relay-r6-ingress.test.ts",
         "tests/integration/relay-r7*.test.ts"))
     action = yaml.load((root / ".github/actions/ci-scope/action.yml").read_text(), Loader=UniqueLoader)
+    validate_action(action)
     assert action["runs"]["using"] == "composite"
     assert set(action["outputs"]) == {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test", "relay", "macos"}
     for key, value in action["outputs"].items():
@@ -192,13 +218,7 @@ def validate():
         subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True)
     proc = subprocess.run([os.environ.get("ACTIONLINT", "actionlint"), "-format", "{{json .}}",
                            *map(str, files)], capture_output=True, text=True)
-    findings = json.loads(proc.stdout or "[]")
-    allowed = [{"kind": item["kind"], "message": item["message"], "filepath": item["filepath"]}
-               for item in findings]
-    assert all(item["kind"] == "if-cond" and 'constant expression "false"' in item["message"]
-               and item["filepath"].endswith("ci.yml") for item in allowed), findings
-    assert len(allowed) <= 1, findings
-    assert proc.returncode == 0 or (proc.returncode == 1 and len(allowed) == 1), proc.stderr
+    allowed = lint_result(proc)
     print(json.dumps({"workflow_yaml_and_contracts": "pass", "actionlint_new_diagnostics": 0,
                       "existing_disabled_e2e_warning": len(allowed)}))
 

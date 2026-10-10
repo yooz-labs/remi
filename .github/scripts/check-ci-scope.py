@@ -21,6 +21,7 @@ METADATA = {"lint", "root", "notices", "test"}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
+WORKFLOW_TOOLS["validate_action"](yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"]))
 
 
 def git(*args):
@@ -229,6 +230,43 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]))
+        for filename, job, name in (("ci.yml", "test", "Test with coverage"),
+                                   ("ci.yml", "test", "Check coverage threshold"),
+                                   ("relay-r7.yml", "local-relay", "Existing actual wire and authority controls"),
+                                   ("relay-r7.yml", "local-relay", "Same attached session for 61 actual minutes")):
+            def marker_only(w):
+                step = next(s for s in w["jobs"][job]["steps"] if s.get("name") == name)
+                step["run"] = "true\n" + "\n".join("# " + line for line in step["run"].splitlines())
+            routing_refusal(filename, marker_only)
+        for change in ("drop-validator", "noop-validator", "noop-controls", "noop-classifier", "reorder", "drop-env"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            action = yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"])
+            steps = action["runs"]["steps"]
+            if change == "drop-validator":
+                steps[:] = [s for s in steps if s.get("name") != "Validate workflow YAML and execution contracts"]
+            elif change == "reorder":
+                steps.reverse()
+            elif change == "drop-env":
+                steps[-1].pop("env")
+            else:
+                label = {"noop-validator": "Validate workflow YAML and execution contracts",
+                         "noop-controls": "Verify classifier controls", "noop-classifier": "Classify complete diff"}[change]
+                next(s for s in steps if s.get("name") == label)["run"] = "true"
+            write(".github/actions/ci-scope/action.yml", yaml.safe_dump(action, sort_keys=False)); commit()
+            try:
+                WORKFLOW_TOOLS["validate_action"](action)
+            except AssertionError:
+                count += 1
+            else:
+                raise AssertionError("scope action bypass accepted")
+        for args in (("--unknown-option",), ("-format", "{", ".github/workflows/ci.yml")):
+            actual = subprocess.run([os.environ.get("ACTIONLINT", "actionlint"), *args], capture_output=True, text=True)
+            try:
+                WORKFLOW_TOOLS["lint_result"](actual)
+            except (AssertionError, ValueError, KeyError, TypeError):
+                count += 1
+            else:
+                raise AssertionError("actual actionlint tool/format failure accepted")
         for destination in (None, "docs/moved.md"):
             git("reset", "--hard", base)
             git("clean", "-fdq")
