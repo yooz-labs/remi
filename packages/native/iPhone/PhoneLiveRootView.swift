@@ -146,6 +146,8 @@ struct PhoneLiveRootView: View {
                     name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                     harness: session.harness ?? "claude",
                     project: URL(fileURLWithPath: session.projectPath).lastPathComponent,
+                    projectPath: session.projectPath,
+                    lastActivity: session.lastActivity,
                     status: session.source == "daemon"
                         ? (count > 0 ? .needsYou : session.status == "active" ? .working : .idle)
                         : .offline,
