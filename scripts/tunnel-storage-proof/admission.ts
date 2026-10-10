@@ -139,6 +139,21 @@ export class AdmittedFile {
     return !this.closed && this.current();
   }
 
+  matchesMetadata(stat: fs.BigIntStats): boolean {
+    const original = this.entries.at(-1)?.stat;
+    return (
+      !this.closed &&
+      !!original &&
+      stat.isFile() &&
+      stat.nlink === 1n &&
+      stat.dev === original.dev &&
+      stat.ino === original.ino &&
+      stat.size === original.size &&
+      stat.mtimeNs === original.mtimeNs &&
+      stat.ctimeNs === original.ctimeNs
+    );
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
