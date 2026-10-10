@@ -100,6 +100,10 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
             elif path.startswith("tests/"):
                 gates.update(dict.fromkeys(GATES, True))
+            elif path == "docs/PROVISIONING.md":
+                # key-provisioning.test.ts extracts and executes its bootstrap shell script.
+                # Markdown here is an actual test fixture, not documentation-only input.
+                gates["test"] = True
             elif path == "docs/relay-r7-gates.md":
                 gates["relay"] = True
             elif path.startswith((".github/", ".rules/")):

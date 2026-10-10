@@ -56,10 +56,13 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         git("config", "user.email", "test@example.com")
         write("package.json", json.dumps(ROOT_PACKAGE))
         write("packages/daemon/src/relay/hub.ts", "export const initial = true;\n")
+        write("docs/PROVISIONING.md", "# initial executable bootstrap fixture\n")
         base = commit()
         cases = [
             ("README.md", "docs\n", set()),
             ("docs/diagram.png", "owned asset", set()),
+            ("docs/ordinary.md", "ordinary prose", set()),
+            ("docs/PROVISIONING.md", "changed executable bootstrap fixture", {"test"}),
             ("packages/native/Mac/Main.swift", "import SwiftUI\n", set()),
             ("packages/native/Mac/Assets.xcassets/Contents.json", "{}", {"lint"}),
             ("packages/native/RemiKit/Tests/Integration/relay-fixture.ts", "export {};", gates),
@@ -76,7 +79,12 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("packages/web/tests/lib/auth.test.ts", "export {};", WEB),
             ("packages/web/package.json", "{}", gates),
             ("packages/daemon/src/relay/hub.ts", "export const changed = true;", gates),
+            ("packages/daemon/src/cli.ts", "// REMI_COMPILED_VERSION\n", gates),
             ("packages/shared/src/protocol.ts", "export {};", gates),
+            ("packages/shared/LICENSE", "license input", gates),
+            ("npm/remi/NOTICE", "notice input", METADATA),
+            ("scripts/bump-version.sh", "#!/bin/sh\n", METADATA),
+            ("scripts/third-party-notices.ts", "export {};", gates),
             ("packages/signaling/wrangler.toml", "name = 'owned'", gates),
             ("tests/integration/relay-r3.test.ts", "export {};", gates),
             (".github/workflows/ci.yml", "name: owned", gates),
@@ -128,6 +136,16 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             else:
                 source.unlink()
             assert selected(classify(base, commit())) == gates
+            count += 1
+        for destination in (None, "docs/renamed-provisioning.md"):
+            git("reset", "--hard", base)
+            git("clean", "-fdq")
+            source = Path("docs/PROVISIONING.md")
+            if destination:
+                source.rename(destination)
+            else:
+                source.unlink()
+            assert selected(classify(base, commit())) == {"test"}
             count += 1
         git("reset", "--hard", base)
         git("clean", "-fdq")

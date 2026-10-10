@@ -10,6 +10,7 @@ always select their existing full gates.
 | Inputs | Ordinary gates | R7 |
 | --- | --- | --- |
 | Docs, native Swift/Xcode files, web CSS/assets | Spelling; native JSON also Biome | Skip |
+| `docs/PROVISIONING.md` executable bootstrap fixture | Spelling + full coverage | Skip |
 | Owned tunnel proof scripts | Spelling; TS/JS/JSON also Biome | Skip |
 | Web TS source/tests | Web source/tests and relay integration type checks, full coverage | Run |
 | Daemon/shared/Worker inputs | All existing gates | Run |
@@ -30,6 +31,12 @@ any reference to either proof directory, or an unavailable scan, runs all gates.
 Moving a candidate into a live caller cannot preserve its standalone exemption.
 Proof files with Bun test/spec names also run full gates, because suite discovery
 does not require an explicit import. CSS exemptions cover web source, not tests.
+
+`docs/PROVISIONING.md` is an explicit Markdown exception: the existing
+`packages/daemon/tests/integration/key-provisioning.test.ts` reads its actual
+shell/cloud-init blocks, compares them and executes the shell script. Changes,
+deletion or rename therefore select the full Bun suite. Ordinary Markdown keeps
+its exemption; comments referring to a document do not establish a consumer.
 
 When Test is selected it still runs the entire existing suite once, with its
 global 60% line threshold. R7 still uses the same actual wire controls and one
