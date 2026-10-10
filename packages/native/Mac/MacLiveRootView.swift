@@ -177,9 +177,9 @@ struct MacLiveRootView: View {
                             description: Text("The session may have ended or the machine may be offline.")
                         )
                     } else {
-                        ContentUnavailableView(
-                            "Select a session",
-                            systemImage: "bubble.left.and.bubble.right"
+                        MacSelectSessionState(
+                            canCreateSession: !sessionCreationMachines.isEmpty,
+                            onNewSession: { showingNewSession = true }
                         )
                     }
                 }
@@ -685,6 +685,24 @@ private struct MacNoSessionsState: View {
         } actions: {
             Button("New session", systemImage: "plus", action: onNewSession)
                 .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct MacSelectSessionState: View {
+    let canCreateSession: Bool
+    let onNewSession: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Choose a conversation", systemImage: "rectangle.split.3x1")
+        } description: {
+            Text("Select a session from the middle column, or start a new one on a connected machine.")
+        } actions: {
+            if canCreateSession {
+                Button("New session", systemImage: "plus", action: onNewSession)
+                    .buttonStyle(.glassProminent)
+            }
         }
     }
 }
