@@ -430,23 +430,8 @@ private struct SessionsSection: View {
 
                     ForEach(machineSessions) { session in
                         if session.canResume {
-                            HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
-                                RemiSessionRow(session: session)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                Button {
-                                    onResumeSession(session.machineID, session.id)
-                                } label: {
-                                    if session.isResuming {
-                                        ProgressView().controlSize(.small)
-                                    } else {
-                                        Label("Resume", systemImage: "play.fill")
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                                .contentShape(.rect)
-                                .disabled(session.isResuming)
-                                .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
+                            PhoneResumableSessionRow(session: session) {
+                                onResumeSession(session.machineID, session.id)
                             }
                         } else {
                             NavigationLink {
@@ -474,6 +459,37 @@ private struct SessionsSection: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct PhoneResumableSessionRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let session: RemiSessionSummary
+    let onResume: () -> Void
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            RemiSessionRow(session: session)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
+            Button(action: onResume) {
+                if session.isResuming {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Resume", systemImage: "play.fill")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+            .disabled(session.isResuming)
+            .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
         }
     }
 }
