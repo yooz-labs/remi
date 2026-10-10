@@ -22,6 +22,7 @@ struct MacSessionDetail: View {
     @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
+    @State private var searchFocusRequest = 0
     @State private var reviewState = RemiTranscriptReviewState()
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
@@ -82,6 +83,7 @@ struct MacSessionDetail: View {
                             onNext: { reviewState.selectNext() },
                             onClose: closeSearch
                         )
+                        .id(searchFocusRequest)
                     }
 
                     ScrollView {
@@ -189,6 +191,7 @@ struct MacSessionDetail: View {
             ToolbarItem {
                 Button("Search conversation", systemImage: "magnifyingglass") {
                     isSearchPresented = true
+                    searchFocusRequest += 1
                 }
                 .keyboardShortcut("f", modifiers: .command)
                 .disabled(visibleTranscript.isEmpty)
