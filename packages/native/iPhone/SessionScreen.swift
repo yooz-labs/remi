@@ -264,18 +264,21 @@ private struct SessionIdentityHeader: View {
     let status: RemiSessionStatus
 
     var body: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-                SessionLocation(machineName: machineName, project: project, harness: harness)
-                RemiStatusBadge(status: status)
-            }
-        } else {
-            HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
-                SessionLocation(machineName: machineName, project: project, harness: harness)
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: RemiTheme.Spacing.s))
+
+        layout {
+            SessionLocation(machineName: machineName, project: project, harness: harness)
+                .layoutPriority(1)
+
+            if !dynamicTypeSize.isAccessibilitySize {
                 Spacer(minLength: RemiTheme.Spacing.xs)
-                RemiStatusBadge(status: status)
             }
+
+            RemiStatusBadge(status: status)
         }
+        .padding(.bottom, RemiTheme.Spacing.xxs)
     }
 }
 
@@ -285,11 +288,37 @@ private struct SessionLocation: View {
     let harness: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-            Text("\(machineName) / \(project)")
-                .font(RemiTheme.Typography.code)
-                .foregroundStyle(.secondary)
-            Text(harness).font(.caption.weight(.semibold)).textCase(.uppercase).foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: RemiTheme.Spacing.m) {
+                SessionMetadataLabel(value: machineName, systemImage: "desktopcomputer")
+                    .fixedSize(horizontal: true, vertical: false)
+                SessionMetadataLabel(value: project, systemImage: "folder")
+                    .fixedSize(horizontal: true, vertical: false)
+                SessionMetadataLabel(value: harness, systemImage: "cpu")
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                SessionMetadataLabel(value: machineName, systemImage: "desktopcomputer")
+                SessionMetadataLabel(value: project, systemImage: "folder")
+                SessionMetadataLabel(value: harness, systemImage: "cpu")
+            }
         }
+    }
+}
+
+private struct SessionMetadataLabel: View {
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        Label {
+            Text(value)
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: systemImage)
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
     }
 }
