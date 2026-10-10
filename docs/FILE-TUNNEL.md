@@ -448,7 +448,8 @@ Independent review found that initially enumerated dependency hashes missed
 added files. The runner now compares exact entry types/names/hashes in both
 installed and captured trees, verifies the copied manifest and archives its
 own input. Actual extensionless-file additions in each tree invalidated the
-receipt before the second compiler started; owned dependency copies were used.
+receipt before the second compiler's first build started; owned dependency
+copies were used.
 Final evidence is retained in `/private/tmp/remi-1170-decoder-20261010-corpus-e/`,
 `-storage-e/`, `-mutations-b/` and `-tree-control/`.
 Earlier receipts remain historical snapshots. The first private tree-control
