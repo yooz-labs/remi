@@ -22,7 +22,7 @@ import {
   createSessionListResponse,
   errorToString,
 } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { MachineDescriptor, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import type {
@@ -36,6 +36,7 @@ import { type SessionListDeps, buildSessionList } from './session-list-entries.t
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
+  machine?: () => MachineDescriptor | undefined;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   /** Typed by shape (`buildSessionList`'s), so this module imports nothing from `transcript/`. */
@@ -148,7 +149,10 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // Include other daemon ports on this machine so the app can auto-connect.
       const port = currentPort();
       const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== port);
-      send(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
+      send(
+        connectionId,
+        createSessionListResponse(allSessions, requestId, livePorts, deps.machine?.()),
+      );
     },
 
     onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID): void => {

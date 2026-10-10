@@ -28,6 +28,7 @@ import {
 import { renderUnicodeCompact } from 'uqr';
 import { IdentityStore, PairingLimitError } from '../auth/identity-store.ts';
 import { readHubStatus } from './daemon-manager.ts';
+import { defaultMachineName } from './machine.ts';
 
 /** What the flow needs: the store, the machine, where the phone connects, and the terminal. */
 export interface PairFlowDeps {
@@ -377,13 +378,6 @@ export function pairPreconditions(
   return { ok: true, host, port: status.port, others };
 }
 
-/** The machine's name for the code: the short host name, plain characters only. */
-function machineName(): string {
-  const short = os.hostname().split('.')[0] ?? '';
-  const plain = short.replace(/[^\p{L}\p{N} ._'-]/gu, '').slice(0, 64);
-  return plain.length > 0 ? plain : 'remi';
-}
-
 /**
  * What `remi pair` says when its store fails. Only an error about the pairing records gets the way
  * out (delete the file, which holds only pairing codes); a lock held too long or anything else is
@@ -476,7 +470,7 @@ export async function runPairCommand(flags: { host?: string }): Promise<number> 
       store,
       machineKey: identity.publicKey,
       machineFingerprint: identity.fingerprint,
-      name: machineName(),
+      name: defaultMachineName(),
       host: checked.host,
       port: checked.port,
       others: checked.others,

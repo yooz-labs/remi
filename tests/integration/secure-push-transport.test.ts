@@ -964,9 +964,11 @@ test('secure transport expired prepared request refuses at the synchronous effec
     audience: received.server.url.origin,
     ownedOrigin: received.server.url.origin,
   });
+  // +1 can leave only a millisecond at the end of a second. Leave a full second
+  // for preparation, then wait for the real expiry below (#1346); the effect guard is unchanged.
   const result = await transport.prepare(
     f.snapshot,
-    { ...f.metadata, expiresAt: Math.floor(Date.now() / 1000) + 1 },
+    { ...f.metadata, expiresAt: Math.floor(Date.now() / 1000) + 2 },
     f.payload,
     () => true,
   );

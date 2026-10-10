@@ -33,6 +33,7 @@ export type {
   SessionSource,
   DiscoverableSessionStatus,
   DiscoverableSession,
+  MachineDescriptor,
   SessionGitWorkspace,
 } from './types.ts';
 

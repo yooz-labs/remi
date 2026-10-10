@@ -525,6 +525,18 @@ export interface SessionGitWorkspace {
   readonly branch: string | null;
 }
 
+/** Display metadata for the authenticated machine hosting this connection (#1234, ADR 0039).
+ * The ID is the relay room ID, not a trust grant. Capabilities apply only to this connection. */
+export interface MachineDescriptor {
+  readonly id: string;
+  readonly name: string;
+  /** Open set: clients must accept future platforms. */
+  readonly platform: string;
+  readonly remiVersion: string;
+  readonly harnesses: readonly HarnessId[];
+  readonly capabilities: readonly string[];
+}
+
 /**
  * A session visible through the discovery mechanism.
  * Combines daemon-managed sessions and externally-discovered transcript files.
@@ -601,7 +613,10 @@ export interface DiscoverableSession {
   /** WebSocket port of the daemon hosting this session (for auto-connect) */
   readonly wsPort?: number;
 
-  /** Hostname of the daemon hosting this session */
+  /** Stable ID of the hosting machine, matching the enclosing list's machine (#1234). */
+  readonly machineId?: string | undefined;
+
+  /** Legacy version-1 routing field; retained for older clients. Use machine for display (#1234). */
   readonly daemonHost?: string;
 
   /**
