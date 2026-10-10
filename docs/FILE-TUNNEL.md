@@ -342,8 +342,9 @@ symlink/hardlink and directory/FIFO/socket/device refusal, and the initial
 10 MiB size boundary. All three supported compiled targets must pass on both
 Bun versions with matching source hashes and no cleanup failures.
 Private mutations of the component, credential-path/identity, regular-file,
-link-count, size and name-identity guards must fail their named real-filesystem
-controls. Failed runs remain evidence; they do not relax the gate.
+link-count, size, name-identity, current-root refresh and retained-root snapshot
+guards must fail their exact named real-filesystem assertions.
+Failed runs remain evidence; they do not relax the gate.
 
 The candidate rejects backup suffix `~`, colon syntax, control and bidirectional
 characters, components over 255 UTF-8 bytes and paths deeper than 64 components.
@@ -355,6 +356,9 @@ A rename keeps the identity denied; a replacement at the configured name keeps
 the path denied. The candidate also captures current configured-directory
 identities before admission and lease revalidation to cover actual filesystem
 normalization/non-ASCII case aliases without assuming string collation rules.
+The admission snapshot's descriptors and identities stay held through traversal
+and the resulting file lease; a configured replacement moved under a selected
+ancestor during lookup remains denied, even after its configured name is recreated.
 It inspects directory metadata only; missing/unreadable configured roots refuse.
 Receipts report which actual alias modes the filesystem provided.
 The device control inspects `/dev/null` metadata without reading bytes or

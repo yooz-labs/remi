@@ -132,6 +132,7 @@ export class AdmittedFile {
     readonly size: bigint,
     private readonly entries: Entry[],
     private readonly current: () => boolean,
+    private readonly protectedSnapshot: DirectoryRoot[],
   ) {}
 
   isCurrent(): boolean {
@@ -141,7 +142,11 @@ export class AdmittedFile {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const entry of this.entries.reverse()) fs.closeSync(entry.fd);
+    try {
+      for (const entry of this.entries.reverse()) fs.closeSync(entry.fd);
+    } finally {
+      for (const captured of this.protectedSnapshot.reverse()) captured.close();
+    }
   }
 }
 
@@ -163,18 +168,36 @@ export class FileAdmission {
     });
   }
 
-  private protectedDirectory(root: DirectoryRoot, entries: readonly Entry[]): boolean {
-    // Original descriptors pin renamed roots. Fresh descriptors also pin replacements
-    // reached through filesystem normalization/case aliases; spelling is not authority.
+  private captureProtected(): DirectoryRoot[] | null {
     const current: DirectoryRoot[] = [];
-    const identities = new Set(this.protectedIdentities);
+    let captured = false;
     try {
       for (const known of this.protectedRoots) {
-        const captured = DirectoryRoot.capture(known.pathname, this.openAt);
-        if (!captured) return true;
-        current.push(captured);
-        identities.add(captured.identity);
+        const directory = DirectoryRoot.capture(known.pathname, this.openAt);
+        if (!directory) return null;
+        current.push(directory);
       }
+      captured = true;
+      return current;
+    } finally {
+      if (!captured) for (const directory of current.reverse()) directory.close();
+    }
+  }
+
+  private protectedDirectory(
+    root: DirectoryRoot,
+    entries: readonly Entry[],
+    held: readonly DirectoryRoot[],
+  ): boolean {
+    // Preserve original, lookup-snapshot and latest configured identities together.
+    const current = this.captureProtected();
+    if (!current) return true;
+    const identities = new Set([
+      ...this.protectedIdentities,
+      ...held.map((item) => item.identity),
+      ...current.map((item) => item.identity),
+    ]);
+    try {
       return (
         root.contains(identities) ||
         entries.some((entry) => entry.stat.isDirectory() && identities.has(identity(entry.stat)))
@@ -196,14 +219,20 @@ export class FileAdmission {
       this.protectedPath(pathname) ||
       root.contains(this.protectedIdentities) ||
       this.protectedRoots.some((item) => !item.active) ||
-      !root.isCurrent() ||
-      this.protectedDirectory(root, [])
+      !root.isCurrent()
     )
       return null;
+    const retained = this.captureProtected();
+    if (!retained) return null;
+    const identities = new Set([
+      ...this.protectedIdentities,
+      ...retained.map((item) => item.identity),
+    ]);
     const entries: Entry[] = [];
     const descriptors: number[] = [];
     let admitted = false;
     try {
+      if (root.contains(identities)) return null;
       let parent = root.fd;
       for (const [index, component] of parts.entries()) {
         const last = index === parts.length - 1;
@@ -215,7 +244,7 @@ export class FileAdmission {
         if (
           last
             ? !stat.isFile() || stat.nlink !== 1n || stat.size > MAX_BYTES
-            : !stat.isDirectory() || this.protectedIdentities.has(identity(stat))
+            : !stat.isDirectory() || identities.has(identity(stat))
         )
           return null;
         entries.push({ fd, parent, name: component, flags, stat });
@@ -233,7 +262,8 @@ export class FileAdmission {
           this.protectedRoots.every((item) => item.active) &&
           root.isCurrent() &&
           namesCurrent(entries, this.openAt) &&
-          !this.protectedDirectory(root, entries),
+          !this.protectedDirectory(root, entries, retained),
+        retained,
       );
       if (!result.isCurrent()) return null;
       admitted = true;
@@ -241,7 +271,13 @@ export class FileAdmission {
     } catch {
       return null; // Native open/inspection failure cannot become an admitted descriptor.
     } finally {
-      if (!admitted) for (const fd of descriptors.reverse()) fs.closeSync(fd);
+      if (!admitted) {
+        try {
+          for (const fd of descriptors.reverse()) fs.closeSync(fd);
+        } finally {
+          for (const captured of retained.reverse()) captured.close();
+        }
+      }
     }
   }
 }

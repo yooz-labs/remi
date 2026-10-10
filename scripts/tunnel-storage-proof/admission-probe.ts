@@ -186,6 +186,19 @@ export async function admissionProbe(
       null,
       'credential root identity refusal',
     );
+    fs.mkdirSync(path.join(project, 'replacement-race'));
+    let configurationMoved = false;
+    assert.equal(
+      admission.open(root, ['replacement-race', 'moved-config', 'inner', 'data.txt'], (index) => {
+        if (index !== 0) return;
+        fs.renameSync(protectedPath, path.join(project, 'replacement-race', 'moved-config'));
+        put('custom-config/inner/data.txt', 'next replacement configuration');
+        configurationMoved = true;
+      }),
+      null,
+      'captured current credential identity refusal',
+    );
+    assert(configurationMoved, 'configured replacement actually moved during lookup');
     checks.push('protected directory overlap and replacement refusal');
 
     fs.symlinkSync(path.join(project, 'safe.txt'), path.join(project, 'leaf-link'));
