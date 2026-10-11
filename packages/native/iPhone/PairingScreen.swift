@@ -122,7 +122,7 @@ struct PairingScreen: View {
                 }
             }
 
-            Section("System access") {
+            Section("Machine authorization") {
                 PairingAccessNotice()
             }
         }
@@ -160,17 +160,19 @@ struct PairingScreen: View {
 
 private struct PairingAccessNotice: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
-            Label("What this phone can do", systemImage: "checkmark.shield")
-                .font(.headline)
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+                Text("After approval, this phone can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions exposed by the machine.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
 
-            Text("After approval, this phone can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions exposed by the machine.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Label("Direct WebSocket connections are not encrypted by Remi. Use a trusted network, VPN, or SSH tunnel.", systemImage: "lock.open")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                Label("Direct connections are not encrypted by Remi. Use a trusted network, VPN, or SSH tunnel.", systemImage: "lock.open")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, RemiTheme.Spacing.xs)
+        } label: {
+            Label("View, answer, and manage exposed sessions", systemImage: "checkmark.shield")
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
     }
