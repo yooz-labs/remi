@@ -21,6 +21,12 @@ Ctrl-B d must exit the wrapper, end its child, and return the shell to the
 foreground. Cleanup also continues and terminates owned stopped processes on
 failure; the runner has a 25-second scenario deadline and a 30-second test
 budget. Signals never target the Bun test runner, its parent, or a live hub.
+Once a process is observed exiting, cleanup never signals its saved PID.
+Remaining cleanup targets must still match their captured kernel start time
+and owned ancestry immediately before each signal; Linux also uses a pidfd
+when available. The success check asserts no wrapper/child cleanup signals.
+A second control keeps an actual inert child before its ready marker and
+checks that the startup timeout terminates the live owned processes.
 
 Run the source check with the Bun version being evaluated:
 
