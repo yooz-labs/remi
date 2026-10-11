@@ -7,11 +7,8 @@
  * signature form of the same extraction (`forSignature`, #990). Precedent was
  * deleted with the rest of the auto-approve judgment in #1125 (ADR 0030).
  * Complete display input is retained as question detail when the short summary
- * hides text, so secure push sizing cannot grant an action over unseen meaning (#1200). Hook text
- * is escaped before any summary cut (#1189); a complete detail is escaped too.
+ * hides text, so secure push sizing cannot grant an action over unseen meaning (#1200).
  */
-
-import { escapeUnsafeText } from '@remi/shared';
 
 /** Longest summary emitted verbatim, so a lock-screen card or terminal
  *  prompt stays one bounded line. */
@@ -38,82 +35,66 @@ export function cutSummary(value: string, headEnd: number, tailStart: number): s
  */
 export function truncateSummary(value: string): string {
   if (value.length <= SUMMARY_MAX) return value;
-  const headEnd = safeBoundary(value, HEAD_KEEP, 'before');
-  const tailStart = safeBoundary(value, value.length - TAIL_KEEP, 'after');
-  return cutSummary(value, headEnd, tailStart);
-}
-
-/** Move a summary cut out of an escape or surrogate pair, preserving the complete display code. */
-function safeBoundary(value: string, index: number, side: 'before' | 'after'): number {
-  for (const match of value.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (start < index && index < end) return side === 'before' ? start : end;
-  }
-  if (
-    index > 0 &&
-    index < value.length &&
-    value.charCodeAt(index - 1) >= 0xd800 &&
-    value.charCodeAt(index - 1) <= 0xdbff &&
-    value.charCodeAt(index) >= 0xdc00 &&
-    value.charCodeAt(index) <= 0xdfff
-  ) {
-    return side === 'before' ? index - 1 : index + 1;
-  }
-  return index;
+  return cutSummary(value, HEAD_KEEP, value.length - TAIL_KEEP);
 }
 
 /**
  * Extract a short summary from tool input for the question prompt.
  *
  * Returns `null` when the tool carries no summarizable argument; the caller
- * then uses the bare tool name. Pure and total: never throws, never guesses.
+ * then uses the bare tool name. The optional formatter receives raw extracted text and
+ * the truncation decision; without it, the original pure summary behavior applies.
  */
 export function summarizeToolInput(
   toolName: string,
   toolInput: Record<string, unknown>,
-  options: { readonly complete?: boolean } = {},
+  options: {
+    readonly complete?: boolean;
+    readonly format?: (value: string, shouldTruncate: boolean) => string;
+  } = {},
 ): string | null {
   if (!toolInput || typeof toolInput !== 'object') return null;
   const lower = toolName.toLowerCase();
 
   const get = (key: string): unknown => toolInput[key];
-  const display = (value: string): string => {
-    const escaped = escapeUnsafeText(value);
-    return options.complete === true ? escaped : truncateSummary(escaped);
-  };
+  const display = (value: string, shouldTruncate: boolean): string =>
+    options.format !== undefined
+      ? options.format(value, shouldTruncate)
+      : shouldTruncate
+        ? truncateSummary(value)
+        : value;
 
   // Bash: show the command
   if (lower === 'bash' || lower === 'terminal') {
     const cmd = get('command') ?? get('cmd');
     if (typeof cmd === 'string') {
-      return display(cmd);
+      return display(cmd, options.complete !== true);
     }
   }
 
   // Read/Write/Edit: show the file path
   if (lower === 'read' || lower === 'write' || lower === 'edit') {
     const path = get('file_path') ?? get('path');
-    if (typeof path === 'string') return display(path);
+    if (typeof path === 'string') return display(path, false);
   }
 
   // Glob/Grep: show the pattern
   if (lower === 'glob' || lower === 'grep') {
     const pattern = get('pattern') ?? get('glob');
-    if (typeof pattern === 'string') return display(pattern);
+    if (typeof pattern === 'string') return display(pattern, false);
   }
 
   // WebFetch: show the URL
   if (lower.includes('fetch') || lower.includes('web')) {
     const url = get('url');
-    if (typeof url === 'string') return display(url);
+    if (typeof url === 'string') return display(url, false);
   }
 
   // Generic: try common field names
   for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
     const val = get(key);
     if (typeof val === 'string' && val.length > 0) {
-      return display(val);
+      return display(val, options.complete !== true);
     }
   }
 

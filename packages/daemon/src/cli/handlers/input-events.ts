@@ -377,7 +377,7 @@ function resolveOption(
 type NamedOption =
   | { readonly kind: 'one'; readonly option: QuestionOption }
   | { readonly kind: 'none' }
-  | { readonly kind: 'ambiguous' };
+  | { readonly kind: 'ambiguous'; readonly cause: 'value-label' | 'display-labels' };
 
 /**
  * The option a plain answer string names on a held card. The lock screen
@@ -394,10 +394,10 @@ type NamedOption =
 function namedOption(options: readonly QuestionOption[], answer: string): NamedOption {
   const byValue = options.find((o) => o.value === answer);
   const byLabelMatches = options.filter((o) => o.label === answer);
-  if (byLabelMatches.length > 1) return { kind: 'ambiguous' };
+  if (byLabelMatches.length > 1) return { kind: 'ambiguous', cause: 'display-labels' };
   const byLabel = byLabelMatches[0];
   if (byValue !== undefined && byLabel !== undefined && byValue !== byLabel) {
-    return { kind: 'ambiguous' };
+    return { kind: 'ambiguous', cause: 'value-label' };
   }
   const option = byValue ?? byLabel;
   return option === undefined ? { kind: 'none' } : { kind: 'one', option };
@@ -409,7 +409,9 @@ const TERMINAL_ONLY_MESSAGE = 'This question can only be answered in the termina
 
 /** The refusal of an answer that names more than one option (see
  *  `namedOption`). */
-const AMBIGUOUS_ANSWER_MESSAGE =
+const AMBIGUOUS_VALUE_LABEL_MESSAGE =
+  'This answer matches one option by its number and another by its label; answer again from the card in the app';
+const AMBIGUOUS_DISPLAY_LABEL_MESSAGE =
   'This answer matches more than one option; answer again from the card in the app';
 
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
@@ -947,7 +949,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             : active.terminalOnly === true
               ? TERMINAL_ONLY_MESSAGE
               : held.kind === 'ambiguous'
-                ? AMBIGUOUS_ANSWER_MESSAGE
+                ? named?.kind === 'ambiguous' && named.cause === 'value-label'
+                  ? AMBIGUOUS_VALUE_LABEL_MESSAGE
+                  : AMBIGUOUS_DISPLAY_LABEL_MESSAGE
                 : selections !== undefined
                   ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
                   : 'This prompt takes one of its own options',

@@ -59,8 +59,8 @@ import type {
   SubagentStopHookInput,
 } from './hook-types.ts';
 import { SubagentContextTracker } from './subagent-context-tracker.ts';
+import { summarizeToolInputForDisplay } from './tool-display-summary.ts';
 import { extractToolQuestion } from './tool-question.ts';
-import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
   /**
@@ -564,8 +564,8 @@ export class HookEventBridge {
         : toolQuestion.text;
       options = toolQuestion.options;
     } else {
-      const inputSummary = summarizeToolInput(toolName, input.tool_input);
-      const complete = summarizeToolInput(toolName, input.tool_input, { complete: true });
+      const inputSummary = summarizeToolInputForDisplay(toolName, input.tool_input);
+      const complete = summarizeToolInputForDisplay(toolName, input.tool_input, { complete: true });
       // Preserve hidden input explicitly; preview text is never evidence of completeness (#1200).
       if (complete !== null && complete !== inputSummary) inputDetail = complete;
       // The action carries the command/path/pattern context (#497).

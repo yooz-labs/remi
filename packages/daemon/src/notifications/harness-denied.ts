@@ -14,7 +14,7 @@
 import { escapeUnsafeText } from '@remi/shared';
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import type { PermissionDeniedHookInput } from '../hooks/hook-types.ts';
-import { summarizeToolInput } from '../hooks/tool-summary.ts';
+import { summarizeToolInputForDisplay } from '../hooks/tool-display-summary.ts';
 import {
   type LegacyPushPolicy,
   legacyChannelOpen,
@@ -65,7 +65,7 @@ export function buildHarnessDeniedText(
 ): { title: string; body: string } {
   const toolName = input.tool_name || 'a tool';
   const displayedToolName = escapeUnsafeText(toolName);
-  const summary = summarizeToolInput(toolName, input.tool_input ?? {});
+  const summary = summarizeToolInputForDisplay(toolName, input.tool_input ?? {});
   const call = summary ? `${displayedToolName}: ${summary}` : displayedToolName;
   const who = input.agent_type ? `${escapeUnsafeText(input.agent_type)} · ` : '';
   const reason = oneLine(escapeUnsafeText(input.reason ?? ''));
