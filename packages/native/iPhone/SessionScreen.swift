@@ -145,7 +145,7 @@ struct SessionScreen: View {
             draft: $draft,
             state: interactionState,
             onSend: onSend,
-            onInterrupt: {}
+            onInterrupt: nil
         )
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -195,10 +195,12 @@ struct SessionScreen: View {
             selectedViewID = ""
             resetReview()
         }
-        .onChange(of: views.map(\.agentId)) { _, agentIDs in
-            if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
-                selectedViewID = ""
-            }
+        .onChange(of: views.map(\.agentId)) { _, _ in
+            let resolved = RemiConversationSelection.resolvedViewID(
+                selectedViewID: selectedViewID,
+                views: views
+            )
+            if resolved != selectedViewID { selectedViewID = resolved }
         }
     }
 
@@ -223,9 +225,11 @@ struct SessionScreen: View {
     }
 
     private var interactionState: RemiSessionInteractionState {
-        if !session.isLive { return .finished }
-        if !selectedViewID.isEmpty { return .liveSubagent }
-        return .liveMain(promptWaiting: !questions.isEmpty)
+        .resolve(
+            sessionIsLive: session.isLive,
+            selectedViewID: selectedViewID,
+            hasWaitingQuestions: !questions.isEmpty
+        )
     }
 
     private var searchQueryBinding: Binding<String> {
@@ -303,7 +307,6 @@ private struct SessionNavigationBarBehavior: ViewModifier {
 
 private struct ConversationPicker: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Namespace private var glassNamespace
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
@@ -317,71 +320,27 @@ private struct ConversationPicker: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: RemiTheme.Spacing.xs) {
-                        ConversationButton(
-                            id: "main",
-                            title: "Main",
-                            systemImage: "bubble.left.fill",
-                            active: true,
-                            selected: selectedViewID.isEmpty,
-                            glassNamespace: glassNamespace
-                        ) { selectedViewID = "" }
-                        ForEach(views) { view in
-                            ConversationButton(
-                                id: view.agentId,
-                                title: view.agentType,
-                                systemImage: "person.2.fill",
-                                active: view.active,
-                                selected: selectedViewID == view.agentId,
-                                glassNamespace: glassNamespace
-                            ) { selectedViewID = view.agentId }
-                        }
+            ScrollView(.horizontal) {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    RemiConversationChip(
+                        title: "Main",
+                        systemImage: "bubble.left.fill",
+                        active: true,
+                        selected: selectedViewID.isEmpty
+                    ) { selectedViewID = "" }
+                    ForEach(views) { view in
+                        RemiConversationChip(
+                            title: view.agentType,
+                            systemImage: "person.2.fill",
+                            active: view.active,
+                            selected: selectedViewID == view.agentId
+                        ) { selectedViewID = view.agentId }
                     }
-                    .padding(.vertical, 2)
                 }
-                .scrollIndicators(.hidden)
+                .padding(.vertical, 2)
             }
+            .scrollIndicators(.hidden)
         }
-    }
-}
-
-private struct ConversationButton: View {
-    let id: String
-    let title: String
-    let systemImage: String
-    let active: Bool
-    let selected: Bool
-    let glassNamespace: Namespace.ID
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: RemiTheme.Spacing.xs) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(selected ? Color.primary : .secondary)
-                Text(title).lineLimit(1)
-                Circle()
-                    .fill(active ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.35))
-                    .frame(width: 6, height: 6)
-            }
-            .font(.subheadline.weight(.semibold))
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .padding(.horizontal, RemiTheme.Spacing.s)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .glassEffectID(id, in: glassNamespace)
-        .overlay {
-            Capsule()
-                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(title), \(active ? "active" : "finished")")
-        .accessibilityHint(active ? "Active conversation" : "Finished conversation")
     }
 }
 

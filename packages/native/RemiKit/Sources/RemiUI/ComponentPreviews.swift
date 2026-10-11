@@ -55,6 +55,7 @@ private struct SupportingComponentsGallery: View {
                 PreviewSection(title: "Composer") {
                     ComposerPreview(promptWaiting: false)
                     ComposerPreview(promptWaiting: true)
+                    ComposerPreview(promptWaiting: true, supportsInterrupt: true)
                 }
 
                 PreviewSection(title: "Feedback") {
@@ -103,9 +104,15 @@ private struct PreviewSection<Content: View>: View {
 private struct ComposerPreview: View {
     @State private var text = "Review the next change"
     let promptWaiting: Bool
+    var supportsInterrupt = false
 
     var body: some View {
-        RemiComposer(text: $text, promptWaiting: promptWaiting, onSend: {}, onInterrupt: {})
+        RemiComposer(
+            text: $text,
+            promptWaiting: promptWaiting,
+            onSend: {},
+            onInterrupt: supportsInterrupt ? {} : nil
+        )
     }
 }
 
@@ -124,7 +131,7 @@ private struct SessionInteractionGallery: View {
                 draft: $draft,
                 state: .liveMain(promptWaiting: true),
                 onSend: { _ in },
-                onInterrupt: {}
+                onInterrupt: nil
             )
             RemiSessionInteractionBar(
                 draft: $draft,

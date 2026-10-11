@@ -6,6 +6,18 @@ public enum RemiSessionInteractionState: Equatable, Sendable {
     case finished
 }
 
+public extension RemiSessionInteractionState {
+    static func resolve(
+        sessionIsLive: Bool,
+        selectedViewID: String,
+        hasWaitingQuestions: Bool
+    ) -> Self {
+        guard sessionIsLive else { return .finished }
+        guard selectedViewID.isEmpty else { return .liveSubagent }
+        return .liveMain(promptWaiting: hasWaitingQuestions)
+    }
+}
+
 enum RemiComposerSubmission {
     static func content(from draft: String) -> String? {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18,13 +30,13 @@ public struct RemiSessionInteractionBar: View {
     @Binding private var draft: String
     private let state: RemiSessionInteractionState
     private let onSend: (String) -> Void
-    private let onInterrupt: () -> Void
+    private let onInterrupt: (() -> Void)?
 
     public init(
         draft: Binding<String>,
         state: RemiSessionInteractionState,
         onSend: @escaping (String) -> Void,
-        onInterrupt: @escaping () -> Void
+        onInterrupt: (() -> Void)?
     ) {
         _draft = draft
         self.state = state
@@ -79,7 +91,7 @@ public extension View {
         draft: Binding<String>,
         state: RemiSessionInteractionState,
         onSend: @escaping (String) -> Void,
-        onInterrupt: @escaping () -> Void
+        onInterrupt: (() -> Void)?
     ) -> some View {
         scrollEdgeEffectStyle(.soft, for: .bottom)
             .safeAreaInset(edge: .bottom, spacing: 0) {
