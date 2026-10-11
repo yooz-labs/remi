@@ -199,12 +199,14 @@ struct MacSessionDetail: View {
         }
         .toolbar {
             if #available(macOS 26.1, *) {
-                ToolbarItem {
+                ToolbarItemGroup {
+                    latestActivityButton
                     searchButton
                 }
                 .visibilityPriority(.high)
             } else {
-                ToolbarItem {
+                ToolbarItemGroup {
+                    latestActivityButton
                     searchButton
                 }
             }
@@ -230,8 +232,28 @@ struct MacSessionDetail: View {
         .help("Search conversation")
     }
 
+    private var latestActivityButton: some View {
+        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
+            guard let latestActivityID else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                visibleEntryID = latestActivityID
+            }
+        }
+        .labelStyle(.iconOnly)
+        .keyboardShortcut(.downArrow, modifiers: .command)
+        .disabled(latestActivityID == nil || visibleEntryID == latestActivityID)
+        .help("Jump to latest activity (Command-↓)")
+    }
+
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
+    }
+
+    private var latestActivityID: String? {
+        RemiTranscriptNavigation.latestActivityID(
+            entryIDs: visibleTranscript.map(\.id),
+            questionIDs: visibleQuestions.map(\.questionID)
+        )
     }
 
     private var interactionState: RemiSessionInteractionState {
