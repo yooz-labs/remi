@@ -1,6 +1,8 @@
-// #1440/#1170 standalone immutable ownership journal; no quota refund or transfer authority.
+// #1440/#1443/#1170 standalone immutable ownership journal; no transfer authority.
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { DirectoryRoot } from './admission';
+import { type MarkerKind, type MarkerWitness, validWitnesses } from './journal-schema';
 import type { PrivateOps } from './private-copy';
 
 export type RecoveryOps = PrivateOps & { lock: (fd: number) => number };
@@ -42,6 +44,11 @@ function matches(stat: fs.BigIntStats, witness: Witness): boolean {
 }
 function canonical(raw: string, value: Marker): boolean {
   return JSON.stringify(value) === raw;
+}
+export function allocatedBlocks(stat: fs.BigIntStats): number {
+  const bytes = stat.blocks * 512n;
+  if (bytes < 0n || bytes > BigInt(Number.MAX_SAFE_INTEGER)) refuse();
+  return Number(bytes);
 }
 function parse(raw: string, id: string, root: string, owned: boolean): Marker {
   const value = JSON.parse(raw) as Marker;
@@ -252,6 +259,130 @@ export class RecoveryIntent {
   }
   private artifact(): number {
     return this.ops.openAt(this.scratch.fd, this.name('artifact'), READ);
+  }
+  snapshot(kinds: readonly MarkerKind[]): MarkerWitness[] {
+    this.current();
+    return kinds.map((kind) => {
+      const item = this.held.find((item) => item.name === this.name(kind)) ?? this.load(kind);
+      if (!item) refuse();
+      this.validate(item);
+      const stat = fs.fstatSync(item.fd, { bigint: true });
+      return {
+        kind,
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+        sha256: createHash('sha256').update(this.read(item.fd)).digest('hex'),
+        allocated: allocatedBlocks(stat),
+      };
+    });
+  }
+  artifactAllocated(writerFd?: number): number {
+    this.current();
+    const owned = this.held.find((item) => item.name === this.name('owned')) ?? this.load('owned');
+    if (!owned?.value.artifact) refuse();
+    // Check the original FD before an artifact open could reuse a closed numeric descriptor.
+    const writer = writerFd === undefined ? undefined : fs.fstatSync(writerFd, { bigint: true });
+    if (writer && !matches(writer, owned.value.artifact)) refuse();
+    const fd = this.artifact();
+    if (fd === -2 && writerFd === undefined) return 0;
+    if (fd < 0) refuse();
+    try {
+      const stat = fs.fstatSync(fd, { bigint: true });
+      if (!matches(stat, owned.value.artifact)) refuse();
+      if (writer) {
+        return allocatedBlocks(writer); // Never substitute a new path FD for a lost owned writer.
+      }
+      return allocatedBlocks(stat);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  static retire(
+    scratch: DirectoryRoot,
+    metadata: DirectoryRoot,
+    id: string,
+    ops: RecoveryOps,
+    witnesses: MarkerWitness[],
+    checkpoint?: (stage: string) => void,
+    account?: (measured: MarkerWitness[]) => void,
+  ): void {
+    if (!TOKEN.test(id) || !validWitnesses(witnesses, ['intent', 'owned', 'cleaned'])) refuse();
+    const result = new RecoveryIntent(scratch, metadata, id, ops, false);
+    try {
+      result.current();
+      // Only persisted retirement invokes this path; an absent intent cannot be reopened.
+      const intent = result.load('intent', true);
+      if (intent) result.acquire(intent);
+      const absent = () => {
+        const fd = result.artifact();
+        if (fd >= 0) fs.closeSync(fd);
+        if (fd !== -2) refuse();
+      };
+      absent();
+      const measured: MarkerWitness[] = [];
+      for (const witness of witnesses) {
+        const item =
+          result.held.find((item) => item.name === result.name(witness.kind)) ??
+          result.load(witness.kind, true);
+        if (!item) {
+          measured.push(witness);
+          continue;
+        }
+        const stat = fs.fstatSync(item.fd, { bigint: true });
+        if (
+          String(stat.dev) !== witness.dev ||
+          String(stat.ino) !== witness.ino ||
+          createHash('sha256').update(result.read(item.fd)).digest('hex') !== witness.sha256
+        )
+          refuse();
+        measured.push({ ...witness, allocated: allocatedBlocks(stat) });
+      }
+      account?.(measured);
+      for (const kind of ['owned', 'cleaned', 'intent'] as const) {
+        result.current();
+        const witness = witnesses.find((item) => item.kind === kind);
+        if (!witness) refuse();
+        const item =
+          result.held.find((item) => item.name === result.name(kind)) ?? result.load(kind, true);
+        if (!item) continue; // Exact ENOENT is covered by the durable witness.
+        result.validate(item);
+        const stat = fs.fstatSync(item.fd, { bigint: true });
+        if (
+          String(stat.dev) !== witness.dev ||
+          String(stat.ino) !== witness.ino ||
+          createHash('sha256').update(result.read(item.fd)).digest('hex') !== witness.sha256
+        )
+          refuse();
+        allocatedBlocks(stat); // Unknown allocation never falls back to a path measurement.
+        result.current();
+        absent();
+        if (ops.unlink(metadata.fd, result.name(kind)) !== 0) refuse();
+        result.held.splice(result.held.indexOf(item), 1);
+        // Keep the intent flock until its own final unlink.
+        fs.closeSync(item.fd);
+        checkpoint?.(`retired-${kind}`);
+      }
+      const markersAbsent = () => {
+        for (const witness of witnesses) {
+          const fd = ops.openAt(metadata.fd, result.name(witness.kind), READ);
+          if (fd >= 0) fs.closeSync(fd);
+          if (fd !== -2) refuse();
+        }
+      };
+      result.current();
+      absent();
+      markersAbsent();
+      fs.fsyncSync(metadata.fd);
+      checkpoint?.('metadata-fsynced');
+      result.current();
+      absent();
+      markersAbsent();
+    } catch (error) {
+      if (error instanceof RecoveryError) throw error;
+      throw new RecoveryError('unavailable');
+    } finally {
+      result.close();
+    }
   }
   cleanup(checkpoint?: (stage: RecoveryStage) => void): 'cleaned' {
     try {
