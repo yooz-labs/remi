@@ -314,7 +314,9 @@ assert.throws(
   'JPEG entropy full-decode refusal',
 );
 checks.push('full PNG CRC and JPEG entropy decode refusal');
-checks.push(...(await processProof(png, jpg)));
+const processResult = await processProof(png, jpg);
+checks.push(...processResult.checks);
+export const decoderChildExits = processResult.childExits;
 console.log(
   JSON.stringify({
     bun: Bun.version,
@@ -323,6 +325,7 @@ console.log(
     checks,
     images,
     paletteImages: decoderPaletteImages,
+    decoderChildExits,
     scope:
       'decoder admission and child lifetime candidate; hard memory CPU budgets and held approval remain unproved; no production integration',
   }),

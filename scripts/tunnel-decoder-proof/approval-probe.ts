@@ -18,7 +18,7 @@ import { SessionRegistry } from '../../packages/daemon/src/session/session-regis
 import { SessionStore } from '../../packages/daemon/src/session/session-store.ts';
 import type { ApprovalClientConfig } from './approval-client';
 import inputs from './inputs.json';
-import { DecoderProcess, DecoderProcessError } from './process.ts';
+import { type DecoderChildExit, DecoderProcess, DecoderProcessError } from './process.ts';
 
 const YES: QuestionOption = {
   label: 'Yes',
@@ -60,6 +60,7 @@ interface ScenarioResult {
     clientPid: number;
     repeatedDecoderPid: number;
     recoveryDecoderPid: number;
+    decoderExits: { repeated: DecoderChildExit; recovery: DecoderChildExit };
     reaped: { pty: boolean; client: boolean; repeatedDecoder: boolean; recoveryDecoder: boolean };
   };
 }
@@ -585,6 +586,10 @@ async function scenario(
     );
     assert.equal(cancelled.error.code, 'cancelled');
     noChild(decoderPid, 'repeated decoder child cancellation');
+    const repeatedExit = decoder.lastChildExit;
+    assert(repeatedExit, 'repeated decoder exit observation recorded');
+    assert.equal(repeatedExit.pid, decoderPid, 'repeated decoder observation matches owned PID');
+    assert.equal(repeatedExit.signalCode, 'SIGKILL', 'repeated decoder kill signal recorded');
     const repeatedDecoderReaped = true;
     assert.deepEqual(
       await decoder.decode(bytes, mediaType),
@@ -594,6 +599,14 @@ async function scenario(
     const recoveryDecoderPid = decoder.lastChildPID;
     assert(recoveryDecoderPid !== undefined, 'same controller recovery child PID recorded');
     noChild(recoveryDecoderPid, 'same controller recovery child');
+    const recoveryExit = decoder.lastChildExit;
+    assert(recoveryExit, 'recovery decoder exit observation recorded');
+    assert.equal(
+      recoveryExit.pid,
+      recoveryDecoderPid,
+      'recovery decoder observation matches owned PID',
+    );
+    assert.equal(recoveryExit.exitCode, 0, 'recovery decoder successful exit recorded');
     const recoveryDecoderReaped = true;
     result = {
       scenario: blockParent
@@ -611,6 +624,7 @@ async function scenario(
         clientPid,
         repeatedDecoderPid: decoderPid,
         recoveryDecoderPid,
+        decoderExits: { repeated: repeatedExit, recovery: recoveryExit },
         reaped: {
           pty: false,
           client: clientReaped,

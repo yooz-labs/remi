@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import inputs from './inputs.json';
-import { DecoderProcess, DecoderProcessError, MAX_RESULT_BYTES } from './process';
+import {
+  type DecoderChildExit,
+  DecoderProcess,
+  DecoderProcessError,
+  MAX_RESULT_BYTES,
+} from './process';
 import { decodeInput, decodeRepeatedWorker, decodeWorker } from './worker';
 
 const executable = () =>
@@ -65,9 +70,22 @@ function noChild(pid: number | undefined, witness: string): void {
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, witness);
 }
 
-export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> {
+export async function processProof(png: Buffer, jpg: Buffer) {
   const root = mkdtempSync(join(tmpdir(), 'remi-decoder-process-'));
   const checks: string[] = [];
+  const childExits: Array<DecoderChildExit & { witness: string }> = [];
+  function observe(current: DecoderProcess, witness: string): void {
+    const value = current.lastChildExit;
+    assert(value, `${witness} exit observation recorded`);
+    assert.equal(value.pid, current.lastChildPID, `${witness} same owned PID`);
+    assert(Number.isFinite(value.elapsedMs) && value.elapsedMs >= 0, `${witness} finite elapsed`);
+    assert(
+      value.exitCode !== null || value.signalCode !== null,
+      `${witness} exited before observation`,
+    );
+    assert.deepEqual(Object.keys(value).sort(), ['elapsedMs', 'exitCode', 'pid', 'signalCode']);
+    childExits.push({ ...value, witness });
+  }
   const manager = new DecoderProcess([...executable(), '--owned-decode-worker']);
   const expected = (index: number) => {
     const image = inputs.images[index];
@@ -93,8 +111,15 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
     task: Promise<unknown>,
     code: DecoderProcessError['code'],
     witness: string,
+    current?: DecoderProcess,
   ): Promise<void> {
     await assert.rejects(task, (error: unknown) => {
+      if (!(error instanceof DecoderProcessError) || error.code !== code) {
+        // A failed assertion still records only owned exit metadata, never image/stream bytes.
+        console.error(
+          JSON.stringify({ witness, decoderChildExit: current?.lastChildExit ?? null }),
+        );
+      }
       assert(error instanceof DecoderProcessError, witness);
       assert.equal(error.code, code, witness);
       return true;
@@ -117,11 +142,15 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
       const result = await manager.decode(bytes, kind);
       assert.deepEqual(result, expected(index), 'actual worker exact decoded pixels');
       noChild(manager.lastChildPID, 'successful decode reaped');
+      observe(manager, 'successful decoder');
+      assert.equal(manager.lastChildExit?.exitCode, 0, 'successful decoder exit code');
     }
     const crc = Buffer.from(png);
     crc[29] ^= 1;
-    await refusal(manager.decode(crc, 'image/png'), 'refused', 'real decoder refusal');
+    await refusal(manager.decode(crc, 'image/png'), 'refused', 'real decoder refusal', manager);
     noChild(manager.lastChildPID, 'refused decoder reaped');
+    observe(manager, 'refused decoder');
+    assert.equal(manager.lastChildExit?.exitCode, 1, 'refused decoder exit code');
     await recovered(manager);
     const controller = new AbortController();
     controller.abort();
@@ -130,6 +159,7 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
       neverStarted.decode(png, 'image/png', { signal: controller.signal }),
       'cancelled',
       'pre-cancelled operation refused',
+      neverStarted,
     );
     assert.equal(neverStarted.lastChildPID, undefined, 'pre-cancel spawns nothing');
     checks.push('owned decoder success refusal and pre-cancel cleanup');
@@ -141,20 +171,34 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
       cold.manager.decode(png, 'image/png', { milliseconds: 300 }),
       'expired',
       'cold child lifetime deadline',
+      cold.manager,
     );
     assert(performance.now() - coldStart < 2000, 'cold deadline reaps within two seconds');
     noChild(cold.manager.lastChildPID, 'cold deadline child reaped');
+    observe(cold.manager, 'cold deadline');
+    assert.equal(
+      cold.manager.lastChildExit?.signalCode,
+      'SIGKILL',
+      'cold deadline kill signal recorded',
+    );
     const timed = control('busy');
     const start = performance.now();
     const expired = refusal(
       timed.manager.decode(png, 'image/png', { milliseconds: 1000 }),
       'expired',
       'busy child deadline',
+      timed.manager,
     );
     await ready(timed.marker);
     await expired;
     assert(performance.now() - start < 2000, 'deadline reaps child within two seconds');
     noChild(timed.manager.lastChildPID, 'expired child reaped');
+    observe(timed.manager, 'busy deadline');
+    assert.equal(
+      timed.manager.lastChildExit?.signalCode,
+      'SIGKILL',
+      'busy deadline kill signal recorded',
+    );
     await recovered(timed.manager);
     checks.push('actual busy child deadline and reap');
 
@@ -164,6 +208,7 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
       cancelled.manager.decode(png, 'image/png', { signal: cancel.signal }),
       'cancelled',
       'explicit cancellation',
+      cancelled.manager,
     );
     await ready(cancelled.marker);
     const pid = cancelled.manager.lastChildPID;
@@ -174,6 +219,12 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
     await stopped;
     assert(performance.now() - cancelAt < 2000, 'cancellation reaps within two seconds');
     noChild(pid, 'cancelled child reaped');
+    observe(cancelled.manager, 'cancelled decoder');
+    assert.equal(
+      cancelled.manager.lastChildExit?.signalCode,
+      'SIGKILL',
+      'cancelled decoder kill signal recorded',
+    );
     await recovered(cancelled.manager);
     checks.push('actual cancellation saturation and reap');
 
@@ -191,8 +242,18 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
         fault.manager.decode(png, 'image/png'),
         mode === 'crash' ? 'failed' : 'protocol',
         'actual child output or exit refusal',
+        fault.manager,
       );
       noChild(fault.manager.lastChildPID, 'failed output child reaped');
+      observe(fault.manager, mode);
+      if (mode === 'crash') {
+        assert.equal(fault.manager.lastChildExit?.exitCode, 7, 'actual crash exit code recorded');
+        assert.equal(
+          fault.manager.lastChildExit?.signalCode,
+          null,
+          'actual crash is an exit, not a signal',
+        );
+      }
       await recovered(fault.manager);
     }
     checks.push('bounded output malformed duplicate and crash refusal');
@@ -203,14 +264,16 @@ export async function processProof(png: Buffer, jpg: Buffer): Promise<string[]> 
       racing.manager.decode(png, 'image/png', { signal: raceCancel.signal }),
       'cancelled',
       'cancelled unpublished result discarded',
+      racing.manager,
     );
     await ready(racing.marker);
     raceCancel.abort();
     await discarded;
     noChild(racing.manager.lastChildPID, 'result race child reaped');
+    observe(racing.manager, 'result race');
     await recovered(racing.manager);
     checks.push('actual result cancellation and subsequent decode');
-    return checks;
+    return { checks, childExits };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
