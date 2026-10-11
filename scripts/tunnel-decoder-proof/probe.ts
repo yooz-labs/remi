@@ -16,7 +16,8 @@ if (!process.argv.includes('--owned-spike')) {
 const png = Buffer.from(await Bun.file(pngAsset).arrayBuffer());
 const jpg = Buffer.from(await Bun.file(jpegAsset).arrayBuffer());
 const sha = (bytes: Uint8Array) => new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
-const checks: string[] = [];
+export const decoderProofChecks: string[] = [];
+const checks = decoderProofChecks;
 const images = [png, jpg].map((bytes, index) => {
   const expected = inputs.images[index];
   assert(expected, 'owned fixture metadata');
