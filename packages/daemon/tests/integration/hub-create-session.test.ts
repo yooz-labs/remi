@@ -18,6 +18,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type { HarnessId } from '@remi/shared';
 import type {
@@ -62,7 +63,9 @@ const INERT_CONCURRENT_CLAUDE = `#!/bin/sh
 process_dir="$FAKE_CLAUDE_DIR/$$"
 mkdir -p "$process_dir"
 printf '%s\\n' "$$" > "$process_dir/pid"
-while [ ! -e "$process_dir/release" ]; do sleep 0.1; done
+wait_ticks="$FAKE_CONCURRENT_CLAUDE_WAIT_TICKS"; case "$wait_ticks" in ''|*[!0-9]*) wait_ticks=600 ;; esac # 600 x 100ms is 60s by default.
+i=0
+while [ ! -e "$process_dir/release" ] && [ "$i" -lt "$wait_ticks" ]; do sleep 0.1; i=$((i + 1)); done
 `;
 
 interface Running {
@@ -141,6 +144,28 @@ afterEach(async () => {
   for (const s of sleepers.splice(0)) s.kill('SIGKILL');
   for (const b of builds.splice(0)) b.remove();
 });
+
+test('the per-process fake exits without a release marker', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-fake-bounded-'));
+  const claudeDir = path.join(root, 'claude');
+  const child = Bun.spawn(['/bin/sh', '-c', INERT_CONCURRENT_CLAUDE], {
+    env: { ...process.env, FAKE_CLAUDE_DIR: claudeDir, FAKE_CONCURRENT_CLAUDE_WAIT_TICKS: '3' },
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+  try {
+    expect(await Promise.race([child.exited, Bun.sleep(2000).then(() => null)])).toBe(0);
+    const dirs = fs.readdirSync(claudeDir);
+    expect(dirs).toHaveLength(1);
+    expect(fs.existsSync(path.join(claudeDir, dirs[0] ?? '', 'release'))).toBe(false);
+  } finally {
+    if (child.exitCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}, 5000);
 
 async function startHub(
   which: { codex?: boolean; claude?: boolean },
