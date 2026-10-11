@@ -16,7 +16,7 @@ if (process.argv.includes('--approval-client')) {
     'use --owned-spike --approval-spike for the owned approval proof',
   );
   const [
-    { decoderProofChecks, decoderPaletteImages },
+    { decoderProofChecks, decoderPaletteImages, decoderChildExits },
     { approvalProof },
     { readApprovalImages },
     { default: inputs },
@@ -42,6 +42,7 @@ if (process.argv.includes('--approval-client')) {
         pixelSha256: image.pixelSha256,
       })),
       paletteImages: decoderPaletteImages,
+      decoderChildExits,
       approvalLatencyMs: approval.scenarios.map((scenario) => scenario.latencyMs),
       approvalScenarios: approval.scenarios,
       ptyMutationControl: approval.ptyMutationControl,

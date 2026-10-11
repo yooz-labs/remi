@@ -36,6 +36,26 @@ deadline, explicit cancellation, output/exit faults and result-race controls.
 The 300 ms cold-start case checks reaping without a subsequent decode.
 This is per-controller concurrency, not the later per-home reservation budget.
 
+The controller records each owned child's PID, exit code, signal and elapsed
+time only after awaiting its exit (#1417). Proof receipts include that metadata
+for the existing success, refusal, deadline, cancellation, output-fault and
+result-race controls. Exit records never contain decoder input, output content
+or stderr. An unexpected refusal assertion records the same bounded metadata
+before failing. Recording a crash does not recover it or relax a threshold.
+
+On macOS 27.0.1 (26A434), a retained Bun 1.3.11 worker produced 99/100 exact
+CRC refusals in a bounded diagnostic; one launch exited 133/SIGTRAP in about
+3.99 ms with no output. Its crash report stopped in
+`pthread_jit_write_protect_np +388`, matching the failure class documented in
+[Bun #42687](https://github.com/oven-sh/bun/issues/42687).
+The retained Bun 1.4.2 control produced 100/100 exact refusals in that finite
+diagnostic. Neither count establishes stability or a production failure rate.
+Older matching reports coincide with the failed CRC and cancellation matrix
+windows, but those receipts omitted child PIDs, so exact per-request linkage
+remains unproved. Native startup availability and portable resource enforcement
+remain adoption gates; there is no automatic retry, JIT-setting change or host
+security/signing change in this candidate.
+
 The first 300 ms busy-child readiness assertion failed on emulated Linux x64:
 an unchanged child needed about 494 ms to start. The short whole-lifetime
 deadline remains a separate control; the observed busy-child deadline is one

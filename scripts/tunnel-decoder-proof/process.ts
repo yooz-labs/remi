@@ -11,6 +11,13 @@ export interface DecodedPixels {
 export interface RepeatedDecodeReady extends DecodedPixels {
   decodes: number;
 }
+/** Owned process metadata only: never decoder input, output content or stderr. */
+export interface DecoderChildExit {
+  readonly pid: number;
+  readonly exitCode: number | null;
+  readonly signalCode: string | null;
+  readonly elapsedMs: number;
+}
 export class DecoderProcessError extends Error {
   constructor(readonly code: 'busy' | 'cancelled' | 'expired' | 'protocol' | 'failed' | 'refused') {
     super(`DECODER_PROCESS_${code.toUpperCase()}`);
@@ -20,6 +27,7 @@ export class DecoderProcessError extends Error {
 export class DecoderProcess {
   private busy = false;
   lastChildPID: number | undefined;
+  lastChildExit: Readonly<DecoderChildExit> | undefined;
 
   constructor(private readonly command: readonly string[]) {}
 
@@ -41,6 +49,8 @@ export class DecoderProcess {
     }
     const ownedBytes = Buffer.from(bytes);
     this.busy = true;
+    this.lastChildExit = undefined;
+    const startedAt = performance.now();
     let child: Bun.Subprocess<'pipe', 'pipe', 'ignore'> | undefined;
     let failure: DecoderProcessError | undefined;
     let interrupt!: (error: DecoderProcessError) => void;
@@ -132,6 +142,12 @@ export class DecoderProcess {
         // A slot stays occupied until the owned OS process has actually exited.
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         await child.exited;
+        this.lastChildExit = Object.freeze({
+          pid: child.pid,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+          elapsedMs: performance.now() - startedAt,
+        });
       }
       this.busy = false;
     }
@@ -160,6 +176,8 @@ export class DecoderProcess {
     }
     const ownedBytes = Buffer.from(bytes);
     this.busy = true;
+    this.lastChildExit = undefined;
+    const startedAt = performance.now();
     let child: Bun.Subprocess<'pipe', 'pipe', 'ignore'> | undefined;
     let failure: DecoderProcessError | undefined;
     let interrupt!: (error: DecoderProcessError) => void;
@@ -276,6 +294,12 @@ export class DecoderProcess {
       if (child) {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         await child.exited;
+        this.lastChildExit = Object.freeze({
+          pid: child.pid,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+          elapsedMs: performance.now() - startedAt,
+        });
       }
       this.busy = false;
     }
