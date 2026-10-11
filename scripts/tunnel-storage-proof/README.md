@@ -56,8 +56,9 @@ required before a refusal counts. Short writes are handled in source but not
 forced in this corpus. No fixture establishes atomic snapshots or complete
 concurrent-edit detection, including edits between final checks/publication.
 
-This remains a packaging/admission/copy experiment. Durable reservations, crash
-recovery and transfer lifecycle remain subsequent work. Bun's compiler/FFI APIs
+This remains a packaging/admission/copy experiment. The separate reservation
+candidate below adds trusted metadata accounting; descriptor-confined recovery
+and transfer lifecycle remain subsequent work. Bun's compiler/FFI APIs
 remain candidate mechanisms; no production helper has been selected.
 No helper or decoder is selected for production by this spike.
 
@@ -88,7 +89,8 @@ uv run python scripts/tunnel-storage-proof/matrix.py \
 
 The Mac execution requires an Apple Silicon host; if unavailable, it is recorded
 as missing and the matrix remains incomplete. There is no Intel Mac target.
-The scope of a 6/6 execution result is seven primitive and nine admission controls.
+The scope of the storage entry's 6/6 execution result is seven primitive,
+nine admission and eleven private-copy controls.
 `--build-only` prepares all six executables, records their hashes and exits 2
 with every runtime execution explicitly unmeasured.
 
@@ -105,7 +107,7 @@ it does not replace HOME or pass the parent's credential variables.
 The output must report six successful builds and six matching runtime
 executions before `complete` is true. A build alone proves no execution.
 Missing or mismatched probe output fails the stage.
-The runner records the compiler versions, checks all sixteen named controls,
+The storage runner records the compiler versions, checks all 27 named controls,
 and refuses to advance if its source changes during a run. Mac binaries run
 from a newly created empty working directory to check their embedded source.
 Compilation uses a captured source snapshot and a private working directory;
@@ -115,6 +117,92 @@ cleanup is recorded with the owned container name for a later retry.
 
 API references: [Bun C compiler](https://bun.sh/docs/runtime/c-compiler)
 and [Bun FFI](https://bun.sh/docs/runtime/ffi).
+
+## Standalone reservation candidate
+
+`reservations.ts` exercises the proposed accounting bounds from #1170 in one
+trusted, owned metadata namespace.
+It uses the shipping nonblocking interprocess lock and restricted fsync/rename
+JSON writer, with exclusive initialization separated from reopening.
+Constructor validation and inspection share that same nonblocking lock with
+writers; read-only operations do not rewrite the ledger.
+Missing, malformed, nonprivate, oversized or inconsistent ledger state refuses;
+it never initializes replacement accounting.
+The namespace must remain trusted: the path-based lock and writer do not isolate
+same-user replacement races and this is not a descriptor-confined journal.
+
+The candidate reserves 10 MiB per file, 100 MiB per home, 128 artifacts per home,
+32 per device and active counts of 2 per device, 4 per session and 8 per hub.
+Charges round up to 4 KiB with a 4 KiB minimum.
+Staged artifacts and failed cleanup retain byte and artifact charges.
+Actual allocated file blocks can increase a retained charge; durable accounting
+debt above the budget refuses new admissions.
+Metadata overhead is not included in scratch file accounting.
+`releaseAfterCleanup` depends on the caller's confirmed owned cleanup and does
+not inspect or delete content files.
+No automatic orphan deletion, crash recovery, tombstone, grant or transfer
+authority is implemented or restored on restart.
+
+`reservation-entry.ts` first executes the unchanged storage entry in a compiled
+child role (`--reservation-storage`), then runs nine accounting groups for 36
+total named groups.
+The accounting groups cover rounding and owner admission; active saturation and
+staged conversion; home bytes and retained cleanup; tiny artifact counts; actual
+allocated-block debt and confirmed deletion before release; malformed/missing
+ledger refusal; private-root replacement refusal; multiprocess/restart accounting;
+and nonblocking lock contention.
+The multiprocess group runs both a 10-by-10-MiB home race and three actual children
+sharing one server-chosen device identity across connections, collectively limited
+to two active tiny reservations.
+All eight owned children must exit and be reaped.
+The contention control performs an actual cooperating atomic rename, refuses
+reads while its lock is held, then reopens the valid replacement successfully;
+an actual malformed replacement still refuses both reopening and inspection.
+
+For this slice, this explicitly supersedes item 3's private-copy integration in
+the private `reservation-plan.md`.
+The actual file creation/growth/deletion witness demonstrates reserve-before-create
+and confirmed-delete-before-release at an owned fixture callsite.
+It does not integrate the ledger with `copyToPrivate`; that integration remains a
+next gate before adoption.
+The PNG supplies only owned content bytes and is never decoded by this profile.
+No production helper, handler, capability, wire field or native UI is selected.
+
+```sh
+python3 scripts/tunnel-storage-proof/reservation-matrix.py \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/bun-1.4.2 \
+  --out /Volumes/S1/yooz/remi/artifacts/reservation-unique \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp \
+  --linux-pids-limit 64 \
+  --linux-arm64-image oven/bun:1.3.11 \
+  --linux-x64-image oven/bun:1.3.11
+```
+
+The profile snapshots the complete daemon/shared source trees and storage-proof
+source tree, plus root TypeScript/package/Bun configuration and the original
+decoder `fixture.png` as an explicit embedded input.
+Compilation uses the snapshot's real root `@remi/shared` aliases; there are no
+codec or ambient dependency imports.
+The receipt records exact source membership, types, hashes, input SHA-256,
+executable hashes and executed commands.
+Each execution reports the parent's memory sample in bytes at receipt time;
+that sample is not a measured peak or a production resource bound.
+The shared guard rechecks those exact trees and files before and after every
+stage, including additions; `--invalidation-control` requires dependencies and
+does not apply to this dependency-free profile.
+Linux starts with a 256 MiB, 32-PID, one-CPU and 32 MiB tmpfs fixture, with network
+disabled and the executable mount read-only.
+These are proof runner resource fixtures, not a production resource contract.
+The reservation profile's first Bun 1.3.11 Linux ARM run at the default 32 PIDs
+aborted an owned child with exit 134.
+An owned shell diagnostic reproduced it with `pids.peak` 32 and three PID denials,
+while memory limit/OOM counters stayed zero.
+A 128-PID diagnostic passed the unchanged 36-group binary with a measured PID
+peak of 51; the diagnostic shell contributes one PID.
+The command above therefore opts into a 64-PID fixture and keeps 256 MiB memory.
+Six builds and six matching 36-group executions, unchanged input and successful
+owned scratch/container cleanup are required for a complete receipt.
 
 ## Admission checkpoint (2026-10-10)
 
