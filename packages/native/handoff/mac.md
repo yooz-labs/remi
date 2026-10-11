@@ -49,7 +49,7 @@ The iPhone track consumes RemiKit; keep its public API small, documented and sta
 
 ## Out of scope for now
 
-- **Relay v2 and its Swift port** (#1242, X2): not until the owner starts it.
+- **Remaining relay acceptance** (#1242, X2): the Swift port and native callers ship; signed two-machine Mac coverage and recovery polish remain open.
 - **Diffs, files and a terminal view:** X5 (#1245).
 - **Changing the daemon or the protocol:** propose it on the protocol-freeze issues (#1234 to #1238) instead.
 - **The existing WebView Mac app** in `packages/macos`: read it, do not change it.

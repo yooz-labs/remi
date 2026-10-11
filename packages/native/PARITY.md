@@ -1,6 +1,6 @@
 # Native app parity
 
-Verified against `packages/web/src` on 2026-10-08. This describes what ships in the
+Verified against production callers on 2026-10-11. This describes what ships in the
 native targets now, not planned behavior.
 
 | Capability | Capacitor client | Native iPhone | Native Mac | Remaining work |
@@ -19,15 +19,16 @@ native targets now, not planned behavior.
 | Create session | Yes | Yes | Yes | Native apps support recent repositories, new worktrees, advertised harnesses, optional model selection, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Native apps can forget endpoints without stopping their remote sessions. Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. iPhone Preferences and Mac Settings request system permission from an explicit action; both explain denied access and link back to system settings. |
-| Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
+| Remote push / lock-screen answers | Yes | Yes — hardware verified | Implemented — acceptance open | The signed iPhone path has physical lock-screen Yes and Watch-mirrored No evidence in #1242. Mac source registration and action handling ship, but two-machine signed-Mac acceptance remains open. |
 | Kill/resume session | Yes | Yes | Yes | Native apps terminate daemon-owned sessions with confirmation and offer Resume for resumable stored sessions. A child response follows the returned port and opens after its authenticated hello; same-daemon responses open immediately (#1309). |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
 | Haptics and notification preferences | Yes | Yes | N/A | iPhone preferences control local question alerts, sounds, and answer feedback. |
-| Relay connection | No shipped client path | No | No | Out of scope until relay v2 (#1242). |
+| Relay connection | No shipped client path | Yes — hardware verified | Implemented — acceptance open | Native relay v2 pairing, authenticated channels, secure push registration, and signed answers ship. Deployed-provider and remaining recovery/polish gates stay tracked by #1242. |
 | Diff, files, terminal view | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
 
-The Capacitor app should not be retired yet. Remote push and lock-screen answers remain
-intentionally blocked on X2; deeper files, diffs, and terminal surfaces remain X5 work.
+The Capacitor app should not be retired yet. Native relay and background-answer source
+paths ship, but #1242 still owns signed Mac, recovery, and remaining hardware acceptance;
+deeper files, diffs, and terminal surfaces remain X5 work.
 
 ## X3/X4 caller evidence
 
@@ -41,6 +42,13 @@ intentionally blocked on X2; deeper files, diffs, and terminal surfaces remain X
   `PhoneNotificationCoordinator.requestAuthorization`; `MacPreferencesView` calls
   `MacNotificationPermission.request`. Neither app treats permission as machine
   authorization, and Mac no longer requests it from the invisible question monitor.
+- Relay lifecycle: both app delegates forward APNs registration, secure default taps,
+  secure actions, and dismissals to `NativeRelayNotifications`; both live roots expose
+  relay notification enablement and present verified notification content from their
+  production `MachineStore`. `NativeSecureSourceIntegrationTests` exercises native
+  pairing, registration, capsule opening, and signed answer delivery against the actual
+  TypeScript fixture. This source/fixture evidence is not a substitute for the remaining
+  signed-Mac and deployed recovery checks in #1242.
 - Recovery: both live roots pass retry actions to `MachineStore.retryApproval` and
   `MachineStore.retryConnection`; relay states that require a fresh token do not offer
   a direct retry that would imply the expired pairing can recover itself.

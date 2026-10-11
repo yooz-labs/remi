@@ -14,11 +14,16 @@ struct RemiPhoneApp: App {
                 if let store = notifications.store {
                     PhoneLiveRootView(store: store)
                 } else {
-                    ContentUnavailableView(
-                        "Couldn’t load device identity",
-                        systemImage: "key.slash",
-                        description: Text(notifications.startupError ?? "Open Remi in the foreground to continue.")
-                    )
+                    ContentUnavailableView {
+                        Label("Couldn’t load device identity", systemImage: "key.slash")
+                    } description: {
+                        Text(notifications.startupError ?? "Unlock this device, then try again.")
+                    } actions: {
+                        Button("Try again", systemImage: "arrow.clockwise") {
+                            notifications.retryStartup()
+                        }
+                        .buttonStyle(.glassProminent)
+                    }
                 }
             }
             .task { if scenePhase == .active { notifications.activate() } }

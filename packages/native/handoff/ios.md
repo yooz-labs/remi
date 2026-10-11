@@ -47,7 +47,7 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
 
 **M3: notifications and parity with the Capacitor app.**
 - [ ] **Local notifications for cards** while the app runs.
-- [ ] **Remote push and the Notification Service Extension** are later work: secure push and lock-screen answers need X2 (#1242) and the owner's signing. Design their screens now, but don't build their plumbing.
+- [x] **Remote push and the Notification Service Extension:** the sealed relay path, extension, signed answer, and lock-screen/Watch acceptance evidence are implemented under X2 (#1242). Keep the remaining signed-Mac and recovery gates explicit.
 - [ ] **A parity checklist** in the PR:
   - what the Capacitor app does today (`packages/web/ios/App` and `packages/web/src`);
   - what the native app does;
@@ -58,6 +58,6 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
 
 ## Out of scope for now
 
-- **Relay v2, secure push, and signed lock-screen answers:** X2 (#1242), not until the owner starts it.
+- **Remaining relay acceptance:** signed two-machine Mac coverage, recovery polish, and outstanding hardware scenarios remain with X2 (#1242).
 - **The Capacitor app** in `packages/web/ios/App`: read it, do not change it.
 - **The daemon and the protocol:** propose changes on the protocol-freeze issues (#1234 to #1238).

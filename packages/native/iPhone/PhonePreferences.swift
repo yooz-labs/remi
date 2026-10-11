@@ -37,13 +37,13 @@ struct PhonePreferencesSheet: View {
                     VStack(alignment: .leading, spacing: 6) {
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 12) {
-                                Text("System access")
+                                Text("iOS permission")
                                 Spacer(minLength: 16)
                                 authorizationLabel
                             }
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("System access")
+                                Text("iOS permission")
                                 authorizationLabel
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1235,7 +1235,7 @@ private struct MacAddMachineSheet: View {
                     LabeledContent("Connection", value: draft.connectionSummary)
                     MacMachineAccessNotice(relayMode: draft.mode == .relay)
                 } header: {
-                    Label("System access", systemImage: "lock.shield")
+                    Label("Machine authorization", systemImage: "lock.shield")
                 }
             }
 
@@ -1314,19 +1314,22 @@ private struct MacMachineAccessNotice: View {
     let relayMode: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Label("What this Mac can do", systemImage: "checkmark.shield")
-                .font(.subheadline.weight(.semibold))
-
-            Text("After approval, this Mac can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions on this machine.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            if !relayMode {
-                Text("Remi does not add transport encryption to direct connections. Use loopback, an SSH tunnel, or a trusted VPN.")
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                Text("After approval, this Mac can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions exposed by this machine.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                if !relayMode {
+                    Text("Remi does not add transport encryption to direct connections. Use loopback, an SSH tunnel, or a trusted VPN.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(.top, RemiTheme.Spacing.xs)
+        } label: {
+            Label("View, answer, and manage exposed sessions", systemImage: "checkmark.shield")
+                .font(.subheadline.weight(.semibold))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, RemiTheme.Spacing.xxs)

@@ -221,6 +221,13 @@ struct MachineStoreTests {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
+    @Test @MainActor func startupKeepsMissingConfigurationEmptyForFirstRun() {
+        let configured = [MachineEndpoint(host: "100.64.0.8", port: 18765)]
+
+        #expect(NativeRelayNotifications.startupEndpoints(from: []).isEmpty)
+        #expect(NativeRelayNotifications.startupEndpoints(from: configured) == configured)
+    }
+
     @Test func sessionPresentationKeepsStableMachineIdentity() {
         let session = RemiSessionSummary(
             id: "session-1",
