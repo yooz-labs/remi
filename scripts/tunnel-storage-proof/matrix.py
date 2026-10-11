@@ -145,6 +145,29 @@ def main(proof=None):
         help="Make owned runtime scratch nonwritable to verify cleanup failure refuses success",
     )
     options = parser.parse_args()
+    linux_tmpfs_exec = proof.get("linux_tmpfs_exec", False)
+    if not isinstance(linux_tmpfs_exec, bool):
+        raise TypeError("Proof linux_tmpfs_exec selector must be boolean")
+    linux_tmpfs_mount = (
+        "/tmp:rw,exec,nosuid,size=32m"
+        if linux_tmpfs_exec
+        else "/tmp:rw,nosuid,size=32m"
+    )
+    compiler_labels = proof.get("compiler_labels", ("1311", "current"))
+    known_compiler_labels = {"1311", "current"}
+    if (
+        not isinstance(compiler_labels, (tuple, list))
+        or not compiler_labels
+        or any(not isinstance(label, str) for label in compiler_labels)
+        or len(set(compiler_labels)) != len(compiler_labels)
+        or not set(compiler_labels).issubset(known_compiler_labels)
+    ):
+        raise ValueError("Proof compiler_labels must be a nonempty unique subset of known labels")
+    compiler_binaries = {
+        "1311": options.bun_1311,
+        "current": options.bun_current,
+    }
+    compilers = tuple((label, compiler_binaries[label]) for label in compiler_labels)
     if options.linux_memory_mib is not None and options.linux_memory_mib < 1:
         parser.error("--linux-memory-mib must be positive")
     if options.linux_pids_limit is not None and options.linux_pids_limit < 1:
@@ -154,7 +177,6 @@ def main(proof=None):
     if options.cleanup_refusal_control and (options.runtime_temp_base is None or os.geteuid() == 0):
         parser.error("cleanup refusal control needs a runtime temp base and an unprivileged owner")
     matrix_targets = ("bun-darwin-arm64",) if options.canary_only else TARGETS
-    compilers = (("1311", options.bun_1311), ("current", options.bun_current))
     source = proof["source"]
     checks = proof["checks"]
     source_trees = tuple(proof.get("source_trees", ()))
@@ -281,9 +303,12 @@ def main(proof=None):
             "dependencyTree": dependency_manifest,
             **({"sourceTree": tree_manifest} if source_trees else {}),
             "targets": list(matrix_targets),
+            "compilerLabels": [label for label, _binary in compilers],
             "sourceUnchanged": unchanged,
             "compilerVersions": versions,
             "linuxImages": images,
+            "linuxTmpfsExec": linux_tmpfs_exec,
+            "linuxTmpfsMount": linux_tmpfs_mount,
             "cleanupErrors": cleanup_errors,
             **({"invalidationControls": invalidation_controls}
                if options.invalidation_control else {}),
@@ -469,7 +494,7 @@ def main(proof=None):
                     run("run-" + label + "-" + target, ["docker", "run", "--rm", "--pull=never",
                         "--name", container_name, "--cidfile", container["cidfile"], "--platform", docker_platform,
                         "--network", "none", "--read-only", "--memory", str(linux_memory_mib) + "m", "--pids-limit", str(linux_pids_limit),
-                        "--cpus", "1", "--tmpfs", "/tmp:rw,nosuid,size=32m", "--workdir", "/tmp",
+                        "--cpus", "1", "--tmpfs", linux_tmpfs_mount, "--workdir", "/tmp",
                         "--mount", "type=bind,src=" + str(output) + ",dst=/proof,readonly",
                         "--env", "TMPDIR=/tmp", image_id, "/proof/" + artifact.name, *runtime_args],
                         (version, "linux", expected_arch))
