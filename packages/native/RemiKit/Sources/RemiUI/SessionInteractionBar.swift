@@ -29,13 +29,15 @@ public struct RemiSessionInteractionBar: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Binding private var draft: String
     private let state: RemiSessionInteractionState
-    private let onSend: (String) -> Void
+    private let onSend: (String) async -> Bool
     private let onInterrupt: (() -> Void)?
+    @State private var isSending = false
+    @State private var sendFailed = false
 
     public init(
         draft: Binding<String>,
         state: RemiSessionInteractionState,
-        onSend: @escaping (String) -> Void,
+        onSend: @escaping (String) async -> Bool,
         onInterrupt: (() -> Void)?
     ) {
         _draft = draft
@@ -51,9 +53,15 @@ public struct RemiSessionInteractionBar: View {
                 RemiComposer(
                     text: $draft,
                     promptWaiting: promptWaiting,
+                    isSending: isSending,
                     onSend: sendDraft,
                     onInterrupt: onInterrupt
                 )
+                if sendFailed {
+                    Label("Message wasn’t sent. Your draft is still here.", systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             case .liveSubagent:
                 readOnlyLabel(
                     "Subagent conversations are read-only",
@@ -81,8 +89,18 @@ public struct RemiSessionInteractionBar: View {
 
     private func sendDraft() {
         guard let content = RemiComposerSubmission.content(from: draft) else { return }
-        draft = ""
-        onSend(content)
+        guard !isSending else { return }
+        isSending = true
+        sendFailed = false
+        Task {
+            let sent = await onSend(content)
+            if sent {
+                draft = ""
+            } else {
+                sendFailed = true
+            }
+            isSending = false
+        }
     }
 }
 
@@ -90,7 +108,7 @@ public extension View {
     func remiSessionInteractionBar(
         draft: Binding<String>,
         state: RemiSessionInteractionState,
-        onSend: @escaping (String) -> Void,
+        onSend: @escaping (String) async -> Bool,
         onInterrupt: (() -> Void)?
     ) -> some View {
         scrollEdgeEffectStyle(.soft, for: .bottom)

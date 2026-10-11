@@ -364,10 +364,10 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func sendChat(sessionId: String, content: String) {
+    private func sendChat(sessionId: String, content: String) async -> Bool {
         let binding = store.machines.lazy.flatMap(\.sessions)
             .first { $0.sessionId == sessionId }?.claudeSessionId
-        store.sendChat(sessionId: sessionId, content: content, claudeSessionId: binding)
+        return await store.sendChat(sessionId: sessionId, content: content, claudeSessionId: binding)
     }
 
     private func addMachine(_ endpoint: MachineEndpoint) {
@@ -464,7 +464,7 @@ struct PhoneLiveRootView: View {
                 onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
                 onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
                 onCancel: { cancel(sessionId: session.id, questionId: $0) },
-                onSend: { sendChat(sessionId: session.id, content: $0) },
+                onSend: { await sendChat(sessionId: session.id, content: $0) },
                 onTerminate: { store.terminateSession(sessionId: session.id) }
             )
             .onAppear {

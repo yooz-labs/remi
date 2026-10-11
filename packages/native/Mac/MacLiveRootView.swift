@@ -152,7 +152,7 @@ struct MacLiveRootView: View {
                             onSend: { content in
                                 let binding = selectedMachine?.sessions
                                     .first { $0.sessionId == session.id }?.claudeSessionId
-                                store.sendChat(
+                                return await store.sendChat(
                                     sessionId: session.id,
                                     content: content,
                                     claudeSessionId: binding

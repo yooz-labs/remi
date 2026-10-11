@@ -322,3 +322,37 @@ public struct RemiTranscriptReviewState: Sendable, Equatable {
         }
     }
 }
+
+public struct RemiConversationReviewSnapshot: Sendable, Equatable {
+    public var reviewState: RemiTranscriptReviewState
+    public var visibleEntryID: String?
+    public var isSearchPresented: Bool
+
+    public init(
+        reviewState: RemiTranscriptReviewState = RemiTranscriptReviewState(),
+        visibleEntryID: String? = nil,
+        isSearchPresented: Bool = false
+    ) {
+        self.reviewState = reviewState
+        self.visibleEntryID = visibleEntryID
+        self.isSearchPresented = isSearchPresented
+    }
+}
+
+public struct RemiConversationReviewMemory: Sendable, Equatable {
+    private var snapshots: [String: RemiConversationReviewSnapshot] = [:]
+
+    public init() {}
+
+    public mutating func save(_ snapshot: RemiConversationReviewSnapshot, for conversationID: String) {
+        snapshots[conversationID] = snapshot
+    }
+
+    public func snapshot(for conversationID: String) -> RemiConversationReviewSnapshot {
+        snapshots[conversationID] ?? RemiConversationReviewSnapshot()
+    }
+
+    public mutating func reset() {
+        snapshots.removeAll()
+    }
+}

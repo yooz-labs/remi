@@ -124,25 +124,25 @@ private struct SessionInteractionGallery: View {
             RemiSessionInteractionBar(
                 draft: $draft,
                 state: .liveMain(promptWaiting: false),
-                onSend: { _ in },
+                onSend: { _ in true },
                 onInterrupt: {}
             )
             RemiSessionInteractionBar(
                 draft: $draft,
                 state: .liveMain(promptWaiting: true),
-                onSend: { _ in },
+                onSend: { _ in true },
                 onInterrupt: nil
             )
             RemiSessionInteractionBar(
                 draft: $draft,
                 state: .liveSubagent,
-                onSend: { _ in },
+                onSend: { _ in true },
                 onInterrupt: {}
             )
             RemiSessionInteractionBar(
                 draft: $draft,
                 state: .finished,
-                onSend: { _ in },
+                onSend: { _ in true },
                 onInterrupt: {}
             )
         }

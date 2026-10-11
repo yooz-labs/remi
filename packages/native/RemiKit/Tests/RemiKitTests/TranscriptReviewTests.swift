@@ -69,3 +69,34 @@ struct TranscriptReviewTests {
         #expect(state == RemiTranscriptReviewState())
     }
 }
+
+@Suite struct ConversationReviewMemoryTests {
+    @Test func keepsSearchAndPositionIndependentPerConversation() {
+        var mainReview = RemiTranscriptReviewState()
+        mainReview.update(query: "build", entries: [entry(id: "main-build", text: "Build complete")])
+        var memory = RemiConversationReviewMemory()
+        memory.save(
+            RemiConversationReviewSnapshot(
+                reviewState: mainReview,
+                visibleEntryID: "main-build",
+                isSearchPresented: true
+            ),
+            for: "main"
+        )
+
+        let subagent = memory.snapshot(for: "agent-1")
+        #expect(subagent.reviewState.query.isEmpty)
+        #expect(subagent.visibleEntryID == nil)
+        #expect(!subagent.isSearchPresented)
+
+        let restored = memory.snapshot(for: "main")
+        #expect(restored.reviewState.query == "build")
+        #expect(restored.reviewState.selectedEntryID == "main-build")
+        #expect(restored.visibleEntryID == "main-build")
+        #expect(restored.isSearchPresented)
+    }
+
+    private func entry(id: String, text: String) -> RemiTranscriptEntry {
+        .agent(id: id, text: text)
+    }
+}

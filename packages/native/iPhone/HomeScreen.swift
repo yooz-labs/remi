@@ -25,7 +25,7 @@ struct HomeScreen: View {
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
     let onOpenSession: (String) -> Void
-    let onSend: (String, String) -> Void
+    let onSend: (String, String) async -> Bool
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     let onCreateSession: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
@@ -56,7 +56,7 @@ struct HomeScreen: View {
         onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
         onCancel: @escaping (String, String) -> Void = { _, _ in },
         onOpenSession: @escaping (String) -> Void = { _ in },
-        onSend: @escaping (String, String) -> Void = { _, _ in },
+        onSend: @escaping (String, String) async -> Bool = { _, _ in true },
         onTerminateSession: @escaping (String) -> Void = { _ in },
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onCreateSession: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void = { _, _, _, _, _ in },
@@ -483,7 +483,7 @@ private struct SessionsSection: View {
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
     let onOpenSession: (String) -> Void
-    let onSend: (String, String) -> Void
+    let onSend: (String, String) async -> Bool
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
@@ -754,7 +754,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
     let onOpenSession: (String) -> Void
-    let onSend: (String, String) -> Void
+    let onSend: (String, String) async -> Bool
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -852,7 +852,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
             onAnswer: { onAnswer(session.id, $0, $1) },
             onSubmit: { onSubmit(session.id, $0, $1) },
             onCancel: { onCancel(session.id, $0) },
-            onSend: { onSend(session.id, $0) },
+            onSend: { await onSend(session.id, $0) },
             onTerminate: { onTerminateSession(session.id) }
         )
         .onAppear { onOpenSession(session.id) }
