@@ -7,12 +7,38 @@ private struct HomePreview: View {
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    var machineStates: [MachineState] = []
 
     var body: some View {
         NavigationStack {
-            HomeScreen(questions: questions, sessions: sessions, machines: machines)
+            HomeScreen(
+                questions: questions,
+                sessions: sessions,
+                machines: machines,
+                sessionMachines: machineStates
+            )
         }
     }
+}
+
+private var unavailableDirectState: MachineState {
+    var machine = MachineState(
+        endpoint: MachineEndpoint(host: "192.168.1.42", port: 18_765),
+        displayName: "Studio Mac"
+    )
+    machine.status = .unavailable(reason: "The connection was refused.")
+    return machine
+}
+
+private var unavailableDirectSummary: RemiMachineSummary {
+    RemiMachineSummary(
+        id: unavailableDirectState.id,
+        name: unavailableDirectState.displayName,
+        address: unavailableDirectState.endpoint.displayAddress,
+        reachability: .unreachable,
+        transport: .direct,
+        sessionCount: 0
+    )
 }
 
 private struct SessionPreview: View {
@@ -71,6 +97,23 @@ private struct EmptyHomePreview: View {
 #Preview("Home · Accessibility") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).environment(\.dynamicTypeSize, .accessibility5) }
 #Preview("Home · Stored session") { HomePreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1))).preferredColorScheme(.light) }
 #Preview("Home · Attention queue") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
+#Preview("Home · Direct Recovery") {
+    HomePreview(
+        questions: [],
+        sessions: [],
+        machines: [unavailableDirectSummary],
+        machineStates: [unavailableDirectState]
+    )
+}
+#Preview("Home · Direct Recovery · Accessibility") {
+    HomePreview(
+        questions: [],
+        sessions: [],
+        machines: [unavailableDirectSummary],
+        machineStates: [unavailableDirectState]
+    )
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
 
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
 #Preview("Session · Dark") { SessionPreview().preferredColorScheme(.dark) }

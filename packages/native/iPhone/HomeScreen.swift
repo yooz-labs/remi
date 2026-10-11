@@ -161,6 +161,7 @@ struct HomeScreen: View {
                         onRemove: onRemoveMachine,
                         onRetryApproval: onRetryApproval,
                         onRetryConnection: onRetryConnection,
+                        onPairAgain: { showingPairing = true },
                         onEnableRelayNotifications: onEnableRelayNotifications,
                         enablingRelayNotifications: enablingRelayNotifications
                     )
@@ -917,6 +918,7 @@ private struct MachinesSection: View {
     let onRemove: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onPairAgain: () -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     @State private var pendingRemoval: RemiMachineSummary?
@@ -947,6 +949,17 @@ private struct MachinesSection: View {
                    case .waitingForRelayConfirmation(let fingerprint) = state.status {
                     RelayConfirmationHelp(machineName: machine.name, fingerprint: fingerprint)
                 }
+                if let state = states.first(where: { $0.id == machine.id }) {
+                    PhoneMachineRecoveryHelp(
+                        machineName: machine.name,
+                        state: RemiMachineRecoveryState.resolve(
+                            status: state.status,
+                            isRelay: state.endpoint.relayPin != nil
+                        ),
+                        onRetry: { onRetryConnection(state.endpoint) },
+                        onPairAgain: onPairAgain
+                    )
+                }
                 if machine.id != machines.last?.id { Divider() }
             }
         }
@@ -966,6 +979,78 @@ private struct MachinesSection: View {
         } message: { machine in
             Text("Remi will forget \(machine.name) and its cached conversations on this device. Sessions on the machine keep running.")
         }
+    }
+}
+
+private struct PhoneMachineRecoveryHelp: View {
+    let machineName: String
+    let state: RemiMachineRecoveryState
+    let onRetry: () -> Void
+    let onPairAgain: () -> Void
+
+    var body: some View {
+        switch state {
+        case .retryableOffline:
+            recoveryCard(
+                title: "Machine offline",
+                detail: "Remi is not connected to \(machineName).",
+                actionTitle: "Retry connection",
+                systemImage: "arrow.clockwise",
+                action: onRetry
+            )
+        case .retryableUnavailable(let reason):
+            recoveryCard(
+                title: "Machine unavailable",
+                detail: reason ?? "Remi could not connect to \(machineName).",
+                actionTitle: "Retry connection",
+                systemImage: "arrow.clockwise",
+                action: onRetry
+            )
+        case .relayOffline:
+            recoveryCard(
+                title: "Relay machine offline",
+                detail: "Remi will reconnect through the relay when \(machineName) becomes available."
+            )
+        case .relayNeedsFreshPairing(let reason):
+            recoveryCard(
+                title: "Relay pairing unavailable",
+                detail: relayPairingDetail(reason),
+                actionTitle: "Pair again",
+                systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                action: onPairAgain
+            )
+        case .none, .waitingForDirectApproval, .waitingForRelayConfirmation:
+            EmptyView()
+        }
+    }
+
+    private func recoveryCard(
+        title: LocalizedStringKey,
+        detail: String,
+        actionTitle: LocalizedStringKey? = nil,
+        systemImage: String = "network.slash",
+        action: (() -> Void)? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            Label(title, systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                .font(.headline)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let actionTitle, let action {
+                Button(actionTitle, systemImage: systemImage, action: action)
+                    .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                    .contentShape(.rect)
+            }
+        }
+        .padding(RemiTheme.Spacing.m)
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: RemiTheme.Radius.control))
+    }
+
+    private func relayPairingDetail(_ reason: String?) -> String {
+        let instruction = "Create a fresh relay pairing token on \(machineName)."
+        guard let reason, !reason.isEmpty else { return instruction }
+        return "\(reason) \(instruction)"
     }
 }
 
@@ -1047,13 +1132,10 @@ private struct PhoneMachineManagementRow: View {
     }
 
     private func canRetryConnection(_ state: MachineState) -> Bool {
-        guard state.endpoint.relayPin == nil else { return false }
-        switch state.status {
-        case .disconnected, .unavailable:
-            true
-        default:
-            false
-        }
+        RemiMachineRecoveryState.resolve(
+            status: state.status,
+            isRelay: state.endpoint.relayPin != nil
+        ).allowsConnectionRetry
     }
 }
 
