@@ -3,10 +3,11 @@ import type { AdmittedFile, DirectoryRoot } from './admission';
 import {
   type CopyCheckpoint,
   type PrivateCopy,
+  PrivateCopyCleanupError,
   type PrivateOps,
   copyToPrivate,
 } from './private-copy';
-import type { Reservations } from './reservations';
+import { CLEANUP_BLOCKING_DEBT, type Reservations } from './reservations';
 
 export class ReservedCopyError extends Error {
   constructor(
@@ -17,14 +18,27 @@ export class ReservedCopyError extends Error {
   }
 }
 
-function retainFailedCleanup(store: Reservations, id: string): never {
+function retainFailedCleanup(
+  store: Reservations,
+  id: string,
+  allocatedBytes: number | null,
+): never {
   try {
-    store.retain(id, 'cleanup');
+    // Unknown allocation retains blocking debt; metadata failure still reports unavailability.
+    store.retain(id, 'cleanup', allocatedBytes ?? CLEANUP_BLOCKING_DEBT);
   } catch {
     // Even an unreadable ledger is never reset or refunded. The artifact may remain.
     throw new ReservedCopyError('unavailable', false);
   }
   throw new ReservedCopyError('cleanup_failed', false);
+}
+
+function completedAllocation(copy: PrivateCopy): number | null {
+  try {
+    return copy.allocatedBytes();
+  } catch {
+    return null;
+  }
 }
 
 function releaseConfirmed(store: Reservations, id: string): void {
@@ -60,7 +74,7 @@ export class ReservedPrivateCopy {
     try {
       this.copy.close();
     } catch {
-      retainFailedCleanup(this.store, this.reservationId);
+      retainFailedCleanup(this.store, this.reservationId, completedAllocation(this.copy));
     }
     // Idempotent file close permits a retry after known pre-write lock refusal.
     // An ambiguous metadata acknowledgment is not generic recovery authority.
@@ -82,9 +96,13 @@ export function reserveAndCopy(
   let copy: PrivateCopy | null;
   try {
     copy = copyToPrivate(source, root, ops, checkpoint);
-  } catch {
+  } catch (error) {
     // copyToPrivate throws when descriptor-owned partial cleanup could not be confirmed.
-    retainFailedCleanup(store, id);
+    retainFailedCleanup(
+      store,
+      id,
+      error instanceof PrivateCopyCleanupError ? error.allocatedBytes : null,
+    );
   }
   if (!copy) {
     releaseConfirmed(store, id); // Normal refusal returns only after successful owned cleanup.
@@ -96,7 +114,7 @@ export function reserveAndCopy(
     try {
       copy.close();
     } catch {
-      retainFailedCleanup(store, id);
+      retainFailedCleanup(store, id, completedAllocation(copy));
     }
     releaseConfirmed(store, id);
     throw new ReservedCopyError('unavailable', true);

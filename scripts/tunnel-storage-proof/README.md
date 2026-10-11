@@ -213,6 +213,15 @@ allocated block charge before returning a handle, and deletes through the
 captured private handle before releasing accounting.
 Normal copy refusal confirms internal partial cleanup before refunding;
 thrown cleanup failure retains quota and reports `cleanupConfirmed=false`.
+Failed discard captures allocation from the same owned regular descriptor before
+closing it, checking captured device/inode/owner and safe nonnegative blocks.
+`PrivateCopyCleanupError` carries that measurement or `null`; the existing
+`private cleanup failed` message is preserved.
+Completed failure measures the still-held completed descriptor.
+Unknown allocation retains `100 MiB + 4 KiB` of blocking accounting debt when
+metadata retention succeeds. That debt refuses every fresh admission until
+confirmed owned cleanup; it is neither an allocation measurement nor a physical
+ceiling. Metadata failure remains visible and never silently refunds a record.
 The same handle can retry failed completed cleanup or an accounting-only
 failure after confirmed deletion.
 Only actual nonblocking lock refusal before mutation has a proven retry path.
@@ -245,6 +254,16 @@ successful cleanup; 27-group and 36-group entries also retain compatibility runs
 Trusted metadata, same-user path replacement, metadata overhead, descriptor
 journal/recovery, grant/transfer authority and production adoption limits remain.
 No storage-load held-answer latency claim is made by this composition.
+
+Independent review added an actual excess-allocation partial refusal control:
+the original published adapter retained 8,192 bytes for a 24,576-byte owned
+orphan after source growth and real native unlink failure.
+The preserved original failure is
+`reserved-copy-excess-partial-control/current.log` in the private sprint artifacts;
+its exact assertion is `failed partial retains actual allocated block charge`.
+The partial group now includes that control and an actual descriptor closure/reuse
+case proving unknown allocation retains blocking debt without a path fallback.
+The group count remains 43; original 27/36 compatibility profiles remain required.
 
 ## Admission checkpoint (2026-10-10)
 

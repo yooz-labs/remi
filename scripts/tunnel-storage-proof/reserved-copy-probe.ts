@@ -10,7 +10,7 @@ import image from '../tunnel-decoder-proof/fixture.png' with { type: 'file' };
 import { DirectoryRoot, FileAdmission } from './admission';
 import nativeSource from './openat.c' with { type: 'file' };
 import type { CopyCheckpoint, PrivateOps } from './private-copy';
-import { Reservations } from './reservations';
+import { CLEANUP_BLOCKING_DEBT, Reservations } from './reservations';
 import { ReservedCopyError, reserveAndCopy } from './reserved-copy';
 
 const owner = () => ({
@@ -127,6 +127,7 @@ export async function reservedCopyProbe() {
     heldInode: number;
     unlinkResult: number;
     retainedCharge: number;
+    allocatedBytes: number;
   }[] = [];
   const measurements = {
     logicalBytes: bytes.length,
@@ -135,6 +136,7 @@ export async function reservedCopyProbe() {
     retainedCharge: 0,
     allocationExit: -1,
     cleanupWitnesses,
+    unknownAllocation: { reusedDescriptor: false, fixtureAllocatedBytes: 0, blockingDebt: 0 },
   };
   try {
     assert(handle && openAtAddress && allocateAddress, 'owned native fixture symbols');
@@ -251,6 +253,8 @@ export async function reservedCopyProbe() {
       let device = 0;
       let syscall = 0;
       let changed = false;
+      let partialFD = -1;
+      let allocationExit = -1;
       const wrapped = {
         ...ops,
         unlink(fd: number, value: string) {
@@ -269,9 +273,24 @@ export async function reservedCopyProbe() {
       };
       try {
         if (completed) {
-          const artifact = reserveAndCopy(f.source, f.scratch, wrapped, f.store, owner());
+          const artifact = reserveAndCopy(
+            f.source,
+            f.scratch,
+            wrapped,
+            f.store,
+            owner(),
+            (event) => {
+              if (event.stage === 'created') partialFD = event.fd;
+            },
+          );
           assert(artifact, 'reserved cleanup fixture copied');
           try {
+            allocationExit = fixed.symbols.remi_preallocate_owned(
+              allocateAddress,
+              process.platform === 'darwin' ? 1 : 0,
+              partialFD,
+            );
+            assert.equal(allocationExit, 0, 'failed completed allocation checkpoint completed');
             accountingError(() => artifact.close(), false, 'completed unlink failure visible');
             assert(changed && syscall !== 0, 'actual completed native unlink failed');
             assert.equal(fs.statSync(moved).ino, inode, 'completed held inode preserved');
@@ -281,12 +300,18 @@ export async function reservedCopyProbe() {
               'failed completed cleanup retains cleanup state',
             );
             assert.equal(f.store.inspect().length, 1, 'failed completed cleanup retains charge');
+            assert.equal(
+              f.store.inspect()[0]?.charge,
+              Math.max(8192, fs.statSync(moved).blocks * 512),
+              'failed completed retains actual allocated block charge',
+            );
             cleanupWitnesses.push({
               completed,
               originalInode: inode,
               heldInode: fs.statSync(moved).ino,
               unlinkResult: syscall,
               retainedCharge: f.store.inspect()[0]?.charge ?? 0,
+              allocatedBytes: fs.statSync(moved).blocks * 512,
             });
           } finally {
             if (changed) fs.renameSync(moved, original);
@@ -297,21 +322,36 @@ export async function reservedCopyProbe() {
           accountingError(
             () =>
               reserveAndCopy(f.source, f.scratch, wrapped, f.store, owner(), (event) => {
-                if (event.stage === 'read') fs.appendFileSync(f.filename, 'growth');
+                if (event.stage === 'created') partialFD = event.fd;
+                if (event.stage === 'read') {
+                  allocationExit = fixed.symbols.remi_preallocate_owned(
+                    allocateAddress,
+                    process.platform === 'darwin' ? 1 : 0,
+                    partialFD,
+                  );
+                  fs.appendFileSync(f.filename, 'growth');
+                }
               }),
             false,
             'partial unlink failure visible',
           );
           assert(changed && syscall !== 0, 'actual partial native unlink failed');
+          assert.equal(allocationExit, 0, 'failed partial allocation checkpoint completed');
           assert.equal(fs.statSync(moved).ino, inode, 'partial held inode preserved');
           const record = f.store.inspect()[0];
           assert(record?.state === 'cleanup', 'failed partial cleanup retains cleanup state');
+          assert.equal(
+            record.charge,
+            Math.max(8192, fs.statSync(moved).blocks * 512),
+            'failed partial retains actual allocated block charge',
+          );
           cleanupWitnesses.push({
             completed,
             originalInode: inode,
             heldInode: fs.statSync(moved).ino,
             unlinkResult: syscall,
             retainedCharge: record.charge,
+            allocatedBytes: fs.statSync(moved).blocks * 512,
           });
           const held = fs.statSync(moved);
           assert(
@@ -335,6 +375,103 @@ export async function reservedCopyProbe() {
           ? 'actual completed unlink failure retains reservation and retries'
           : 'actual partial unlink failure retains reservation until explicit cleanup',
       );
+    }
+    {
+      const f = fixture();
+      const replacement = path.join(f.home, 'other-owned.png');
+      fs.writeFileSync(replacement, bytes, { mode: 0o600 });
+      let partialFD = -1;
+      let replacementFD = -1;
+      let moved = '';
+      let owned: fs.Stats | undefined;
+      let syscall = 0;
+      let allocationExit = -1;
+      const wrapped = {
+        ...ops,
+        unlink(fd: number, value: string) {
+          const original = path.join(f.privatePath, value);
+          owned = fs.statSync(original);
+          moved = path.join(f.privatePath, 'owned-held');
+          fs.renameSync(original, moved);
+          syscall = ops.unlink(fd, value);
+          return syscall;
+        },
+      };
+      try {
+        accountingError(
+          () =>
+            reserveAndCopy(f.source, f.scratch, wrapped, f.store, owner(), (event) => {
+              if (event.stage === 'created') partialFD = event.fd;
+              if (event.stage === 'read') {
+                allocationExit = fixed.symbols.remi_preallocate_owned(
+                  allocateAddress,
+                  process.platform === 'darwin' ? 1 : 0,
+                  partialFD,
+                );
+                fs.closeSync(partialFD);
+                replacementFD = fs.openSync(replacement, 'r');
+                fs.appendFileSync(f.filename, 'growth');
+              }
+            }),
+          false,
+          'unknown owned allocation cleanup remains unconfirmed',
+        );
+        assert.equal(allocationExit, 0, 'unknown allocation preallocation checkpoint completed');
+        assert.equal(replacementFD, partialFD, 'actual private descriptor reused');
+        assert(owned && syscall !== 0 && moved, 'unknown allocation actual native unlink failed');
+        const held = fs.statSync(moved);
+        assert(
+          held.dev === owned.dev &&
+            held.ino === owned.ino &&
+            held.isFile() &&
+            held.nlink === 1 &&
+            held.uid === process.getuid?.(),
+          'unknown allocation known held fixture identity',
+        );
+        assert.notEqual(
+          fs.statSync(replacement).ino,
+          held.ino,
+          'replacement descriptor is not the owned partial',
+        );
+        const record = f.store.inspect()[0];
+        assert(record?.state === 'cleanup', 'unknown allocation retains cleanup state');
+        assert.equal(
+          record.charge,
+          CLEANUP_BLOCKING_DEBT,
+          'unknown allocation retains blocking accounting debt',
+        );
+        assert.throws(
+          () => f.store.reserve(owner(), 1),
+          { code: 'busy' },
+          'unknown allocation blocks every fresh admission',
+        );
+        measurements.unknownAllocation = {
+          reusedDescriptor: true,
+          fixtureAllocatedBytes: held.blocks * 512,
+          blockingDebt: record.charge,
+        };
+        assert.throws(
+          () => fs.fstatSync(replacementFD),
+          { code: 'EBADF' },
+          'discard closed replacement descriptor',
+        );
+        fs.unlinkSync(moved); // Explicit known fixture cleanup; no allocation or deletion path fallback.
+        assert(!fs.existsSync(moved), 'unknown allocation explicit owned deletion confirmed');
+        f.store.releaseAfterCleanup(record.id);
+        f.store.reserve(owner(), 1);
+      } finally {
+        // If a checkpoint failed before discard acquired the replacement, close only that owned FD.
+        try {
+          if (replacementFD >= 0) fs.closeSync(replacementFD);
+        } catch (error) {
+          assert.equal(
+            (error as NodeJS.ErrnoException).code,
+            'EBADF',
+            'owned replacement already closed',
+          );
+        }
+        f.close();
+      }
     }
     {
       const f = fixture();

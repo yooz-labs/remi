@@ -11,6 +11,9 @@ import { writeRestrictedJson } from '../../packages/daemon/src/storage/restricte
 const KIB = 1024;
 const FILE_LIMIT = 10 * 1024 * KIB;
 const HOME_LIMIT = 100 * 1024 * KIB;
+// Blocking accounting debt when an unconfirmed cleanup has no owned allocation measurement.
+// This is not a measured allocation or a physical ceiling.
+export const CLEANUP_BLOCKING_DEBT = HOME_LIMIT + 4 * KIB;
 const LEDGER_LIMIT = 256 * KIB;
 const STATES = ['active', 'staged', 'cleanup'] as const;
 type State = (typeof STATES)[number];
