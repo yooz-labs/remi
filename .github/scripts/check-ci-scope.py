@@ -242,6 +242,43 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 write(HOOK_SERVER_TEST, "export const added = true;")
             assert selected(classify(absent_base, commit())) == gates
             count += 1
+        # Both endpoints can have a blob while the actual merge-base diff is an addition.
+        git("reset", "--hard", base)
+        git("clean", "-fdq")
+        Path(HOOK_SERVER_TEST).unlink()
+        absent_ancestor = commit()
+        write(HOOK_SERVER_TEST, "export const target = true;")
+        target_base = commit()
+        git("reset", "--hard", absent_ancestor)
+        write(HOOK_SERVER_TEST, "export const head = true;")
+        divergent_head = commit()
+        assert git("merge-base", target_base, divergent_head) == absent_ancestor
+        assert module["hook_test_references_reviewed"](target_base, divergent_head)
+        status = subprocess.check_output(["git", "diff", "--no-ext-diff", "--no-renames",
+                                          "--name-status", "-z", absent_ancestor, divergent_head,
+                                          "--", HOOK_SERVER_TEST])
+        assert status == b"A\0" + HOOK_SERVER_TEST.encode() + b"\0"
+        result = classify(target_base, divergent_head)
+        assert selected(result) == gates, ("divergent-producer-addition", result)
+        count += 1
+        for direction in ("regular-to-symlink", "symlink-to-regular"):
+            git("reset", "--hard", base)
+            git("clean", "-fdq")
+            Path(HOOK_SERVER_TEST).unlink()
+            Path(HOOK_SERVER_TEST).symlink_to("fixtures/build-hook-corpus.ts")
+            link_head = commit()
+            if direction == "regular-to-symlink":
+                left, right = base, link_head
+            else:
+                Path(HOOK_SERVER_TEST).unlink()
+                write(HOOK_SERVER_TEST, "export const changed = true;")
+                left, right = link_head, commit()
+            status = subprocess.check_output(["git", "diff", "--no-ext-diff", "--no-renames",
+                                              "--name-status", "-z", left, right, "--", HOOK_SERVER_TEST])
+            assert status == b"T\0" + HOOK_SERVER_TEST.encode() + b"\0"
+            result = classify(left, right)
+            assert selected(result) == gates and result["reason"].startswith("Hook test is not"), result
+            count += 1
         for source in ("packages/daemon/src/relay/hub.ts", "packages/daemon/src/hooks/hook-server.ts"):
             git("reset", "--hard", base)
             git("clean", "-fdq")

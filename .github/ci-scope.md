@@ -64,7 +64,9 @@ or renamed tests remain conservative; this is separate from the wrapper producer
 Only modifications of `packages/daemon/tests/hooks/hook-server.test.ts` may skip
 relay; this test is outside the R7 workflow's actual test list. Every normal
 test/type/lint/notice/Mac gate remains selected. The producer must exist as a blob
-at both endpoints. Additions, deletions, renames, unknown neighbors and mixed
+at both endpoints, and its actual merge-base-to-head name-status comparison must
+contain exactly one `M` entry for that path. Independent additions on divergent
+branches, type changes, unavailable/malformed status data, deletions, renames, unknown neighbors and mixed
 runtime inputs retain full gates; this rule never clears relay selected earlier.
 Both-endpoint `hook-server.test` scans cover all packages (including native), root
 tests/scripts and GitHub workflows/actions/scripts, excluding only the producer

@@ -158,6 +158,11 @@ def classify(base, head):
                 # Never clear relay already selected by a different changed execution input.
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == HOOK_SERVER_TEST:
+                # Endpoint existence is insufficient when both branches independently add it.
+                status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                             merge_base, head, "--", HOOK_SERVER_TEST)
+                if status != b"M\0" + HOOK_SERVER_TEST.encode() + b"\0":
+                    return all_gates("Hook test is not an exact modification; running all gates")
                 if not hook_test_references_reviewed(base, head):
                     return all_gates("Hook test reference, provenance or scan failure; running all gates")
                 # This exact test is outside the R7 list; preserve every normal gate and prior relay.
