@@ -64,6 +64,8 @@ Transcript entries use one shared presentation on both platforms: constrained tr
 
 New-session creation also shares one observable draft model across iPhone and Mac. Machine changes choose that machine's most recent repository, repair an unavailable harness selection, and disable worktree creation for legacy machines. Submission trims user-entered paths, branches, bases, and model names; worktree creation requires a branch, while a blank base means the machine's default base. The UI presents the final machine, destination mode, and harness before Create becomes available. This model is presentation and request construction only: the daemon remains authoritative for repository validation and workspace creation.
 
+Machine onboarding uses the same observable draft on iPhone and Mac. It normalizes direct hosts and relay tokens, enforces the TCP port range, clears stale mode-specific errors as input changes, and constructs endpoints through the existing direct or relay contracts. Both apps show the resulting connection mode before enabling Add. Direct setup continues to disclose that Remi adds no transport encryption, while relay setup requires terminal fingerprint confirmation; the draft changes neither trust boundary.
+
 Both app roots currently cap Dynamic Type at Accessibility 2 as a deliberate legibility/layout tradeoff. That is the shipping boundary, not full support for every system size. Revisit the global cap by testing and repairing individual layouts before claiming support through Accessibility 5; do not silently lower it further.
 
 ## iOS/macOS 27 watchlist

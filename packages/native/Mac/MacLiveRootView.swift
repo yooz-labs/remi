@@ -1197,12 +1197,16 @@ private struct MacFeedbackBanner: View {
 private struct MacAddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var host = "127.0.0.1"
-    @State private var port = 18765
-    @State private var relayMode = false
-    @State private var relayToken = ""
-    @State private var relayError: String?
+    @State private var draft = AddMachineDraft()
     let onAdd: (MachineEndpoint) -> Void
+
+    init(
+        draft: AddMachineDraft = AddMachineDraft(),
+        onAdd: @escaping (MachineEndpoint) -> Void
+    ) {
+        _draft = State(initialValue: draft)
+        self.onAdd = onAdd
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1213,11 +1217,11 @@ private struct MacAddMachineSheet: View {
 
             Form {
                 Section {
-                    Picker("Connection method", selection: $relayMode) {
+                    Picker("Connection method", selection: $draft.mode) {
                         Label("Direct", systemImage: "point.3.connected.trianglepath.dotted")
-                            .tag(false)
+                            .tag(AddMachineDraft.ConnectionMode.direct)
                         Label("Relay", systemImage: "network")
-                            .tag(true)
+                            .tag(AddMachineDraft.ConnectionMode.relay)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
@@ -1226,21 +1230,27 @@ private struct MacAddMachineSheet: View {
                 }
 
                 Section {
-                    if relayMode {
-                        SecureField("Relay pairing token", text: $relayToken)
+                    if draft.mode == .relay {
+                        SecureField("Relay pairing token", text: $draft.relayToken)
+                            .onSubmit(addMachine)
                         Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        if let relayError {
-                            Label(relayError, systemImage: "exclamationmark.triangle.fill")
+                        if let issue = draft.submissionIssue {
+                            Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.red)
                         }
                     } else {
-                        TextField("Host or IP address", text: $host)
-                        TextField("Port", value: $port, format: .number)
+                        TextField("Host or IP address", text: $draft.host)
+                        TextField("Port", value: $draft.port, format: .number)
+                            .onSubmit(addMachine)
+                        if let issue = draft.submissionIssue {
+                            Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                        }
                     }
                 } header: {
-                    if relayMode {
+                    if draft.mode == .relay {
                         Label("Pairing", systemImage: "qrcode")
                     } else {
                         Label("Address", systemImage: "server.rack")
@@ -1248,7 +1258,8 @@ private struct MacAddMachineSheet: View {
                 }
 
                 Section {
-                    MacMachineAccessNotice(relayMode: relayMode)
+                    LabeledContent("Connection", value: draft.connectionSummary)
+                    MacMachineAccessNotice(relayMode: draft.mode == .relay)
                 } header: {
                     Label("System access", systemImage: "lock.shield")
                 }
@@ -1276,25 +1287,30 @@ private struct MacAddMachineSheet: View {
             idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 600,
             maxHeight: 760
         )
-        .onChange(of: relayMode) { _, _ in relayError = nil }
     }
 
     @ViewBuilder private var actionButtons: some View {
         Button("Cancel", role: .cancel) { dismiss() }
-        Button("Add") {
-            do {
-                let endpoint = relayMode ? try MachineEndpoint.pairingOverRelay(relayToken) :
-                    MachineEndpoint(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
-                relayToken = ""
-                onAdd(endpoint)
-                dismiss()
-            } catch {
-                relayError = "The relay token is invalid or expired. Create a new token on the machine."
-            }
-        }
+        Button("Add", action: addMachine)
         .buttonStyle(.glassProminent)
-        .disabled(relayMode ? relayToken.isEmpty :
-            host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+        .disabled(!draft.canSubmit)
+        .keyboardShortcut(.defaultAction)
+        .accessibilityHint("Adds the machine using the connection summary")
+    }
+
+    private func addMachine() {
+        guard let endpoint = draft.makeEndpoint() else { return }
+        onAdd(endpoint)
+        dismiss()
+    }
+
+    private func validationMessage(_ issue: AddMachineDraft.ValidationIssue) -> LocalizedStringResource {
+        switch issue {
+        case .missingHost: "Enter a host or IP address."
+        case .invalidPort: "Enter a port from 1 through 65535."
+        case .missingRelayToken: "Paste the relay pairing token from the machine."
+        case .invalidRelayToken: "The relay token is invalid or expired. Create a new token on the machine."
+        }
     }
 }
 
@@ -1557,5 +1573,23 @@ private var workspacePreviewMachine: MachineState {
 #Preview("Add machine · Accessibility") {
     MacAddMachineSheet(onAdd: { _ in })
         .environment(\.dynamicTypeSize, .accessibility5)
+}
+
+#Preview("Add machine · Dark") {
+    MacAddMachineSheet(onAdd: { _ in })
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Add machine · Relay error") {
+    MacAddMachineSheet(draft: rejectedRelayMachineDraft, onAdd: { _ in })
+}
+
+private var rejectedRelayMachineDraft: AddMachineDraft {
+    struct Rejected: Error {}
+    let draft = AddMachineDraft { _ in throw Rejected() }
+    draft.mode = .relay
+    draft.relayToken = "expired-token"
+    _ = draft.makeEndpoint()
+    return draft
 }
 #endif

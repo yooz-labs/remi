@@ -38,9 +38,20 @@ private struct SessionPreview: View {
 }
 
 private struct PairingPreview: View {
+    var draft = AddMachineDraft()
+
     var body: some View {
-        NavigationStack { PairingScreen() }
+        NavigationStack { PairingScreen(draft: draft) }
     }
+}
+
+private var rejectedRelayDraft: AddMachineDraft {
+    struct Rejected: Error {}
+    let draft = AddMachineDraft { _ in throw Rejected() }
+    draft.mode = .relay
+    draft.relayToken = "expired-token"
+    _ = draft.makeEndpoint()
+    return draft
 }
 
 private struct FirstRunPreview: View {
@@ -76,6 +87,7 @@ private struct EmptyHomePreview: View {
 #Preview("Pairing · Light") { PairingPreview().preferredColorScheme(.light) }
 #Preview("Pairing · Dark") { PairingPreview().preferredColorScheme(.dark) }
 #Preview("Pairing · Accessibility") { PairingPreview().environment(\.dynamicTypeSize, .accessibility5) }
+#Preview("Pairing · Relay error") { PairingPreview(draft: rejectedRelayDraft) }
 
 #Preview("First Run · Light") { FirstRunPreview().preferredColorScheme(.light) }
 #Preview("First Run · Dark") { FirstRunPreview().preferredColorScheme(.dark) }

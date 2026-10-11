@@ -14,21 +14,19 @@ struct PairingScreen: View {
     let publicIdentity: PublicClientIdentity?
     let machineStates: [MachineState]
 
-    @State private var host = "127.0.0.1"
-    @State private var port = 18765
-    @State private var added = false
+    @State private var draft = AddMachineDraft()
     @State private var showingScanner = false
-    @State private var relayToken = ""
-    @State private var relayError: String?
 
     init(
         publicIdentity: PublicClientIdentity? = nil,
         machineStates: [MachineState] = [],
+        draft: AddMachineDraft = AddMachineDraft(),
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in }
     ) {
         self.publicIdentity = publicIdentity
         self.machineStates = machineStates
         self.onAddMachine = onAddMachine
+        _draft = State(initialValue: draft)
     }
 
     var body: some View {
@@ -55,52 +53,71 @@ struct PairingScreen: View {
             }
 
             Section {
-                TextField("Host or IP address", text: $host)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("Port", value: $port, format: .number)
-                    .keyboardType(.numberPad)
-                Button(added ? "Machine added" : "Add machine") {
-                    onAddMachine(MachineEndpoint(
-                        host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                        port: port
-                    ))
-                    added = true
+                Picker("Connection method", selection: $draft.mode) {
+                    Label("Direct", systemImage: "point.3.connected.trianglepath.dotted")
+                        .tag(AddMachineDraft.ConnectionMode.direct)
+                    Label("Relay", systemImage: "network")
+                        .tag(AddMachineDraft.ConnectionMode.relay)
                 }
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(1...65535).contains(port))
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if draft.mode == .direct {
+                    TextField("Host or IP address", text: $draft.host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.go)
+                        .onSubmit(addMachine)
+                    TextField("Port", value: $draft.port, format: .number)
+                        .keyboardType(.numberPad)
+                } else {
+                    SecureField("Relay pairing token", text: $draft.relayToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.go)
+                        .onSubmit(addMachine)
+                }
+
+                if let issue = draft.submissionIssue {
+                    Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
+
+                LabeledContent("Connection", value: draft.connectionSummary)
+
+                Button(draft.mode == .relay ? "Pair over the relay" : "Add machine") {
+                    addMachine()
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(!draft.canSubmit)
+                .accessibilityHint("Adds the machine using the connection summary")
             } header: {
-                Text("Manual direct connection")
+                Text("Other connection methods")
             } footer: {
-                Text("Use 127.0.0.1 in the simulator. A physical phone needs an address reachable through the machine’s configured LAN, VPN, or Tailscale bind.")
-            }
-
-            Section("Authorize a manual connection") {
-                PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand)
-                PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand)
-            }
-
-            Section("Relay pairing") {
-                SecureField("Relay pairing token", text: $relayToken)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Button("Pair over the relay") {
-                    do {
-                        let endpoint = try MachineEndpoint.pairingOverRelay(relayToken)
-                        relayToken = ""
-                        relayError = nil
-                        onAddMachine(endpoint)
-                    } catch {
-                        relayError = "The relay token is invalid or expired. Create a new token on the machine."
-                    }
+                if draft.mode == .direct {
+                    Text("Use 127.0.0.1 in the simulator. A physical phone needs an address reachable through the machine’s configured LAN, VPN, or Tailscale bind. Direct traffic is not encrypted by Remi.")
+                } else {
+                    Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving.")
                 }
-                .disabled(relayToken.isEmpty)
-                if let relayError { Text(relayError).foregroundStyle(.red) }
-                ForEach(machineStates.filter { $0.endpoint.relayPin != nil }) { machine in
-                    if case .waitingForRelayConfirmation(let fingerprint) = machine.status {
-                        Text("Compare \(fingerprint) in the machine's terminal.")
-                            .font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+            }
+
+            if draft.mode == .direct {
+                Section("Authorize a manual connection") {
+                    PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand)
+                    PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand)
+                }
+            } else {
+                Section("Terminal confirmation") {
+                    ForEach(machineStates.filter { $0.endpoint.relayPin != nil }) { machine in
+                        if case .waitingForRelayConfirmation(let fingerprint) = machine.status {
+                            LabeledContent("Machine fingerprint", value: fingerprint)
+                                .fontDesign(.monospaced)
+                                .textSelection(.enabled)
+                        }
                     }
+                    Text("Relay pairing is not complete until the fingerprint is confirmed in the machine’s terminal.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -116,8 +133,21 @@ struct PairingScreen: View {
                 machineStates: machineStates
             ) { endpoint in
                 onAddMachine(endpoint)
-                added = true
             }
+        }
+    }
+
+    private func addMachine() {
+        guard let endpoint = draft.makeEndpoint() else { return }
+        onAddMachine(endpoint)
+    }
+
+    private func validationMessage(_ issue: AddMachineDraft.ValidationIssue) -> LocalizedStringResource {
+        switch issue {
+        case .missingHost: "Enter a host or IP address."
+        case .invalidPort: "Enter a port from 1 through 65535."
+        case .missingRelayToken: "Paste the relay pairing token from the machine."
+        case .invalidRelayToken: "The relay token is invalid or expired. Create a new token on the machine."
         }
     }
 }

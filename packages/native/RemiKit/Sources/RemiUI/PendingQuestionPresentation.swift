@@ -82,6 +82,7 @@ public enum RemiPendingQuestionPresentation {
             detail: question.detail,
             machineID: machine.id,
             machineName: machine.displayName,
+            sessionID: message.sessionId,
             sessionName: sessionName,
             options: question.options.map { option in
                 RemiQuestionOption(
