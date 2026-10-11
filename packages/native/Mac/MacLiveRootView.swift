@@ -17,13 +17,17 @@ struct MacLiveRootView: View {
     @State private var relayNotifications = NativeRelayNotifications.shared
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var expandedColumnVisibility = NavigationSplitViewVisibility.all
+    @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 
     private var mainContent: some View {
         Group {
             if store.machines.isEmpty {
                 MacFirstRunView(onAddMachine: { showingAddMachine = true })
             } else {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
+                NavigationSplitView(
+                    columnVisibility: $columnVisibility,
+                    preferredCompactColumn: $preferredCompactColumn
+                ) {
                     List(store.machines, selection: machineSelection) { machine in
                         RemiMachineRow(machine: machinePresentation(machine))
                             .tag(machine.id)
@@ -206,8 +210,19 @@ struct MacLiveRootView: View {
                         .labelStyle(.iconOnly)
                         .keyboardShortcut("2", modifiers: [.command, .control])
                         .help("Show or hide both navigation columns (Control-Command-2)")
+
+                        Button {
+                            focusConversation()
+                        } label: {
+                            Label("Focus conversation", systemImage: "rectangle.righthalf.inset.filled")
+                        }
+                        .labelStyle(.iconOnly)
+                        .keyboardShortcut("3", modifiers: [.command, .control])
+                        .help("Focus conversation (Control-Command-3)")
+                        .disabled(selectedSessionID.isEmpty)
                     }
                 }
+                .navigationSplitViewStyle(.prominentDetail)
             }
         }
     }
@@ -234,6 +249,7 @@ struct MacLiveRootView: View {
             notificationDestination = destination
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
+            preferredCompactColumn = .detail
             store.loadTranscript(sessionId: destination.agentID ?? destination.sessionID)
             notificationRouter.destination = nil
         }
@@ -249,6 +265,7 @@ struct MacLiveRootView: View {
             pendingResume = nil
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
+            preferredCompactColumn = .detail
             store.consumeResumedSessionDestination(id: destination.id)
         }
         .sheet(isPresented: $showingAddMachine) {
@@ -329,6 +346,7 @@ struct MacLiveRootView: View {
                 guard next != selectedMachineID else { return }
                 selectedMachineID = next
                 selectedSessionID = ""
+                preferredCompactColumn = next.isEmpty ? .sidebar : .content
                 pendingResume = nil
                 notificationDestination = nil
                 reconcileNavigation()
@@ -341,6 +359,7 @@ struct MacLiveRootView: View {
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
                 selectedSessionID = $0 ?? ""
+                preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
                     || pendingResume?.sessionID != selectedSessionID {
                     pendingResume = nil
@@ -366,6 +385,10 @@ struct MacLiveRootView: View {
             guard machine.hasLoadedSessions else { return }
             selectedSessionID = machine.activeSessions.contains(where: { $0.sessionId == destination.sessionID })
                 ? destination.sessionID : ""
+            preferredCompactColumn = RemiMacCompactDestination.resolve(
+                hasMachine: true,
+                hasSession: !selectedSessionID.isEmpty
+            ).column
             return
         }
         if !store.machines.contains(where: { $0.id == selectedMachineID }) {
@@ -376,6 +399,10 @@ struct MacLiveRootView: View {
         if !sessionIDs.contains(selectedSessionID) {
             selectedSessionID = sessionIDs.first ?? ""
         }
+        preferredCompactColumn = RemiMacCompactDestination.resolve(
+            hasMachine: selectedMachine != nil,
+            hasSession: !selectedSessionID.isEmpty
+        ).column
     }
 
     private var sessionCreationMachines: [MachineState] {
@@ -427,6 +454,16 @@ struct MacLiveRootView: View {
 
     private func toggleSessionColumn() {
         applyColumnLayout(currentColumnLayout.togglingNavigation())
+    }
+
+    private func focusConversation() {
+        guard !selectedSessionID.isEmpty else { return }
+        preferredCompactColumn = .detail
+        let expanded = columnVisibility == .detailOnly ? expandedColumnVisibility : columnVisibility
+        applyColumnLayout(RemiMacColumnLayout(
+            visibility: .detailOnly,
+            expandedVisibility: expanded
+        ))
     }
 
     private var currentColumnLayout: RemiMacColumnLayout {
