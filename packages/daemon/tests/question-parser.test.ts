@@ -23,7 +23,12 @@ import {
   parseNumberedOptions,
   parseQuestion,
 } from '../src/parser/question-parser.ts';
-import { WRAPPED_DIRECTORY_DIALOG } from './parser/fixtures/claude-dialogs.ts';
+import { WRAPPED_DIRECTORY, WRAPPED_DIRECTORY_DIALOG } from './parser/fixtures/claude-dialogs.ts';
+
+const WRAPPED_DIRECTORY_OPTION_LABEL = `Yes, and always allow access to ${WRAPPED_DIRECTORY.replace(
+  '8666-00a1',
+  '86 66-00a1',
+)} from this project`;
 
 const fixture = (name: string): string =>
   readFileSync(join(import.meta.dir, 'parser', 'fixtures', name), 'utf8');
@@ -78,21 +83,37 @@ describe('parseQuestion() - selection-box chrome (Claude prompts)', () => {
  * that row used to end the option block, losing every later option.
  */
 describe('parseQuestion() - wrapped option labels (#1134)', () => {
-  test('the live wrapped dialog parses all three options, "No" included', () => {
+  test('the live wrapped dialog preserves CHA word spacing and all three options (#1137)', () => {
     const result = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
     expect(result.detected).toBe(true);
     const options = result.question?.options ?? [];
     expect(options.map((o) => o.value)).toEqual(['1', '2', '3']);
     expect(options[0]?.label).toBe('Yes');
     // Both rows of the wrapped label belong to option 2, joined with ONE
-    // space. The path was wrapped mid-token, so the space lands inside it
-    // ("-86 66-00"): the documented cost of the join heuristic. The missing
-    // spaces between words are the cursor-column spacing loss, #1137.
-    expect(options[1]?.label).toBe(
-      'Yes,andalwaysallowaccessto/private/tmp/remi-e5/-Users-dev-Documents-git-example-workspace/0f1e2d3c-4b5a-6978-86 66-00a1b2c3d4e5/scratchpad/spike/work/e5-classic-detached-nofromthisproject',
-    );
+    // space. Its path was wrapped mid-token, so that heuristic still places
+    // one space inside the token ("-86 66-00"); #1137 remains open for that
+    // separate word-versus-token ambiguity.
+    expect(options[1]?.label).toBe(WRAPPED_DIRECTORY_OPTION_LABEL);
     // The footer after the last option is not absorbed into it.
     expect(options[2]?.label).toBe('No');
+  });
+
+  test('OutputProcessor emits the captured CHA spacing with unchanged values (#1137)', () => {
+    const questions: Array<ReadonlyArray<{ value: string; label: string }>> = [];
+    const processor = new OutputProcessor(
+      { sessionId: 'wrapped-dialog-capture' as UUID, streamStatusOnly: true },
+      { onQuestion: (question) => questions.push(question.options) },
+    );
+
+    processor.process(WRAPPED_DIRECTORY_DIALOG);
+
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.map((option) => option.value)).toEqual(['1', '2', '3']);
+    expect(questions[0]?.map((option) => option.label)).toEqual([
+      'Yes',
+      WRAPPED_DIRECTORY_OPTION_LABEL,
+      'No',
+    ]);
   });
 
   test('a spaced wrap joins the rows with a space', () => {
@@ -222,7 +243,10 @@ describe('parseQuestion() - wrapped option labels (#1134)', () => {
  * live captures, replayed chunk by chunk through the real OutputProcessor
  * exactly as the daemon feeds it, so a parser change that shifts the
  * numbering shows up here. Labels carry the description row and the
- * capture's own render artifacts (partial frames, #1137 spacing loss).
+ * capture's own render artifacts (partial frames and literal CHA cursor gaps).
+ * In `three-questions-multi-middle`, the raw capture has `Th` followed by
+ * `CSI 10 G` and `color`; `Th    color red` is the append-history result, not
+ * reconstructed screen content. This parser does not infer missing glyphs.
  */
 describe('AskUserQuestion captures parse with their own numbering (#1134)', () => {
   function emittedOptions(name: string): string[][] {
@@ -245,18 +269,18 @@ describe('AskUserQuestion captures parse with their own numbering (#1134)', () =
 
   test('one question, single select', () => {
     expect(emittedOptions('one-question-single-select.txt')).toEqual([
-      ['1:Red A warm color.', '2:Green Acoolcolor.', '3:Blue Acoolcolor.', '4:Typesomething.'],
+      ['1:Red A warm color.', '2:Green A cool color.', '3:Blue A cool color.', '4:Type something.'],
     ]);
   });
 
   test('one question, multi select', () => {
     expect(emittedOptions('one-question-multi-select.txt')).toEqual([
       [
-        '1:[ ] Apple Crisp andclassic',
-        '2:[ ] Banana Sweetandsoft',
-        '3:[]Cherry Smallandtart-sweet',
-        '4:[]Date Richandcaramel-like',
-        '5:[]Typesomething',
+        '1:[ ] Apple Crisp and   classic',
+        '2:[ ] Banana Sweet and soft',
+        '3:[ ] Cherry Small and tart-sweet',
+        '4:[ ] Date Rich and caramel-like',
+        '5:[ ] Type something',
       ],
     ]);
   });
@@ -265,23 +289,23 @@ describe('AskUserQuestion captures parse with their own numbering (#1134)', () =
     expect(emittedOptions('two-questions-single-and-multi.txt')).toEqual([
       [
         '1:Red The color red.',
-        '2:Green Thecolorgreen.',
-        '3:Blue Thecolorblue.',
-        '4:Typesomething.',
+        '2:Green The color green.',
+        '3:Blue The color blue.',
+        '4:Type something.',
       ],
     ]);
   });
 
   test('three questions, multi select in the middle', () => {
     expect(emittedOptions('three-questions-multi-middle.txt')).toEqual([
-      ['1:Red Thcolorred', '2:Green Thecolorgreen', '3:Typesomething.'],
+      ['1:Red Th    color red', '2:Green The color green', '3:Type something.'],
       ['1:Submit answers', '2:Cancel'],
     ]);
   });
 
   test('three questions, single select', () => {
     expect(emittedOptions('three-questions-single-select.txt')).toEqual([
-      ['1:1 Option 1 for A', '2:2 Option2forA', '3:3 Option3forA', '4:Typesomething.'],
+      ['1:1 Option 1 for A', '2:2 Option 2 for A', '3:3 Option 3 for A', '4:Type something.'],
       ['1:Submit answers', '2:Cancel'],
     ]);
   });
