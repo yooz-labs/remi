@@ -5,6 +5,9 @@ import { decodeImage } from './decode';
 import jpegAsset from './fixture.jpg' with { type: 'file' };
 import pngAsset from './fixture.png' with { type: 'file' };
 import inputs from './inputs.json';
+import { dispatchProcessWorker, processProof } from './process-probe';
+
+await dispatchProcessWorker();
 
 if (!process.argv.includes('--owned-spike')) {
   console.error('Use --owned-spike for the owned decoder admission corpus.');
@@ -306,6 +309,7 @@ assert.throws(
   'JPEG entropy full-decode refusal',
 );
 checks.push('full PNG CRC and JPEG entropy decode refusal');
+checks.push(...(await processProof(png, jpg)));
 console.log(
   JSON.stringify({
     bun: Bun.version,
@@ -314,6 +318,6 @@ console.log(
     checks,
     images,
     scope:
-      'decoder header and malformed-input candidate only; no process budgets, authority, chosen dependency or production integration',
+      'decoder admission and child lifetime candidate; hard memory CPU budgets and held approval remain unproved; no production integration',
   }),
 );

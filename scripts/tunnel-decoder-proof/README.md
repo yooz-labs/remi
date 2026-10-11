@@ -1,4 +1,4 @@
-# Decoder admission proof (#1170)
+# Decoder admission and child lifetime proof (#1170)
 
 This preserves the existing private pngjs 7.0.0 / jpeg-js 0.4.4 candidate.
 No daemon dependency, handler or capability is selected. Header admission is
@@ -6,6 +6,25 @@ not pixel validation: the candidate must also fully decode and agree with the
 admitted dimensions and RGBA length. Ten control groups alter actual owned PNG
 and JPEG bytes, checking input/dimension bounds, PNG structure/animation/methods,
 JPEG frames/tables/scans/ending and full-decoder CRC/entropy refusal.
+
+Five additional groups construct real owned child processes. The worker fully
+decodes the same PNG/JPEG pixels and returns only dimensions, byte count and hash.
+Each controller permits one child, refuses saturation before spawning, limits
+results to 4 KiB, and owns a maximum five-second wall deadline. Cancellation,
+overflow, malformed/duplicate/mismatched results and child failure refuse; the
+slot is released only after actual child exit. A cancelled result is discarded.
+Successful decoding through the same controller follows the one-second busy
+deadline, explicit cancellation, output/exit faults and result-race controls.
+The 300 ms cold-start case checks reaping without a subsequent decode.
+This is per-controller concurrency, not the later per-home reservation budget.
+
+The first 300 ms busy-child readiness assertion failed on emulated Linux x64:
+an unchanged child needed about 494 ms to start. The short whole-lifetime
+deadline remains a separate control; the observed busy-child deadline is one
+second. Each must return with its child reaped within two seconds. Explicit
+cancellation is tested after the child records its actual CPU/result boundary.
+The original failure is preserved; the controller's five-second maximum was
+not increased. These are proof parameters, not a frozen production contract.
 
 The PNG is the owned Remi icon from the earlier private candidate. The JPEG is
 re-encoded from those same pixels using jpeg-js 0.4.4 at quality 85. `inputs.json`
@@ -42,5 +61,7 @@ uv run python scripts/tunnel-decoder-proof/matrix.py \
 Missing builds/executions or changed source/dependencies fail the matrix.
 `--build-only` remains incomplete. Notices for the candidate packages are in
 `THIRD-PARTY-LICENSES.txt`; compiled proofs remain private local artifacts.
-Process CPU/memory/deadline budgets, cancellation/concurrency, actual held-approval
-responsiveness, production-helper selection and upload authority remain later gates.
+Portable hard CPU/memory budgets, actual held-approval responsiveness,
+production-helper selection and upload authority remain later gates. The wall
+watchdog does not enforce a resident-memory ceiling or a kernel CPU budget.
+The proof never constructs a permission gate and does not claim that coverage.
