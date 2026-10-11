@@ -764,8 +764,12 @@ public final class MachineStore {
         } onCancel: { permit.replace() }
     }
 
-    public func sendChat(sessionId: String, content: String, claudeSessionId: String? = nil) {
-        guard let connection = connection(forSession: sessionId) else { return }
+    @discardableResult
+    public func sendChat(sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
+        guard let connection = connection(forSession: sessionId) else {
+            latestOperationError = "Cannot send message: this session is unavailable."
+            return false
+        }
         let message = UserInputMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
@@ -773,7 +777,13 @@ public final class MachineStore {
             content: content,
             claudeSessionId: claudeSessionId
         )
-        Task { try? await connection.send(message) }
+        do {
+            try await connection.send(message)
+            return true
+        } catch {
+            latestOperationError = "Message not sent. Check the connection and try again."
+            return false
+        }
     }
 
     public func terminateSession(sessionId: String) {

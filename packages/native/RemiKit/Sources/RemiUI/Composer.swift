@@ -4,12 +4,20 @@ public struct RemiComposer: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Binding private var text: String
     private let promptWaiting: Bool
+    private let isSending: Bool
     private let onSend: () -> Void
     private let onInterrupt: (() -> Void)?
 
-    public init(text: Binding<String>, promptWaiting: Bool, onSend: @escaping () -> Void, onInterrupt: (() -> Void)?) {
+    public init(
+        text: Binding<String>,
+        promptWaiting: Bool,
+        isSending: Bool = false,
+        onSend: @escaping () -> Void,
+        onInterrupt: (() -> Void)?
+    ) {
         _text = text
         self.promptWaiting = promptWaiting
+        self.isSending = isSending
         self.onSend = onSend
         self.onInterrupt = onInterrupt
     }
@@ -30,20 +38,28 @@ public struct RemiComposer: View {
                         .padding(.horizontal, RemiTheme.Spacing.s)
                         .frame(minHeight: RemiTheme.Size.minimumTapTarget)
                         .modifier(ComposerInputSurface(reduceTransparency: reduceTransparency))
-                        .disabled(promptWaiting)
+                        .disabled(promptWaiting || isSending)
 
                     if !promptWaiting || onInterrupt != nil {
                         Button(action: promptWaiting ? interrupt : onSend) {
-                            Image(systemName: promptWaiting ? "escape" : "arrow.up")
-                                .font(.headline)
-                                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                            Group {
+                                if isSending && !promptWaiting {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: promptWaiting ? "escape" : "arrow.up")
+                                        .font(.headline)
+                                }
+                            }
+                            .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
                         }
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
                         .tint(promptWaiting ? .secondary : RemiTheme.Color.attention)
                         .foregroundStyle(promptWaiting ? Color.primary : RemiTheme.Color.attentionInk)
-                        .disabled(!promptWaiting && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(!promptWaiting && (isSending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                         .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
+                        .accessibilityValue(isSending ? "Sending" : "")
                     }
                 }
             }

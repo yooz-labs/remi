@@ -14,7 +14,7 @@ struct MacSessionDetail: View {
     let onAnswer: (String, String) -> Void
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
-    let onSend: (String) -> Void
+    let onSend: (String) async -> Bool
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
 
@@ -25,6 +25,9 @@ struct MacSessionDetail: View {
     @State private var isSearchPresented = false
     @State private var searchFocusRequest = 0
     @State private var reviewState = RemiTranscriptReviewState()
+    @State private var reviewMemory = RemiConversationReviewMemory()
+    @State private var visibleEntryID: String?
+    @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
     init(
@@ -40,7 +43,7 @@ struct MacSessionDetail: View {
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
-        onSend: @escaping (String) -> Void = { _ in },
+        onSend: @escaping (String) async -> Bool = { _ in true },
         onResume: (() -> Void)? = nil,
         onTerminate: @escaping () -> Void = {}
     ) {
@@ -51,6 +54,7 @@ struct MacSessionDetail: View {
         self.viewsLoaded = viewsLoaded
         _selectedViewID = State(initialValue: initialConversationID ?? "")
         _focusedQuestionID = State(initialValue: initialQuestionID)
+        _reviewSessionID = State(initialValue: session.id)
         self.transcriptForView = transcriptForView
         self.onSelectView = onSelectView
         self.onAnswer = onAnswer
@@ -123,7 +127,9 @@ struct MacSessionDetail: View {
                         .frame(maxWidth: 760)
                         .padding(RemiTheme.Spacing.l)
                         .frame(maxWidth: .infinity)
+                        .scrollTargetLayout()
                     }
+                    .scrollPosition(id: $visibleEntryID, anchor: .top)
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
                         guard let focusedQuestionID else { return }
@@ -149,15 +155,28 @@ struct MacSessionDetail: View {
             onInterrupt: nil
             )
         }
-        .onChange(of: selectedViewID) { _, newValue in
+        .onChange(of: selectedViewID) { oldValue, newValue in
             focusedQuestionID = nil
             accessibilityQuestionID = nil
-            resetReview()
+            guard reviewSessionID == session.id else {
+                reviewSessionID = session.id
+                restoreReview(for: conversationID(viewID: newValue))
+                onSelectView(newValue.isEmpty ? session.id : newValue)
+                return
+            }
+            preserveReview(for: conversationID(viewID: oldValue))
+            restoreReview(for: conversationID(viewID: newValue))
             onSelectView(newValue.isEmpty ? session.id : newValue)
         }
         .onChange(of: session.id) { _, _ in
-            selectedViewID = ""
+            reviewMemory.reset()
             resetReview()
+            visibleEntryID = nil
+            if selectedViewID.isEmpty {
+                reviewSessionID = session.id
+            } else {
+                selectedViewID = ""
+            }
         }
         .onChange(of: viewsLoaded, initial: true) { _, loaded in
             guard loaded else { return }
@@ -288,6 +307,28 @@ struct MacSessionDetail: View {
     private func resetReview() {
         isSearchPresented = false
         reviewState.reset()
+    }
+
+    private func conversationID(viewID: String) -> String {
+        viewID.isEmpty ? session.id : viewID
+    }
+
+    private func preserveReview(for conversationID: String) {
+        reviewMemory.save(
+            RemiConversationReviewSnapshot(
+                reviewState: reviewState,
+                visibleEntryID: visibleEntryID,
+                isSearchPresented: isSearchPresented
+            ),
+            for: conversationID
+        )
+    }
+
+    private func restoreReview(for conversationID: String) {
+        let snapshot = reviewMemory.snapshot(for: conversationID)
+        reviewState = snapshot.reviewState
+        visibleEntryID = snapshot.visibleEntryID
+        isSearchPresented = snapshot.isSearchPresented
     }
 }
 

@@ -127,6 +127,20 @@ struct MachineStoreTests {
         #expect(store.machines.isEmpty)
     }
 
+    @Test @MainActor func sendingToUnavailableSessionFailsWithoutDiscardingCallerState() async {
+        let store = MachineStore(
+            endpoints: [],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client"
+        )
+
+        let sent = await store.sendChat(sessionId: "missing", content: "keep this draft")
+
+        #expect(!sent)
+        #expect(store.latestOperationError == "Cannot send message: this session is unavailable.")
+    }
+
     @Test @MainActor func rescanningPairingCodeReplacesStableEndpointIdentity() {
         let original = MachineEndpoint(host: "127.0.0.1", port: 18765)
         let replacement = MachineEndpoint(
