@@ -465,9 +465,13 @@ test('secure transport rechecks durable rotation across actual receiver response
 });
 test('secure transport finite remaining-expiry wait aborts a real stalled receiver without resend', async () => {
   const f = await fixture();
+  let replyDueAt: number | undefined;
+  let replySentAt: number | undefined;
   const received = receiver(async (_req, body) => {
     const input = await submissionInput(body);
+    replyDueAt = Date.now() + 2200;
     await new Promise<void>((resolve) => setTimeout(resolve, 2200));
+    replySentAt = Date.now();
     return new Response(
       r.encodePushSubmitResult({
         v: 2,
@@ -483,20 +487,31 @@ test('secure transport finite remaining-expiry wait aborts a real stalled receiv
     audience: received.server.url.origin,
     ownedOrigin: received.server.url.origin,
   });
+  const expiresAt = Math.floor(Date.now() / 1000) + 2;
   const result = await transport.prepare(
     f.snapshot,
-    { ...f.metadata, expiresAt: Math.floor(Date.now() / 1000) + 1 },
+    { ...f.metadata, expiresAt },
     f.payload,
     () => true,
   );
   expect(result.outcome).toBe('prepared');
   if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+  expect(result.prepared.expiresAt).toBe(expiresAt);
   const started = Date.now();
+  const remainingMs = result.prepared.expiresAt * 1000 - started;
+  expect(remainingMs).toBeGreaterThan(250);
+  expect(remainingMs).toBeLessThanOrEqual(2000);
   await expect(transport.sendPrepared(result.prepared)).resolves.toMatchObject({
     outcome: 'uncertain',
     attempts: 1,
   });
-  expect(Date.now() - started).toBeLessThan(1800);
+  const finished = Date.now();
+  const elapsed = finished - started;
+  expect(elapsed).toBeGreaterThanOrEqual(remainingMs - 250);
+  expect(elapsed).toBeLessThanOrEqual(remainingMs + 250);
+  if (replyDueAt === undefined) throw new Error('real stalled receiver did not start');
+  expect(finished).toBeLessThan(replyDueAt);
+  expect(replySentAt).toBeUndefined();
   expect(received.bodies).toHaveLength(1);
 });
 
