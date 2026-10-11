@@ -18,6 +18,7 @@ always select their existing full gates.
 | Web TS source/tests | Web source/tests and relay integration type checks, full coverage | Run |
 | Daemon/shared/Worker inputs | All existing gates | Run |
 | Exact wrapper suspend test/PTY fixture producers | All normal gates | Skip without external references |
+| Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -50,6 +51,14 @@ paths and the exact classifier/corpus self-tools. Their expected test-to-fixture
 reference or scan error restores all gates. Source, package, unknown neighbor or
 renamed producer changes remain conservative. This is not a generic test exemption.
 Literal scans may match comments/data and cannot discover computed references.
+
+`packages/daemon/tests/ci-coverage-threshold.test.ts` has its own exact exemption:
+this consumer exercises the existing CI shell body and still selects every normal
+test/type/lint/notice/Mac gate. Only relay skips. Both-endpoint basename scans cover
+all packages, root tests/scripts and GitHub workflows/actions/scripts, excluding
+only the test itself and the exact classifier/corpus self-tools. Any other
+reference or scan error restores all gates. Source changes and unknown neighbors
+or renamed tests remain conservative; this is separate from the wrapper producers.
 
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
