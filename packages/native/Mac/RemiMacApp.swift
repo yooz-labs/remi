@@ -17,7 +17,7 @@ struct RemiMacApp: App {
                     identityUnavailableView
                 }
             }
-            .frame(minWidth: 980, minHeight: 600)
+            .frame(minWidth: 760, minHeight: 560)
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }

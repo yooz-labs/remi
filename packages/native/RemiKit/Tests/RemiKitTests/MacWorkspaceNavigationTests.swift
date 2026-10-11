@@ -55,4 +55,11 @@ import Testing
             offset: 1
         ) == nil)
     }
+
+    @Test func compactDestinationFollowsTheDeepestValidSelection() {
+        #expect(RemiMacCompactDestination.resolve(hasMachine: false, hasSession: false) == .machines)
+        #expect(RemiMacCompactDestination.resolve(hasMachine: true, hasSession: false) == .sessions)
+        #expect(RemiMacCompactDestination.resolve(hasMachine: true, hasSession: true) == .conversation)
+        #expect(RemiMacCompactDestination.conversation.column == .detail)
+    }
 }

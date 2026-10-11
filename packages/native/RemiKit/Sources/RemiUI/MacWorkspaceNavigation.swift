@@ -51,3 +51,23 @@ public enum RemiOrderedSelection {
         return orderedIDs[nextIndex]
     }
 }
+
+public enum RemiMacCompactDestination: Equatable, Sendable {
+    case machines
+    case sessions
+    case conversation
+
+    public static func resolve(hasMachine: Bool, hasSession: Bool) -> Self {
+        if hasSession { return .conversation }
+        if hasMachine { return .sessions }
+        return .machines
+    }
+
+    public var column: NavigationSplitViewColumn {
+        switch self {
+        case .machines: .sidebar
+        case .sessions: .content
+        case .conversation: .detail
+        }
+    }
+}
