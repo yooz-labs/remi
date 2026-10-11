@@ -51,6 +51,7 @@ struct PendingQuestionPresentationTests {
         ).first?.items.first)
 
         #expect(item.model.sessionName == "Native app")
+        #expect(item.model.sessionID == "session")
         #expect(item.projectName == "remi")
         #expect(item.harnessName == "Claude Code")
         #expect(item.conversationName == "Code reviewer")

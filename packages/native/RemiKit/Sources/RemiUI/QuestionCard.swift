@@ -28,7 +28,7 @@ public struct RemiQuestionCard: View {
                 sessionName: model.sessionName,
                 requiresAttention: requiresAttention
             )
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
                 Text(model.text).font(RemiTheme.Typography.cardTitle).fixedSize(horizontal: false, vertical: true)
                 if let detail = model.detail {
                     ScrollView {
@@ -50,7 +50,7 @@ public struct RemiQuestionCard: View {
                     onCancel: onCancel
                 )
             }
-            .padding(RemiTheme.Spacing.m)
+            .padding(RemiTheme.Spacing.s)
         }
         .background(
             reduceTransparency
@@ -58,6 +58,7 @@ public struct RemiQuestionCard: View {
                 : AnyShapeStyle(RemiTheme.Color.surface),
             in: .rect(cornerRadius: RemiTheme.Radius.card)
         )
+        .clipShape(RoundedRectangle(cornerRadius: RemiTheme.Radius.card))
         .overlay {
             RoundedRectangle(cornerRadius: RemiTheme.Radius.card)
                 .stroke(
@@ -91,21 +92,25 @@ private struct QuestionCardHeader: View {
     let requiresAttention: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: RemiTheme.Spacing.xs) {
-                Circle()
-                    .fill(requiresAttention ? RemiTheme.Color.attention : Color.secondary)
-                    .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
-                Text(title).font(RemiTheme.Typography.eyebrow).textCase(.uppercase).foregroundStyle(.secondary)
+                requestLabel
+                Spacer(minLength: RemiTheme.Spacing.xs)
+                Text("\(machineName) · \(sessionName)")
+                    .font(RemiTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            if dynamicTypeSize.isAccessibilitySize {
-                Text("\(machineName) · \(sessionName)").font(RemiTheme.Typography.metadata).foregroundStyle(.secondary)
-            } else {
-                Text("\(machineName) · \(sessionName)").font(RemiTheme.Typography.metadata).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                requestLabel
+                Text("\(machineName) · \(sessionName)")
+                    .font(RemiTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             reduceTransparency
@@ -114,6 +119,18 @@ private struct QuestionCardHeader: View {
                 ? AnyShapeStyle(RemiTheme.Color.attention.opacity(0.1))
                 : AnyShapeStyle(RemiTheme.Color.elevatedSurface)
         )
+    }
+
+    private var requestLabel: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Circle()
+                .fill(requiresAttention ? RemiTheme.Color.attention : Color.secondary)
+                .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
+            Text(title)
+                .font(RemiTheme.Typography.eyebrow)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var title: LocalizedStringKey {
@@ -171,16 +188,16 @@ private struct QuestionOptions: View {
     let onCancel: () -> Void
 
     var body: some View {
-        GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
-            VStack(spacing: RemiTheme.Spacing.xs) {
-                ForEach(options) { option in QuestionOptionButton(option: option) { onAnswer(option.id) } }
-                Button(role: .cancel, action: onCancel) {
-                    Text("Cancel")
-                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.glass)
+        VStack(spacing: RemiTheme.Spacing.xs) {
+            ForEach(options) { option in QuestionOptionButton(option: option) { onAnswer(option.id) } }
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                    .contentShape(.rect)
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
     }
 }
@@ -208,10 +225,26 @@ private struct QuestionOptionButton: View {
             }
             .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
             .padding(.horizontal, RemiTheme.Spacing.s)
+            .padding(.vertical, RemiTheme.Spacing.xxs)
             .contentShape(.rect)
         }
-        .buttonStyle(.glass)
-        .tint(option.role == .allow ? RemiTheme.Color.attention : nil)
+        .buttonStyle(.plain)
+        .background(
+            option.role == .allow
+                ? RemiTheme.Color.attention.opacity(0.16)
+                : RemiTheme.Color.elevatedSurface,
+            in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                .stroke(
+                    option.role == .allow
+                        ? RemiTheme.Color.attention.opacity(0.32)
+                        : RemiTheme.Color.hairline,
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        }
         .foregroundStyle(option.role == .allow ? RemiTheme.Color.attentionInk : .primary)
         .accessibilityHint(accessibilityHint)
     }

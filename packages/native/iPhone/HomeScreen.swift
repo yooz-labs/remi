@@ -98,7 +98,7 @@ struct HomeScreen: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.l) {
+            LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
                 if let errorMessage {
                     ErrorBanner(message: errorMessage, onDismiss: onDismissError)
                 }
@@ -115,7 +115,12 @@ struct HomeScreen: View {
                 }
 
                 if !visibleQuestions.isEmpty {
-                    NeedsYouSection(questions: visibleQuestions)
+                    NeedsYouSection(
+                        questions: visibleQuestions,
+                        onAnswer: onAnswer,
+                        onSubmit: onSubmit,
+                        onCancel: onCancel
+                    )
                 }
 
                 if visibleSessions.isEmpty {
@@ -381,15 +386,19 @@ private struct ScopeButton: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
-            .frame(minWidth: 132, alignment: .leading)
+            .frame(minWidth: 116, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
             .padding(.horizontal, RemiTheme.Spacing.s)
-            .padding(.vertical, RemiTheme.Spacing.s)
+            .padding(.vertical, RemiTheme.Spacing.xs)
             .contentShape(.rect)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.plain)
+        .background(
+            selected ? Color.primary.opacity(0.09) : Color.primary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
+                .stroke(selected ? Color.primary.opacity(0.38) : RemiTheme.Color.hairline, lineWidth: 1)
                 .allowsHitTesting(false)
         }
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -400,12 +409,20 @@ private struct ScopeButton: View {
 
 private struct NeedsYouSection: View {
     let questions: [RemiQuestionCardModel]
+    let onAnswer: (String, String, String) -> Void
+    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (String, String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             Text("Needs you").font(.title2.weight(.bold))
             ForEach(questions) { question in
-                RemiQuestionCard(model: question)
+                RemiQuestionCard(
+                    model: question,
+                    onAnswer: { onAnswer(question.sessionID, question.questionID, $0) },
+                    onSubmit: { onSubmit(question.sessionID, question.questionID, $0) },
+                    onCancel: { onCancel(question.sessionID, question.questionID) }
+                )
             }
         }
     }

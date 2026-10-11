@@ -241,6 +241,7 @@ struct PhoneLiveRootView: View {
             detail: question.detail,
             machineID: machine.id,
             machineName: machine.displayName,
+            sessionID: message.sessionId,
             sessionName: machine.sessions.first(where: { $0.sessionId == message.sessionId })?.name
                 ?? message.sessionId,
             options: question.options.map { option in
@@ -249,7 +250,7 @@ struct PhoneLiveRootView: View {
                     label: option.label,
                     detail: option.description,
                     role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
-                    grantsForSession: option.standingGrant != nil,
+                    grantsForSession: option.standingGrant != nil || option.sessionGrant != nil,
                     isRecommended: option.isRecommended
                 )
             },
