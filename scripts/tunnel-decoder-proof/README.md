@@ -103,6 +103,18 @@ cgroup PID and memory sample while the card, decoder and client are live; macOS
 reports those cgroup values as unavailable. Receipts list the owned PTY, client,
 repeated-decoder and recovery-decoder PIDs and confirm each was reaped.
 
+The `/bin/cat` PTY drain uses an inert marker line with a leading newline and a
+trailing newline. The leading newline releases any earlier canonical input; the
+trailing newline releases the marker line. The proof first records the actual
+terminal-driver echo plus `/bin/cat` echo on that host, then compares output
+after the answer against that observed pattern after both marker copies arrive
+and the stream stays quiet for 75 ms (within a two-second barrier deadline).
+This handles CR/LF and echo details from the real PTY
+instead of assuming a fixed byte pattern. Receipts separate those deliberate
+barrier bytes from zero answer-path bytes. A private control writes the No value
+directly to an isolated inert `/bin/cat` PTY and proves the same output assertion
+rejects it; no handler result or spy is substituted.
+
 The approval matrix snapshots all files, directories and hashes under
 `packages/daemon/src`, `packages/shared/src` and the decoder proof scripts,
 plus root `tsconfig.json` and package metadata. Candidate codec dependency trees

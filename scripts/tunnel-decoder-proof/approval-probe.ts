@@ -39,6 +39,8 @@ const PNG_GROUP = 'PNG held No under repeated actual decoder load';
 const JPEG_GROUP = 'JPEG held No under repeated actual decoder load';
 const BLOCK_GROUP = 'synchronous parent block makes held No exceed one second';
 const MAX_CLIENT_OUTPUT = 4096;
+const PTY_BARRIER_TIMEOUT_MS = 2000;
+const PTY_BARRIER_QUIET_MS = 75;
 
 interface ScenarioResult {
   scenario: 'png-under-load' | 'jpeg-under-load' | 'synchronous-parent-block';
@@ -51,6 +53,7 @@ interface ScenarioResult {
     endedAtUnixMs: number;
     durationMs: number;
   } | null;
+  ptyBarrier?: PtyBarrierEvidence;
   resourceSnapshot: string;
   childProcesses: {
     ptyPid: number;
@@ -59,6 +62,43 @@ interface ScenarioResult {
     recoveryDecoderPid: number;
     reaped: { pty: boolean; client: boolean; repeatedDecoder: boolean; recoveryDecoder: boolean };
   };
+}
+
+interface PtyBarrierEvidence {
+  baselineOutputBytes: number;
+  observedBarrierOutputBytes: number;
+  observedMarkerCopies: number;
+  baselineOutputSha256: string;
+  observedOutputSha256: string;
+  answerPathOutputBytes: 0;
+  outputMatchedBaseline: true;
+  leadingAndTrailingNewlines: true;
+  quietWindowMs: number;
+}
+
+interface PtyBarrierObservation {
+  output: string;
+  markerCopies: number;
+  inputBytes: number;
+}
+
+interface PtyBarrierCapture {
+  baselineOutput: string;
+  baselineMarker: string;
+  observedMarker: string;
+  markerCopiesBeforeClose: number;
+}
+
+interface PtyMutationEvidence {
+  mutationInput: string;
+  baselineOutputBytes: number;
+  mutatedOutputBytes: number;
+  baselineOutputSha256: string;
+  mutatedOutputSha256: string;
+  observedMarkerCopies: number;
+  outputAssertionRejectedMutation: true;
+  childPid: number;
+  reaped: true;
 }
 
 function childEnv(): Record<string, string> {
@@ -126,6 +166,74 @@ function noChild(pid: number | undefined, witness: string): void {
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `${witness}: child reaped`);
 }
 
+function occurrences(value: string, marker: string): number {
+  let count = 0;
+  let index = 0;
+  while (index !== -1) {
+    index = value.indexOf(marker, index);
+    if (index === -1) break;
+    count++;
+    index += marker.length;
+  }
+  return count;
+}
+
+function normalizeBarrier(value: string, marker: string): string {
+  return value.split(marker).join('<PTY_BARRIER>');
+}
+
+function sha256Text(value: string): string {
+  return new Bun.CryptoHasher('sha256').update(value).digest('hex');
+}
+
+function assertNoAnswerPathPtyBytes(
+  observed: string,
+  baseline: string,
+  observedMarker: string,
+  baselineMarker: string,
+): void {
+  assert.equal(
+    normalizeBarrier(observed, observedMarker),
+    normalizeBarrier(baseline, baselineMarker),
+    'answer path produced zero bytes before the observed /bin/cat drain barrier',
+  );
+}
+
+async function writeAndObservePtyBarrier(
+  pty: PTYSession,
+  readOutput: () => string,
+  marker: string,
+  outputStart: number,
+): Promise<PtyBarrierObservation> {
+  const barrierInput = `\n${marker}\n`;
+  await pty.write(barrierInput);
+  const deadline = performance.now() + PTY_BARRIER_TIMEOUT_MS;
+  let lastLength = -1;
+  let quietSince = performance.now();
+  while (performance.now() < deadline) {
+    const completeOutput = readOutput();
+    if (completeOutput.length !== lastLength) {
+      lastLength = completeOutput.length;
+      quietSince = performance.now();
+    }
+    const output = completeOutput.slice(outputStart);
+    const markerCopies = occurrences(output, marker);
+    if (markerCopies >= 2 && performance.now() - quietSince >= PTY_BARRIER_QUIET_MS) {
+      return { output, markerCopies, inputBytes: Buffer.byteLength(barrierInput) };
+    }
+    await Bun.sleep(5);
+  }
+  throw new Error('owned /bin/cat did not return the real PTY barrier and terminal echo');
+}
+
+function ptyBarrierMarker(): { baseline: string; observed: string } {
+  const nonce = generateId().replaceAll('-', '').slice(0, 8).toUpperCase();
+  return {
+    baseline: `REMI_PTY_BARRIER_A_${nonce}`,
+    observed: `REMI_PTY_BARRIER_B_${nonce}`,
+  };
+}
+
 function expectedPixels(index: number) {
   const image = inputs.images[index];
   assert(image, 'owned approval image metadata');
@@ -170,6 +278,7 @@ async function scenario(
   );
   let ptyPid: number | undefined;
   let result: ScenarioResult | undefined;
+  let ptyBarrierCapture: PtyBarrierCapture | undefined;
   let gate: AutoApproveGate | undefined;
   let hookServer: HookServer | undefined;
   let answerServer: ReturnType<typeof Bun.serve> | undefined;
@@ -181,6 +290,26 @@ async function scenario(
     await pty.start();
     ptyPid = pty.childPid ?? undefined;
     assert(ptyPid !== undefined, 'owned /bin/cat PTY has a child PID');
+    assert.equal(terminalOutput, '', 'owned /bin/cat is silent before the barrier calibration');
+    const barrierMarkers = ptyBarrierMarker();
+    const barrierCalibration = await writeAndObservePtyBarrier(
+      pty,
+      () => terminalOutput,
+      barrierMarkers.baseline,
+      0,
+    );
+    assert(
+      barrierCalibration.markerCopies >= 2,
+      'barrier calibration observed terminal echo and /bin/cat output',
+    );
+    const baselineBarrierOutput = barrierCalibration.output;
+    ptyBarrierCapture = {
+      baselineOutput: baselineBarrierOutput,
+      baselineMarker: barrierMarkers.baseline,
+      observedMarker: barrierMarkers.observed,
+      markerCopiesBeforeClose: 0,
+    };
+    terminalOutput = '';
     const { messageApi } = createMessageApiForSession(
       {
         sessionRegistry: registry,
@@ -435,7 +564,13 @@ async function scenario(
       'conflicting answer for the removed question is stale',
     );
     assert.equal(resolutionCount, 1, 'duplicate answers cause only one resolution effect');
-    assert.equal(terminalOutput, '', 'No was not written to the /bin/cat PTY');
+    const observedBarrier = await writeAndObservePtyBarrier(
+      pty,
+      () => terminalOutput,
+      barrierMarkers.observed,
+      0,
+    );
+    if (ptyBarrierCapture) ptyBarrierCapture.markerCopiesBeforeClose = observedBarrier.markerCopies;
     if (blockParent) {
       assert(clientResult.latencyMs > 1000, 'client-measured deny crossed the one-second block');
     } else {
@@ -506,17 +641,150 @@ async function scenario(
     Object.values(result.childProcesses.reaped).every(Boolean),
     'all owned child processes reaped',
   );
+  assert(ptyBarrierCapture, 'PTY barrier evidence was captured before process cleanup');
+  const finalPtyOutput = terminalOutput;
+  const markerCopiesAfterClose = occurrences(finalPtyOutput, ptyBarrierCapture.observedMarker);
+  assert(
+    markerCopiesAfterClose >= 2 &&
+      markerCopiesAfterClose >= ptyBarrierCapture.markerCopiesBeforeClose,
+    'PTY remained drained through child exit without discarding later bytes',
+  );
+  assertNoAnswerPathPtyBytes(
+    finalPtyOutput,
+    ptyBarrierCapture.baselineOutput,
+    ptyBarrierCapture.observedMarker,
+    ptyBarrierCapture.baselineMarker,
+  );
+  const baselineBarrierHash = sha256Text(
+    normalizeBarrier(ptyBarrierCapture.baselineOutput, ptyBarrierCapture.baselineMarker),
+  );
+  const observedBarrierHash = sha256Text(
+    normalizeBarrier(finalPtyOutput, ptyBarrierCapture.observedMarker),
+  );
+  assert.equal(
+    observedBarrierHash,
+    baselineBarrierHash,
+    'empty answer output matches barrier hash',
+  );
+  result.ptyBarrier = {
+    baselineOutputBytes: ptyBarrierCapture.baselineOutput.length,
+    observedBarrierOutputBytes: finalPtyOutput.length,
+    observedMarkerCopies: markerCopiesAfterClose,
+    baselineOutputSha256: baselineBarrierHash,
+    observedOutputSha256: observedBarrierHash,
+    answerPathOutputBytes: 0,
+    outputMatchedBaseline: true,
+    leadingAndTrailingNewlines: true,
+    quietWindowMs: PTY_BARRIER_QUIET_MS,
+  };
   return result;
+}
+
+async function ptyOutputMutationControl(): Promise<PtyMutationEvidence> {
+  const dir = mkdtempSync(join(tmpdir(), 'remi-approval-pty-mutation-'));
+  chmodSync(dir, 0o700);
+  let terminalOutput = '';
+  const pty = new PTYSession(
+    { command: '/bin/cat', args: [], cwd: dir },
+    {
+      onData: (data) => {
+        terminalOutput += data;
+      },
+    },
+  );
+  let childPid: number | undefined;
+  let baselineOutput: string | undefined;
+  let baselineMarker: string | undefined;
+  let observedMarker: string | undefined;
+  let markerCopiesBeforeClose = 0;
+  let reaped = false;
+  try {
+    await pty.start();
+    childPid = pty.childPid ?? undefined;
+    assert(childPid !== undefined, 'mutation /bin/cat PTY has a child PID');
+    const markers = ptyBarrierMarker();
+    const baseline = await writeAndObservePtyBarrier(
+      pty,
+      () => terminalOutput,
+      markers.baseline,
+      0,
+    );
+    assert(
+      baseline.markerCopies >= 2,
+      'mutation control observed terminal echo and /bin/cat output',
+    );
+    baselineOutput = baseline.output;
+    baselineMarker = markers.baseline;
+    observedMarker = markers.observed;
+    terminalOutput = '';
+
+    // Actual inert PTY input mutation of the forbidden No value, not a handler spy:
+    // /bin/cat only echoes it when the following barrier completes its line.
+    await pty.write(NO.value);
+    const mutated = await writeAndObservePtyBarrier(pty, () => terminalOutput, markers.observed, 0);
+    markerCopiesBeforeClose = mutated.markerCopies;
+  } finally {
+    await pty.close(2000);
+    if (childPid !== undefined) {
+      noChild(childPid, 'mutation /bin/cat PTY');
+      reaped = true;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert(reaped, 'mutation /bin/cat PTY reaped after barrier observation');
+  assert(childPid !== undefined, 'mutation PTY child PID remained recorded');
+  assert(baselineOutput !== undefined && baselineMarker && observedMarker);
+  const finalOutput = terminalOutput;
+  const markerCopiesAfterClose = occurrences(finalOutput, observedMarker);
+  assert(
+    markerCopiesAfterClose >= 2 && markerCopiesAfterClose >= markerCopiesBeforeClose,
+    'mutation barrier remained drained through child exit without discarding later bytes',
+  );
+  let outputAssertionRejectedMutation = false;
+  try {
+    assertNoAnswerPathPtyBytes(finalOutput, baselineOutput, observedMarker, baselineMarker);
+  } catch (error) {
+    assert(error instanceof Error, 'empty-answer-output assertion failed with an Error');
+    assert.match(error.message, /answer path produced zero bytes/);
+    outputAssertionRejectedMutation = true;
+  }
+  assert(
+    outputAssertionRejectedMutation,
+    'actual No-value PTY write makes the empty-answer-output assertion fail',
+  );
+  const baselineOutputSha256 = sha256Text(normalizeBarrier(baselineOutput, baselineMarker));
+  const mutatedOutputSha256 = sha256Text(normalizeBarrier(finalOutput, observedMarker));
+  assert.notEqual(
+    mutatedOutputSha256,
+    baselineOutputSha256,
+    'actual inert PTY mutation changes the normalized output digest',
+  );
+  const mutationEvidence: Omit<PtyMutationEvidence, 'childPid' | 'reaped'> = {
+    mutationInput: NO.value,
+    baselineOutputBytes: baselineOutput.length,
+    mutatedOutputBytes: finalOutput.length,
+    baselineOutputSha256,
+    mutatedOutputSha256,
+    observedMarkerCopies: markerCopiesAfterClose,
+    outputAssertionRejectedMutation,
+  };
+  return { ...mutationEvidence, childPid, reaped: true };
 }
 
 export async function approvalProof(
   png: Buffer,
   jpg: Buffer,
-): Promise<{ checks: string[]; scenarios: ScenarioResult[] }> {
+): Promise<{
+  checks: string[];
+  scenarios: ScenarioResult[];
+  ptyMutationControl: PtyMutationEvidence;
+}> {
   const scenarios = [
     await scenario('image/png', png, 0, false),
     await scenario('image/jpeg', jpg, 1, false),
     await scenario('image/png', png, 0, true),
   ];
-  return { checks: [PNG_GROUP, JPEG_GROUP, BLOCK_GROUP], scenarios };
+  const ptyMutationControl = await ptyOutputMutationControl();
+  assert(scenarios.every((item) => Object.values(item.childProcesses.reaped).every(Boolean)));
+  return { checks: [PNG_GROUP, JPEG_GROUP, BLOCK_GROUP], scenarios, ptyMutationControl };
 }

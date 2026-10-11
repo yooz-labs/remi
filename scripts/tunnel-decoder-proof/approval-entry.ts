@@ -39,6 +39,7 @@ if (process.argv.includes('--approval-client')) {
       })),
       approvalLatencyMs: approval.scenarios.map((scenario) => scenario.latencyMs),
       approvalScenarios: approval.scenarios,
+      ptyMutationControl: approval.ptyMutationControl,
       scope:
         '18 owned decoder and held-answer groups; Linux memory is a 512 MiB fixture only; portable resource enforcement and production adoption remain pending',
     }),
