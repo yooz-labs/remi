@@ -75,8 +75,8 @@ expected = bytearray()
 result = {"shell": shell, "cycles": cycles, "states": states}
 
 
-def drain(seconds=0.02):
-    end = min(time.monotonic() + seconds, deadline)
+def drain(seconds=0.02, limit=None):
+    end = min(time.monotonic() + seconds, deadline if limit is None else limit)
     while time.monotonic() < end:
         ready, _, _ = select.select([master], [], [], max(0, end - time.monotonic()))
         if ready:
@@ -93,10 +93,11 @@ def wait_for(check, description):
         drain()
 
 
-def processes():
+def processes(candidates=None):
     output = subprocess.check_output(
         ["/bin/ps", "-o", "pid=,ppid=,pgid=,tpgid=,state=", "-p",
-         ",".join(str(pid) for pid in [shell_pid, *owned])], text=True
+         ",".join(str(pid) for pid in [shell_pid, *(owned if candidates is None else candidates)])],
+        text=True
     )
     return {int(fields[0]): fields[1:] for line in output.splitlines() if (fields := line.split())}
 
@@ -153,10 +154,12 @@ try:
     metadata = json.loads((root / "pids.json").read_text())
     wrapper, child = metadata["wrapper"], metadata["child"]
     assert wrapper > 1 and child > 1 and wrapper != shell_pid and child != shell_pid
-    owned.extend([wrapper, child])
+    initial = processes([wrapper, child])
+    assert int(initial[wrapper][0]) == shell_pid, "wrapper is not our shell's child"
+    owned.append(wrapper)
+    assert int(initial[child][0]) == wrapper, "PTY child is not our wrapper's child"
+    owned.append(child)
     state = snapshot("ready")
-    assert int(state["processes"][wrapper][0]) == shell_pid, "wrapper is not our shell's child"
-    assert int(state["processes"][child][0]) == wrapper, "PTY child is not our wrapper's child"
     assert int(state["processes"][wrapper][1]) == wrapper, "wrapper has no distinct job group"
     assert int(state["processes"][child][1]) == child, "PTY child has no distinct process group"
     drain(0.1)
@@ -174,21 +177,36 @@ try:
 except Exception as error:
     result["error"] = str(error)
 finally:
+    # A wrapper may fail before the child emits its ready marker. Recover its
+    # foreground PID only after proving that it belongs to this owned shell.
+    foreground = os.tcgetpgrp(master)
+    if foreground != shell_pid and foreground not in owned:
+        entry = processes([foreground]).get(foreground)
+        if entry is not None and int(entry[0]) == shell_pid:
+            owned.append(foreground)
+    metadata_path = root / "pids.json"
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text())
+        candidate = metadata["child"]
+        entry = processes([candidate]).get(candidate)
+        if candidate not in owned and entry is not None and int(entry[0]) in owned:
+            owned.append(candidate)
     # Even a stopped wrapper must be ended. SIGCONT/TERM target only the owned
     # PIDs; after a short teardown window SIGKILL is the bounded fallback.
+    cleanup_deadline = time.monotonic() + 2
     for pid in owned:
         for sig in (signal.SIGCONT, signal.SIGTERM):
             try:
                 os.kill(pid, sig)
             except ProcessLookupError:
                 pass
-    drain(0.2)
+    drain(0.2, cleanup_deadline)
     for pid in owned:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    drain(0.1)
+    drain(0.1, cleanup_deadline)
     try:
         os.kill(shell_pid, signal.SIGKILL)
     except ProcessLookupError:
