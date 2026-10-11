@@ -35,7 +35,12 @@
  * (`notifications/turn-failed.ts`).
  */
 
-import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
+import {
+  DEFAULT_PERMISSION_LABELS,
+  boundedEscape,
+  escapeUnsafeText,
+  generateId,
+} from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
 import { isMultiChoicePermission } from '../auto-approve/multichoice.ts';
@@ -54,8 +59,8 @@ import type {
   SubagentStopHookInput,
 } from './hook-types.ts';
 import { SubagentContextTracker } from './subagent-context-tracker.ts';
+import { summarizeToolInputForDisplay } from './tool-display-summary.ts';
 import { extractToolQuestion } from './tool-question.ts';
-import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
   /**
@@ -132,9 +137,33 @@ const MAX_PERMISSION_OPTIONS = 4;
 const SUGGESTION_LABEL_MAX = 80;
 
 function truncateLabel(label: string): string {
-  return label.length > SUGGESTION_LABEL_MAX
-    ? `${label.slice(0, SUGGESTION_LABEL_MAX - 3)}...`
-    : label;
+  const escaped = escapeUnsafeText(label);
+  if (escaped.length <= SUGGESTION_LABEL_MAX) return escaped;
+  return `${boundedEscape(label, SUGGESTION_LABEL_MAX - 2).slice(0, -1)}...`;
+}
+
+/** Cut an already escaped label without splitting its visible escape or a surrogate pair. */
+function safePrefix(text: string, max: number): string {
+  let end = Math.min(max, text.length);
+  for (const match of text.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
+    const start = match.index;
+    const escapeEnd = start + match[0].length;
+    if (start < end && end < escapeEnd) {
+      end = start;
+      break;
+    }
+  }
+  if (
+    end > 0 &&
+    end < text.length &&
+    text.charCodeAt(end - 1) >= 0xd800 &&
+    text.charCodeAt(end - 1) <= 0xdbff &&
+    text.charCodeAt(end) >= 0xdc00 &&
+    text.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return text.slice(0, end);
 }
 
 /**
@@ -157,7 +186,7 @@ function disambiguateLabels(labels: readonly string[]): string[] {
     if (occurrence === 1) return label;
     const suffix = ` (${occurrence})`;
     const maxBaseLength = SUGGESTION_LABEL_MAX - suffix.length;
-    const base = label.length > maxBaseLength ? label.slice(0, maxBaseLength) : label;
+    const base = label.length > maxBaseLength ? safePrefix(label, maxBaseLength) : label;
     return `${base}${suffix}`;
   });
 }
@@ -218,7 +247,11 @@ export function standingGrantFor(entry: unknown): {
     const prefix = 'Yes, allow ';
     const room = SUGGESTION_LABEL_MAX - prefix.length - suffix.length - 4;
     const joined = parts.join(', ');
-    const shown = joined.length > room ? `${joined.slice(0, room - 3)}...` : joined;
+    const escapedJoined = escapeUnsafeText(joined);
+    const shown =
+      escapedJoined.length > room
+        ? `${boundedEscape(joined, room - 2).slice(0, -1)}...`
+        : escapedJoined;
     return {
       label: `${prefix}${shown}${suffix}`,
       kind: 'addRules',
@@ -271,7 +304,13 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
       const lower = suggestion.toLowerCase();
       const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
       const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
-      return { label: suggestion, value: String(idx + 1), isRecommended: idx === 0, isYes, isNo };
+      return {
+        label: escapeUnsafeText(suggestion),
+        value: String(idx + 1),
+        isRecommended: idx === 0,
+        isYes,
+        isNo,
+      };
     });
     return { options, isFallback: false };
   }
@@ -500,6 +539,7 @@ export class HookEventBridge {
    */
   buildPermissionQuestion(input: PermissionRequestHookInput): Question {
     const toolName = input.tool_name || 'unknown tool';
+    const displayToolName = escapeUnsafeText(toolName);
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
     // question in tool_input; surface it instead of the generic
@@ -520,19 +560,21 @@ export class HookEventBridge {
       // Already phrased as a question, so no "Allow" prefix. A subagent prompt
       // still names the agent so the user knows WHO is asking.
       promptText = input.agent_type
-        ? `${input.agent_type} · ${toolQuestion.text}`
+        ? `${escapeUnsafeText(input.agent_type)} · ${toolQuestion.text}`
         : toolQuestion.text;
       options = toolQuestion.options;
     } else {
-      const inputSummary = summarizeToolInput(toolName, input.tool_input);
-      const complete = summarizeToolInput(toolName, input.tool_input, { complete: true });
+      const inputSummary = summarizeToolInputForDisplay(toolName, input.tool_input);
+      const complete = summarizeToolInputForDisplay(toolName, input.tool_input, { complete: true });
       // Preserve hidden input explicitly; preview text is never evidence of completeness (#1200).
       if (complete !== null && complete !== inputSummary) inputDetail = complete;
       // The action carries the command/path/pattern context (#497).
-      const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
+      const action = inputSummary ? `${displayToolName}: ${inputSummary}` : displayToolName;
       // A subagent prompt names the agent, e.g.
       // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
-      promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
+      promptText = input.agent_type
+        ? `${escapeUnsafeText(input.agent_type)} · ${action}`
+        : `Allow ${action}`;
       const built = optionsFromSuggestions(input.permission_suggestions);
       options = built.options;
       optionsAreFallback = built.isFallback;

@@ -18,7 +18,7 @@
  * terminal.
  */
 
-import type { QuestionOption, QuestionStep } from '@remi/shared';
+import { type QuestionOption, type QuestionStep, escapeUnsafeText } from '@remi/shared';
 
 import {
   askQuestionSteps,
@@ -39,7 +39,7 @@ export interface ToolQuestion {
   readonly questions?: QuestionStep[];
   /** #626: submit-button label for the multi-question form. */
   readonly submitLabel?: string;
-  /** #1127: the plan an ExitPlanMode asks to approve, verbatim. */
+  /** #1127/#1189: escaped display plan. Approval echoes the original hook input, never this field. */
   readonly detail?: string;
   /** #1127 review S7: an AskUserQuestion that did not parse exactly; no
    *  phone answer can be applied to it (see `Question.terminalOnly`). */
@@ -71,12 +71,38 @@ function pickOption(label: string, index: number, description?: string): Questio
  */
 export const PLAN_DETAIL_MAX = 20_000;
 
+/** The visible plan cut stays outside an escape written by `escapeUnsafeText` or a surrogate pair. */
+function safePlanBoundary(text: string, max: number): number {
+  let end = Math.min(max, text.length);
+  for (const match of text.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
+    const start = match.index;
+    const escapeEnd = start + match[0].length;
+    if (start < end && end < escapeEnd) {
+      end = start;
+      break;
+    }
+  }
+  if (
+    end > 0 &&
+    end < text.length &&
+    text.charCodeAt(end - 1) >= 0xd800 &&
+    text.charCodeAt(end - 1) <= 0xdbff &&
+    text.charCodeAt(end) >= 0xdc00 &&
+    text.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return end;
+}
+
 /** A plan as a card's `detail`: verbatim up to `PLAN_DETAIL_MAX`, otherwise
- *  cut there with a marker. */
+ *  escaped, then cut there with a marker. The hook input used by the answer remains raw. */
 export function planDetail(plan: string): string {
-  if (plan.length <= PLAN_DETAIL_MAX) return plan;
-  const missing = plan.length - PLAN_DETAIL_MAX;
-  return `${plan.slice(0, PLAN_DETAIL_MAX)}\n\n[Plan truncated: ${missing} more characters. Read the full plan in the terminal.]`;
+  const escaped = escapeUnsafeText(plan);
+  if (escaped.length <= PLAN_DETAIL_MAX) return escaped;
+  const end = safePlanBoundary(escaped, PLAN_DETAIL_MAX);
+  const missing = escaped.length - end;
+  return `${escaped.slice(0, end)}\n\n[Plan truncated: ${missing} more characters. Read the full plan in the terminal.]`;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

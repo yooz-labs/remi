@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import {
@@ -59,6 +60,27 @@ describe('buildHarnessDeniedText', () => {
     });
     expect(title.length).toBeLessThanOrEqual(120);
     expect(body.length).toBeLessThanOrEqual(200);
+  });
+
+  test('escapes summary, tool/agent prefixes, reason and title before they reach a push (#1189)', () => {
+    const hostile = '\x1b\x07\u202e\u2066\u200b\u200f';
+    const toolName = `Bash${hostile}`;
+    const agentType = `reviewer${hostile}`;
+    const reason = `blocked ${hostile}`;
+    const command = `run ${hostile}`;
+    const { title, body } = buildHarnessDeniedText(`session${hostile}`, {
+      tool_name: toolName,
+      tool_input: { command },
+      agent_type: agentType,
+      reason,
+    });
+
+    expect(title).toBe(escapeUnsafeText(`session${hostile}: auto mode blocked ${toolName}`));
+    expect(body).toBe(
+      `${escapeUnsafeText(agentType)} · ${escapeUnsafeText(toolName)}: ${escapeUnsafeText(command)}. ${escapeUnsafeText(reason)}`,
+    );
+    expect(title).not.toContain('\x1b');
+    expect(body).not.toContain('\u202e');
   });
 });
 
