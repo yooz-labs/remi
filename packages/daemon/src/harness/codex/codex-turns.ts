@@ -41,11 +41,12 @@
  * prose and failure excerpts have the shared unsafe characters removed except the zero-width
  * joiner, which an emoji sequence needs. Tag characters (U+E0020 to U+E007F) are removed, so a
  * subdivision-flag emoji loses its tags. Claude's `last_assistant_message` is also passed through
- * `pushProse` before whitespace normalization and truncation. An answer with nothing left to see
- * (only joiners, whitespace or removed characters) is no answer: no `turn_complete` push, and one
- * line without content says so. Chat prose is NOT touched here (`codex-chat.ts` leaves it as the
- * model wrote it, deliberately). Claude's raw `StopFailure` input still forms `turnFailureKey`,
- * so sanitizing its displayed excerpt does not change failure deduplication.
+ * `pushProse` before whitespace normalization and truncation. For Codex only, an answer with
+ * nothing left to see (only joiners, whitespace or removed characters) reaches the shared sink
+ * without an answer, so the gate makes no `turn_complete` push; this adapter logs one line without
+ * content. Chat prose is NOT touched here (`codex-chat.ts` leaves it as the model wrote it,
+ * deliberately). Claude's raw `StopFailure` input still forms `turnFailureKey`, so sanitizing its
+ * displayed excerpt does not change failure deduplication.
  *
  * Nothing a turn says is logged: the answer, the error text and the thread id
  * stay out of the log, and a status remi does not know is logged without its
