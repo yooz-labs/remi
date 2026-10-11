@@ -221,11 +221,11 @@ struct MachineStoreTests {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    @Test func missingMachineConfigurationStaysEmptyForFirstRun() {
-        let key = "remi.machine-store-tests.\(UUID().uuidString)"
-        let persistence = MachineConfigurationStore(key: key)
+    @Test @MainActor func startupKeepsMissingConfigurationEmptyForFirstRun() {
+        let configured = [MachineEndpoint(host: "100.64.0.8", port: 18765)]
 
-        #expect(persistence.load().isEmpty)
+        #expect(NativeRelayNotifications.startupEndpoints(from: []).isEmpty)
+        #expect(NativeRelayNotifications.startupEndpoints(from: configured) == configured)
     }
 
     @Test func sessionPresentationKeepsStableMachineIdentity() {

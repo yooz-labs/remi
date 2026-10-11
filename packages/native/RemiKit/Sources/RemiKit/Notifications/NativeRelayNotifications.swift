@@ -155,7 +155,7 @@ public final class NativeRelayNotifications {
                 }
                 let identity = try currentIdentity ?? identityStore.loadOrCreate()
                 let saved = MachineConfigurationStore.shared.load()
-                let current = MachineStore(endpoints: saved,
+                let current = MachineStore(endpoints: Self.startupEndpoints(from: saved),
                     identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
                     clientId: clientID(), pushStore: pushStore)
@@ -190,6 +190,10 @@ public final class NativeRelayNotifications {
         guard store == nil else { return }
         foreground = false
         activate()
+    }
+
+    package static func startupEndpoints(from saved: [MachineEndpoint]) -> [MachineEndpoint] {
+        saved
     }
 
     /// Transient inactive scenes (including the permission dialog) retain the
