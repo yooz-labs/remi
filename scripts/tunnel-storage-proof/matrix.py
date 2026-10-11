@@ -140,6 +140,10 @@ def main(proof=None):
         type=Path,
         help="Use a caller-supplied short absolute base for one owned runtime scratch directory",
     )
+    parser.add_argument(
+        "--cleanup-refusal-control", action="store_true",
+        help="Make owned runtime scratch nonwritable to verify cleanup failure refuses success",
+    )
     options = parser.parse_args()
     if options.linux_memory_mib is not None and options.linux_memory_mib < 1:
         parser.error("--linux-memory-mib must be positive")
@@ -147,12 +151,21 @@ def main(proof=None):
         parser.error("--linux-pids-limit must be positive")
     if options.runtime_temp_base is not None and not options.runtime_temp_base.is_absolute():
         parser.error("--runtime-temp-base must be an absolute path")
+    if options.cleanup_refusal_control and (options.runtime_temp_base is None or os.geteuid() == 0):
+        parser.error("cleanup refusal control needs a runtime temp base and an unprivileged owner")
     matrix_targets = ("bun-darwin-arm64",) if options.canary_only else TARGETS
     compilers = (("1311", options.bun_1311), ("current", options.bun_current))
     source = proof["source"]
     checks = proof["checks"]
     source_trees = tuple(proof.get("source_trees", ()))
     source_tree_excludes = tuple(proof.get("source_tree_excludes", ()))
+    proof_entry = Path(proof.get("entry", "probe.ts"))
+    if proof_entry.is_absolute() or ".." in proof_entry.parts:
+        raise ValueError("Proof entry must be a captured path inside the source snapshot")
+    if options.invalidation_control and (
+            not source_trees or not proof.get("dependencies") or
+            not any(Path(tree) in proof_entry.parents for tree in source_trees)):
+        parser.error("invalidation controls need captured source trees, an entry tree and dependencies")
     tree_manifest = source_tree(source, source_trees, source_tree_excludes)
     source_hashes = {
         name: entry["sha256"]
@@ -231,9 +244,6 @@ def main(proof=None):
     linux_memory_mib = options.linux_memory_mib or 256
     linux_pids_limit = options.linux_pids_limit or 32
     runtime_args = tuple(proof.get("runtime_args", ("--owned-spike",)))
-    entry = Path(proof.get("entry", "probe.ts"))
-    if entry.is_absolute() or ".." in entry.parts:
-        raise ValueError("Proof entry must be a captured path inside the source snapshot")
     results = []
     container = None
     run_id = uuid.uuid4().hex[:12]
@@ -251,7 +261,8 @@ def main(proof=None):
     def source_unchanged():
         try:
             return (digest(runner) == runner_hash and digest(runner_snapshot) == runner_hash and
-                    all(digest(directory / name) == value
+                    all(not (directory / name).is_symlink() and (directory / name).is_file()
+                        and digest(directory / name) == value
                         for directory in (source, snapshot) for name, value in source_hashes.items()) and
                     source_tree(source, source_trees, source_tree_excludes) == tree_manifest and
                     source_tree(snapshot, source_trees, source_tree_excludes) == tree_manifest and
@@ -279,7 +290,8 @@ def main(proof=None):
             "complete": (unchanged and not cleanup_errors and len(results) == 2 * len(compilers) * len(matrix_targets) and all(item.get("passed") for item in results)
                          and all(item.get("artifactSha256") for item in results if item["label"].startswith("build-"))
                          and (not options.invalidation_control or
-                              len(invalidation_controls) == 3 and all(item["passed"] for item in invalidation_controls))),
+                              len(invalidation_controls) == 4 and all(item["passed"] for item in invalidation_controls))
+                         and (runtime_temp_dir is None or runtime_temp_cleaned)),
             "scope": proof["scope"],
             **({"linuxMemoryMiB": linux_memory_mib}
                if options.linux_memory_mib is not None else {}),
@@ -336,26 +348,31 @@ def main(proof=None):
         if not item["passed"]:
             raise RuntimeError(label + " failed; inspect its retained log")
 
-    def invalidation_control(label, add_path):
+    def assert_not_launched(label):
         marker = output / (label + ".launched")
         marker.unlink(missing_ok=True)
+        try:
+            run(label, [sys.executable, "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('launched')",
+                str(marker)])
+        except RuntimeError as error:
+            if str(error) != "Source changed during the matrix; start a new run":
+                raise
+        else:
+            raise RuntimeError(label + " did not reject the changed input")
+        if marker.exists():
+            raise RuntimeError(label + " launched the guarded command")
+
+    def invalidation_control(label, add_path):
+        if add_path.exists():
+            raise RuntimeError("Invalidation control would replace an existing snapshot input")
         add_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         add_path.write_text("owned invalidation control\n")
         try:
-            try:
-                run(label, [sys.executable, "-c",
-                    "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('launched')",
-                    str(marker)])
-            except RuntimeError as error:
-                if str(error) != "Source changed during the matrix; start a new run":
-                    raise
-            else:
-                raise RuntimeError(label + " did not reject the added entry")
-            if marker.exists():
-                raise RuntimeError(label + " launched the guarded command")
+            assert_not_launched(label)
         finally:
             add_path.unlink(missing_ok=True)
-        item = {"label": label, "passed": source_unchanged() and not marker.exists()}
+        item = {"label": label, "passed": source_unchanged()}
         invalidation_controls.append(item)
         save()
         if not item["passed"]:
@@ -365,16 +382,30 @@ def main(proof=None):
         if options.invalidation_control:
             invalidation_control(
                 "invalidation-source-addition",
-                snapshot / "packages/shared/src/invalidation-control.ts",
+                snapshot / source_trees[0] / "invalidation-control.ts",
             )
             invalidation_control(
                 "invalidation-entry-addition",
-                snapshot / "scripts/tunnel-decoder-proof/added-entry.ts",
+                snapshot / proof_entry.parent / "added-entry.ts",
             )
             invalidation_control(
                 "invalidation-dependency-addition",
-                snapshot / "node_modules/pngjs/lib/invalidation-control.js",
+                snapshot / "node_modules" / next(iter(dependencies)) / "invalidation-control.js",
             )
+            label = "invalidation-explicit-file-symlink"
+            original = snapshot / proof["files"][0]
+            held = output / "explicit-file-control-original"
+            original.rename(held)
+            original.symlink_to(held)
+            try:
+                assert_not_launched(label)
+            finally:
+                original.unlink()
+                held.rename(original)
+            item = {"label": label, "passed": source_unchanged()}
+            invalidation_controls.append(item)
+            if not item["passed"]:
+                raise RuntimeError(label + " failed to restore the owned snapshot")
         for label, executable in compilers:
             executable = executable.resolve()
             version = subprocess.check_output([str(executable), "--version"], env=environment,
@@ -385,7 +416,7 @@ def main(proof=None):
             for target in matrix_targets:
                 artifact = output / (label + "-" + target)
                 run("build-" + label + "-" + target, [executable, "--no-env-file", "build", "--compile",
-                    "--target=" + target, "--outfile=" + str(artifact), snapshot / entry])
+                    "--target=" + target, "--outfile=" + str(artifact), snapshot / proof_entry])
                 results[-1]["artifactSha256"] = digest(artifact)
                 save()
                 if options.build_only:
@@ -443,10 +474,9 @@ def main(proof=None):
                         "--env", "TMPDIR=/tmp", image_id, "/proof/" + artifact.name, *runtime_args],
                         (version, "linux", expected_arch))
                     container = None
-        save()
-        complete = json.loads((output / "receipt.json").read_text())["complete"]
-        print("Complete packaging matrix" if complete else "Partial matrix; missing executions remain unaccepted")
-        return 0 if complete else 2
+        if options.cleanup_refusal_control:
+            (runtime_temp_dir / "cleanup-control").write_text("owned cleanup refusal control\n")
+            runtime_temp_dir.chmod(0o500)
     finally:
         if container:
             try:
@@ -474,6 +504,9 @@ def main(proof=None):
                 except OSError:
                     pass  # Leave a shared or nonempty caller-supplied base intact.
         save()
+    complete = json.loads((output / "receipt.json").read_text())["complete"]
+    print("Complete packaging matrix" if complete else "Partial matrix; missing executions remain unaccepted")
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":
