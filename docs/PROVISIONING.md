@@ -20,9 +20,10 @@ All three build the record with `createAuthorizedKey` and write it with `writeAu
 An exported key authorizes exactly the key it contains.
 A pairing code authorizes nothing until the person has compared the fingerprint of the key that claimed it.
 
-`remi authorize` is for public keys, and it does not enforce that.
-It takes the `publicKey` out of whatever JSON it is given and ignores every other field.
-It does not refuse a file that holds a private key, so a full `remi export-key` identity is accepted (#1320).
+For JSON imports, `remi authorize` takes the `publicKey` and derives the fingerprint from it.
+It refuses an object with an own `encryptedPrivateKey`, `salt`, `iv` or `iterations` field, regardless of that field's value, before adding a grant (#1320).
+A full `remi export-key` identity therefore fails; the command does not print its contents.
+Other fields, including `fingerprint`, `label` and unknown metadata, remain ignored.
 Only `remi export-key --public-only` output, or an app's public-only export, belongs in a devices directory.
 The cloud-init example below writes device files with mode 0644, so a private key exported by mistake would be left readable by every user on the machine.
 
@@ -36,8 +37,9 @@ The cloud-init example below writes device files with mode 0644, so a private ke
   It names the machine.
 - **Label:** a name the person gives the device, such as "Work iPhone".
   It names the client, never the host.
-  It is stored as given and is not part of the identity, so another key with the same label gets nothing.
-  `remi keys` cuts it to 16 characters and prints it as it is stored (#1321).
+  A valid CLI label is stored as given and is not part of the identity, so another key with the same label gets nothing.
+  It has 1 to 64 well-formed Unicode code points, is not blank after trimming, does not start with `-`, and contains no C0/C1 control or other character `escapeUnsafeText` would escape; quotes and backslashes are allowed.
+  `remi keys` prints a safely escaped preview capped at 16 UTF-16 code units after escaping, without splitting a code point or helper-generated escape, and does not rewrite legacy labels (#1321).
 
 The person approves a *client* fingerprint on the machine, and compares a *machine* fingerprint on the device.
 Never confuse the two.
@@ -91,9 +93,8 @@ Rules the daemon enforces, which an app builds against:
   A retry of a key that is already pending does not duplicate it.
 - The machine does not push an approval to the app, so the retry is how the app learns of it.
 - Quote the label for the shell: wrap it in single quotes, and write each `'` in it as `'\''`.
-  A label may not be empty or start with `-`, because the command refuses it with "--label requires a value".
-  Keep labels to plain text of 1 to 64 characters, the rule `remi pair` holds a phone's label to.
-  If the person pastes the command into a terminal, strip control characters and line breaks from the label first.
+  The CLI refuses an empty or whitespace-only label, a label beginning with `-`, one over 64 Unicode code points, malformed UTF-16, C0/C1 controls, and other unsafe display characters.
+  It preserves accepted text as given; quoted and backslash characters are allowed.
 
 ## Fleet and ephemeral machines: authorize before the first connection
 
@@ -104,8 +105,9 @@ The JSON the CLI reads is:
 {"publicKey":"<the 32-byte key as canonical standard base64, 44 characters>"}
 ```
 
-Other fields are ignored.
+Other harmless fields are ignored.
 A `fingerprint` in the JSON is for display and is never believed, because the fingerprint is always derived from the key.
+The CLI refuses the object if it includes an own `encryptedPrivateKey`, `salt`, `iv` or `iterations` field, even when the value is null.
 The machine then runs, as the user that runs remi:
 
 ```sh
