@@ -23,6 +23,8 @@ NATIVE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.
 WRAPPER_INPUTS = module["WRAPPER_SUSPEND_INPUTS"]
 WRAPPER_GATES = gates - {"relay"}
 COVERAGE_READER = module["CI_COVERAGE_READER"]
+HOOK_SERVER_TEST = module["HOOK_SERVER_TEST"]
+HOOK_COMMENT_SOURCE = {path: Path(path).read_text() for path in module["HOOK_TEST_COMMENTS"]}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -72,6 +74,9 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write(WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py';\n")
         write(WRAPPER_INPUTS[1], "print('owned fixture')\n")
         write(COVERAGE_READER, "export {};\n")
+        write(HOOK_SERVER_TEST, "export {};\n")
+        for path, text in HOOK_COMMENT_SOURCE.items():
+            write(path, text)
         for name, text in WORKFLOWS.items():
             write(f".github/workflows/{name}", text)
         write(".github/actions/ci-scope/action.yml", ACTION)
@@ -94,6 +99,8 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("packages/daemon/tests/cli/wrapper-suspend-neighbor.test.ts", "export {};", gates),
             (COVERAGE_READER, "export const changed = true;", WRAPPER_GATES),
             ("packages/daemon/tests/ci-coverage-threshold-neighbor.test.ts", "export {};", gates),
+            (HOOK_SERVER_TEST, "export const changed = true;", WRAPPER_GATES),
+            ("packages/daemon/tests/hooks/hook-server-neighbor.test.ts", "export {};", gates),
             ("scripts/tunnel-storage-proof/probe.ts", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.tsx", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.mts", "export {};", {"lint"}),
@@ -143,6 +150,164 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (path, expected, result)
             count += 1
+        # Exact HookServer test modifications permit only the reviewed immutable comments.
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            consumer = f"{directory}/consumer.ts"
+            content = "import 'hook-server.test';\n"
+            if directory == ".github/workflows":
+                consumer = f"{directory}/consumer.yml"
+                content = "name: Owned consumer\non: [push]\njobs:\n  hook:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test " + HOOK_SERVER_TEST + "\n"
+            elif directory == ".github/actions":
+                consumer = f"{directory}/consumer/action.yml"
+                content = "name: Owned consumer\ndescription: Owned consumer\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: bun test " + HOOK_SERVER_TEST + "\n"
+            for context in ("both", "target-base-only", "new-head"):
+                git("reset", "--hard", base)
+                git("clean", "-fdq")
+                write(consumer, content)
+                consumer_base = commit()
+                if context != "both":
+                    git("reset", "--hard", base)
+                if context == "new-head":
+                    write(consumer, content)
+                write(HOOK_SERVER_TEST, "export const changed = true;")
+                left = base if context == "new-head" else consumer_base
+                right = commit()
+                assert not module["hook_test_references_reviewed"](left, right)
+                assert selected(classify(left, right)) == gates, (consumer, context)
+                count += 1
+        git("reset", "--hard", base)
+        git("clean", "-fdq")
+        write("scripts/consumer.ts", "// hook-server.test is an unknown comment\n")
+        consumer_base = commit()
+        Path("scripts/consumer.ts").unlink()
+        write(HOOK_SERVER_TEST, "export const changed = true;")
+        assert selected(classify(consumer_base, commit())) == gates
+        count += 1
+        for path, text in HOOK_COMMENT_SOURCE.items():
+            for context in ("target-base-only", "new-head"):
+                git("reset", "--hard", base)
+                git("clean", "-fdq")
+                write(path, text + "\nimport 'hook-server.test';\n")
+                consumer_base = commit()
+                if context == "target-base-only":
+                    git("reset", "--hard", base)
+                write(HOOK_SERVER_TEST, "export const changed = true;")
+                left = consumer_base if context == "target-base-only" else base
+                right = commit()
+                assert not module["hook_test_references_reviewed"](left, right)
+                assert selected(classify(left, right)) == gates
+                count += 1
+            _, _, comment = module["HOOK_TEST_COMMENTS"][path]
+            for changed in (text + comment + "\n", text.replace(comment, comment + " changed"),
+                            "\n" + text, text + "\n// unrelated blob change\n", None):
+                git("reset", "--hard", base)
+                git("clean", "-fdq")
+                if changed is None:
+                    Path(path).unlink()
+                else:
+                    write(path, changed)
+                changed_base = commit()
+                write(HOOK_SERVER_TEST, "export const changed = true;")
+                right = commit()
+                result = classify(changed_base, right)
+                assert selected(result) == gates and result["reason"].startswith("Hook test reference")
+                count += 1
+        git("reset", "--hard", base)
+        git("clean", "-fdq")
+        for tool in (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"):
+            write(tool, "# hook-server.test reference is the exact self-tool\n")
+        self_base = commit()
+        write(HOOK_SERVER_TEST, "export const changed = true;")
+        assert selected(classify(self_base, commit())) == WRAPPER_GATES
+        count += 1
+        for destination in (None, "docs/moved-hook-test.md", HOOK_SERVER_TEST + ".renamed"):
+            git("reset", "--hard", base)
+            git("clean", "-fdq")
+            if destination:
+                Path(HOOK_SERVER_TEST).rename(destination)
+            else:
+                Path(HOOK_SERVER_TEST).unlink()
+            assert selected(classify(base, commit())) == gates
+            count += 1
+        for rename in (False, True):
+            git("reset", "--hard", base)
+            git("clean", "-fdq")
+            Path(HOOK_SERVER_TEST).rename(HOOK_SERVER_TEST + ".neighbor")
+            absent_base = commit()
+            if rename:
+                Path(HOOK_SERVER_TEST + ".neighbor").rename(HOOK_SERVER_TEST)
+            else:
+                write(HOOK_SERVER_TEST, "export const added = true;")
+            assert selected(classify(absent_base, commit())) == gates
+            count += 1
+        for source in ("packages/daemon/src/relay/hub.ts", "packages/daemon/src/hooks/hook-server.ts"):
+            git("reset", "--hard", base)
+            git("clean", "-fdq")
+            write(source, "export const changed = true;")
+            write(HOOK_SERVER_TEST, "export const changed = true;")
+            assert selected(classify(base, commit())) == gates
+            count += 1
+        # Git grep silently omits symlink targets; inspect actual tracked tree modes too.
+        for kind in ("symlink-file", "symlink-directory", "gitlink"):
+            for context in ("target-base-only", "new-head"):
+                git("reset", "--hard", base)
+                git("clean", "-fdq")
+                consumer = "packages/web/src/hook-alias"
+                Path(consumer).parent.mkdir(parents=True, exist_ok=True)
+                if kind == "gitlink":
+                    git("update-index", "--add", "--cacheinfo", f"160000,{base},{consumer}")
+                    git("commit", "-qm", "owned gitlink reference")
+                    consumer_base = git("rev-parse", "HEAD")
+                else:
+                    target = "../../daemon/tests/hooks/"
+                    if kind == "symlink-file":
+                        target += "hook-server.test.ts"
+                    Path(consumer).symlink_to(target, target_is_directory=kind == "symlink-directory")
+                    consumer_base = commit()
+                if context == "target-base-only":
+                    git("reset", "--hard", base)
+                write(HOOK_SERVER_TEST, "export const changed = true;")
+                if kind == "gitlink" and context == "new-head":
+                    git("add", HOOK_SERVER_TEST)
+                    git("commit", "-qm", "owned producer change")
+                    right = git("rev-parse", "HEAD")
+                else:
+                    right = commit()
+                left = consumer_base if context == "target-base-only" else base
+                assert not module["hook_test_references_reviewed"](left, right)
+                assert selected(classify(left, right)) == gates
+                count += 1
+        # Malformed objects are real Git tree/commit objects, never fabricated ls-tree output.
+        git("reset", "--hard", base)
+        git("clean", "-fdq")
+        package_tree = git("rev-parse", f"{base}:packages")
+        root_bytes = subprocess.check_output(["git", "cat-file", "tree", f"{base}^{{tree}}"])
+        package_bytes = subprocess.check_output(["git", "cat-file", "tree", package_tree])
+        blob = bytes.fromhex(git("rev-parse", f"{base}:{HOOK_SERVER_TEST}"))
+        def literal_tree(raw):
+            return subprocess.check_output(["git", "hash-object", "--literally", "-w", "-t", "tree", "--stdin"],
+                                           input=raw, stderr=subprocess.PIPE).decode().strip()
+        for malformed in (b"100644 no-framing", b"bad-mode alias\0" + blob,
+                          b"100644 \0" + blob, b"100644 alias\0" + blob[:5]):
+            changed_tree = literal_tree(package_bytes + malformed)
+            root_tree = literal_tree(root_bytes.replace(bytes.fromhex(package_tree), bytes.fromhex(changed_tree)))
+            bad_head = git("commit-tree", root_tree, "-p", base, "-m", "owned malformed tree")
+            assert not module["hook_test_references_reviewed"](base, bad_head)
+            assert selected(classify(base, bad_head)) == gates
+            count += 1
+        git("reset", "--hard", base)
+        git("clean", "-fdq")
+        write(HOOK_SERVER_TEST, "export const changed = true;")
+        scan_head = commit()
+        git("config", "grep.threads", "not-a-number")
+        try:
+            result = classify(base, scan_head)
+            assert selected(result) == gates and result["reason"].startswith("Hook test reference")
+            count += 1
+        finally:
+            git("config", "--unset", "grep.threads")
         # This independent CI-shell reader retains normal gates, with its own consumer guard.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
                           "packages/macos", "packages/native", "tests", "scripts",

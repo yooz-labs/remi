@@ -19,6 +19,7 @@ always select their existing full gates.
 | Daemon/shared/Worker inputs | All existing gates | Run |
 | Exact wrapper suspend test/PTY fixture producers | All normal gates | Skip without external references |
 | Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
+| Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -59,6 +60,35 @@ all packages, root tests/scripts and GitHub workflows/actions/scripts, excluding
 only the test itself and the exact classifier/corpus self-tools. Any other
 reference or scan error restores all gates. Source changes and unknown neighbors
 or renamed tests remain conservative; this is separate from the wrapper producers.
+
+Only modifications of `packages/daemon/tests/hooks/hook-server.test.ts` may skip
+relay; this test is outside the R7 workflow's actual test list. Every normal
+test/type/lint/notice/Mac gate remains selected. The producer must exist as a blob
+at both endpoints. Additions, deletions, renames, unknown neighbors and mixed
+runtime inputs retain full gates; this rule never clears relay selected earlier.
+Both-endpoint `hook-server.test` scans cover all packages (including native), root
+tests/scripts and GitHub workflows/actions/scripts, excluding only the producer
+and the exact classifier/corpus self-tools. Whole files are scanned.
+Both complete Git trees in these directories must contain only regular file
+blobs: tracked symlinks and submodules restore all gates because `git grep` can
+omit their literal targets. This tree-mode check has no path exclusions, and
+unavailable or malformed tree metadata also restores all gates.
+
+Two existing commentary references have reviewed immutable provenance:
+
+| Path under `packages/daemon/tests/hooks/` | Git blob | Exact occurrence |
+| --- | --- | --- |
+| `fixtures/build-hook-corpus.ts` | `7568a1b1da3e696a169b2197d0aaf3c46d8bd75f` | Line 96, commentary on test contamination |
+| `hook-diag-provenance-worker.ts` | `2f070d8de7da9247e8dc153f211dad76732b5d33` | Line 10, comparison with its own HTTP POST |
+
+The corpus builder reads diagnostic JSONL, writes the redacted corpus and exports
+filters used by its own test. The provenance worker imports the source HookServer
+and is spawned by `hook-diag-provenance.test.ts`; neither consumes the exempt
+test. Each endpoint must retain both exact Git blobs and exactly the single
+matching complete comment line in each. Any changed/missing blob, extra, moved or
+modified occurrence, other reference or scan failure restores all gates. This
+allows reviewed comments without a whole-file exclusion or generic comment
+stripping. Literal scans cannot establish the absence of computed references.
 
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
