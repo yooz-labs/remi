@@ -14,11 +14,7 @@ struct RemiMacApp: App {
                 if let store = notifications.store {
                     MacLiveRootView(store: store)
                 } else {
-                    ContentUnavailableView(
-                        "Couldn’t load device identity",
-                        systemImage: "key.slash",
-                        description: Text(notifications.startupError ?? "Open Remi in the foreground to continue.")
-                    )
+                    identityUnavailableView
                 }
             }
             .frame(minWidth: 980, minHeight: 600)
@@ -47,14 +43,23 @@ struct RemiMacApp: App {
                 if let store = notifications.store {
                     MacPreferencesView(publicIdentity: store.publicIdentity)
                 } else {
-                    ContentUnavailableView(
-                        "Device identity unavailable",
-                        systemImage: "key.slash",
-                        description: Text(notifications.startupError ?? "Open Remi in the foreground to continue.")
-                    )
+                    identityUnavailableView
                     .frame(width: 520, height: 360)
                 }
             }
+        }
+    }
+
+    private var identityUnavailableView: some View {
+        ContentUnavailableView {
+            Label("Couldn’t load device identity", systemImage: "key.slash")
+        } description: {
+            Text(notifications.startupError ?? "Unlock this Mac, then try again.")
+        } actions: {
+            Button("Try again", systemImage: "arrow.clockwise") {
+                notifications.retryStartup()
+            }
+            .buttonStyle(.glassProminent)
         }
     }
 

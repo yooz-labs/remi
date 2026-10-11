@@ -184,6 +184,14 @@ public final class NativeRelayNotifications {
         }
     }
 
+    /// Retries foreground identity loading after a protected store or provider
+    /// was temporarily unavailable. Existing identity material is never replaced.
+    public func retryStartup() {
+        guard store == nil else { return }
+        foreground = false
+        activate()
+    }
+
     /// Transient inactive scenes (including the permission dialog) retain the
     /// request. Background entry releases every bounded OS continuation.
     public func background(suspendForegroundConnections: Bool = true) {
