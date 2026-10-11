@@ -260,6 +260,98 @@ separate standalone profile, `storage-approval-matrix.py`, adds that proof
 without adding a production upload caller, selecting a helper, or changing the
 existing 43 storage groups.
 
+## Immutable journal and restart cleanup proof (#1440)
+
+`recovery.ts` is a standalone prerequisite for #1170. It uses unchanged
+reservation IDs, captured `DirectoryRoot` descriptors and three immutable 0600
+markers: `<id>.intent`, `<id>.owned` and `<id>.cleaned`. An exact 32-character
+lowercase hexadecimal ID generates `<id>.artifact`; no client filename or path
+is admitted. Canonical marker reads are capped at 4 KiB. Roots require current
+UID and exact 0700 mode; markers and artifacts require current UID, regular type,
+one link and exact 0600 mode, including special permission bits.
+
+Intent is fsynced before exclusive artifact creation, and artifact identity is
+fsynced before returning a writable descriptor. Nonblocking OS flock holds the
+exact intent descriptor through effects. Every native journal open adds
+`O_CLOEXEC`; the proof checks actual descriptor flags, competing processes and
+lock release after an observed SIGKILL. Roots, marker names and artifact identity
+are rechecked at effects. These are sampled checks, not atomic protection against
+every same-user race or a power-loss durability claim.
+
+Recovery only reopens existing state. Missing owned witnesses, malformed or
+incomplete immutable markers, unavailable roots, unexpected link/type/mode or
+replaced names refuse cleanup. No incomplete marker is rewritten or retired.
+Cleanup unlinks only the witnessed artifact, fsyncs its directory, then persists
+and fsyncs a cleaned outcome. Exact ENOENT after durable ownership can finish
+cleanup. An existing cleaned marker validates intent and owned markers and
+requires exact ENOENT at the artifact name; any conflicting entry refuses.
+A reopened intent never recreates an artifact. This records a cleanup
+acknowledgment, not transfer or harness authority. Reservations remain charged
+through confirmed journal cleanup; cross-ledger refund reconciliation is deferred
+rather than inferred from pathname absence.
+
+`recovery-matrix.py` requires the original 43 groups plus 18 recovery groups
+(61 total). The independent `reserved-copy-matrix.py` default stays at 43. Five
+real child processes stop at a checkpoint handshake and are SIGKILLed before
+creation, after creation before witness, after witness, after unlink before
+cleaned, and after cleaned before acknowledgment. Each owned child has bounded
+4 KiB stdout and 8 KiB stderr, a deadline, an awaited exit and a post-exit ESRCH
+check; failures retain their PID/exit/signal/byte-count log. Real filesystem
+controls cover each marker's unknown fields, duplicate known keys, noncanonical
+JSON, empty/truncated bytes, size/link/FIFO/mode/missing state, held name
+replacement, both root replacements, artifact replacement, conflicting terminal
+state and actual native unlink failure. Project and sibling marker bytes remain
+unchanged, and every reservation remains charged. On the unprivileged Mac,
+create fault evidence is EACCES; UID0 in the unchanged Linux fixture uses the
+owned read-only `/proof` mount's EROFS. Journal root-mode refusal is checked
+separately. No synthetic failure substitutes for either native syscall.
+
+Use a fresh S1 output and the existing 256 MiB/64-PID resource fixture:
+
+```sh
+TMPDIR=/Volumes/S1/yooz/remi/tmp/srp PYTHONDONTWRITEBYTECODE=1 \
+python3 scripts/tunnel-storage-proof/recovery-matrix.py \
+  --bun-1311 /Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64 \
+  --bun-current /opt/homebrew/Cellar/bun/1.4.2/bin/bun \
+  --out /Volumes/S1/yooz/remi/artifacts/recovery-unique \
+  --linux-arm64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --linux-x64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp/srp \
+  --linux-memory-mib 256 --linux-pids-limit 64
+```
+
+The short Mac canary adds `--canary-only`. Full acceptance requires all six
+supported compiled target/Bun cells, matching source/artifact hashes and zero
+cleanup errors. This profile does not rerun the 47-group held-answer measurement.
+
+`recovery-mutations.py` reuses the strict compiled assertion receipt gate and
+synthetic-success/setup rejection controls. Run its five semantic selectors
+`ownership`, `current-root`, `schema`, `cleanup-outcome`, and `canonical-bytes`
+on both `1311` and `current`:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/tunnel-storage-proof/recovery-mutations.py \
+  --mutation ownership --bun-label 1311 \
+  --source-root /Volumes/S1/yooz/remi/artifacts/recovery-unique/source \
+  --bun-1311 /Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64 \
+  --bun-current /opt/homebrew/Cellar/bun/1.4.2/bin/bun \
+  --out /Volumes/S1/yooz/remi/artifacts/recovery-ownership-1311-unique \
+  --linux-arm64-image oven/bun:1.3.11 --linux-x64-image oven/bun:1.3.11 \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp/srp
+```
+
+The schema mutation removes the unknown-field keyset guard. The canonical-bytes
+mutation removes the shared predicate used by both parse and retained-descriptor
+validation; it fails the duplicate-known-key refusal. Both original guards were
+characterized against actual duplicate/noncanonical/truncated/empty marker bytes
+on both compiled Mac Bun cells before this behavior-preserving extraction.
+These controls test five semantics, not every individual check. Each must fail
+its exact named assertion in a compiled Mac stack with a
+completed nonzero runtime exit. Setup failure or assertion-looking successful
+output is rejected as evidence. Production helper adoption, portable decoder
+CPU/memory limits, native decoder startup #1417 and staging contract freeze
+remain separate prerequisites.
+
 ## Held-answer storage load proof
 
 `storage-approval-entry.ts` combines the existing 36 reservation and seven
