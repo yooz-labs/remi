@@ -61,7 +61,106 @@ uv run python scripts/tunnel-decoder-proof/matrix.py \
 Missing builds/executions or changed source/dependencies fail the matrix.
 `--build-only` remains incomplete. Notices for the candidate packages are in
 `THIRD-PARTY-LICENSES.txt`; compiled proofs remain private local artifacts.
-Portable hard CPU/memory budgets, actual held-approval responsiveness,
-production-helper selection and upload authority remain later gates. The wall
-watchdog does not enforce a resident-memory ceiling or a kernel CPU budget.
-The proof never constructs a permission gate and does not claim that coverage.
+Portable hard CPU/memory budgets, production-helper selection and upload
+authority remain later gates. The wall watchdog does not enforce a resident-memory
+ceiling or a kernel CPU budget.
+
+## Held-approval continuation
+
+`approval-matrix.py` extends the original 15 groups with three source-backed
+checks: PNG and JPEG decode load while a phone-shaped No answer reaches the
+original held `PermissionRequest` HTTP response, plus a synchronous 1200 ms
+parent-event-loop block that must make the independently measured deny exceed
+1000 ms. Each ordinary answer must complete within 1000 ms on every supported
+execution. The independent client child starts its original loopback HTTP hold
+before readiness; it starts timing only when it sends No and stops after it
+parses the original deny JSON.
+
+The fixture constructs the real `HookServer`, `AutoApproveGate`,
+`SessionRegistry`, `/bin/cat` `PTYSession`, message API, session stores and
+`createInputHandlers`. An owned loopback adapter validates the expected session,
+question and `No.value`, then calls the real `relayAnswer`. The hook body uses
+the inert command `echo REMI_TUNNEL_APPROVAL_PROOF`; no Claude or real remote
+request runs. Every case checks the delivered outcome, deny response, cleared
+hold and card, empty `/bin/cat` output, same-value duplicate reporting without
+a second resolution effect, and a conflicting answer reported as stale. This
+matches `ResolvedAnswerCache`: a successful duplicate is acknowledged as
+delivered; a conflicting or unknown answer remains stale. It then cancels
+and reaps the repeated decoder child and decodes exact pixels through the same
+controller.
+
+The compiled entry repeats actual full PNG/JPEG decodes inside one owned child.
+Before readiness, the child has decoded twice and the parent verifies exact
+dimensions and pixel hash; the child continues decoding until parent
+cancellation or its five-second deadline. This proves approval responsiveness
+for this candidate fixture only. It does not establish production integration,
+portable CPU or memory enforcement, decoder selection, or transfer authority.
+
+Each approval result records the independent client's send and deny-parse Unix
+timestamps with its monotonic latency. The blocking control also records the
+parent block start, client send, end and monotonic duration. Linux runs record a
+cgroup PID and memory sample while the card, decoder and client are live; macOS
+reports those cgroup values as unavailable. Receipts list the owned PTY, client,
+repeated-decoder and recovery-decoder PIDs and confirm each was reaped.
+
+The `/bin/cat` PTY drain uses an inert marker line with a leading newline and a
+trailing newline. The leading newline releases any earlier canonical input; the
+trailing newline releases the marker line. The proof first records the actual
+terminal-driver echo plus `/bin/cat` echo on that host, then compares output
+after the answer against that observed pattern after both marker copies arrive
+and the stream stays quiet for 75 ms (within a two-second barrier deadline).
+This handles CR/LF and echo details from the real PTY
+instead of assuming a fixed byte pattern. Receipts separate those deliberate
+barrier bytes from zero answer-path bytes. A private control writes the No value
+directly to an isolated inert `/bin/cat` PTY and proves the same output assertion
+rejects it; no handler result or spy is substituted.
+
+The approval matrix snapshots all files, directories and hashes under
+`packages/daemon/src`, `packages/shared/src` and the decoder proof scripts,
+plus root `tsconfig.json` and package metadata. Candidate codec dependency trees
+are captured separately. It compiles from that snapshot and refuses an added,
+deleted or changed entry before a build and after every execution. The optional
+`--invalidation-control` runs four owned-copy controls: add a source-tree file,
+add a nested entry, add a candidate-dependency file, and replace an explicitly
+captured metadata file with a symlink to identical bytes. Each change must be
+rejected before the guarded command launches, and the owned snapshot is restored
+before compilation continues.
+
+The extra client and decoder processes need a 512 MiB Linux Docker fixture and
+a 64 PID cap for this proof. Use `--linux-memory-mib 512 --linux-pids-limit
+64`; the shared runner defaults remain 256 MiB and 32 PIDs for the existing
+decoder and storage matrices. Both overrides are approval-fixture capacity, not
+portable resource acceptance.
+
+The shared runner can take `--runtime-temp-base` when its artifact path would
+make a Unix-domain socket path too long on macOS. It creates one short owned
+scratch directory there, records it in the receipt and removes it after the
+child processes exit. The option has no default and does not change the storage
+or decoder runner defaults.
+
+Run the local Apple Silicon canary first, then the full six-build/six-execution
+matrix (both Bun versions across Apple Silicon Mac, Linux ARM64 and Linux x64):
+
+```sh
+uv run python scripts/tunnel-decoder-proof/approval-matrix.py \
+  --canary-only --invalidation-control \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/current-bun \
+  --node-modules /path/to/standalone/node_modules \
+  --out /Volumes/S1/yooz/remi/artifacts/2026-10-11-sprint/decoder-approval-canary \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp \
+  --linux-arm64-image oven/bun:1.3.11 \
+  --linux-x64-image oven/bun:1.3.11 \
+  --linux-memory-mib 512 --linux-pids-limit 64
+
+uv run python scripts/tunnel-decoder-proof/approval-matrix.py \
+  --invalidation-control \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/current-bun \
+  --node-modules /path/to/standalone/node_modules \
+  --out /Volumes/S1/yooz/remi/artifacts/2026-10-11-sprint/decoder-approval-full \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp \
+  --linux-arm64-image oven/bun:1.3.11 \
+  --linux-x64-image oven/bun:1.3.11 \
+  --linux-memory-mib 512 --linux-pids-limit 64
+```
