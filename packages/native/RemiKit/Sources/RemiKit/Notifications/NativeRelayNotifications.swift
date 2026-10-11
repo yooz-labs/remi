@@ -155,8 +155,7 @@ public final class NativeRelayNotifications {
                 }
                 let identity = try currentIdentity ?? identityStore.loadOrCreate()
                 let saved = MachineConfigurationStore.shared.load()
-                let current = MachineStore(endpoints: saved.isEmpty
-                    ? [MachineEndpoint(host: "127.0.0.1", port: 18765)] : saved,
+                let current = MachineStore(endpoints: saved,
                     identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
                     clientId: clientID(), pushStore: pushStore)

@@ -221,6 +221,13 @@ struct MachineStoreTests {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
+    @Test func missingMachineConfigurationStaysEmptyForFirstRun() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+
+        #expect(persistence.load().isEmpty)
+    }
+
     @Test func sessionPresentationKeepsStableMachineIdentity() {
         let session = RemiSessionSummary(
             id: "session-1",
