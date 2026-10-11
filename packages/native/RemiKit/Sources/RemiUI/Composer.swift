@@ -32,13 +32,7 @@ public struct RemiComposer: View {
                         .modifier(ComposerInputSurface(reduceTransparency: reduceTransparency))
                         .disabled(promptWaiting)
 
-                    if promptWaiting, onInterrupt == nil {
-                        Image(systemName: "questionmark.bubble")
-                            .font(.headline)
-                            .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                    } else {
+                    if !promptWaiting || onInterrupt != nil {
                         Button(action: promptWaiting ? interrupt : onSend) {
                             Image(systemName: promptWaiting ? "escape" : "arrow.up")
                                 .font(.headline)
