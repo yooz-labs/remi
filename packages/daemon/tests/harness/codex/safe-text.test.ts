@@ -164,6 +164,12 @@ describe('pushProse', () => {
     expect(pushProse(`${family}!`)).toBe(`${family}!`);
   });
 
+  test('#1211 bytes are removed while the ZWJ family emoji survives the original helper', () => {
+    const hostile = 'lead\x1b]52;c;QUJD\x07middle\x1b[2K\r\u202eR\u2066L\u200bZ\u200fTtail';
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    expect(pushProse(`${hostile} ${family}`)).toBe(`lead]52;c;QUJDmiddle[2KRLZTtail ${family}`);
+  });
+
   test('text with nothing unsafe is unchanged: tabs, newlines, accents, CJK, variation selectors', () => {
     const text = 'Fertig:\t日本語 café\nline 2 ❤️ \u{1f600}';
     expect(pushProse(text)).toBe(text);
