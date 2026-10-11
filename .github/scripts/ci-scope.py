@@ -85,7 +85,10 @@ def classify(base, head):
                 consumers = subprocess.run(
                     ["git", "grep", "-F", "-q", "-e", "wrapper-suspend", base, head, "--",
                      "packages", "tests", "scripts", ".github/workflows", ".github/actions",
-                     *(f":(exclude){producer}" for producer in WRAPPER_SUSPEND_INPUTS)],
+                     ".github/scripts",
+                     *(f":(exclude){producer}" for producer in WRAPPER_SUSPEND_INPUTS),
+                     ":(exclude).github/scripts/ci-scope.py",
+                     ":(exclude).github/scripts/check-ci-scope.py"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 )
                 if consumers.returncode != 1:

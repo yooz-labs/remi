@@ -45,8 +45,8 @@ The exact `packages/daemon/tests/cli/wrapper-suspend.test.ts` and
 `packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py` producers retain every
 normal package/type/lint/test/notice/Mac gate while skipping only relay. A fixed
 `wrapper-suspend` scan at both base and head covers all packages (including native),
-root tests/scripts and GitHub workflows/actions, excluding only these two producer
-paths. Their expected test-to-fixture reference does not select relay; any other
+root tests/scripts and GitHub workflows/actions/scripts, excluding these two producer
+paths and the exact classifier/corpus self-tools. Their expected test-to-fixture reference does not select relay; any other
 reference or scan error restores all gates. Source, package, unknown neighbor or
 renamed producer changes remain conservative. This is not a generic test exemption.
 Literal scans may match comments/data and cannot discover computed references.

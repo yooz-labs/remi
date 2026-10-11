@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         count += 1
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
                           "packages/macos", "packages/native", "tests", "scripts",
-                          ".github/workflows", ".github/actions"):
+                          ".github/workflows", ".github/actions", ".github/scripts"):
             git("reset", "--hard", base); git("clean", "-fdq")
             if directory == ".github/workflows":
                 write(f"{directory}/consumer.yml", "name: Owned consumer\non: [push]\njobs:\n  fixture:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun " + WRAPPER_INPUTS[0] + "\n")
@@ -161,20 +161,33 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(consumer_base, commit())
             assert selected(result) == gates and result["reason"].startswith("Wrapper test reference")
             count += 1
-        for context in ("new-head", "target-base-only", "removed-head"):
-            git("reset", "--hard", base); git("clean", "-fdq")
-            write("scripts/consumer.ts", "import 'wrapper-suspend';")
-            consumer_base = commit()
-            if context != "removed-head":
-                git("reset", "--hard", base)
-            if context == "new-head":
-                write("scripts/consumer.ts", "import 'wrapper-suspend';")
-            elif context == "removed-head":
-                Path("scripts/consumer.ts").unlink()
-            write(WRAPPER_INPUTS[1], "print('changed fixture')")
-            result = classify(base if context == "new-head" else consumer_base, commit())
-            assert selected(result) == gates and result["reason"].startswith("Wrapper test reference")
-            count += 1
+        for consumer in ("scripts/consumer.ts", ".github/scripts/consumer.py"):
+            for context in ("new-head", "target-base-only", "removed-head"):
+                git("reset", "--hard", base); git("clean", "-fdq")
+                write(consumer, "# wrapper-suspend")
+                consumer_base = commit()
+                if context != "removed-head":
+                    git("reset", "--hard", base)
+                if context == "new-head":
+                    write(consumer, "# wrapper-suspend")
+                elif context == "removed-head":
+                    Path(consumer).unlink()
+                write(WRAPPER_INPUTS[1], "print('changed fixture')")
+                result = classify(base if context == "new-head" else consumer_base, commit())
+                assert selected(result) == gates, (consumer, context, result)
+                # A changed unknown helper may select all gates before the producer;
+                # an unchanged target-base-only helper must be found by the scan.
+                if context == "target-base-only":
+                    assert result["reason"].startswith("Wrapper test reference"), result
+                count += 1
+        # The exact two routing self-tools are excluded; neighboring helpers are not.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for tool in ("ci-scope.py", "check-ci-scope.py"):
+            write(".github/scripts/" + tool, "# wrapper-suspend")
+        self_base = commit()
+        write(WRAPPER_INPUTS[1], "print('changed fixture')")
+        assert selected(classify(self_base, commit())) == WRAPPER_GATES
+        count += 1
         for producer in WRAPPER_INPUTS:
             for destination, expected in ((None, WRAPPER_GATES), (producer + ".renamed", gates)):
                 git("reset", "--hard", base); git("clean", "-fdq")
