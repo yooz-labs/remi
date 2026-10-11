@@ -50,6 +50,28 @@ import Testing
         #expect(RemiConversationSelection.title(for: duplicateViews[2], among: duplicateViews) == "Reviewer")
     }
 
+    @Test func subagentSelectionShowsItsQuestionsAndAnExplicitDeepLinkFocus() {
+        let main = question(id: "main", agentID: nil)
+        let reviewer = question(id: "review", agentID: "reviewer")
+        let researcher = question(id: "research", agentID: "researcher")
+
+        #expect(RemiConversationSelection.visibleQuestions(
+            [main, reviewer, researcher],
+            selectedViewID: "",
+            focusedQuestionID: nil
+        ).map(\.questionID) == ["main", "review", "research"])
+        #expect(RemiConversationSelection.visibleQuestions(
+            [main, reviewer, researcher],
+            selectedViewID: "reviewer",
+            focusedQuestionID: nil
+        ).map(\.questionID) == ["review"])
+        #expect(RemiConversationSelection.visibleQuestions(
+            [main, reviewer, researcher],
+            selectedViewID: "reviewer",
+            focusedQuestionID: "research"
+        ).map(\.questionID) == ["review", "research"])
+    }
+
     @Test func interactionStatePrioritizesFinishedThenReadOnlySubagentThenPrompt() {
         #expect(RemiSessionInteractionState.resolve(
             sessionIsLive: false,
@@ -71,5 +93,17 @@ import Testing
             selectedViewID: "",
             hasWaitingQuestions: false
         ) == .liveMain(promptWaiting: false))
+    }
+
+    private func question(id: String, agentID: String?) -> RemiQuestionCardModel {
+        RemiQuestionCardModel(
+            id: id,
+            kind: .permission,
+            text: "Question",
+            machineName: "Studio",
+            sessionID: "session",
+            sessionName: "Session",
+            agentID: agentID
+        )
     }
 }

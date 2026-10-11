@@ -245,6 +245,7 @@ struct PhoneLiveRootView: View {
             sessionID: message.sessionId,
             sessionName: machine.sessions.first(where: { $0.sessionId == message.sessionId })?.name
                 ?? message.sessionId,
+            agentID: question.agentId,
             options: question.options.map { option in
                 RemiQuestionOption(
                     id: option.value,

@@ -230,9 +230,11 @@ struct MacSessionDetail: View {
     }
 
     private var visibleQuestions: [RemiQuestionCardModel] {
-        guard !selectedViewID.isEmpty else { return questions }
-        guard let focusedQuestionID else { return [] }
-        return questions.filter { $0.questionID == focusedQuestionID }
+        RemiConversationSelection.visibleQuestions(
+            questions,
+            selectedViewID: selectedViewID,
+            focusedQuestionID: focusedQuestionID
+        )
     }
 
     private var focusedQuestions: [RemiQuestionCardModel] {

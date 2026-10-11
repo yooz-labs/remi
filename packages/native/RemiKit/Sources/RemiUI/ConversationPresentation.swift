@@ -2,6 +2,17 @@ import RemiKit
 import SwiftUI
 
 public enum RemiConversationSelection {
+    public static func visibleQuestions(
+        _ questions: [RemiQuestionCardModel],
+        selectedViewID: String,
+        focusedQuestionID: String?
+    ) -> [RemiQuestionCardModel] {
+        guard !selectedViewID.isEmpty else { return questions }
+        return questions.filter { question in
+            question.agentID == selectedViewID || question.questionID == focusedQuestionID
+        }
+    }
+
     public static func title(for view: SessionViewMeta, among views: [SessionViewMeta]) -> String {
         let trimmedType = view.agentType.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = trimmedType.isEmpty ? "Subagent" : trimmedType

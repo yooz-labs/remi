@@ -504,6 +504,7 @@ struct MacLiveRootView: View {
                 sessionID: message.sessionId,
                 sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
                     ?? message.sessionId,
+                agentID: question.agentId,
                 options: question.options.map { option in
                     RemiQuestionOption(
                         id: option.value,
