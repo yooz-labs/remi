@@ -4,8 +4,10 @@ This reproduces the existing T0 experiment from `docs/FILE-TUNNEL.md`.
 The probe uses newly created temporary content files and closes its descriptors.
 Its nonregular-file control also opens `/dev/null` for metadata inspection;
 it reads no device bytes and creates no device.
-The C source is embedded in the compiled executable, then materialized into
-a private temporary directory for Bun's experimental C compiler.
+The original storage primitive probe embeds its C source in the executable,
+then materializes it into a private temporary directory for Bun's experimental
+C compiler. The standalone held-answer load proof described below prepares its
+own library before the measured worker starts.
 The native `openat` address is resolved explicitly; its variadic creation
 call is made through a fixed C wrapper.
 
@@ -253,7 +255,181 @@ All six compiled pairs must report exactly 43 groups, unchanged source and
 successful cleanup; 27-group and 36-group entries also retain compatibility runs.
 Trusted metadata, same-user path replacement, metadata overhead, descriptor
 journal/recovery, grant/transfer authority and production adoption limits remain.
-No storage-load held-answer latency claim is made by this composition.
+The reserved-copy composition does not itself measure held-answer latency. A
+separate standalone profile, `storage-approval-matrix.py`, adds that proof
+without adding a production upload caller, selecting a helper, or changing the
+existing 43 storage groups.
+
+## Held-answer storage load proof
+
+`storage-approval-entry.ts` combines the existing 36 reservation and seven
+reserved-copy groups with a real held-hook load scenario. One owned child
+repeatedly reserves and descriptor-copies a generated 10 MiB regular file with
+the current `reserveAndCopy` composition. It compares private bytes against
+the admitted source descriptor in fixed-size chunks, checks the digest, mode,
+actual allocated blocks and ledger charge, then requires confirmed deletion
+and an empty ledger before counting progress. No whole-file buffer, timer-only
+load, transfer authority or recovery behavior is added.
+
+An independent compiled client measures from its actual No send until it parses
+the original `PermissionRequest` HTTP deny response. The normal scenario must
+stay below 1,000 ms while the storage child makes real progress before and after
+the denial. A synchronous parent CPU block overlaps a second client's send and
+must make its measured answer exceed 1,000 ms; this calibrates the measurement
+and does not claim that a production upload path blocks the daemon.
+
+Before creating its held hook, the parent prepares the unchanged `openat.c`
+snapshot with the separate proof-only `storage-approval-native.c` wrappers.
+On macOS, `xcrun` resolves the actual compiler and SDK; the receipt records the
+launcher, compiler and SDK identities, both source hashes, the library hash,
+the exact compile command and setup duration. Linux uses the official
+`golang` 1.26.8 Trixie compiler image pinned by index
+`sha256:0f063af2d465d8dcae54cce04278ada488b96f77b42449c8d071e47d016cc65a`,
+with ARM64 manifest `sha256:4364967143356b3498a4bcec1f1a2a2129495333f85f8f05b4e4dbb9ef70d287`
+and AMD64 manifest `sha256:af00f232205a01baf323bddc5bb4a4ea2e4cbf49e8ccc988beb2558d0f9c882a`.
+The parent verifies the local root index ID and its selected platform child ID
+before creating a compiler container. The compiler container runs with no
+network, no image pulls, a read-only root, one CPU, 512 MiB, 64 PIDs and 32 MiB
+tmpfs. It mounts only the frozen C inputs read-only and one owned S1 output
+directory. Its receipt keeps the root index ID, selected platform manifest
+digest and the actual Docker container inspect `.Image` value as distinct
+fields. The `.Image` value must match the root index ID; architecture comes
+from the separately verified platform manifest, compiler target, `uname` and
+ELF machine. The receipt also records compiler path, version, target and binary
+hash, libc version, source hashes, exact command, dependencies, GLIBC symbol
+requirements and library hash. The S1 packager embeds those bytes and metadata
+in the derived proof source; the runtime never accepts a library path or
+invokes a compiler.
+Each compiler run gets a unique container name, a host-side CID file outside
+the writable mount, and a private lifecycle receipt. Its `finally` cleanup is
+bounded to 20 seconds and removes a container only after its ID, name, image
+and private run labels match that receipt; both ID and name absence are then
+checked. An unverified cleanup remains a failed preparation with its receipt
+and logs retained. The lifecycle has been exercised for both Linux compiler
+architectures; final six-cell matrix and mutation acceptance remain separate
+gates.
+The parent derives the asset from its own platform and architecture, verifies
+the manifest/source/library hashes, copies it into its owned 0700 fixture
+directory and checks identity before the child loads it through one FFI table.
+The wrappers forward the same descriptor-relative `openat`, `linkat` and
+`unlinkat` calls with their original flags and return values. Helper
+preparation stays outside the measured worker lifetime, which remains bounded
+from child spawn to reap at 5,000 ms. This is proof packaging only; no production
+upload or helper is adopted.
+
+For this profile only, the Linux runner mounts its existing 32 MiB `/tmp` fixture
+as executable so the worker can `dlopen` the hash-verified helper from its owned
+private temporary directory. The matrix receipt records the exact tmpfs option.
+Other profiles keep the shared runner's existing `/tmp:rw,nosuid,size=32m`
+argument. CPU, memory, PID, tmpfs size, network, read-only root and pull limits
+are unchanged; executable tmpfs is a proof-fixture requirement, not a production
+helper or upload capability.
+
+The held-answer proof reuses the production `HookServer`, `AutoApproveGate`,
+`createInputHandlers` and `PTYSession` through the same local seam as #1411. A
+real `/bin/cat` baseline and post-answer barriers require two marker copies and
+75 ms of quiet, then compare the bytes through actual child reap. An intentional
+wrong PTY write must invalidate the zero-byte assertion. The worker output and
+lifetime are bounded, the worker is one-at-a-time with no queue, and cleanup
+removes only the owned fixture root after all owned children are reaped.
+
+The matrix adds four named groups to the unchanged 43 storage groups. Its
+private-source controls must fail the actual-copy, actual-denial and zero-PTY
+witnesses. First run the Mac canary to freeze the corrected source, then prepare
+the Linux support assets from that S1 source snapshot. The packager writes all
+generated source, libraries, logs and receipts under S1; it never pulls images.
+
+```sh
+uv run python scripts/tunnel-storage-proof/storage-approval-matrix.py \
+  --canary-only \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/bun-1.4.2 \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp \
+  --out /Volumes/S1/yooz/remi/artifacts/storage-approval-mac-canary
+
+uv run python scripts/tunnel-storage-proof/storage-approval-prepare-linux.py \
+  --source-root /Volumes/S1/yooz/remi/artifacts/storage-approval-mac-canary/source \
+  --out /Volumes/S1/yooz/remi/artifacts/storage-approval-linux-helper
+```
+
+Then pass the packager's `source/` output to the full matrix. It requires this
+owned S1 source root; the final Bun runtime containers keep the pinned
+no-network images and existing limits. For all four Linux executions, the
+approval wrapper first resolves each caller-selected image locally and checks
+the original Bun 1.3.11 index and per-platform IDs below. It writes a bounded
+inspect-only receipt beside the requested output as
+`<out>-linux-image-profile.json`. If the first successful platform inspection
+returns the already verified parent index ID, the wrapper makes one identical
+metadata read and records both responses. It still requires the exact pinned
+platform child ID and OS/architecture; any other ID or a second mismatch is
+rejected. This is bounded to two reads for that platform inside the same
+preflight deadline. The wrapper then passes the immutable accepted index ID to
+the unchanged matrix runner. The container image supplies the Linux fixture
+environment; each compiled artifact carries and checks the Bun runtime used
+to build it.
+
+```sh
+uv run python scripts/tunnel-storage-proof/storage-approval-matrix.py \
+  --source-root /Volumes/S1/yooz/remi/artifacts/storage-approval-linux-helper/source \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/bun-1.4.2 \
+  --out /Volumes/S1/yooz/remi/artifacts/storage-approval-unique \
+  --linux-arm64-image oven/bun:1.3.11 \
+  --linux-x64-image oven/bun:1.3.11 \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp \
+  --linux-memory-mib 512 \
+  --linux-pids-limit 64
+```
+
+The six required compiled executions are Apple Silicon Mac, Linux ARM64 and
+Linux x64 on Bun 1.3.11 and 1.4.2. Both Linux architectures use the original
+locally pinned Bun 1.3.11 image index
+`sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7`,
+with ARM64 platform image ID
+`sha256:06bd53b80989da758c8d2995ba711733090caf688bab09e7d4b21c6c8df728b7`
+and AMD64 platform image ID
+`sha256:38919894db4e117a37f74e3dca503e84f24d97f19cabc5f499a289c2a5d0db7c`.
+The wrapper rejects a selected local image unless both its index and requested
+platform match those pins, then passes the immutable index ID to the matrix.
+The Bun 1.4.2 AMD64 child is not needed for this profile; the 1.4.2 compiled
+artifact supplies its own Bun runtime. Linux is one CPU, 512 MiB, 64 PIDs and
+32 MiB tmpfs in the fixture runner; those values are not portable production
+limits. The compiled receipts bind the source snapshot and executable hashes.
+The matrix uses `--pull=never` and stops if either pinned local platform is
+absent.
+No held-answer latency claim is accepted until the named groups, private-source
+controls, cleanup and all six matching runtime executions pass on one immutable
+source snapshot.
+
+Run the private-source controls against the `source/` snapshot from a passing
+matrix build. Each command makes a separate private mutated copy and exits
+successfully only after a completed compiled runtime exits nonzero with the
+exact named `AssertionError` and a compiled-proof stack frame. A successful
+control that prints the same assertion-looking witness text, and a setup-failure
+control with a nonzero exit and the same text, must both be rejected by receipt
+acceptance:
+
+```sh
+uv run python scripts/tunnel-storage-proof/storage-approval-mutations.py \
+  --mutation actual-copy \
+  --bun-label 1311 \
+  --source-root /Volumes/S1/yooz/remi/artifacts/storage-approval-unique/source \
+  --bun-1311 /path/to/bun-1.3.11 \
+  --bun-current /path/to/bun-1.4.2 \
+  --out /Volumes/S1/yooz/remi/artifacts/storage-approval-copy-mutation \
+  --linux-arm64-image oven/bun:1.3.11 \
+  --linux-x64-image oven/bun:1.3.11 \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp
+```
+
+Repeat with `--mutation actual-denial` and `--mutation zero-pty`, each with a
+fresh output path. For every mutation, run once with `--bun-label 1311` and once
+with `--bun-label current`, using a fresh output path each time. The mutation
+runner selects only that label's compiled Mac cell and records its requested and
+resolved executable, binary hash, observed Bun version, build command and
+runtime version from the failure log. Normal matrix runs still execute both Bun
+versions. These private negative controls do not edit the worktree source or
+replace the restored-source six-execution matrix.
 
 Independent review added an actual excess-allocation partial refusal control:
 the original published adapter retained 8,192 bytes for a 24,576-byte owned
