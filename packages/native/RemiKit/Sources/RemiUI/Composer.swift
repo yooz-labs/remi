@@ -5,9 +5,9 @@ public struct RemiComposer: View {
     @Binding private var text: String
     private let promptWaiting: Bool
     private let onSend: () -> Void
-    private let onInterrupt: () -> Void
+    private let onInterrupt: (() -> Void)?
 
-    public init(text: Binding<String>, promptWaiting: Bool, onSend: @escaping () -> Void, onInterrupt: @escaping () -> Void) {
+    public init(text: Binding<String>, promptWaiting: Bool, onSend: @escaping () -> Void, onInterrupt: (() -> Void)?) {
         _text = text
         self.promptWaiting = promptWaiting
         self.onSend = onSend
@@ -32,20 +32,26 @@ public struct RemiComposer: View {
                         .modifier(ComposerInputSurface(reduceTransparency: reduceTransparency))
                         .disabled(promptWaiting)
 
-                    Button(action: promptWaiting ? onInterrupt : onSend) {
-                        Image(systemName: promptWaiting ? "escape" : "arrow.up")
-                            .font(.headline)
-                            .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                    if !promptWaiting || onInterrupt != nil {
+                        Button(action: promptWaiting ? interrupt : onSend) {
+                            Image(systemName: promptWaiting ? "escape" : "arrow.up")
+                                .font(.headline)
+                                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .buttonBorderShape(.circle)
+                        .tint(promptWaiting ? .secondary : RemiTheme.Color.attention)
+                        .foregroundStyle(promptWaiting ? Color.primary : RemiTheme.Color.attentionInk)
+                        .disabled(!promptWaiting && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
                     }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(promptWaiting ? .secondary : RemiTheme.Color.attention)
-                    .foregroundStyle(promptWaiting ? Color.primary : RemiTheme.Color.attentionInk)
-                    .disabled(!promptWaiting && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
                 }
             }
         }
+    }
+
+    private func interrupt() {
+        onInterrupt?()
     }
 }
 

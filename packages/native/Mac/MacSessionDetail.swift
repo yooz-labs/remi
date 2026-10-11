@@ -140,10 +140,10 @@ struct MacSessionDetail: View {
                 }
             }
             .remiSessionInteractionBar(
-                draft: $draft,
-                state: interactionState,
-                onSend: onSend,
-                onInterrupt: {}
+            draft: $draft,
+            state: interactionState,
+            onSend: onSend,
+            onInterrupt: nil
             )
         }
         .onChange(of: selectedViewID) { _, newValue in
@@ -156,10 +156,12 @@ struct MacSessionDetail: View {
             selectedViewID = ""
             resetReview()
         }
-        .onChange(of: views.map(\.agentId)) { _, agentIDs in
-            if !selectedViewID.isEmpty, !agentIDs.contains(selectedViewID) {
-                selectedViewID = ""
-            }
+        .onChange(of: views.map(\.agentId)) { _, _ in
+            let resolved = RemiConversationSelection.resolvedViewID(
+                selectedViewID: selectedViewID,
+                views: views
+            )
+            if resolved != selectedViewID { selectedViewID = resolved }
         }
         .confirmationDialog(
             "Exit \(session.name)?",
@@ -200,9 +202,11 @@ struct MacSessionDetail: View {
     }
 
     private var interactionState: RemiSessionInteractionState {
-        if !session.isLive { return .finished }
-        if !selectedViewID.isEmpty { return .liveSubagent }
-        return .liveMain(promptWaiting: !questions.isEmpty)
+        .resolve(
+            sessionIsLive: session.isLive,
+            selectedViewID: selectedViewID,
+            hasWaitingQuestions: !questions.isEmpty
+        )
     }
 
     private var searchQueryBinding: Binding<String> {
@@ -274,7 +278,6 @@ struct MacSessionDetail: View {
 
 private struct MacConversationPicker: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Namespace private var glassNamespace
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
@@ -288,33 +291,27 @@ private struct MacConversationPicker: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: RemiTheme.Spacing.xs) {
-                        MacConversationButton(
-                            id: "main",
-                            title: "Main",
-                            systemImage: "bubble.left.fill",
-                            active: true,
-                            selected: selectedViewID.isEmpty,
-                            glassNamespace: glassNamespace
-                        ) { selectedViewID = "" }
+            ScrollView(.horizontal) {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    RemiConversationChip(
+                        title: "Main",
+                        systemImage: "bubble.left.fill",
+                        active: true,
+                        selected: selectedViewID.isEmpty
+                    ) { selectedViewID = "" }
 
-                        ForEach(views) { view in
-                            MacConversationButton(
-                                id: view.agentId,
-                                title: view.agentType,
-                                systemImage: "person.2.fill",
-                                active: view.active,
-                                selected: selectedViewID == view.agentId,
-                                glassNamespace: glassNamespace
-                            ) { selectedViewID = view.agentId }
-                        }
+                    ForEach(views) { view in
+                        RemiConversationChip(
+                            title: view.agentType,
+                            systemImage: "person.2.fill",
+                            active: view.active,
+                            selected: selectedViewID == view.agentId
+                        ) { selectedViewID = view.agentId }
                     }
-                    .padding(.vertical, 2)
                 }
-                .scrollIndicators(.hidden)
+                .padding(.vertical, 2)
             }
+            .scrollIndicators(.hidden)
 
             GlassEffectContainer(spacing: RemiTheme.Spacing.xxs) {
                 HStack(spacing: RemiTheme.Spacing.xxs) {
@@ -355,48 +352,11 @@ private struct MacConversationPicker: View {
     }
 
     private func selectConversation(offsetBy offset: Int) {
-        let conversationIDs = [""] + views.map(\.agentId)
-        let currentIndex = conversationIDs.firstIndex(of: selectedViewID) ?? 0
-        let nextIndex = (currentIndex + offset + conversationIDs.count) % conversationIDs.count
-        selectedViewID = conversationIDs[nextIndex]
-    }
-}
-
-private struct MacConversationButton: View {
-    let id: String
-    let title: String
-    let systemImage: String
-    let active: Bool
-    let selected: Bool
-    let glassNamespace: Namespace.ID
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: RemiTheme.Spacing.xs) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(selected ? Color.primary : .secondary)
-                Text(title).lineLimit(1)
-                Circle()
-                    .fill(active ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.35))
-                    .frame(width: 6, height: 6)
-            }
-            .font(.subheadline.weight(.semibold))
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .padding(.horizontal, RemiTheme.Spacing.s)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .glassEffectID(id, in: glassNamespace)
-        .overlay {
-            Capsule()
-                .stroke(selected ? Color.primary.opacity(0.32) : .clear, lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(title), \(active ? "active" : "finished")")
-        .accessibilityHint(active ? "Active conversation" : "Finished conversation")
+        selectedViewID = RemiConversationSelection.shiftedViewID(
+            selectedViewID: selectedViewID,
+            views: views,
+            offset: offset
+        )
     }
 }
 
