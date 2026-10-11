@@ -100,11 +100,11 @@ struct HomeScreen: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
                 if let errorMessage {
-                    ErrorBanner(message: errorMessage, onDismiss: onDismissError)
+                    RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
                 }
 
                 if let noticeMessage {
-                    NoticeBanner(message: noticeMessage, onDismiss: onDismissNotice)
+                    RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
                 }
 
                 if machines.count > 1 {
@@ -289,48 +289,6 @@ private struct PhoneNoSessionsState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.l)
-    }
-}
-
-private struct ErrorBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            Text(message)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Dismiss", systemImage: "xmark", action: onDismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-        }
-        .padding(RemiTheme.Spacing.m)
-        .background(.orange.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
-    }
-}
-
-private struct NoticeBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(.blue)
-                .accessibilityHidden(true)
-            Text(message)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Dismiss", systemImage: "xmark", action: onDismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-        }
-        .padding(RemiTheme.Spacing.m)
-        .background(.blue.opacity(0.1), in: .rect(cornerRadius: RemiTheme.Radius.control))
     }
 }
 

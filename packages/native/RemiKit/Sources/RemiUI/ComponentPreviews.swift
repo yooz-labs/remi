@@ -17,11 +17,11 @@ private struct QuestionCardGallery: View {
         ScrollView {
             LazyVStack(spacing: RemiTheme.Spacing.l) {
                 ForEach(variants) { question in
-                    RemiQuestionCard(model: question)
+                    PreviewQuestionCard(model: question)
                 }
 
                 ForEach(RemiPreviewData.questionStates) { question in
-                    RemiQuestionCard(model: question)
+                    PreviewQuestionCard(model: question)
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -56,9 +56,35 @@ private struct SupportingComponentsGallery: View {
                     ComposerPreview(promptWaiting: false)
                     ComposerPreview(promptWaiting: true)
                 }
+
+                PreviewSection(title: "Feedback") {
+                    RemiFeedbackBanner(
+                        message: "The answer could not be delivered. Try again.",
+                        tone: .error,
+                        onDismiss: {}
+                    )
+                    RemiFeedbackBanner(
+                        message: "Connected to the development machine.",
+                        tone: .information,
+                        onDismiss: {}
+                    )
+                }
             }
             .padding(RemiTheme.Spacing.m)
         }
+    }
+}
+
+private struct PreviewQuestionCard: View {
+    let model: RemiQuestionCardModel
+
+    var body: some View {
+        RemiQuestionCard(
+            model: model,
+            onAnswer: { _ in },
+            onSubmit: { _ in },
+            onCancel: {}
+        )
     }
 }
 
@@ -153,12 +179,12 @@ private struct SessionInteractionGallery: View {
 }
 
 #Preview("Generic decision") {
-    RemiQuestionCard(model: RemiPreviewData.genericQuestion)
+    PreviewQuestionCard(model: RemiPreviewData.genericQuestion)
         .padding(RemiTheme.Spacing.m)
 }
 
 #Preview("Resolved decision") {
-    RemiQuestionCard(model: RemiPreviewData.questionStates[2])
+    PreviewQuestionCard(model: RemiPreviewData.questionStates[2])
         .padding(RemiTheme.Spacing.m)
 }
 #endif

@@ -10,9 +10,9 @@ public struct RemiQuestionCard: View {
 
     public init(
         model: RemiQuestionCardModel,
-        onAnswer: @escaping (String) -> Void = { _ in },
-        onSubmit: @escaping ([RemiQuestionStepSelection]) -> Void = { _ in },
-        onCancel: @escaping () -> Void = {}
+        onAnswer: @escaping (String) -> Void,
+        onSubmit: @escaping ([RemiQuestionStepSelection]) -> Void,
+        onCancel: @escaping () -> Void
     ) {
         self.model = model
         self.onAnswer = onAnswer
@@ -262,7 +262,14 @@ private struct TerminalOnlyMessage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             Label("Answer this in the terminal.", systemImage: "terminal").foregroundStyle(.secondary)
-            Button("Cancel", role: .cancel, action: onCancel).buttonStyle(.glass)
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel")
+                    .font(.subheadline.weight(.medium))
+                    .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
     }
 }
@@ -316,20 +323,31 @@ private struct QuestionSteps: View {
                     }
                 }
             }
-            GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
-                VStack(spacing: RemiTheme.Spacing.xs) {
-                    Button("Submit") {
-                        onSubmit(formSelections)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(!formIsComplete)
-                    Button(role: .cancel, action: onCancel) {
-                        Text("Cancel")
-                            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(.glass)
+            VStack(spacing: RemiTheme.Spacing.xs) {
+                Button {
+                    onSubmit(formSelections)
+                } label: {
+                    Text("Submit")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                        .contentShape(.rect)
                 }
+                .buttonStyle(.plain)
+                .background(
+                    RemiTheme.Color.attention.opacity(formIsComplete ? 0.16 : 0.08),
+                    in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                )
+                .foregroundStyle(formIsComplete ? RemiTheme.Color.attentionInk : .secondary)
+                .disabled(!formIsComplete)
+
+                Button(role: .cancel, action: onCancel) {
+                    Text("Cancel")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
         }
     }

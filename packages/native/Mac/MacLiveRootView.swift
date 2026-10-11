@@ -296,15 +296,15 @@ struct MacLiveRootView: View {
 
     @ViewBuilder private var feedbackBanner: some View {
         if let message = notificationRouter.notice {
-            MacFeedbackBanner(message: message, isError: true, onDismiss: { notificationRouter.notice = nil })
+            RemiFeedbackBanner(message: message, tone: .error, onDismiss: { notificationRouter.notice = nil })
         } else if let message = store.latestOperationError ?? store.latestError?.message {
-            MacFeedbackBanner(message: message, isError: true, onDismiss: store.clearLatestError)
+            RemiFeedbackBanner(message: message, tone: .error, onDismiss: store.clearLatestError)
         } else if let message = store.latestOperationNotice {
-            MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearLatestError)
+            RemiFeedbackBanner(message: message, tone: .information, onDismiss: store.clearLatestError)
         } else if let message = relayNotifications.notice {
-            MacFeedbackBanner(message: message, isError: false, onDismiss: relayNotifications.clearNotice)
+            RemiFeedbackBanner(message: message, tone: .information, onDismiss: relayNotifications.clearNotice)
         } else if let message = store.relayNotificationNotice {
-            MacFeedbackBanner(message: message, isError: false, onDismiss: store.clearRelayNotificationNotice)
+            RemiFeedbackBanner(message: message, tone: .information, onDismiss: store.clearRelayNotificationNotice)
         }
     }
 
@@ -1169,29 +1169,6 @@ private struct MacConnectionUnavailableState: View {
             Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
                 .buttonStyle(.borderedProminent)
         }
-    }
-}
-
-private struct MacFeedbackBanner: View {
-    let message: String
-    let isError: Bool
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
-            Image(systemName: isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .foregroundStyle(isError ? .orange : .blue)
-            Text(message)
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Dismiss", systemImage: "xmark", action: onDismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-        }
-        .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.s)
-        .background((isError ? Color.orange : Color.blue).opacity(0.1))
-        .accessibilityElement(children: .combine)
     }
 }
 
