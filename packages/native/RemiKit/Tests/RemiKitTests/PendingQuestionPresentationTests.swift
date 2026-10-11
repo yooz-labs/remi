@@ -4,6 +4,15 @@ import Foundation
 import Testing
 
 struct PendingQuestionPresentationTests {
+    @Test func queueDisclosureKeepsTwoVisibleUntilExpanded() {
+        #expect(RemiQueueDisclosure.visibleCount(total: 0, expanded: false) == 0)
+        #expect(RemiQueueDisclosure.visibleCount(total: 1, expanded: false) == 1)
+        #expect(RemiQueueDisclosure.visibleCount(total: 5, expanded: false) == 2)
+        #expect(RemiQueueDisclosure.hiddenCount(total: 5, expanded: false) == 3)
+        #expect(RemiQueueDisclosure.visibleCount(total: 5, expanded: true) == 5)
+        #expect(RemiQueueDisclosure.hiddenCount(total: 5, expanded: true) == 0)
+    }
+
     @Test func groupsMachinesAndRequestsDeterministically() throws {
         var zeta = MachineState(
             endpoint: MachineEndpoint(host: "zeta.local", port: 18765),
