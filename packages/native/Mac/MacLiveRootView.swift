@@ -111,6 +111,7 @@ struct MacLiveRootView: View {
                             transcript: transcript(for: session.id),
                             questions: questions(for: session.id),
                             views: store.sessionViewsBySession[session.id] ?? [],
+                            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
                             initialConversationID: notificationDestination?.agentID,
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: transcript,
@@ -503,6 +504,7 @@ struct MacLiveRootView: View {
                 sessionID: message.sessionId,
                 sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
                     ?? message.sessionId,
+                agentID: question.agentId,
                 options: question.options.map { option in
                     RemiQuestionOption(
                         id: option.value,

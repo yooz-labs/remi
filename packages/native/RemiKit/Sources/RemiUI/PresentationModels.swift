@@ -131,13 +131,14 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let machineName: String
     public let sessionID: String
     public let sessionName: String
+    public let agentID: String?
     public let options: [RemiQuestionOption]
     public let steps: [RemiQuestionStep]
     public let terminalOnly: Bool
     public let answerPath: RemiAnswerPath?
     public let state: RemiQuestionState
 
-    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionID: String, sessionName: String, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
+    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionID: String, sessionName: String, agentID: String? = nil, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
         self.id = id
         self.questionID = questionID ?? id
         self.kind = kind
@@ -147,6 +148,7 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
         self.machineName = machineName
         self.sessionID = sessionID
         self.sessionName = sessionName
+        self.agentID = agentID
         self.options = options
         self.steps = steps
         self.terminalOnly = terminalOnly

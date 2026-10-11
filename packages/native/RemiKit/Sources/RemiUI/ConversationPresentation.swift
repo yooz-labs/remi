@@ -2,6 +2,38 @@ import RemiKit
 import SwiftUI
 
 public enum RemiConversationSelection {
+    public static func visibleQuestions(
+        _ questions: [RemiQuestionCardModel],
+        selectedViewID: String,
+        focusedQuestionID: String?
+    ) -> [RemiQuestionCardModel] {
+        guard !selectedViewID.isEmpty else { return questions }
+        return questions.filter { question in
+            question.agentID == selectedViewID || question.questionID == focusedQuestionID
+        }
+    }
+
+    public static func title(for view: SessionViewMeta, among views: [SessionViewMeta]) -> String {
+        let trimmedType = view.agentType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmedType.isEmpty ? "Subagent" : trimmedType
+        let duplicateCount = views.count { candidate in
+            let candidateType = candidate.agentType.trimmingCharacters(in: .whitespacesAndNewlines)
+            let candidateBase = candidateType.isEmpty ? "Subagent" : candidateType
+            return candidateBase.localizedCaseInsensitiveCompare(base) == .orderedSame
+        }
+        guard duplicateCount > 1 else { return base }
+        return "\(base) · \(view.agentId.suffix(6))"
+    }
+
+    public static func reconciledViewID(
+        selectedViewID: String,
+        views: [SessionViewMeta],
+        viewsLoaded: Bool
+    ) -> String {
+        guard viewsLoaded else { return selectedViewID }
+        return resolvedViewID(selectedViewID: selectedViewID, views: views)
+    }
+
     public static func resolvedViewID(
         selectedViewID: String,
         views: [SessionViewMeta]

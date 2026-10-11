@@ -8,6 +8,7 @@ struct MacSessionDetail: View {
     let transcript: [RemiTranscriptEntry]
     let questions: [RemiQuestionCardModel]
     let views: [SessionViewMeta]
+    let viewsLoaded: Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
@@ -31,6 +32,7 @@ struct MacSessionDetail: View {
         transcript: [RemiTranscriptEntry],
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
+        viewsLoaded: Bool = true,
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
@@ -46,6 +48,7 @@ struct MacSessionDetail: View {
         self.transcript = transcript
         self.questions = questions
         self.views = views
+        self.viewsLoaded = viewsLoaded
         _selectedViewID = State(initialValue: initialConversationID ?? "")
         _focusedQuestionID = State(initialValue: initialQuestionID)
         self.transcriptForView = transcriptForView
@@ -156,12 +159,13 @@ struct MacSessionDetail: View {
             selectedViewID = ""
             resetReview()
         }
+        .onChange(of: viewsLoaded, initial: true) { _, loaded in
+            guard loaded else { return }
+            reconcileConversationSelection()
+        }
         .onChange(of: views.map(\.agentId)) { _, _ in
-            let resolved = RemiConversationSelection.resolvedViewID(
-                selectedViewID: selectedViewID,
-                views: views
-            )
-            if resolved != selectedViewID { selectedViewID = resolved }
+            guard viewsLoaded else { return }
+            reconcileConversationSelection()
         }
         .confirmationDialog(
             "Exit \(session.name)?",
@@ -185,6 +189,15 @@ struct MacSessionDetail: View {
                 }
             }
         }
+    }
+
+    private func reconcileConversationSelection() {
+        let resolved = RemiConversationSelection.reconciledViewID(
+            selectedViewID: selectedViewID,
+            views: views,
+            viewsLoaded: viewsLoaded
+        )
+        if resolved != selectedViewID { selectedViewID = resolved }
     }
 
     private var searchButton: some View {
@@ -217,9 +230,11 @@ struct MacSessionDetail: View {
     }
 
     private var visibleQuestions: [RemiQuestionCardModel] {
-        guard !selectedViewID.isEmpty else { return questions }
-        guard let focusedQuestionID else { return [] }
-        return questions.filter { $0.questionID == focusedQuestionID }
+        RemiConversationSelection.visibleQuestions(
+            questions,
+            selectedViewID: selectedViewID,
+            focusedQuestionID: focusedQuestionID
+        )
     }
 
     private var focusedQuestions: [RemiQuestionCardModel] {
@@ -302,7 +317,7 @@ private struct MacConversationPicker: View {
 
                     ForEach(views) { view in
                         RemiConversationChip(
-                            title: view.agentType,
+                            title: RemiConversationSelection.title(for: view, among: views),
                             systemImage: "person.2.fill",
                             active: view.active,
                             selected: selectedViewID == view.agentId
