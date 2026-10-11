@@ -20,6 +20,18 @@ WRAPPER_SUSPEND_INPUTS = (
     "packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py",
 )
 CI_COVERAGE_READER = "packages/daemon/tests/ci-coverage-threshold.test.ts"
+HOOK_SERVER_TEST = "packages/daemon/tests/hooks/hook-server.test.ts"
+# Reviewed commentary only; the whole blob and complete scan must still match (#1359).
+HOOK_TEST_COMMENTS = {
+    "packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts": (
+        "7568a1b1da3e696a169b2197d0aaf3c46d8bd75f", 96,
+        " * unsafe to treat as pure Claude Code traffic. `hook-server.test.ts` and",
+    ),
+    "packages/daemon/tests/hooks/hook-diag-provenance-worker.ts": (
+        "2f070d8de7da9247e8dc153f211dad76732b5d33", 10,
+        " * at it exactly like `hook-server.test.ts` does, and exits; the parent test",
+    ),
+}
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -46,6 +58,43 @@ def git(*args):
 
 def all_gates(reason):
     return {**dict.fromkeys(GATES, True), "typecheck": True, "reason": reason}
+
+
+def hook_test_references_reviewed(base, head):
+    try:
+        for ref in (base, head):
+            tree = git("ls-tree", "-r", "-z", ref, "--", "packages", "tests", "scripts",
+                       ".github/workflows", ".github/actions", ".github/scripts")
+            if not tree or not tree.endswith(b"\0"):
+                return False
+            for entry in tree[:-1].split(b"\0"):
+                header, separator, path = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return False
+                if any(part in (b"", b".", b"..") for part in path.split(b"/")) or any(
+                        byte < 32 or byte == 127 for byte in path):
+                    return False
+            # An added/deleted/renamed producer is not the reviewed modification case.
+            if git("cat-file", "-t", f"{ref}:{HOOK_SERVER_TEST}").strip() != b"blob":
+                return False
+            expected = []
+            for path, (blob, line, text) in HOOK_TEST_COMMENTS.items():
+                if git("rev-parse", f"{ref}:{path}").decode().strip() != blob:
+                    return False
+                expected.append(f"{ref}:{path}:{line}:{text}")
+            consumers = subprocess.run(
+                ["git", "grep", "-n", "-F", "-e", "hook-server.test", ref, "--",
+                 "packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts",
+                 f":(exclude){HOOK_SERVER_TEST}", ":(exclude).github/scripts/ci-scope.py",
+                 ":(exclude).github/scripts/check-ci-scope.py"],
+                capture_output=True, check=False,
+            )
+            # Scan whole known files too: only their single exact comment lines are permitted.
+            if consumers.returncode != 0 or sorted(consumers.stdout.decode().splitlines()) != sorted(expected):
+                return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
 
 
 def package_transport_unchanged(base, head):
@@ -107,6 +156,16 @@ def classify(base, head):
                 if consumers.returncode != 1:
                     return all_gates("Wrapper test reference or scan failure; running all gates")
                 # Never clear relay already selected by a different changed execution input.
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
+            elif path == HOOK_SERVER_TEST:
+                # Endpoint existence is insufficient when both branches independently add it.
+                status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                             merge_base, head, "--", HOOK_SERVER_TEST)
+                if status != b"M\0" + HOOK_SERVER_TEST.encode() + b"\0":
+                    return all_gates("Hook test is not an exact modification; running all gates")
+                if not hook_test_references_reviewed(base, head):
+                    return all_gates("Hook test reference, provenance or scan failure; running all gates")
+                # This exact test is outside the R7 list; preserve every normal gate and prior relay.
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path.startswith(("packages/daemon/", "packages/shared/", "packages/signaling/")):
                 # Cross-package conformance tests import both endpoints: retain all TS gates.
