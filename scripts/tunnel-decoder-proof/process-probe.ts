@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import inputs from './inputs.json';
 import { DecoderProcess, DecoderProcessError, MAX_RESULT_BYTES } from './process';
-import { decodeInput, decodeWorker } from './worker';
+import { decodeInput, decodeRepeatedWorker, decodeWorker } from './worker';
 
 const executable = () =>
   Bun.main.startsWith('/$bunfs/') ? [process.execPath] : [process.execPath, Bun.main];
@@ -12,7 +12,8 @@ const executable = () =>
 /** Faults are real owned OS children, never substituted decoder or approval results. */
 export async function dispatchProcessWorker(): Promise<void> {
   if (process.argv.includes('--owned-decode-worker')) {
-    await decodeWorker(process.argv.at(-1));
+    if (process.argv.includes('--repeat-decode')) await decodeRepeatedWorker(process.argv.at(-1));
+    else await decodeWorker(process.argv.at(-1));
     process.exit(process.exitCode ?? 0);
   }
   const index = process.argv.indexOf('--owned-process-child');
