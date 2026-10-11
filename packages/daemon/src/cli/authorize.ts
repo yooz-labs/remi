@@ -7,8 +7,65 @@
  */
 
 import * as fs from 'node:fs';
-import { errorToString } from '@remi/shared';
+import { boundedEscape, errorToString, escapeUnsafeText } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
+
+const PRIVATE_IDENTITY_FIELDS = ['encryptedPrivateKey', 'salt', 'iv', 'iterations'] as const;
+const KEY_LABEL_MAX_CODE_POINTS = 64;
+const KEY_LABEL_TABLE_MAX = 16;
+const KEY_LABEL_OUTPUT_MAX = 128;
+
+/** Keep the terminal on one line while preserving a visible marker for legacy tabs and newlines. */
+function oneLineLabel(label: string): string {
+  return label.replaceAll('\t', '\u2409').replaceAll('\n', '\u240a');
+}
+
+function wellFormedUtf16(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasControl(text: string): boolean {
+  for (const character of text) {
+    const codePoint = character.codePointAt(0) as number;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
+  }
+  return false;
+}
+
+/** The public CLI accepts only labels that can be read as-is and safely put in its commands. */
+function isSafeKeyLabel(label: string): boolean {
+  return (
+    wellFormedUtf16(label) &&
+    [...label].length > 0 &&
+    [...label].length <= KEY_LABEL_MAX_CODE_POINTS &&
+    label.trim().length > 0 &&
+    !label.startsWith('-') &&
+    !hasControl(label) &&
+    escapeUnsafeText(label) === label
+  );
+}
+
+function invalidLabel(): never {
+  console.error(
+    'Invalid label: use 1 to 64 visible, well-formed Unicode characters and do not start with a hyphen.',
+  );
+  process.exit(1);
+}
+
+function invalidPublicKeyInput(): never {
+  console.error('Invalid public key input: expected a JSON object with a publicKey string.');
+  process.exit(1);
+}
 
 export interface AuthorizeOptions {
   input?: string | undefined;
@@ -41,10 +98,15 @@ export async function runAuthorize(options: AuthorizeOptions): Promise<void> {
     process.exit(1);
   }
 
+  const label = options.label ?? 'unnamed';
+  if (!isSafeKeyLabel(label)) invalidLabel();
+
   if (/^[0-9a-f]{16}$/.test(options.input)) {
     try {
-      const key = await store.authorizePendingKey(options.input, options.label ?? 'unnamed');
-      console.log(`Authorized pending key: ${key.fingerprint} [${key.label}]`);
+      const key = await store.authorizePendingKey(options.input, label);
+      console.log(
+        `Authorized pending key: ${key.fingerprint} [${boundedEscape(oneLineLabel(key.label), KEY_LABEL_OUTPUT_MAX)}]`,
+      );
     } catch (err) {
       console.error(errorToString(err));
       process.exit(1);
@@ -53,33 +115,41 @@ export async function runAuthorize(options: AuthorizeOptions): Promise<void> {
   }
 
   let json: string;
-  if (fs.existsSync(options.input)) {
-    json = fs.readFileSync(options.input, 'utf-8');
-  } else {
-    // Treat as inline JSON
-    json = options.input;
+  try {
+    json = fs.existsSync(options.input) ? fs.readFileSync(options.input, 'utf-8') : options.input;
+  } catch {
+    console.error('Could not read public key input.');
+    process.exit(1);
+    return;
   }
 
   let publicKey: string;
   try {
-    const parsed = JSON.parse(json) as Record<string, unknown>;
-    publicKey = parsed['publicKey'] as string;
-    if (typeof publicKey !== 'string') {
-      throw new Error('Missing publicKey field');
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      invalidPublicKeyInput();
     }
-  } catch (err) {
-    console.error(`Failed to parse public key: ${errorToString(err)}`);
-    process.exit(1);
-    return; // unreachable, helps TS
+    const record = parsed as Record<string, unknown>;
+    if (PRIVATE_IDENTITY_FIELDS.some((field) => Object.hasOwn(record, field))) {
+      console.error('Refusing private identity data; use a public-only key export.');
+      process.exit(1);
+      return;
+    }
+    publicKey = record['publicKey'] as string;
+    if (typeof publicKey !== 'string') {
+      invalidPublicKeyInput();
+    }
+  } catch {
+    // Parsing errors can contain the offending input. Keep malformed key material out of output.
+    invalidPublicKeyInput();
+    return;
   }
-
-  const label = options.label ?? 'unnamed';
 
   try {
     const key = await store.addAuthorizedKey(publicKey, label);
     console.log('Authorized key added:');
     console.log(`  Fingerprint: ${key.fingerprint}`);
-    console.log(`  Label:       ${key.label}`);
+    console.log(`  Label:       ${boundedEscape(oneLineLabel(key.label), KEY_LABEL_OUTPUT_MAX)}`);
   } catch (err) {
     console.error(errorToString(err));
     process.exit(1);
@@ -103,7 +173,7 @@ export function runListKeys(dir?: string): void {
     const added = new Date(key.addedAt).toLocaleDateString();
     const lastUsed = key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : 'never';
     const fp = key.fingerprint.padEnd(18);
-    const label = key.label.slice(0, 16).padEnd(17);
+    const label = boundedEscape(oneLineLabel(key.label), KEY_LABEL_TABLE_MAX).padEnd(17);
     console.log(`${fp}${label}${added.padEnd(14)}${lastUsed}`);
     console.log(`  Public key: ${key.publicKey}`);
   }
