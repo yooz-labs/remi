@@ -20,14 +20,19 @@ CHECKS = {
     "JPEG segment quantization Huffman and restart length refusal",
     "JPEG scan marker and end structure refusal",
     "full PNG CRC and JPEG entropy decode refusal",
+    "owned decoder success refusal and pre-cancel cleanup",
+    "actual busy child deadline and reap",
+    "actual cancellation saturation and reap",
+    "bounded output malformed duplicate and crash refusal",
+    "actual result cancellation and subsequent decode",
 }
 inputs = json.loads((ROOT / "inputs.json").read_text())
 if __name__ == "__main__":
     sys.exit(module.main({
         "source": ROOT,
-        "files": ("probe.ts", "admission.ts", "decode.ts", "pngjs.d.ts", "fixture.png", "fixture.jpg", "inputs.json", "package.json", "bun.lock", "matrix.py", "THIRD-PARTY-LICENSES.txt"),
+        "files": ("probe.ts", "admission.ts", "decode.ts", "process.ts", "process-probe.ts", "worker.ts", "pngjs.d.ts", "fixture.png", "fixture.jpg", "inputs.json", "package.json", "bun.lock", "matrix.py", "THIRD-PARTY-LICENSES.txt"),
         "checks": CHECKS,
         "dependencies": {"pngjs": "7.0.0", "jpeg-js": "0.4.4"},
         "expected": {"images": [{key: value for key, value in image.items() if key not in ("filename", "inputSha256")} for image in inputs["images"]]},
-        "scope": "Ten decoder header/malformed/full-decode groups; process budgets, cancellation, concurrency, held approval and production selection remain pending",
+        "scope": "Ten admission/decode and five actual child lifetime groups; hard memory/CPU budgets, held approval and production selection remain pending",
     }))
