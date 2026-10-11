@@ -6,6 +6,13 @@ public enum RemiSessionInteractionState: Equatable, Sendable {
     case finished
 }
 
+enum RemiComposerSubmission {
+    static func content(from draft: String) -> String? {
+        let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return content.isEmpty ? nil : content
+    }
+}
+
 public struct RemiSessionInteractionBar: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Binding private var draft: String
@@ -61,7 +68,7 @@ public struct RemiSessionInteractionBar: View {
     }
 
     private func sendDraft() {
-        let content = draft
+        guard let content = RemiComposerSubmission.content(from: draft) else { return }
         draft = ""
         onSend(content)
     }
