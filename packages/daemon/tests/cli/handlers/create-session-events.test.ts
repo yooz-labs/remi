@@ -8,8 +8,11 @@ import {
   createCreateSessionHandlers,
 } from '../../../src/cli/handlers/create-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { DEFAULT_CONFIG } from '../../../src/config/config.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
+import { findAvailableTcpPort as actualPortProbe } from '../../../src/session/port-utils.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { occupyPort, reserveRange } from '../../session/port-test-helpers.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -25,6 +28,55 @@ describe('createCreateSessionHandlers', () => {
   function send(connectionId: UUID, message: ProtocolMessage): boolean {
     sendCalls.push({ connectionId, message });
     return true;
+  }
+
+  type PortFinder = NonNullable<
+    Parameters<typeof createCreateSessionHandlers>[0]['findAvailableTcpPort']
+  >;
+  type ChildStarter = NonNullable<Parameters<typeof createCreateSessionHandlers>[0]['spawnDaemon']>;
+
+  function makeHandler(
+    basePort: number,
+    portRange: number,
+    spawnDaemon: ChildStarter,
+    findAvailableTcpPort?: PortFinder,
+  ) {
+    return createCreateSessionHandlers({
+      harnesses,
+      liveSessionsRegistry,
+      spawningPorts,
+      basePort,
+      portRange,
+      bindHost: DEFAULT_CONFIG.daemon.bind,
+      inheritedArgs: () => [],
+      send,
+      ...(findAvailableTcpPort === undefined ? {} : { findAvailableTcpPort }),
+      spawnDaemon,
+    });
+  }
+
+  function resultFor(port: number, index: number): SpawnResult {
+    return {
+      sessionId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      port,
+      pid: process.pid,
+    };
+  }
+
+  function recordingStarter(ports: number[]): ChildStarter {
+    // The existing child-starter seam records the reservation; the hub test covers real listeners.
+    return async (port) => {
+      ports.push(port);
+      return resultFor(port, ports.length);
+    };
+  }
+
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
   }
 
   beforeEach(() => {
@@ -233,5 +285,119 @@ describe('createCreateSessionHandlers', () => {
     // usedPorts set passed to the port probe.
     expect(usedPortsSeen).toContain(20001);
     expect(usedPortsSeen).toContain(20002);
+  });
+
+  test('concurrent starts reserve distinct ports after real probes (#1213 controlled schedule)', async () => {
+    const bindHost = DEFAULT_CONFIG.daemon.bind;
+    const basePort = await reserveRange(2, 50, bindHost);
+    const firstProbeFinished = deferred();
+    let probeCalls = 0;
+    const delayedRealProbe: PortFinder = async (base, range, used, host) => {
+      if (probeCalls++ === 0) {
+        // The real bind-and-close probe has finished before the first selection waits here.
+        const port = await actualPortProbe(base, range, used, host);
+        firstProbeFinished.resolve();
+        await Bun.sleep(50);
+        return port;
+      }
+      // Start the second real probe after the first socket is closed, but before its caller adds
+      // the result to spawningPorts. This controls only scheduling, never port availability.
+      await firstProbeFinished.promise;
+      return actualPortProbe(base, range, used, host);
+    };
+    const reservedPorts: number[] = [];
+    const handlers = makeHandler(basePort, 2, recordingStarter(reservedPorts), delayedRealProbe);
+
+    const outcomes = await Promise.all([
+      handlers.startSession(tmpDir),
+      handlers.startSession(tmpDir),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, true]);
+    // Without the selector queue, both live-port snapshots can choose basePort after this delay.
+    expect(reservedPorts).toEqual([basePort, basePort + 1]);
+    expect(spawningPorts.size).toBe(0);
+  });
+
+  test('null and thrown real probes release the selector (#1213)', async () => {
+    const bindHost = DEFAULT_CONFIG.daemon.bind;
+    const basePort = await reserveRange(2, 50, bindHost);
+    const holders: Array<Awaited<ReturnType<typeof occupyPort>>> = [];
+    let throwAfterProbe = false;
+    const realProbeThenThrow: PortFinder = async (base, range, used, host) => {
+      const port = await actualPortProbe(base, range, used, host);
+      if (throwAfterProbe) {
+        throwAfterProbe = false;
+        throw new Error('controlled wrapper failure after the real probe');
+      }
+      return port;
+    };
+    const reservedPorts: number[] = [];
+    const handlers = makeHandler(basePort, 2, recordingStarter(reservedPorts), realProbeThenThrow);
+
+    try {
+      holders.push(await occupyPort(basePort, bindHost));
+      holders.push(await occupyPort(basePort + 1, bindHost));
+      expect((await handlers.startSession(tmpDir)).ok).toBe(false);
+    } finally {
+      await Promise.all(
+        holders.map((holder) => new Promise<void>((resolve) => holder.close(() => resolve()))),
+      );
+    }
+
+    throwAfterProbe = true;
+    expect((await handlers.startSession(tmpDir)).ok).toBe(false);
+    const outcome = await Promise.race([
+      handlers.startSession(tmpDir),
+      Bun.sleep(2000).then(() => {
+        throw new Error('selection did not recover after a null or thrown probe');
+      }),
+    ]);
+    expect(outcome.ok).toBe(true);
+    expect(reservedPorts).toEqual([basePort]);
+  });
+
+  test('port selection releases before a slow child start (#1213)', async () => {
+    const basePort = await reserveRange(2, 50, DEFAULT_CONFIG.daemon.bind);
+    const firstEntered = deferred();
+    const secondEntered = deferred();
+    const firstSpawnGate = deferred();
+    const reservedPorts: number[] = [];
+    const handlers = makeHandler(basePort, 2, async (port) => {
+      reservedPorts.push(port);
+      if (reservedPorts.length === 1) {
+        firstEntered.resolve();
+        await firstSpawnGate.promise;
+      } else if (reservedPorts.length === 2) {
+        secondEntered.resolve();
+      }
+      return resultFor(port, reservedPorts.length);
+    });
+    const starts: Array<ReturnType<typeof handlers.startSession>> = [];
+    let secondStartedBeforeRelease = false;
+
+    try {
+      starts.push(handlers.startSession(tmpDir));
+      await Promise.race([
+        firstEntered.promise,
+        Bun.sleep(2000).then(() => {
+          throw new Error('first child start did not begin');
+        }),
+      ]);
+      starts.push(handlers.startSession(tmpDir));
+      secondStartedBeforeRelease = await Promise.race([
+        secondEntered.promise.then(() => true),
+        Bun.sleep(1000).then(() => false),
+      ]);
+    } finally {
+      firstSpawnGate.resolve();
+      await Promise.allSettled(starts);
+    }
+
+    expect(secondStartedBeforeRelease).toBe(true);
+    expect(
+      await Promise.all(starts).then((outcomes) => outcomes.map((outcome) => outcome.ok)),
+    ).toEqual([true, true]);
+    expect(reservedPorts).toEqual([basePort, basePort + 1]);
   });
 });

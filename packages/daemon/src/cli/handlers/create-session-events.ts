@@ -9,8 +9,10 @@
  * One session per daemon is a hard invariant, so "create session" always
  * means "spawn a new daemon process". The in-flight `spawningPorts` set
  * is shared with the parent cli.ts (written by this handler, read by the
- * daemon-mode startup path) to prevent a TOCTOU race where two concurrent
- * create requests race for the same free port.
+ * daemon-mode startup path). A per-instance selection queue makes this
+ * handler's live-port snapshot, async probe and reservation atomic for
+ * concurrent callers (#1213); it releases before workspace preparation or
+ * spawn and does not coordinate with another process binding after the probe.
  */
 
 import {
@@ -242,6 +244,30 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
     spawnDaemon = defaultSpawnRemiDaemon,
   } = deps;
 
+  // Only serialize the snapshot/probe/reserve step. Child preparation and startup can take much
+  // longer, and must be allowed to proceed concurrently once each port is reserved.
+  let portSelectionTail: Promise<void> = Promise.resolve();
+  const reserveChildPort = async (): Promise<number | null> => {
+    let releaseSelection!: () => void;
+    const previousSelection = portSelectionTail;
+    portSelectionTail = new Promise<void>((resolve) => {
+      releaseSelection = resolve;
+    });
+    await previousSelection;
+    try {
+      // Take this snapshot only after the previous caller reserved its candidate.
+      const liveUsed = new Set([
+        ...liveSessionsRegistry.listLive().map((entry) => entry.wsPort),
+        ...spawningPorts,
+      ]);
+      const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
+      if (freePort !== null) spawningPorts.add(freePort);
+      return freePort;
+    } finally {
+      releaseSelection();
+    }
+  };
+
   /**
    * Check a request, reserve a port, make the worktree it names and spawn the child daemon. Sends
    * nothing: the caller answers its requester with the outcome (`onCreateSessionRequest`, or a
@@ -277,13 +303,9 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         return { ok: false, error: RESUME_INTO_WORKTREE_TEXT };
       }
 
-      // Include in-flight spawn ports to prevent a TOCTOU race on
-      // concurrent create requests.
-      const liveUsed = new Set([
-        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
-        ...spawningPorts,
-      ]);
-      const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
+      // Reserve before yielding to workspace preparation or child startup. The per-handler queue
+      // keeps concurrent requests from selecting the same probed candidate (#1213).
+      const freePort = await reserveChildPort();
       if (freePort === null) {
         const rangeEnd = basePort + portRange - 1;
         return {
@@ -292,7 +314,6 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         };
       }
 
-      spawningPorts.add(freePort);
       try {
         // The worktree is made only once a port is held, so a request that cannot start makes
         // none (#1236). The port stays reserved while git runs.
