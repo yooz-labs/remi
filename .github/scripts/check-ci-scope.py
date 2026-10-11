@@ -22,6 +22,7 @@ METADATA = {"lint", "root", "notices", "test"}
 NATIVE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts"
 WRAPPER_INPUTS = module["WRAPPER_SUSPEND_INPUTS"]
 WRAPPER_GATES = gates - {"relay"}
+COVERAGE_READER = module["CI_COVERAGE_READER"]
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -70,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write(NATIVE_FIXTURE, "export const owned = true;\n")
         write(WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py';\n")
         write(WRAPPER_INPUTS[1], "print('owned fixture')\n")
+        write(COVERAGE_READER, "export {};\n")
         for name, text in WORKFLOWS.items():
             write(f".github/workflows/{name}", text)
         write(".github/actions/ci-scope/action.yml", ACTION)
@@ -90,6 +92,8 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             (WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py'; export {};", WRAPPER_GATES),
             (WRAPPER_INPUTS[1], "print('changed fixture')", WRAPPER_GATES),
             ("packages/daemon/tests/cli/wrapper-suspend-neighbor.test.ts", "export {};", gates),
+            (COVERAGE_READER, "export const changed = true;", WRAPPER_GATES),
+            ("packages/daemon/tests/ci-coverage-threshold-neighbor.test.ts", "export {};", gates),
             ("scripts/tunnel-storage-proof/probe.ts", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.tsx", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.mts", "export {};", {"lint"}),
@@ -139,6 +143,66 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (path, expected, result)
             count += 1
+        # This independent CI-shell reader retains normal gates, with its own consumer guard.
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            if directory == ".github/workflows":
+                write(f"{directory}/consumer.yml", "name: Owned consumer\non: [push]\njobs:\n  coverage:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test " + COVERAGE_READER + "\n")
+            elif directory == ".github/actions":
+                write(f"{directory}/consumer/action.yml", "name: Owned consumer\ndescription: Owned consumer\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: bun test " + COVERAGE_READER + "\n")
+            else:
+                write(f"{directory}/consumer.ts", "import 'ci-coverage-threshold';")
+            consumer_base = commit()
+            write(COVERAGE_READER, "export const changed = true;")
+            result = classify(consumer_base, commit())
+            assert selected(result) == gates and result["reason"].startswith("Coverage reader reference")
+            count += 1
+        for context in ("new-head", "target-base-only", "removed-head"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            write("scripts/consumer.ts", "import 'ci-coverage-threshold';")
+            consumer_base = commit()
+            if context != "removed-head":
+                git("reset", "--hard", base)
+            if context == "new-head":
+                write("scripts/consumer.ts", "import 'ci-coverage-threshold';")
+            elif context == "removed-head":
+                Path("scripts/consumer.ts").unlink()
+            write(COVERAGE_READER, "export const changed = true;")
+            result = classify(base if context == "new-head" else consumer_base, commit())
+            assert selected(result) == gates and result["reason"].startswith("Coverage reader reference")
+            count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for tool in (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"):
+            write(tool, "# ci-coverage-threshold reference is the exact self-tool\n")
+        self_base = commit()
+        write(COVERAGE_READER, "export const changed = true;")
+        assert selected(classify(self_base, commit())) == WRAPPER_GATES
+        count += 1
+        for destination, expected in ((None, WRAPPER_GATES), (COVERAGE_READER + ".renamed", gates)):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            if destination:
+                Path(COVERAGE_READER).rename(destination)
+            else:
+                Path(COVERAGE_READER).unlink()
+            assert selected(classify(base, commit())) == expected
+            count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(COVERAGE_READER, "export const changed = true;")
+        write("packages/daemon/src/relay/hub.ts", "export const changed = true;")
+        assert selected(classify(base, commit())) == gates
+        count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(COVERAGE_READER, "export const changed = true;")
+        scan_head = commit()
+        git("config", "grep.threads", "not-a-number")
+        try:
+            result = classify(base, scan_head)
+            assert selected(result) == gates and result["reason"].startswith("Coverage reader reference")
+            count += 1
+        finally:
+            git("config", "--unset", "grep.threads")
         # Exact wrapper producers keep every normal gate; their self-reference is excluded.
         git("reset", "--hard", base); git("clean", "-fdq")
         write(WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py'; export {};")

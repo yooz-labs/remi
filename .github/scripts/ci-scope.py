@@ -19,6 +19,7 @@ WRAPPER_SUSPEND_INPUTS = (
     "packages/daemon/tests/cli/wrapper-suspend.test.ts",
     "packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py",
 )
+CI_COVERAGE_READER = "packages/daemon/tests/ci-coverage-threshold.test.ts"
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -80,6 +81,18 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
+            elif path == CI_COVERAGE_READER:
+                consumers = subprocess.run(
+                    ["git", "grep", "-F", "-q", "-e", "ci-coverage-threshold", base, head, "--",
+                     "packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts",
+                     f":(exclude){CI_COVERAGE_READER}", ":(exclude).github/scripts/ci-scope.py",
+                     ":(exclude).github/scripts/check-ci-scope.py"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                )
+                if consumers.returncode != 1:
+                    return all_gates("Coverage reader reference or scan failure; running all gates")
+                # Only this CI shell consumer skips relay; all normal gates remain selected.
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path in WRAPPER_SUSPEND_INPUTS:
                 # Exact real-PTY test producers retain normal gates; no relay caller is changed.
                 consumers = subprocess.run(
