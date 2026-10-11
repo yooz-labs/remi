@@ -16,7 +16,7 @@ The epic is #1239.
 - `packages/native/Remi.xcodeproj` on `develop`: one project with two app targets, `RemiMac` and `RemiPhone`, and a scheme for each.
 - For isolated-worktree UI acceptance, run `packages/native/scripts/open-exact-xcode.sh --expected <full-commit>`. It refuses a dirty or mismatched native checkout, writes a source-hash receipt under the temporary directory, and asks the selected Xcode installation to open that worktree's project. Use `--check-only` in automation.
 - `packages/native/RemiKit`: a local Swift package with two libraries, `RemiKit` (not screens) and `RemiUI` (the design system), and its tests.
-- The skeleton builds and its tests pass: each app is a placeholder window with an empty asset catalog (app icon and accent color), RemiUI holds placeholder spacing and radius tokens, and RemiKit's tests read the real protocol fixtures (every fixture has a message type; `question` and `session_list_response` decode into models) and decode a session with no name.
+- Both production targets now use live `MachineStore` roots. RemiKit owns direct and relay connections, identity, secure push, session and question state; RemiUI owns the shared interaction system. Golden protocol fixtures, source integrations, and presentation tests remain the executable evidence—use `PARITY.md` for the current shipped boundary rather than the historical milestone checklists below.
 
 ## How to work
 

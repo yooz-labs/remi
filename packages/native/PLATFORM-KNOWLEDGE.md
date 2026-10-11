@@ -1,6 +1,6 @@
 # Apple platform knowledge base
 
-Last verified: 2026-10-08 against the current Remi native code and Apple Developer Documentation in Xcode.
+Last verified: 2026-10-11 against the current Remi native callers, tests, and the physical acceptance recorded in #1242.
 
 This is the adoption guide for Apple APIs that affect Remi's native apps. It records what the current apps actually do, separates the iOS/macOS 26 baseline from newer SDK work, and names the checks required before a platform feature is presented as shipped.
 
@@ -9,7 +9,7 @@ This is the adoption guide for Apple APIs that affect Remi's native apps. It rec
 | Area | What ships now | What is not shipped | Adoption decision |
 |---|---|---|---|
 | Foundation Models | On-device question summaries when `SystemLanguageModel.default` is available, with a deterministic fallback and a 900 ms deadline | A guarantee that Apple Intelligence is available, or a physical-device acceptance result | Keep the feature optional and presentation-only; never block a question notification on generation |
-| Notifications | Local notifications created by a running native app after its live connection observes a new question; taps carry a typed machine/session/question destination | Server-originated APNs delivery while the app is terminated, a Notification Service Extension, or lock-screen answer actions | Describe these as local alerts. Remote delivery waits for the secure push design and owner signing |
+| Notifications | Typed local question alerts; sealed relay APNs delivery; iPhone and Mac Notification Service Extensions; verified lock-screen actions that open a short-lived authenticated relay channel | Complete signed two-machine Mac acceptance and every remaining recovery/standing-grant scenario in #1242 | Keep local and relay paths distinct in UI and evidence. Never infer secure delivery from ordinary notification permission |
 | Liquid Glass | Native system navigation/materials, semantic question-card content surfaces, and coordinated custom glass groups for question actions, the composer, and conversation selection | A glass surface on every row or section | Let standard controls provide glass automatically; use custom effects sparingly and group adjacent effects |
 | Live Activities | Design research only | Widget extension, activity lifecycle, ActivityKit push tokens, and App Intent answers | Build only after secure remote delivery and the signed-answer path are specified and testable |
 | App Intents | Design research only | Siri/Shortcuts/App Intent actions in either app | Any answer intent must call the same authenticated answer operation as the app; it must not become a second trust path |
@@ -32,11 +32,11 @@ Apple's iOS 27 Foundation Models additions include newer model capabilities and 
 
 ## Notifications and background execution
 
-The iPhone and Mac coordinators currently schedule immediate local notifications only after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. On both platforms, a tap decodes `RemiNavigationDestination`, selects the named machine and session, and may select the named agent conversation. When the matching question is present, the session detail places that card before transcript history, scrolls to it, and moves accessibility focus to it. The focus survives an answered-on-another-device update while the short-lived resolved card remains, then clears when the question disappears. A payload that cannot decode or names an unknown machine/session does not guess a destination; `questionID` and `agentID` are optional and their absence does not prevent routing. Simulator notification-tap acceptance remains a separate gate from this caller trace.
+The iPhone and Mac coordinators schedule immediate local notifications after `MachineStore` receives a question over a live connection. They remove pending and delivered notifications when the question ID disappears. On both platforms, a local-notification tap decodes `RemiNavigationDestination`, selects the named machine and session, and may select the named agent conversation. When the matching question is present, the session detail places that card before transcript history, scrolls to it, and moves accessibility focus to it. The focus survives an answered-on-another-device update while the short-lived resolved card remains, then clears when the question disappears. A payload that cannot decode or names an unknown machine/session does not guess a destination; `questionID` and `agentID` are optional and their absence does not prevent routing. Simulator notification-tap acceptance remains a separate gate from this caller trace.
 
-This does not wake a terminated app and is not remote push. Background notifications are low priority and are not guaranteed by the system, so they cannot be the sole transport for an urgent approval. A Notification Service Extension may decrypt or rewrite notification content before delivery, but it cannot dynamically redefine registered action titles and its work is time-limited.
+The separate relay path registers an APNs token only after notification permission, a signed runtime environment, authenticated relay pairing, and durable machine trust are available. The iPhone and Mac service extensions open sealed content through `RemiPush`; app delegates verify the original capsule and displayed fields before accepting a default tap, dismissal, or semantic action. An action opens a bounded authenticated relay channel and signs the answer with the existing device identity. The source integration suite exercises pairing, registration, opening, and signed delivery against the TypeScript fixture. #1242 records physical iPhone lock-screen Yes and Watch-mirrored No results, while its remaining signed-Mac and recovery gates stay open.
 
-Remote notifications, an NSE, and notification actions require all of the following before implementation:
+Any extension of remote notification behavior still requires all of the following:
 
 - an authenticated, end-to-end protected payload whose security properties are traced through the live caller path;
 - owner-controlled signing and provisioning for the app and extension;

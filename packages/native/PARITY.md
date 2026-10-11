@@ -19,11 +19,11 @@ native targets now, not planned behavior.
 | Create session | Yes | Yes | Yes | Native apps support recent repositories, new worktrees, advertised harnesses, optional model selection, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Native apps can forget endpoints without stopping their remote sessions. Discovery is not inferred on loopback. |
 | Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. iPhone Preferences and Mac Settings request system permission from an explicit action; both explain denied access and link back to system settings. |
-| Remote push / lock-screen answers | Yes | Yes | Yes | The signed iPhone path has physical lock-screen Yes and Watch-mirrored No evidence in #1242. Mac source registration and action handling ship, but two-machine signed-Mac acceptance remains open. |
+| Remote push / lock-screen answers | Yes | Yes — hardware verified | Implemented — acceptance open | The signed iPhone path has physical lock-screen Yes and Watch-mirrored No evidence in #1242. Mac source registration and action handling ship, but two-machine signed-Mac acceptance remains open. |
 | Kill/resume session | Yes | Yes | Yes | Native apps terminate daemon-owned sessions with confirmation and offer Resume for resumable stored sessions. A child response follows the returned port and opens after its authenticated hello; same-daemon responses open immediately (#1309). |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
 | Haptics and notification preferences | Yes | Yes | N/A | iPhone preferences control local question alerts, sounds, and answer feedback. |
-| Relay connection | No shipped client path | Yes | Yes | Native relay v2 pairing, authenticated channels, secure push registration, and signed answers ship. Deployed-provider and remaining recovery/polish gates stay tracked by #1242. |
+| Relay connection | No shipped client path | Yes — hardware verified | Implemented — acceptance open | Native relay v2 pairing, authenticated channels, secure push registration, and signed answers ship. Deployed-provider and remaining recovery/polish gates stay tracked by #1242. |
 | Diff, files, terminal view | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
 
 The Capacitor app should not be retired yet. Native relay and background-answer source
