@@ -62,6 +62,8 @@ The iPhone and Mac conversation screens share one session interaction bar for li
 
 Transcript entries use one shared presentation on both platforms: constrained trailing user messages, document-like agent responses, compact expandable tool activity, and semantic error surfaces. Dynamic agent text uses Foundation's inline-only Markdown parser with whitespace preservation; only `http`, `https`, and `mailto` links remain interactive. This is deliberately not a full block-Markdown renderer, so headings, lists, tables, and fenced code blocks retain readable source structure rather than receiving custom block layout.
 
+New-session creation also shares one observable draft model across iPhone and Mac. Machine changes choose that machine's most recent repository, repair an unavailable harness selection, and disable worktree creation for legacy machines. Submission trims user-entered paths, branches, bases, and model names; worktree creation requires a branch, while a blank base means the machine's default base. The UI presents the final machine, destination mode, and harness before Create becomes available. This model is presentation and request construction only: the daemon remains authoritative for repository validation and workspace creation.
+
 Both app roots currently cap Dynamic Type at Accessibility 2 as a deliberate legibility/layout tradeoff. That is the shipping boundary, not full support for every system size. Revisit the global cap by testing and repairing individual layouts before claiming support through Accessibility 5; do not silently lower it further.
 
 ## iOS/macOS 27 watchlist

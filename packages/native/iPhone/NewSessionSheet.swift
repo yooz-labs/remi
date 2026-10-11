@@ -9,13 +9,7 @@ struct PhoneNewSessionSheet: View {
     let recentRepositories: [String: [RecentRepository]]
     let onCreate: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
 
-    @State private var machineID: String
-    @State private var repository = ""
-    @State private var harness = "claude"
-    @State private var model = ""
-    @State private var createsWorktree = false
-    @State private var branch = ""
-    @State private var base = ""
+    @State private var draft: NewSessionDraft
 
     init(
         machines: [MachineState],
@@ -25,20 +19,20 @@ struct PhoneNewSessionSheet: View {
         self.machines = machines
         self.recentRepositories = recentRepositories
         self.onCreate = onCreate
-        _machineID = State(initialValue: machines.first?.id ?? "")
+        _draft = State(initialValue: NewSessionDraft(
+            machines: machines,
+            recentRepositoriesByMachine: recentRepositories
+        ))
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Machine", selection: $machineID) {
+                    Picker("Machine", selection: $draft.machineID) {
                         ForEach(machines) { machine in
                             Text(machine.displayName).tag(machine.id)
                         }
-                    }
-                    .onChange(of: machineID) { _, _ in
-                        selectDefaultsForMachine(resetRepository: true)
                     }
                 } header: {
                     Label("Machine", systemImage: "desktopcomputer")
@@ -47,10 +41,10 @@ struct PhoneNewSessionSheet: View {
                 }
 
                 Section {
-                    if !repositories.isEmpty {
-                        Picker("Recent", selection: $repository) {
+                    if !draft.recentRepositories.isEmpty {
+                        Picker("Recent repository", selection: $draft.repository) {
                             Text("Choose a repository").tag("")
-                            ForEach(repositories) { item in
+                            ForEach(draft.recentRepositories) { item in
                                 VStack(alignment: .leading) {
                                     Text(item.name)
                                     Text(item.repository).font(.caption).foregroundStyle(.secondary)
@@ -60,44 +54,44 @@ struct PhoneNewSessionSheet: View {
                         }
                     }
 
-                    if workspaceCapable {
-                        TextField("Repository path", text: $repository)
+                    if draft.workspaceCapable {
+                        TextField("Repository path", text: $draft.repository)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } else {
-                        TextField("Existing directory", text: $repository)
+                        TextField("Existing directory", text: $draft.repository)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
                 } header: {
-                    if workspaceCapable {
+                    if draft.workspaceCapable {
                         Label("Repository", systemImage: "folder")
                     } else {
                         Label("Directory", systemImage: "folder")
                     }
                 } footer: {
-                    if workspaceCapable {
+                    if draft.workspaceCapable {
                         Text("Use an absolute path or a path under ~ on this machine.")
                     } else {
                         Text("This machine does not support workspaces yet, so Remi will start in this existing directory.")
                     }
                 }
 
-                if workspaceCapable {
+                if draft.workspaceCapable {
                     Section {
-                        Toggle("Create a new branch and worktree", isOn: $createsWorktree)
-                        if createsWorktree {
-                            TextField("Branch name", text: $branch)
+                        Toggle("Create a new branch and worktree", isOn: $draft.createsWorktree)
+                        if draft.createsWorktree {
+                            TextField("Branch name", text: $draft.branch)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
-                            TextField("Base (optional)", text: $base)
+                            TextField("Base (optional)", text: $draft.base)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                         }
                     } header: {
                         Label("Workspace", systemImage: "arrow.triangle.branch")
                     } footer: {
-                        if createsWorktree {
+                        if draft.createsWorktree {
                             Text("The machine creates a separate worktree next to the repository. Remi does not delete it when the session ends.")
                         } else {
                             Text("The session starts in the repository’s main worktree.")
@@ -106,19 +100,29 @@ struct PhoneNewSessionSheet: View {
                 }
 
                 Section {
-                    Picker("Harness", selection: $harness) {
-                        ForEach(harnesses, id: \.self) { value in
-                            Text(Self.harnessName(value)).tag(value)
+                    Picker("Harness", selection: $draft.harness) {
+                        ForEach(draft.availableHarnesses, id: \.self) { value in
+                            Text(NewSessionDraft.harnessName(value)).tag(value)
                         }
                     }
 
-                    TextField("Model (optional)", text: $model)
+                    TextField("Model (optional)", text: $draft.model)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .onSubmit(create)
                 } header: {
                     Label("Agent", systemImage: "sparkles")
                 } footer: {
                     Text("Leave this empty to use the harness default configured on the machine.")
+                }
+
+                Section {
+                    LabeledContent("Machine", value: draft.selectedMachine?.displayName ?? "Unavailable")
+                    LabeledContent("Destination", value: draft.destinationSummary)
+                    LabeledContent("Harness", value: NewSessionDraft.harnessName(draft.harness))
+                } header: {
+                    Label("Launch summary", systemImage: "checklist")
                 }
             }
             .navigationTitle("New session")
@@ -129,76 +133,23 @@ struct PhoneNewSessionSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { create() }
-                        .disabled(!canCreate)
+                        .disabled(!draft.canCreate)
+                        .accessibilityHint("Starts the session using the launch summary")
                 }
             }
-            .onAppear { selectDefaultsForMachine(resetRepository: repository.isEmpty) }
-        }
-    }
-
-    private var selectedMachine: MachineState? {
-        machines.first { $0.id == machineID }
-    }
-
-    private var workspaceCapable: Bool {
-        selectedMachine?.capabilities.contains("workspaces") == true
-    }
-
-    private var repositories: [RecentRepository] {
-        recentRepositories[machineID] ?? []
-    }
-
-    private var harnesses: [String] {
-        let offered = selectedMachine?.harnesses ?? ["claude"]
-        return offered.isEmpty ? ["claude"] : offered
-    }
-
-    private var trimmedRepository: String {
-        repository.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var canCreate: Bool {
-        guard selectedMachine != nil, !trimmedRepository.isEmpty else { return false }
-        return !createsWorktree || !branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func selectDefaultsForMachine(resetRepository: Bool) {
-        if !harnesses.contains(harness) {
-            harness = harnesses[0]
-        }
-        if resetRepository {
-            repository = repositories.first?.repository ?? ""
-        }
-        if !workspaceCapable {
-            createsWorktree = false
         }
     }
 
     private func create() {
-        guard let selectedMachine, canCreate else { return }
-        let workspace: WorkspaceRequest?
-        if workspaceCapable {
-            let worktree = createsWorktree
-                ? WorktreeRequest(
-                    branch: branch.trimmingCharacters(in: .whitespacesAndNewlines),
-                    base: base.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-                )
-                : nil
-            workspace = WorkspaceRequest(repository: trimmedRepository, worktree: worktree)
-        } else {
-            workspace = nil
-        }
-        let args = HarnessLaunchArguments.model(model)
-        onCreate(selectedMachine.endpoint, trimmedRepository, harness, args, workspace)
+        guard let submission = draft.submission else { return }
+        onCreate(
+            submission.endpoint,
+            submission.directory,
+            submission.harness,
+            submission.arguments,
+            submission.workspace
+        )
         dismiss()
-    }
-
-    private static func harnessName(_ harness: String) -> String {
-        switch harness {
-        case "claude": "Claude Code"
-        case "codex": "Codex"
-        default: harness.capitalized
-        }
     }
 }
 
@@ -229,8 +180,13 @@ private var newSessionPreviewMachine: MachineState {
         onCreate: { _, _, _, _, _ in }
     )
 }
-#endif
 
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
+#Preview("New session · Accessibility") {
+    PhoneNewSessionSheet(
+        machines: [newSessionPreviewMachine],
+        recentRepositories: [:],
+        onCreate: { _, _, _, _, _ in }
+    )
+    .environment(\.dynamicTypeSize, .accessibility5)
 }
+#endif
