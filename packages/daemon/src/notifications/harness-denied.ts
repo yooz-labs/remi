@@ -11,6 +11,7 @@
  * class a user cannot turn off gets the whole app muted instead.
  */
 
+import { escapeUnsafeText } from '@remi/shared';
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import type { PermissionDeniedHookInput } from '../hooks/hook-types.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
@@ -31,6 +32,31 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/** Cut display text without splitting an escape or surrogate pair. */
+function truncateDisplay(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max;
+  for (const match of text.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
+    const start = match.index;
+    const escapeEnd = start + match[0].length;
+    if (start < end && end < escapeEnd) {
+      end = start;
+      break;
+    }
+  }
+  if (
+    end > 0 &&
+    end < text.length &&
+    text.charCodeAt(end - 1) >= 0xd800 &&
+    text.charCodeAt(end - 1) <= 0xdbff &&
+    text.charCodeAt(end) >= 0xdc00 &&
+    text.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return text.slice(0, end);
+}
+
 /** Title and body for one blocked call. The body names the call the way a
  *  permission card does, then the classifier's reason. */
 export function buildHarnessDeniedText(
@@ -38,12 +64,16 @@ export function buildHarnessDeniedText(
   input: Pick<PermissionDeniedHookInput, 'tool_name' | 'tool_input' | 'reason' | 'agent_type'>,
 ): { title: string; body: string } {
   const toolName = input.tool_name || 'a tool';
+  const displayedToolName = escapeUnsafeText(toolName);
   const summary = summarizeToolInput(toolName, input.tool_input ?? {});
-  const call = summary ? `${toolName}: ${summary}` : toolName;
-  const who = input.agent_type ? `${input.agent_type} · ` : '';
-  const reason = oneLine(input.reason ?? '');
-  const title = `${sessionName}: auto mode blocked ${toolName}`.slice(0, TITLE_MAX);
-  const body = oneLine(`${who}${call}${reason ? `. ${reason}` : ''}`).slice(0, BODY_MAX);
+  const call = summary ? `${displayedToolName}: ${summary}` : displayedToolName;
+  const who = input.agent_type ? `${escapeUnsafeText(input.agent_type)} · ` : '';
+  const reason = oneLine(escapeUnsafeText(input.reason ?? ''));
+  const title = truncateDisplay(
+    escapeUnsafeText(`${sessionName}: auto mode blocked ${toolName}`),
+    TITLE_MAX,
+  );
+  const body = truncateDisplay(oneLine(`${who}${call}${reason ? `. ${reason}` : ''}`), BODY_MAX);
   return { title, body };
 }
 

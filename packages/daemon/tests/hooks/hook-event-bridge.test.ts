@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import type { AgentStatus, Question } from '@remi/shared';
-import { HookEventBridge, standingGrantFor } from '../../src/hooks/hook-event-bridge.ts';
+import { escapeUnsafeText } from '@remi/shared';
+import {
+  HookEventBridge,
+  optionsFromSuggestions,
+  standingGrantFor,
+} from '../../src/hooks/hook-event-bridge.ts';
 import type {
   ElicitationHookInput,
   NotificationHookInput,
@@ -493,6 +498,36 @@ describe('HookEventBridge', () => {
         expect(standingGrantFor(entry)).toBeNull();
       }
     });
+
+    it('escapes suggestion labels before truncation while preserving echoes and indices (#1189)', () => {
+      const hostile = '\x1b\x07\u202e\u200b';
+      const rule = {
+        type: 'addRules',
+        rules: [{ toolName: 'Bash', ruleContent: `run ${hostile}` }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      };
+      const mode = { type: 'setMode', mode: `accept${hostile}Edits`, destination: 'session' };
+      const rawLegacy = `Continue ${hostile}`;
+
+      const legacy = optionsFromSuggestions([rawLegacy, 'Do not continue']).options;
+      expect(legacy.map((option) => [option.label, option.value])).toEqual([
+        [escapeUnsafeText(rawLegacy), '1'],
+        ['Do not continue', '2'],
+      ]);
+
+      const grantOptions = optionsFromSuggestions([rule, mode]).options;
+      expect(
+        grantOptions.slice(1, 3).map((option) => [option.value, option.suggestionIndex]),
+      ).toEqual([
+        ['2', 0],
+        ['3', 1],
+      ]);
+      expect(grantOptions[1]?.label).toContain(escapeUnsafeText(hostile));
+      expect(grantOptions[2]?.label).toContain(escapeUnsafeText(hostile));
+      expect(standingGrantFor(rule)?.echo).toEqual({ ...rule, destination: 'session' });
+      expect(standingGrantFor(mode)?.echo).toEqual(mode);
+    });
   });
 
   // Mixed arrays where at least 2 string entries survive the filter:
@@ -559,6 +594,30 @@ describe('HookEventBridge', () => {
 
     // The user sees WHO is asking + the command, not a bare "Allow Bash".
     expect(questions[0]?.text).toBe('code-reviewer · Bash: git push origin main');
+  });
+
+  it('escapes tool, agent and command display fields and keeps the complete escaped detail (#1189)', () => {
+    const { bridge, questions } = createBridge();
+    const hostile = 'start\x1b]52;c;QUJD\x07RTL\u202eoverride\u2066isolate\u200bzero\u200f';
+    const toolName = `Bash${hostile}`;
+    const agentType = `reviewer${hostile}`;
+    const command = `${'x'.repeat(115)}${hostile} && tail`;
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      agent_id: 'agent-unsafe',
+      agent_type: agentType,
+      tool_name: toolName,
+      tool_input: { command },
+    } as PermissionRequestHookInput);
+
+    const question = questions[0];
+    expect(question?.text).toContain(escapeUnsafeText(agentType));
+    expect(question?.text).toContain(escapeUnsafeText(toolName));
+    expect(question?.text).not.toContain('\x1b');
+    expect(question?.text).not.toContain('\u202e');
+    expect(question?.detail).toBe(escapeUnsafeText(command));
   });
 
   it('surfaces the real AskUserQuestion question + options, not "Allow AskUserQuestion" (#597)', () => {

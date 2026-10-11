@@ -1,11 +1,12 @@
 /**
  * `summarizeToolInput`'s display form: a Bash command over 120 chars keeps
- * its head and its tail around an explicit marker; paths/patterns/urls are
- * never cut. (The untruncated SIGNATURE form, #990, was deleted with
- * auto-approve precedent in #1125.)
+ * its head and its tail around an explicit marker; paths/patterns/urls use
+ * the same summary bound. Escaping is applied before truncation, and the
+ * complete escaped input remains available as display detail (#1189).
  */
 
 import { describe, expect, it } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import { summarizeToolInput, truncateSummary } from '../../src/hooks/tool-summary.ts';
 
 describe('summarizeToolInput — display form', () => {
@@ -42,19 +43,55 @@ describe('summarizeToolInput — display form', () => {
     expect(summary).toContain('chars hidden');
   });
 
-  it('does not truncate a long file_path (Read/Write/Edit)', () => {
+  it('summarizes a long file_path (Read/Write/Edit) and retains complete escaped detail', () => {
     const file_path = `/Users/x/${'d/'.repeat(80)}file.ts`;
     expect(file_path.length).toBeGreaterThan(120);
-    expect(summarizeToolInput('Write', { file_path, content: 'x' })).toBe(file_path);
+    const summary = summarizeToolInput('Write', { file_path, content: 'x' });
+    expect(summary).toBe(
+      `${file_path.slice(0, 80)} … [${file_path.length - 110} chars hidden] … ${file_path.slice(-30)}`,
+    );
+    expect(summarizeToolInput('Write', { file_path }, { complete: true })).toBe(file_path);
   });
 
-  it('does not truncate a long Glob/Grep pattern', () => {
+  it('summarizes a long Glob/Grep pattern', () => {
     const pattern = `**/${'x'.repeat(150)}/*.ts`;
-    expect(summarizeToolInput('Glob', { pattern })).toBe(pattern);
+    expect(summarizeToolInput('Glob', { pattern })).toBe(truncateSummary(pattern));
   });
 
-  it('does not truncate a long WebFetch url', () => {
+  it('summarizes a long WebFetch url', () => {
     const url = `https://example.com/${'x'.repeat(150)}`;
-    expect(summarizeToolInput('WebFetch', { url })).toBe(url);
+    expect(summarizeToolInput('WebFetch', { url })).toBe(truncateSummary(url));
+  });
+
+  it('escapes each command, path, pattern and URL before summary truncation', () => {
+    const hostile = 'start\x1b]52;c;QUJD\x07RTL\u202eoverride\u2066isolate\u200bzero\u200f';
+    const fields = [
+      ['Bash', { command: hostile }],
+      ['Write', { file_path: hostile }],
+      ['Glob', { pattern: hostile }],
+      ['WebFetch', { url: hostile }],
+    ] as const;
+    for (const [tool, input] of fields) {
+      const summary = summarizeToolInput(tool, input);
+      const complete = summarizeToolInput(tool, input, { complete: true });
+      expect(summary).toBe(escapeUnsafeText(hostile));
+      expect(complete).toBe(escapeUnsafeText(hostile));
+      expect(summary).not.toContain('\x1b');
+      expect(summary).not.toContain('\x07');
+      expect(summary).not.toContain('\u202e');
+      expect(summary).not.toContain('\u2066');
+      expect(summary).not.toContain('\u200b');
+      expect(summary).not.toContain('\u200f');
+    }
+  });
+
+  it('does not cut an escaped code point at either summary boundary', () => {
+    const nearHead = `${'a'.repeat(79)}\u202e${'b'.repeat(80)}`;
+    const nearTail = `${'a'.repeat(120)}\u202e`;
+    const headSummary = summarizeToolInput('Bash', { command: nearHead }) ?? '';
+    const tailSummary = summarizeToolInput('Bash', { command: nearTail }) ?? '';
+    expect(headSummary).not.toContain('\\u20');
+    expect(tailSummary).toContain('\\u202E');
+    expect(tailSummary).not.toContain('\\u20b');
   });
 });

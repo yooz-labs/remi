@@ -7,8 +7,11 @@
  * signature form of the same extraction (`forSignature`, #990). Precedent was
  * deleted with the rest of the auto-approve judgment in #1125 (ADR 0030).
  * Complete display input is retained as question detail when the short summary
- * hides text, so secure push sizing cannot grant an action over unseen meaning (#1200).
+ * hides text, so secure push sizing cannot grant an action over unseen meaning (#1200). Hook text
+ * is escaped before any summary cut (#1189); a complete detail is escaped too.
  */
+
+import { escapeUnsafeText } from '@remi/shared';
 
 /** Longest summary emitted verbatim, so a lock-screen card or terminal
  *  prompt stays one bounded line. */
@@ -35,7 +38,29 @@ export function cutSummary(value: string, headEnd: number, tailStart: number): s
  */
 export function truncateSummary(value: string): string {
   if (value.length <= SUMMARY_MAX) return value;
-  return cutSummary(value, HEAD_KEEP, value.length - TAIL_KEEP);
+  const headEnd = safeBoundary(value, HEAD_KEEP, 'before');
+  const tailStart = safeBoundary(value, value.length - TAIL_KEEP, 'after');
+  return cutSummary(value, headEnd, tailStart);
+}
+
+/** Move a summary cut out of an escape or surrogate pair, preserving the complete display code. */
+function safeBoundary(value: string, index: number, side: 'before' | 'after'): number {
+  for (const match of value.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (start < index && index < end) return side === 'before' ? start : end;
+  }
+  if (
+    index > 0 &&
+    index < value.length &&
+    value.charCodeAt(index - 1) >= 0xd800 &&
+    value.charCodeAt(index - 1) <= 0xdbff &&
+    value.charCodeAt(index) >= 0xdc00 &&
+    value.charCodeAt(index) <= 0xdfff
+  ) {
+    return side === 'before' ? index - 1 : index + 1;
+  }
+  return index;
 }
 
 /**
@@ -53,8 +78,10 @@ export function summarizeToolInput(
   const lower = toolName.toLowerCase();
 
   const get = (key: string): unknown => toolInput[key];
-  const display = (value: string): string =>
-    options.complete === true ? value : truncateSummary(value);
+  const display = (value: string): string => {
+    const escaped = escapeUnsafeText(value);
+    return options.complete === true ? escaped : truncateSummary(escaped);
+  };
 
   // Bash: show the command
   if (lower === 'bash' || lower === 'terminal') {
@@ -67,19 +94,19 @@ export function summarizeToolInput(
   // Read/Write/Edit: show the file path
   if (lower === 'read' || lower === 'write' || lower === 'edit') {
     const path = get('file_path') ?? get('path');
-    if (typeof path === 'string') return path;
+    if (typeof path === 'string') return display(path);
   }
 
   // Glob/Grep: show the pattern
   if (lower === 'glob' || lower === 'grep') {
     const pattern = get('pattern') ?? get('glob');
-    if (typeof pattern === 'string') return pattern;
+    if (typeof pattern === 'string') return display(pattern);
   }
 
   // WebFetch: show the URL
   if (lower.includes('fetch') || lower.includes('web')) {
     const url = get('url');
-    if (typeof url === 'string') return url;
+    if (typeof url === 'string') return display(url);
   }
 
   // Generic: try common field names

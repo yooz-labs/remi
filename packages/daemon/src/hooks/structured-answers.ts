@@ -26,18 +26,18 @@
  * refused, never completed with a guess.
  */
 
-import type { QuestionOption, QuestionStep } from '@remi/shared';
+import { type QuestionOption, type QuestionStep, escapeUnsafeText } from '@remi/shared';
 
 import type { PermissionDecision } from './hook-server.ts';
 
 /**
- * Collapse runs of whitespace (newlines, the column padding a PTY leaves
- * behind) to single spaces and trim, keeping the single spaces between
- * words. Display only: an answer is always built from the raw tool input,
- * never from a cleaned label.
+ * Escape unsafe display characters (#1189), then collapse runs of whitespace
+ * (newlines, the column padding a PTY leaves behind) to single spaces and
+ * trim, keeping the single spaces between words. Display only: an answer is
+ * always built from the raw tool input, never from a cleaned label.
  */
 export function cleanText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
+  return escapeUnsafeText(s).replace(/\s+/g, ' ').trim();
 }
 
 /** Longest free-text answer passed to Claude. A phone keyboard can paste a
