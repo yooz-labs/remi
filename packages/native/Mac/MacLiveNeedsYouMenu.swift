@@ -104,11 +104,12 @@ private struct MacNeedsYouMachineGroup: View {
     let onSubmit: (RemiPendingQuestionItem, [RemiQuestionStepSelection]) -> Void
     let onCancel: (RemiPendingQuestionItem) -> Void
     let onOpen: (RemiPendingQuestionItem) -> Void
+    @State private var showsAll = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             MacNeedsYouMachineHeader(group: group)
-            ForEach(group.items) { item in
+            ForEach(visibleItems) { item in
                 MacNeedsYouQuestionItem(
                     item: item,
                     onAnswer: { onAnswer(item, $0) },
@@ -117,7 +118,36 @@ private struct MacNeedsYouMachineGroup: View {
                     onOpen: { onOpen(item) }
                 )
             }
+
+            if hiddenCount > 0 {
+                Button("Show \(hiddenCount) more", systemImage: "chevron.down") {
+                    showsAll = true
+                }
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            } else if showsAll && group.items.count > 2 {
+                Button("Show fewer", systemImage: "chevron.up") {
+                    showsAll = false
+                }
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            }
         }
+        .onChange(of: group.items.map(\.id)) { _, ids in
+            if ids.count <= 2 { showsAll = false }
+        }
+    }
+
+    private var visibleItems: ArraySlice<RemiPendingQuestionItem> {
+        group.items.prefix(RemiQueueDisclosure.visibleCount(total: group.items.count, expanded: showsAll))
+    }
+
+    private var hiddenCount: Int {
+        RemiQueueDisclosure.hiddenCount(total: group.items.count, expanded: showsAll)
     }
 }
 

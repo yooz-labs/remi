@@ -172,3 +172,14 @@ public enum RemiPendingQuestionPresentation {
         }
     }
 }
+
+public enum RemiQueueDisclosure {
+    public static func visibleCount(total: Int, expanded: Bool, collapsedLimit: Int = 2) -> Int {
+        guard total > 0 else { return 0 }
+        return expanded ? total : min(total, max(collapsedLimit, 1))
+    }
+
+    public static func hiddenCount(total: Int, expanded: Bool, collapsedLimit: Int = 2) -> Int {
+        max(0, total - visibleCount(total: total, expanded: expanded, collapsedLimit: collapsedLimit))
+    }
+}
