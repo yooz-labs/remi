@@ -120,8 +120,11 @@ The approval matrix snapshots all files, directories and hashes under
 plus root `tsconfig.json` and package metadata. Candidate codec dependency trees
 are captured separately. It compiles from that snapshot and refuses an added,
 deleted or changed entry before a build and after every execution. The optional
-`--invalidation-control` exercises source, entry and dependency additions in
-the owned snapshot and confirms the next command is not launched.
+`--invalidation-control` runs four owned-copy controls: add a source-tree file,
+add a nested entry, add a candidate-dependency file, and replace an explicitly
+captured metadata file with a symlink to identical bytes. Each change must be
+rejected before the guarded command launches, and the owned snapshot is restored
+before compilation continues.
 
 The extra client and decoder processes need a 512 MiB Linux Docker fixture and
 a 64 PID cap for this proof. Use `--linux-memory-mib 512 --linux-pids-limit
