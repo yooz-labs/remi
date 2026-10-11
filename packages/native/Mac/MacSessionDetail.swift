@@ -75,7 +75,7 @@ struct MacSessionDetail: View {
             if !views.isEmpty {
                 MacConversationPicker(views: views, selectedViewID: $selectedViewID)
                     .padding(.horizontal, RemiTheme.Spacing.m)
-                    .padding(.vertical, RemiTheme.Spacing.xs)
+                    .padding(.vertical, RemiTheme.Spacing.xxs)
             }
             Divider()
 
@@ -124,8 +124,9 @@ struct MacSessionDetail: View {
                                 questionCard(question)
                             }
                         }
-                        .frame(maxWidth: 760)
-                        .padding(RemiTheme.Spacing.l)
+                        .frame(maxWidth: 860)
+                        .padding(.horizontal, RemiTheme.Spacing.m)
+                        .padding(.vertical, RemiTheme.Spacing.m)
                         .frame(maxWidth: .infinity)
                         .scrollTargetLayout()
                     }
@@ -149,10 +150,10 @@ struct MacSessionDetail: View {
                 }
             }
             .remiSessionInteractionBar(
-            draft: $draft,
-            state: interactionState,
-            onSend: onSend,
-            onInterrupt: nil
+                draft: $draft,
+                state: interactionState,
+                onSend: onSend,
+                onInterrupt: nil
             )
         }
         .onChange(of: selectedViewID) { oldValue, newValue in
@@ -343,9 +344,10 @@ private struct MacConversationPicker: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            Label("Conversations", systemImage: "bubble.left.and.bubble.right")
-                .font(.subheadline.weight(.semibold))
+            Image(systemName: "bubble.left.and.bubble.right")
                 .foregroundStyle(.secondary)
+                .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+                .accessibilityLabel("Conversations")
 
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
@@ -455,64 +457,79 @@ private struct MacSessionToolbarHeader: View {
     let onTerminate: () -> Void
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.s))
-            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.m))
-
-        layout {
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text(verbatim: session.name)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(2)
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: RemiTheme.Spacing.m) {
-                        metadataLabel(session.machineName, systemImage: "desktopcomputer")
-                        metadataLabel(session.project, systemImage: "folder")
-                        metadataLabel(session.harness, systemImage: "cpu")
-                    }
-
-                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                        metadataLabel(session.machineName, systemImage: "desktopcomputer")
-                        metadataLabel(session.project, systemImage: "folder")
-                        metadataLabel(session.harness, systemImage: "cpu")
-                    }
-                }
-            }
-            .layoutPriority(1)
-
-            if !dynamicTypeSize.isAccessibilitySize {
-                Spacer()
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: RemiTheme.Spacing.m) {
+                sessionIdentity
+                Spacer(minLength: RemiTheme.Spacing.m)
+                sessionControls
             }
 
-            HStack(spacing: RemiTheme.Spacing.s) {
-                RemiStatusBadge(status: session.status)
-                if let onResume {
-                    Button(action: onResume) {
-                        if session.isResuming {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("Resume", systemImage: "play.fill")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(session.isResuming)
-                    .help("Resume this session")
-                }
-                if session.canTerminate {
-                    Menu("Session actions", systemImage: "ellipsis.circle") {
-                        Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
-                            onTerminate()
-                        }
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Session actions")
-                }
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                sessionIdentity
+                sessionControls
             }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+    }
+
+    private var sessionIdentity: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+            Text(verbatim: session.name)
+                .font(.headline)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: RemiTheme.Spacing.m) {
+                    metadataLabel(session.machineName, systemImage: "desktopcomputer")
+                    metadataLabel(session.project, systemImage: "folder")
+                    metadataLabel(session.harness, systemImage: "cpu")
+                }
+
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                    metadataLabel(session.machineName, systemImage: "desktopcomputer")
+                    metadataLabel(session.project, systemImage: "folder")
+                    metadataLabel(session.harness, systemImage: "cpu")
+                }
+            }
+        }
+        .layoutPriority(1)
+    }
+
+    private var sessionControls: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            RemiStatusBadge(status: session.status)
+            if let onResume {
+                Button(action: onResume) {
+                    if session.isResuming {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(session.isResuming)
+                .help("Resume this session")
+            }
+            if session.canTerminate {
+                Menu {
+                    Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                        onTerminate()
+                    }
+                } label: {
+                    Label("Session actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .frame(
+                            minWidth: RemiTheme.Size.minimumTapTarget,
+                            minHeight: RemiTheme.Size.minimumTapTarget
+                        )
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Session actions")
+            }
+        }
     }
 
     private func metadataLabel(_ value: String, systemImage: String) -> some View {
