@@ -17,6 +17,7 @@ import Testing
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "", views: views, offset: -1) == "reviewer")
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "reviewer", views: views, offset: 1).isEmpty)
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "researcher", views: views, offset: 1) == "reviewer")
+        #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "", views: views, offset: -4) == "reviewer")
     }
 
     @Test func interactionStatePrioritizesFinishedThenReadOnlySubagentThenPrompt() {

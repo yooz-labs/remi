@@ -17,8 +17,9 @@ public enum RemiConversationSelection {
     ) -> String {
         let conversationIDs = [""] + views.map(\.agentId)
         let currentIndex = conversationIDs.firstIndex(of: selectedViewID) ?? 0
-        let nextIndex = (currentIndex + offset % conversationIDs.count + conversationIDs.count)
+        let normalizedOffset = ((offset % conversationIDs.count) + conversationIDs.count)
             % conversationIDs.count
+        let nextIndex = (currentIndex + normalizedOffset) % conversationIDs.count
         return conversationIDs[nextIndex]
     }
 }
