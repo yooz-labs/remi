@@ -36,17 +36,16 @@
  * than 200 characters (`ID_MAX_LENGTH`) is no id: such a turn is announced each time
  * and never remembered, so a hostile frame cannot fill the memory.
  *
- * What Codex chose is made safe before it leaves remi (`safe-text.ts`): a failure's
- * details and code are written out with every control, invisible and bidirectional
- * character visible (`escapeUnsafeText`'s set), cut to what the push shows
- * AFTER counting the escapes so a cut never lands inside one, and the final answer
- * in the push has those characters removed except the zero-width joiner, which an
- * emoji sequence needs. Tag characters (U+E0020 to U+E007F) are among the removed, so a
- * subdivision-flag emoji loses its tags. An answer with nothing left to see (only joiners,
- * whitespace or removed characters) is no answer: no `turn_complete` push, and one line
- * without content says so. Chat prose is NOT touched here (`codex-chat.ts` leaves it
- * as the model wrote it, deliberately). Claude's `last_assistant_message` has the
- * same exposure today and is not changed by this phase.
+ * Display text uses helpers exported by `@remi/shared` (`packages/shared/src/display-text.ts`):
+ * failure titles, codes and agent-type labels are visibly escaped and bounded; completed-turn
+ * prose and failure excerpts have the shared unsafe characters removed except the zero-width
+ * joiner, which an emoji sequence needs. Tag characters (U+E0020 to U+E007F) are removed, so a
+ * subdivision-flag emoji loses its tags. Claude's `last_assistant_message` is also passed through
+ * `pushProse` before whitespace normalization and truncation. An answer with nothing left to see
+ * (only joiners, whitespace or removed characters) is no answer: no `turn_complete` push, and one
+ * line without content says so. Chat prose is NOT touched here (`codex-chat.ts` leaves it as the
+ * model wrote it, deliberately). Claude's raw `StopFailure` input still forms `turnFailureKey`,
+ * so sanitizing its displayed excerpt does not change failure deduplication.
  *
  * Nothing a turn says is logged: the answer, the error text and the thread id
  * stay out of the log, and a status remi does not know is logged without its
