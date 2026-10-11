@@ -46,6 +46,7 @@ private final class MacLocalQuestionActions {
 
 enum MacNotificationAccess: Sendable, Equatable {
     case unknown
+    case notDetermined
     case allowed
     case denied
 }
@@ -65,7 +66,7 @@ final class MacNotificationPermission {
         access = Self.access(for: settings.authorizationStatus)
     }
 
-    func requestIfNeeded() async {
+    func request() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         if settings.authorizationStatus == .notDetermined {
             _ = try? await UNUserNotificationCenter.current()
@@ -78,7 +79,7 @@ final class MacNotificationPermission {
         switch status {
         case .denied: .denied
         case .authorized, .provisional, .ephemeral: .allowed
-        case .notDetermined: .unknown
+        case .notDetermined: .notDetermined
         @unknown default: .unknown
         }
     }
@@ -160,10 +161,6 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
 }
 
 enum MacNotificationCoordinator {
-    static func requestAuthorization() async {
-        await MacNotificationPermission.shared.requestIfNeeded()
-    }
-
     @MainActor static func notify(
         id: String,
         title: String,
@@ -306,7 +303,6 @@ private struct MacQuestionNotificationMonitor: View {
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
-            .task { await MacNotificationCoordinator.requestAuthorization() }
             .onChange(of: Set(pending.map(\.destination)), initial: true) { _, newValue in
                 guard baselineEstablished else {
                     knownQuestions = newValue

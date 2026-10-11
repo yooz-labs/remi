@@ -6,6 +6,7 @@ native targets now, not planned behavior.
 | Capability | Capacitor client | Native iPhone | Native Mac | Remaining work |
 |---|---|---|---|---|
 | Direct WebSocket and reconnect | Yes | Yes | Yes | Direct transport is not encrypted by Remi; keep the pairing warning. |
+| First-run machine onboarding | Yes | Yes | Yes | Each shipping client presents an explicit empty-machine action. Native routes that action through its real add-machine flow rather than a preview-only destination. |
 | Ed25519 identity and local approval | Yes | Yes | Yes | Real-hub approval integration test passes. |
 | `remi pair` QR onboarding | No | Yes | No | iPhone scans in-app, validates every shared ADR 0037 vector, pins the full daemon key, and sends the nonce in the signed challenge response; terminal approval remains mandatory. |
 | Multiple machines and session daemons | Yes | Yes | Yes | Native apps persist machine/session scope. Machine identity remains `host:port` until protocol #1234. |
@@ -17,7 +18,7 @@ native targets now, not planned behavior.
 | Typed chat with prompt guard | Yes | Yes | Yes | Native apps present daemon errors in dismissible banners. |
 | Create session | Yes | Yes | Yes | Native apps support recent repositories, new worktrees, advertised harnesses, optional model selection, and legacy fallback. |
 | Add/persist direct machines | Yes | Yes | Yes | Native apps can forget endpoints without stopping their remote sessions. Discovery is not inferred on loopback. |
-| Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. Mac Settings also surfaces confirmed denied notification access and links back to System Settings. |
+| Local card notifications | Yes | Yes | Yes | Native apps notify once for new cards and remove resolved notifications. iPhone Preferences and Mac Settings request system permission from an explicit action; both explain denied access and link back to system settings. |
 | Remote push / lock-screen answers | Yes | No | No | Deliberately blocked on X2 (#1242) and owner signing. |
 | Kill/resume session | Yes | Yes | Yes | Native apps terminate daemon-owned sessions with confirmation and offer Resume for resumable stored sessions. A child response follows the returned port and opens after its authenticated hello; same-daemon responses open immediately (#1309). |
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
@@ -27,3 +28,19 @@ native targets now, not planned behavior.
 
 The Capacitor app should not be retired yet. Remote push and lock-screen answers remain
 intentionally blocked on X2; deeper files, diffs, and terminal surfaces remain X5 work.
+
+## X3/X4 caller evidence
+
+- iPhone first run: `RemiPhoneApp` creates `PhoneLiveRootView`, whose `HomeScreen`
+  resolves zero persisted machines to `FirstRunScreen`; its Add machine action opens
+  the same `PairingScreen` sheet whose callback reaches `MachineStore.addMachine`.
+- Mac first run: `RemiMacApp` creates `MacLiveRootView`, which presents
+  `MacFirstRunView` for an empty `MachineStore` and opens the production add-machine
+  sheet through its callback.
+- Notification permission: `PhonePreferencesSheet` calls
+  `PhoneNotificationCoordinator.requestAuthorization`; `MacPreferencesView` calls
+  `MacNotificationPermission.request`. Neither app treats permission as machine
+  authorization, and Mac no longer requests it from the invisible question monitor.
+- Recovery: both live roots pass retry actions to `MachineStore.retryApproval` and
+  `MachineStore.retryConnection`; relay states that require a fresh token do not offer
+  a direct retry that would imply the expired pairing can recover itself.
