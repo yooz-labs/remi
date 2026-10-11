@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { escapeUnsafeText } from '../src/display-text.ts';
+import { boundedEscape, escapeUnsafeText, pushProse } from '../src/display-text.ts';
 
 /** Characters built from code points, so the source never holds a raw bidi or invisible character. */
 const ch = (...codes: number[]): string => String.fromCodePoint(...codes);
@@ -114,5 +114,18 @@ describe('escapeUnsafeText', () => {
     const hostile = `e\x1b[31m\x00\x7f${ch(0x9b, 0x202e, 0x2069, 0xe0041, 0x61c, 0xfeff)} ok`;
     expect(hasUnsafe(hostile)).toBe(true);
     expect(hasUnsafe(escapeUnsafeText(hostile))).toBe(false);
+  });
+});
+
+describe('boundedEscape', () => {
+  test('keeps a shared-set escape whole inside the display bound', () => {
+    expect(boundedEscape(`${'x'.repeat(8)}\u202e tail`, 10)).toBe(`${'x'.repeat(8)}…`);
+  });
+});
+
+describe('pushProse', () => {
+  test('removes unsafe prose characters and preserves the ZWJ family emoji', () => {
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    expect(pushProse(`a\x1b\x07\u202e\u2066\u200b ${family}`)).toBe(`a ${family}`);
   });
 });

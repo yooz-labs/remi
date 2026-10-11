@@ -262,8 +262,8 @@ export { errorToString } from './error-utils.ts';
 // Async helpers
 export { sleep } from './async-utils.ts';
 
-// Text a peer controls, made safe to show (#1178)
-export { escapeUnsafeText } from './display-text.ts';
+// Text a peer controls, made safe to show (#1178, #1211)
+export { boundedEscape, escapeUnsafeText, pushProse } from './display-text.ts';
 // The pairing link a machine shows as a QR (#1275, ADR 0037)
 export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
 export {

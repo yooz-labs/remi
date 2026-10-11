@@ -60,11 +60,11 @@
  * schema-shaped cases remain in the tests for edge conditions not captured live.
  */
 
-import type { UUID } from '@remi/shared';
+import { type UUID, boundedEscape, pushProse } from '@remi/shared';
 
 import type { TurnEventSink } from '../../notifications/turn-events.ts';
 import { describeError } from './describe-error.ts';
-import { boundedEscape, hasVisibleText, pushProse } from './safe-text.ts';
+import { hasVisibleText } from './safe-text.ts';
 import { agentWorkThreadOf, parseTurnCompleted } from './thread-protocol.ts';
 
 /** Who the failure notice says stopped. */

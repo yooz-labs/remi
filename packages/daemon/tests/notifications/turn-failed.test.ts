@@ -9,6 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -23,6 +24,7 @@ import {
   createTurnFailedRoutes,
   describeTurnFailure,
   turnFailedCollapseId,
+  turnFailureKey,
 } from '../../src/notifications/turn-failed.ts';
 import { shouldNotifyTurnComplete } from '../../src/notifications/turn-timer.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
@@ -256,6 +258,32 @@ describe('buildTurnFailedText', () => {
     });
     expect(body.length).toBeLessThanOrEqual(200);
   });
+
+  test('push excerpts strip unsafe prose; titles and error/agent identifiers are visibly escaped (#1211)', () => {
+    const hostile =
+      'start\x1b]52;c;QUJD\x07middle\x1b[2K\rRTL\u202eoverride\u2066isolate\u200bzero\u200fend';
+    const errorCode = 'custom\u202e';
+    const agentType = 'reviewer\u2066\u200b';
+    const sessionName = 'session\u202e';
+    const agentName = 'Agent\u200f';
+    const input = {
+      error: errorCode,
+      last_assistant_message: `Failure ${hostile}`,
+      agent_type: agentType,
+    };
+    const original = structuredClone(input);
+    const { title, body } = buildTurnFailedText(sessionName, input, agentName);
+
+    expect(title).toBe(`${escapeUnsafeText(sessionName)}: ${escapeUnsafeText(agentName)} stopped`);
+    expect(body).toBe(
+      `${escapeUnsafeText(agentType)} · ${escapeUnsafeText(errorCode)}. Failure start]52;c;QUJDmiddle[2KRTLoverrideisolatezeroend`,
+    );
+    expect(input).toEqual(original);
+    expect(turnFailureKey(input)).toBe(`main:${describeTurnFailure(input.error)}`);
+    for (const unsafe of ['\x1b', '\x07', '\u202e', '\u2066', '\u200b', '\u200f']) {
+      expect(body).not.toContain(unsafe);
+    }
+  });
 });
 
 describe('turnFailedCollapseId', () => {
@@ -373,6 +401,30 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       expect(opts['dynOptions']).toBeUndefined();
       expect(opts['dismiss']).toBeUndefined();
     }
+  });
+
+  test('the push transport receives the safe excerpt while failure identity keeps the raw code (#1211)', async () => {
+    register(false);
+    deviceTokens.set('a', device('a'));
+    const sessionName = registry.getSession(SID)?.name ?? '';
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    const input = {
+      error: 'custom\u202e',
+      last_assistant_message: `Failure \x1b\x07\u2066hidden\u200b ${family}`,
+      agent_type: 'reviewer\u2066',
+    };
+
+    expect(await make().pushTurnFailed(input)).toBe('pushed');
+    const payload = sent[0]?.opts;
+    if (!payload) throw new Error('turn_failed push was not captured');
+    const expected = buildTurnFailedText(sessionName, input);
+    expect(payload['title']).toBe(expected.title);
+    expect(payload['body']).toBe(expected.body);
+    expect(payload['body']).toContain(family);
+    for (const unsafe of ['\x1b', '\x07', '\u202e', '\u2066', '\u200b']) {
+      expect(payload['body']).not.toContain(unsafe);
+    }
+    expect(turnFailureKey(input)).toBe(`main:${describeTurnFailure(input.error)}`);
   });
 
   test('the agent the caller names is the one the notification says stopped (#1180)', async () => {

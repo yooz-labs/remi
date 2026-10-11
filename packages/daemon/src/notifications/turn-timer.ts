@@ -47,6 +47,8 @@
  * a normal single-session daemon carries at most a couple of live entries.
  */
 
+import { boundedEscape, pushProse } from '@remi/shared';
+
 /**
  * Cap on tracked `prompt_id` entries. remi is one session per daemon, so
  * under normal operation this map holds 0-1 live entries (the current
@@ -177,8 +179,15 @@ function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+/** Keep the existing push bound without splitting an astral code point in the model's prose. */
+function truncateProse(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let prefix = '';
+  for (const character of text) {
+    if (prefix.length + character.length > max) break;
+    prefix += character;
+  }
+  return `${prefix}…`;
 }
 
 /**
@@ -192,7 +201,7 @@ export function buildTurnCompleteText(
   sessionName: string,
   lastAssistantMessage: string,
 ): { title: string; body: string } {
-  const title = truncate(`${sessionName}: turn complete`, TITLE_MAX);
-  const body = truncate(normalize(lastAssistantMessage), BODY_MAX);
+  const title = boundedEscape(`${sessionName}: turn complete`, TITLE_MAX + 1);
+  const body = truncateProse(normalize(pushProse(lastAssistantMessage)), BODY_MAX);
   return { title, body };
 }

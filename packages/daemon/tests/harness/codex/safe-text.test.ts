@@ -4,12 +4,8 @@
  * set of characters; these decide how it is applied.
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  boundedEscape,
-  firstCodePoints,
-  hasVisibleText,
-  pushProse,
-} from '../../../src/harness/codex/safe-text.ts';
+import { boundedEscape, pushProse } from '@remi/shared';
+import { firstCodePoints, hasVisibleText } from '../../../src/harness/codex/safe-text.ts';
 
 describe('boundedEscape', () => {
   test('text with nothing to escape and nothing to cut is returned as it is', () => {
