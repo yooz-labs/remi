@@ -102,6 +102,8 @@ public struct ClientIdentity: Sendable {
 }
 
 public struct PublicClientIdentity: Sendable, Equatable {
+    private static let maximumAuthorizationLabelCodePoints = 64
+
     public let publicKey: String
     public let fingerprint: String
 
@@ -115,10 +117,37 @@ public struct PublicClientIdentity: Sendable, Equatable {
     }
 
     public func authorizeCommand(label: String) -> String {
-        let normalizedLabel = label.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        let safeLabel = (normalizedLabel.isEmpty ? "device" : normalizedLabel)
+        let safeLabel = Self.authorizationLabel(from: label)
             .replacingOccurrences(of: "'", with: "'\\''")
         return "remi authorize \(fingerprint) --label '\(safeLabel)'"
+    }
+
+    static func authorizationLabel(from label: String) -> String {
+        let visible = label.unicodeScalars.map { scalar in
+            isUnsafeAuthorizationLabelScalar(scalar.value) ? " " : String(scalar)
+        }.joined()
+        let normalized = visible.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        var candidate = normalized.isEmpty ? "device" : normalized
+        if candidate.hasPrefix("-") {
+            candidate = "device \(candidate)"
+        }
+        return candidate.unicodeScalars
+            .prefix(maximumAuthorizationLabelCodePoints)
+            .map(String.init)
+            .joined()
+    }
+
+    private static func isUnsafeAuthorizationLabelScalar(_ value: UInt32) -> Bool {
+        value <= 0x1f ||
+            (0x7f...0x9f).contains(value) ||
+            value == 0x00ad ||
+            value == 0x061c ||
+            value == 0x180e ||
+            (0x200b...0x200f).contains(value) ||
+            (0x2028...0x202e).contains(value) ||
+            (0x2060...0x206f).contains(value) ||
+            value == 0xfeff ||
+            (0xe0000...0xe007f).contains(value)
     }
 }
 
