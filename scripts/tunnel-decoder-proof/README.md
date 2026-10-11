@@ -7,6 +7,24 @@ admitted dimensions and RGBA length. Ten control groups alter actual owned PNG
 and JPEG bytes, checking input/dimension bounds, PNG structure/animation/methods,
 JPEG frames/tables/scans/ending and full-decoder CRC/entropy refusal.
 
+Three palette groups enforce PNG's normative PLTE rules before full decoding:
+one palette, before the first IDAT, 1–256 entries in complete RGB triples, only
+for color types 2/3/6, and an indexed palette no larger than its legal bit depth
+allows. Indexed images require that palette. These are PNG format rules
+([PLTE](https://www.w3.org/TR/png-3/#11PLTE) and
+[chunk ordering](https://www.w3.org/TR/png-3/#5ChunkOrdering)), not a selected
+resource policy. Valid-CRC byte mutations isolate each refusal. Legal suggested
+palettes are attached to pinned pngjs truecolor encodings of the exact owned
+icon pixels; tiny indexed encodings use two actual pixels from that icon.
+Every legal case fully decodes, and results retain derived input/pixel hashes
+separately from the unchanged original fixture hashes.
+
+The unchanged admission accepted a 771-byte palette (257 entries) and duplicate
+legal palettes; actual pngjs constructed 257/416 palette entries while preserving
+the original icon pixels. The correction prevents that palette accumulation
+path. Aggregate chunk/JPEG metadata counts, allocation/CPU budgets and a whole
+process memory ceiling remain separate open gates.
+
 Five additional groups construct real owned child processes. The worker fully
 decodes the same PNG/JPEG pixels and returns only dimensions, byte count and hash.
 Each controller permits one child, refuses saturation before spawning, limits
@@ -67,7 +85,8 @@ ceiling or a kernel CPU budget.
 
 ## Held-approval continuation
 
-`approval-matrix.py` extends the original 15 groups with three source-backed
+`approval-matrix.py` extends the 18 decoder groups (including the three palette
+groups) with three source-backed
 checks: PNG and JPEG decode load while a phone-shaped No answer reaches the
 original held `PermissionRequest` HTTP response, plus a synchronous 1200 ms
 parent-event-loop block that must make the independently measured deny exceed

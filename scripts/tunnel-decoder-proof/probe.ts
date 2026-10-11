@@ -5,6 +5,7 @@ import { decodeImage } from './decode';
 import jpegAsset from './fixture.jpg' with { type: 'file' };
 import pngAsset from './fixture.png' with { type: 'file' };
 import inputs from './inputs.json';
+import { paletteProof } from './palette-probe';
 import { dispatchProcessWorker, processProof } from './process-probe';
 
 await dispatchProcessWorker();
@@ -149,6 +150,9 @@ refused(
   'PNG chunk overflow refused',
 );
 checks.push('PNG duplicate chunk and end structure refusal');
+const palettes = paletteProof(png);
+export const decoderPaletteImages = palettes.images;
+checks.push(...palettes.checks);
 // Walk actual generated JPEG segment boundaries, rather than guessed byte offsets.
 function marker(code: number) {
   let offset = 2;
@@ -318,6 +322,7 @@ console.log(
     arch: process.arch,
     checks,
     images,
+    paletteImages: decoderPaletteImages,
     scope:
       'decoder admission and child lifetime candidate; hard memory CPU budgets and held approval remain unproved; no production integration',
   }),
