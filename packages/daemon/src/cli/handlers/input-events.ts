@@ -373,7 +373,7 @@ function resolveOption(
 }
 
 /** What a plain answer string names among a card's options (#1127 review
- *  S1): one option, none, or two different ones. */
+ *  S1): one option, none, or more than one. */
 type NamedOption =
   | { readonly kind: 'one'; readonly option: QuestionOption }
   | { readonly kind: 'none' }
@@ -386,12 +386,16 @@ type NamedOption =
  * lock-screen tap on "1" would then answer the option whose value is "1",
  * labeled "4" (reproduced in review). A string that is one option's value
  * and a DIFFERENT option's label is therefore ambiguous: the held path
- * refuses it and keeps the card and the hold. Typed (non-held) cards keep
- * `resolveOption`.
+ * refuses it and keeps the card and the hold. Display labels can also collide
+ * after escaping or whitespace cleanup; `QuestionOption.label` is already
+ * the displayed form, so all exact label matches must name one option.
+ * Typed (non-held) cards keep `resolveOption`.
  */
 function namedOption(options: readonly QuestionOption[], answer: string): NamedOption {
   const byValue = options.find((o) => o.value === answer);
-  const byLabel = options.find((o) => o.label === answer);
+  const byLabelMatches = options.filter((o) => o.label === answer);
+  if (byLabelMatches.length > 1) return { kind: 'ambiguous' };
+  const byLabel = byLabelMatches[0];
   if (byValue !== undefined && byLabel !== undefined && byValue !== byLabel) {
     return { kind: 'ambiguous' };
   }
@@ -403,10 +407,10 @@ function namedOption(options: readonly QuestionOption[], answer: string): NamedO
  *  (`Question.terminalOnly`, #1127 review S7). Cancel still works. */
 const TERMINAL_ONLY_MESSAGE = 'This question can only be answered in the terminal (or Cancel).';
 
-/** The refusal of an answer that names two different options (see
+/** The refusal of an answer that names more than one option (see
  *  `namedOption`). */
 const AMBIGUOUS_ANSWER_MESSAGE =
-  'This answer matches one option by its number and another by its label; answer again from the card in the app';
+  'This answer matches more than one option; answer again from the card in the app';
 
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
