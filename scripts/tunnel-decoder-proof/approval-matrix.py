@@ -49,7 +49,7 @@ if __name__ == "__main__":
                     ]
                 },
                 "scope": (
-                    "Fifteen decoder and three held-answer groups; the 512 MiB Linux limit is a fixture, "
+                    "Eighteen decoder and three held-answer groups; the 512 MiB Linux limit is a fixture, "
                     "portable resource enforcement and production adoption remain pending"
                 ),
             }

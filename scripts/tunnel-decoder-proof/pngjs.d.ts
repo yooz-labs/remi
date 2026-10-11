@@ -2,6 +2,10 @@
 declare module 'pngjs' {
   export const PNG: {
     sync: {
+      write(
+        pixels: { width: number; height: number; data: Buffer },
+        options: { colorType: 2 | 6; inputColorType: 6; bitDepth: 8 },
+      ): Buffer;
       read(
         bytes: Buffer,
         options: { checkCRC: boolean },
@@ -12,6 +16,10 @@ declare module 'pngjs' {
       };
     };
   };
+}
+declare module 'pngjs/lib/crc' {
+  const CRC: { crc32(bytes: Buffer): number };
+  export default CRC;
 }
 declare module '*.png' {
   const asset: string;

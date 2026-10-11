@@ -15,13 +15,17 @@ if (process.argv.includes('--approval-client')) {
     process.argv.includes('--approval-spike') && process.argv.includes('--owned-spike'),
     'use --owned-spike --approval-spike for the owned approval proof',
   );
-  const [{ decoderProofChecks }, { approvalProof }, { readApprovalImages }, { default: inputs }] =
-    await Promise.all([
-      import('./probe'),
-      import('./approval-probe'),
-      import('./approval-assets'),
-      import('./inputs.json'),
-    ]);
+  const [
+    { decoderProofChecks, decoderPaletteImages },
+    { approvalProof },
+    { readApprovalImages },
+    { default: inputs },
+  ] = await Promise.all([
+    import('./probe'),
+    import('./approval-probe'),
+    import('./approval-assets'),
+    import('./inputs.json'),
+  ]);
   const { png, jpg } = await readApprovalImages();
   const approval = await approvalProof(png, jpg);
   const checks = [...decoderProofChecks, ...approval.checks];
@@ -37,11 +41,12 @@ if (process.argv.includes('--approval-client')) {
         pixelBytes: image.pixelBytes,
         pixelSha256: image.pixelSha256,
       })),
+      paletteImages: decoderPaletteImages,
       approvalLatencyMs: approval.scenarios.map((scenario) => scenario.latencyMs),
       approvalScenarios: approval.scenarios,
       ptyMutationControl: approval.ptyMutationControl,
       scope:
-        '18 owned decoder and held-answer groups; Linux memory is a 512 MiB fixture only; portable resource enforcement and production adoption remain pending',
+        '21 owned decoder and held-answer groups; Linux memory is a 512 MiB fixture only; portable resource enforcement and production adoption remain pending',
     }),
   );
 }

@@ -35,6 +35,9 @@ function pngDimensions(bytes: Uint8Array, view: DataView): Dimensions {
   let offset = 8;
   let result: Dimensions | undefined;
   let imageData = false;
+  let colorType = -1;
+  let bitDepth = 0;
+  let paletteEntries = 0;
   while (offset + 12 <= bytes.length) {
     const length = view.getUint32(offset);
     const end = offset + 12 + length;
@@ -44,12 +47,23 @@ function pngDimensions(bytes: Uint8Array, view: DataView): Dimensions {
     if (type === 0x49484452) {
       if (result || length !== 13) refuse();
       result = dimensions(view.getUint32(offset + 8), view.getUint32(offset + 12));
+      bitDepth = bytes[offset + 16];
+      colorType = bytes[offset + 17];
+      if (colorType === 3 && ![1, 2, 4, 8].includes(bitDepth)) refuse();
       // pngjs 7's interlaced sync branch uses uncapped zlib.inflateSync. Candidate only.
       if (bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] !== 0)
         refuse();
+    } else if (type === 0x504c5445) {
+      // PNG 11.2.2 / 5.6: one legal palette before IDAT; this is not a process memory cap.
+      if (paletteEntries || imageData) refuse();
+      if (length < 3 || length > 768 || length % 3 !== 0) refuse();
+      if (colorType !== 2 && colorType !== 3 && colorType !== 6) refuse();
+      paletteEntries = length / 3;
+      if (colorType === 3 && paletteEntries > 2 ** bitDepth) refuse();
     } else if (type === 0x6163544c || type === 0x6663544c || type === 0x66644154) {
       refuse(); // acTL/fcTL/fdAT: this candidate admits a single static image only.
     } else if (type === 0x49444154) {
+      if (colorType === 3 && !paletteEntries) refuse();
       imageData = true;
     } else if (type === 0x49454e44) {
       if (length !== 0 || !imageData || end !== bytes.length || !result) refuse();
