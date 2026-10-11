@@ -1,4 +1,4 @@
-// #1170 feasibility candidate only; no daemon, quota ledger or transfer caller.
+// #1170 feasibility candidate only; the optional reserved-copy adapter is not a daemon caller.
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';
@@ -58,6 +58,25 @@ export class PrivateCopy {
     if (this.closed || !Number.isSafeInteger(offset) || offset < 0 || offset > this.size)
       throw new Error('private copy unavailable');
     return fs.readSync(this.fd, buffer, 0, Math.min(buffer.length, this.size - offset), offset);
+  }
+
+  /** Actual allocated blocks of the same completed descriptor, not its path. */
+  allocatedBytes(): number {
+    if (this.closed) throw new Error('private copy unavailable');
+    const stat = fs.fstatSync(this.fd, { bigint: true });
+    const bytes = Number(stat.blocks * 512n);
+    if (
+      !stat.isFile() ||
+      stat.dev !== this.owned.dev ||
+      stat.ino !== this.owned.ino ||
+      stat.nlink !== 1n ||
+      stat.size !== BigInt(this.size) ||
+      (stat.mode & 0o777n) !== 0o600n ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    )
+      throw new Error('private copy unavailable');
+    return bytes;
   }
 
   close(): void {

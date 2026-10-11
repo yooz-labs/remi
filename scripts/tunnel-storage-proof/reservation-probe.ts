@@ -98,7 +98,7 @@ export async function reservationChild(
   console.log(JSON.stringify(ids));
 }
 
-export async function reservationProbe(): Promise<void> {
+export async function reservationProbe() {
   const storageChild = await child(['--reservation-storage']);
   const storage = JSON.parse(storageChild.output.trim().split('\n').at(-1) ?? 'null');
   assert.equal(storage.bun, Bun.version, 'original storage Bun');
@@ -368,21 +368,19 @@ export async function reservationProbe(): Promise<void> {
       children.every((item) => item.reaped),
       'every owned child reaped',
     );
-    console.log(
-      JSON.stringify({
-        bun: Bun.version,
-        platform: process.platform,
-        arch: process.arch,
-        checks,
-        children,
-        parentMemoryAtReceipt: process.memoryUsage(),
-        reservationInputSha256: createHash('sha256')
-          .update(Buffer.from(await Bun.file(image).arrayBuffer()))
-          .digest('hex'),
-        scope:
-          'standalone trusted-namespace quota accounting; no transfer authority, descriptor journal, orphan recovery or production caller',
-      }),
-    );
+    return {
+      bun: Bun.version,
+      platform: process.platform,
+      arch: process.arch,
+      checks,
+      children,
+      parentMemoryAtReceipt: process.memoryUsage(),
+      reservationInputSha256: createHash('sha256')
+        .update(Buffer.from(await Bun.file(image).arrayBuffer()))
+        .digest('hex'),
+      scope:
+        'standalone trusted-namespace quota accounting; no transfer authority, descriptor journal, orphan recovery or production caller',
+    };
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

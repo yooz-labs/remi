@@ -163,8 +163,8 @@ For this slice, this explicitly supersedes item 3's private-copy integration in
 the private `reservation-plan.md`.
 The actual file creation/growth/deletion witness demonstrates reserve-before-create
 and confirmed-delete-before-release at an owned fixture callsite.
-It does not integrate the ledger with `copyToPrivate`; that integration remains a
-next gate before adoption.
+That reservation entry does not integrate the ledger with `copyToPrivate`;
+the separate trusted composition profile below exercises that next gate.
 The PNG supplies only owned content bytes and is never decoded by this profile.
 No production helper, handler, capability, wire field or native UI is selected.
 
@@ -203,6 +203,48 @@ peak of 51; the diagnostic shell contributes one PID.
 The command above therefore opts into a 64-PID fixture and keeps 256 MiB memory.
 Six builds and six matching 36-group executions, unchanged input and successful
 owned scratch/container cleanup are required for a complete receipt.
+
+## Reserved private-copy composition
+
+`reserved-copy.ts` composes the existing copy and reservation candidates in the
+same trusted metadata namespace, without selecting a production helper.
+It reserves before any private copy effect, stages the same-descriptor actual
+allocated block charge before returning a handle, and deletes through the
+captured private handle before releasing accounting.
+Normal copy refusal confirms internal partial cleanup before refunding;
+thrown cleanup failure retains quota and reports `cleanupConfirmed=false`.
+The same handle can retry failed completed cleanup or an accounting-only
+failure after confirmed deletion.
+Only actual nonblocking lock refusal before mutation has a proven retry path.
+The restricted writer can commit its rename before a later acknowledgment fails:
+`cleanupConfirmed=true` proves file deletion only, never whether metadata changed
+or was durably acknowledged. An absent reservation remains unavailable.
+Generic write acknowledgment recovery and idempotency remain a separate gate.
+
+`reserved-copy-matrix.py` uses the same immutable repository snapshot and original
+PNG bytes. Its entry preserves all 36 existing groups and adds seven actual
+integration groups: success and preallocated blocks; full-home refusal before
+copy effects; source growth and confirmed partial cleanup; completed unlink
+failure and retry; partial unlink failure and explicit owned fixture cleanup;
+captured-root replacement; and accounting contention/corruption after deletion.
+At the native unlink boundary, the failure fixtures rename only the known owned
+name after descriptor identity validation, then call the actual unlinkat on the
+missing original. Completed retry restores that same name; partial cleanup
+explicitly confirms the held fixture's identity before deletion/refund.
+No ledger record is used to discover or authorize deletion.
+
+The fixture-only fixed C wrapper invokes real Darwin `F_PREALLOCATE` or Linux
+`fallocate(FALLOC_FL_KEEP_SIZE)` on the captured descriptor at the validated
+checkpoint. It increases blocks without changing logical PNG bytes, which the
+candidate then revalidates before publication. This is a discriminating owned
+allocation witness, not a production preallocation policy.
+Run the reservation command above with `reserved-copy-matrix.py` and a fresh
+output path, preserving its explicit 256 MiB/64-PID resource fixture.
+All six compiled pairs must report exactly 43 groups, unchanged source and
+successful cleanup; 27-group and 36-group entries also retain compatibility runs.
+Trusted metadata, same-user path replacement, metadata overhead, descriptor
+journal/recovery, grant/transfer authority and production adoption limits remain.
+No storage-load held-answer latency claim is made by this composition.
 
 ## Admission checkpoint (2026-10-10)
 
