@@ -2,6 +2,15 @@ import RemiKit
 import SwiftUI
 
 public enum RemiConversationSelection {
+    public static func reconciledViewID(
+        selectedViewID: String,
+        views: [SessionViewMeta],
+        viewsLoaded: Bool
+    ) -> String {
+        guard viewsLoaded else { return selectedViewID }
+        return resolvedViewID(selectedViewID: selectedViewID, views: views)
+    }
+
     public static func resolvedViewID(
         selectedViewID: String,
         views: [SessionViewMeta]

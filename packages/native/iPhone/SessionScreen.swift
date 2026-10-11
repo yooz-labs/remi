@@ -9,6 +9,7 @@ struct SessionScreen: View {
     let transcript: [RemiTranscriptEntry]
     let questions: [RemiQuestionCardModel]
     let views: [SessionViewMeta]
+    let viewsLoaded: Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
@@ -31,6 +32,7 @@ struct SessionScreen: View {
         transcript: [RemiTranscriptEntry],
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
+        viewsLoaded: Bool = true,
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
@@ -45,6 +47,7 @@ struct SessionScreen: View {
         self.transcript = transcript
         self.questions = questions
         self.views = views
+        self.viewsLoaded = viewsLoaded
         _selectedViewID = State(initialValue: initialConversationID ?? "")
         _focusedQuestionID = State(initialValue: initialQuestionID)
         self.transcriptForView = transcriptForView
@@ -195,13 +198,23 @@ struct SessionScreen: View {
             selectedViewID = ""
             resetReview()
         }
-        .onChange(of: views.map(\.agentId)) { _, _ in
-            let resolved = RemiConversationSelection.resolvedViewID(
-                selectedViewID: selectedViewID,
-                views: views
-            )
-            if resolved != selectedViewID { selectedViewID = resolved }
+        .onChange(of: viewsLoaded, initial: true) { _, loaded in
+            guard loaded else { return }
+            reconcileConversationSelection()
         }
+        .onChange(of: views.map(\.agentId)) { _, _ in
+            guard viewsLoaded else { return }
+            reconcileConversationSelection()
+        }
+    }
+
+    private func reconcileConversationSelection() {
+        let resolved = RemiConversationSelection.reconciledViewID(
+            selectedViewID: selectedViewID,
+            views: views,
+            viewsLoaded: viewsLoaded
+        )
+        if resolved != selectedViewID { selectedViewID = resolved }
     }
 
     private var searchButton: some View {

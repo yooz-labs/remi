@@ -13,6 +13,24 @@ import Testing
         #expect(RemiConversationSelection.resolvedViewID(selectedViewID: "missing", views: views).isEmpty)
     }
 
+    @Test func deepLinkWaitsForAuthoritativeConversationMetadata() {
+        #expect(RemiConversationSelection.reconciledViewID(
+            selectedViewID: "reviewer",
+            views: [],
+            viewsLoaded: false
+        ) == "reviewer")
+        #expect(RemiConversationSelection.reconciledViewID(
+            selectedViewID: "reviewer",
+            views: views,
+            viewsLoaded: true
+        ) == "reviewer")
+        #expect(RemiConversationSelection.reconciledViewID(
+            selectedViewID: "missing",
+            views: views,
+            viewsLoaded: true
+        ).isEmpty)
+    }
+
     @Test func keyboardNavigationWrapsAcrossMainAndSubagents() {
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "", views: views, offset: -1) == "reviewer")
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "reviewer", views: views, offset: 1).isEmpty)

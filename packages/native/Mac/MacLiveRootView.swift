@@ -111,6 +111,7 @@ struct MacLiveRootView: View {
                             transcript: transcript(for: session.id),
                             questions: questions(for: session.id),
                             views: store.sessionViewsBySession[session.id] ?? [],
+                            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
                             initialConversationID: notificationDestination?.agentID,
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: transcript,

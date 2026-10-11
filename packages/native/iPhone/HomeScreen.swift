@@ -20,6 +20,7 @@ struct HomeScreen: View {
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
     let viewsForSession: (String) -> [SessionViewMeta]
+    let viewsLoadedForSession: (String) -> Bool
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
@@ -50,6 +51,7 @@ struct HomeScreen: View {
         transcriptForSession: @escaping (String) -> [RemiTranscriptEntry] = { _ in RemiPreviewData.transcript },
         questionsForSession: @escaping (String) -> [RemiQuestionCardModel] = { _ in [] },
         viewsForSession: @escaping (String) -> [SessionViewMeta] = { _ in [] },
+        viewsLoadedForSession: @escaping (String) -> Bool = { _ in true },
         onAnswer: @escaping (String, String, String) -> Void = { _, _, _ in },
         onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
         onCancel: @escaping (String, String) -> Void = { _, _ in },
@@ -79,6 +81,7 @@ struct HomeScreen: View {
         self.transcriptForSession = transcriptForSession
         self.questionsForSession = questionsForSession
         self.viewsForSession = viewsForSession
+        self.viewsLoadedForSession = viewsLoadedForSession
         self.onAnswer = onAnswer
         self.onSubmit = onSubmit
         self.onCancel = onCancel
@@ -143,6 +146,7 @@ struct HomeScreen: View {
                         transcriptForSession: transcriptForSession,
                         questionsForSession: questionsForSession,
                         viewsForSession: viewsForSession,
+                        viewsLoadedForSession: viewsLoadedForSession,
                         onAnswer: onAnswer,
                         onSubmit: onSubmit,
                         onCancel: onCancel,
@@ -474,6 +478,7 @@ private struct SessionsSection: View {
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
     let viewsForSession: (String) -> [SessionViewMeta]
+    let viewsLoadedForSession: (String) -> Bool
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
@@ -541,6 +546,7 @@ private struct SessionsSection: View {
                     transcriptForSession: transcriptForSession,
                     questionsForSession: questionsForSession,
                     viewsForSession: viewsForSession,
+                    viewsLoadedForSession: viewsLoadedForSession,
                     onAnswer: onAnswer,
                     onSubmit: onSubmit,
                     onCancel: onCancel,
@@ -743,6 +749,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
     let viewsForSession: (String) -> [SessionViewMeta]
+    let viewsLoadedForSession: (String) -> Bool
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
@@ -839,6 +846,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
             transcript: transcriptForSession(session.id),
             questions: questionsForSession(session.id),
             views: viewsForSession(session.id),
+            viewsLoaded: viewsLoadedForSession(session.id),
             transcriptForView: transcriptForSession,
             onSelectView: onOpenSession,
             onAnswer: { onAnswer(session.id, $0, $1) },
