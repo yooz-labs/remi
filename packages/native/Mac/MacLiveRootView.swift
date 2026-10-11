@@ -985,41 +985,38 @@ private struct MacWorkspaceGroupLabel: View {
     let workspace: MacSessionWorkspace
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-            HStack {
-                Label(workspace.project, systemImage: "folder")
-                    .font(.headline)
-                Spacer(minLength: RemiTheme.Spacing.s)
-                Text(workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Label(workspace.project, systemImage: "folder")
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
 
             Text(workspace.projectPath)
                 .font(RemiTheme.Typography.code)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(-1)
+
+            Spacer(minLength: RemiTheme.Spacing.xs)
 
             if workspace.questionCount > 0 {
-                Label(attentionLabel, systemImage: "questionmark.bubble.fill")
-                    .font(.caption.weight(.semibold))
+                Label("\(workspace.questionCount)", systemImage: "questionmark.bubble.fill")
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(RemiTheme.Color.attentionInk)
                     .padding(.horizontal, RemiTheme.Spacing.xs)
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .background(RemiTheme.Color.attention, in: Capsule())
             }
+
+            Text("\(workspace.sessions.count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, RemiTheme.Spacing.xxs)
+        .padding(.vertical, RemiTheme.Spacing.xxxs)
+        .help(workspace.projectPath)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Expands or collapses sessions in this workspace")
-    }
-
-    private var attentionLabel: String {
-        workspace.questionCount == 1
-            ? "1 question needs attention"
-            : "\(workspace.questionCount) questions need attention"
     }
 
     private var accessibilityLabel: String {
@@ -1046,7 +1043,7 @@ private struct MacSessionListRow: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            RemiSessionRow(session: session)
+            MacCompactSessionRow(session: session)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
             if session.canResume {
@@ -1055,14 +1052,129 @@ private struct MacSessionListRow: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Label("Resume", systemImage: "play.fill")
+                            .labelStyle(.iconOnly)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .buttonStyle(.borderless)
+                .frame(
+                    minWidth: RemiTheme.Size.minimumTapTarget,
+                    minHeight: RemiTheme.Size.minimumTapTarget
+                )
                 .contentShape(.rect)
                 .disabled(session.isResuming)
                 .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
+                .help(session.isResuming ? "Resuming session" : "Resume session")
             }
+        }
+    }
+}
+
+private struct MacCompactSessionRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let session: RemiSessionSummary
+
+    var body: some View {
+        HStack(alignment: .top, spacing: RemiTheme.Spacing.xs) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(session.status == .needsYou ? RemiTheme.Color.attention : .clear)
+                .frame(width: 3)
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                        Text(session.name)
+                            .font(.body.weight(.semibold))
+                        RemiStatusBadge(status: session.status)
+                    }
+                } else {
+                    HStack(spacing: RemiTheme.Spacing.xs) {
+                        Text(session.name)
+                            .font(.body.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: RemiTheme.Spacing.xs)
+                        RemiStatusBadge(status: session.status)
+                    }
+                }
+
+                if let lastMessage = session.lastMessage, !lastMessage.isEmpty {
+                    Text(lastMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                }
+
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    Text(session.harness)
+                        .font(.caption2.weight(.semibold))
+                        .textCase(.uppercase)
+
+                    if session.canResume {
+                        Text(storedSessionLabel)
+                            .font(.caption2.weight(.semibold))
+                    }
+
+                    if let activity = lastActivityDate {
+                        Text(activity, style: .relative)
+                            .font(.caption)
+                    }
+
+                    Spacer(minLength: RemiTheme.Spacing.xs)
+
+                    if session.openQuestionCount > 0 {
+                        Label("\(session.openQuestionCount)", systemImage: "questionmark.bubble.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(RemiTheme.Color.attentionInk)
+                    }
+                }
+                .foregroundStyle(.secondary)
+
+                if let resumeError = session.resumeError {
+                    Text(resumeError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, RemiTheme.Spacing.xxs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var storedSessionLabel: String {
+        if session.isResuming { return "Resuming…" }
+        guard let identity = session.resumeIdentity else { return "Stored" }
+        return "Stored · \(identity)"
+    }
+
+    private var lastActivityDate: Date? {
+        guard let lastActivity = session.lastActivity else { return nil }
+        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))
+            ?? (try? Date.ISO8601FormatStyle().parse(lastActivity))
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [session.name, session.harness, statusLabel]
+        if let lastMessage = session.lastMessage, !lastMessage.isEmpty {
+            parts.append(lastMessage)
+        }
+        if session.openQuestionCount > 0 {
+            parts.append(
+                session.openQuestionCount == 1
+                    ? "1 question needs attention"
+                    : "\(session.openQuestionCount) questions need attention"
+            )
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private var statusLabel: String {
+        switch session.status {
+        case .needsYou: "Needs you"
+        case .working: "Working"
+        case .idle: "Idle"
+        case .connecting: "Connecting"
+        case .offline: "Offline"
         }
     }
 }
