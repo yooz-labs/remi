@@ -9,6 +9,7 @@ public enum RemiPreviewData {
             kind: .permission,
             text: message.question.text,
             machineName: "fixture-host",
+            sessionID: message.sessionId,
             sessionName: message.sessionId,
             options: message.question.options.map { option in
                 RemiQuestionOption(
@@ -43,6 +44,7 @@ public enum RemiPreviewData {
         kind: .permission,
         text: "Allow Bash to run the test suite?",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         options: [
             RemiQuestionOption(id: "yes", label: "Yes", role: .allow, isRecommended: true),
@@ -55,6 +57,7 @@ public enum RemiPreviewData {
         kind: .permission,
         text: "Allow edits under packages/native?",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         options: [
             RemiQuestionOption(id: "once", label: "Yes", role: .allow),
@@ -69,6 +72,7 @@ public enum RemiPreviewData {
         text: "Ready to implement this plan?",
         detail: "1. Add semantic design tokens.\n2. Build the shared question card.\n3. Verify light, dark, and accessibility sizes.",
         machineName: "MacBook",
+        sessionID: "design-pass",
         sessionName: "design-pass",
         options: [
             RemiQuestionOption(id: "auto", label: "Approve, auto-accept edits", role: .allow, grantsForSession: true),
@@ -82,6 +86,7 @@ public enum RemiPreviewData {
         kind: .askUser,
         text: "Choose the first native app direction.",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         steps: [
             RemiQuestionStep(id: "focus", header: "Focus", text: "Which surface should lead?", options: [
@@ -96,6 +101,7 @@ public enum RemiPreviewData {
         kind: .askUser,
         text: "This question cannot be represented safely on this device.",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         terminalOnly: true
     )
@@ -105,6 +111,7 @@ public enum RemiPreviewData {
         kind: .multipleChoice,
         text: "Which verification should run next?",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         options: [
             RemiQuestionOption(id: "unit", label: "Package tests", detail: "Run the Swift Testing suite"),
@@ -117,6 +124,7 @@ public enum RemiPreviewData {
         kind: .generic,
         text: "The agent has a request from a newer protocol version.",
         machineName: "Studio",
+        sessionID: "native-app",
         sessionName: "native-app",
         options: [
             RemiQuestionOption(id: "continue", label: "Continue"),
@@ -125,10 +133,10 @@ public enum RemiPreviewData {
     )
 
     public static let questionStates: [RemiQuestionCardModel] = [
-        RemiQuestionCardModel(id: "sending", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .sending),
-        RemiQuestionCardModel(id: "answered", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .answered("Yes")),
-        RemiQuestionCardModel(id: "elsewhere", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .resolvedElsewhere(.terminal)),
-        RemiQuestionCardModel(id: "stale", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionName: "native-app", state: .stale),
+        RemiQuestionCardModel(id: "sending", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionID: "native-app", sessionName: "native-app", state: .sending),
+        RemiQuestionCardModel(id: "answered", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionID: "native-app", sessionName: "native-app", state: .answered("Yes")),
+        RemiQuestionCardModel(id: "elsewhere", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionID: "native-app", sessionName: "native-app", state: .resolvedElsewhere(.terminal)),
+        RemiQuestionCardModel(id: "stale", kind: .permission, text: "Allow Bash to run tests?", machineName: "Studio", sessionID: "native-app", sessionName: "native-app", state: .stale),
     ]
 
     public static let primarySession = RemiSessionSummary(

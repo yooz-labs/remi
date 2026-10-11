@@ -16,6 +16,7 @@ struct PairingScreen: View {
 
     @State private var draft = AddMachineDraft()
     @State private var showingScanner = false
+    @State private var added = false
 
     init(
         publicIdentity: PublicClientIdentity? = nil,
@@ -78,18 +79,18 @@ struct PairingScreen: View {
                         .onSubmit(addMachine)
                 }
 
-                if let issue = draft.submissionIssue {
+                if let issue = draft.submissionIssue ?? draft.validationIssue {
                     Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                 }
 
                 LabeledContent("Connection", value: draft.connectionSummary)
 
-                Button(draft.mode == .relay ? "Pair over the relay" : "Add machine") {
+                Button(added ? "Machine added" : draft.mode == .relay ? "Pair over the relay" : "Add machine") {
                     addMachine()
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(!draft.canSubmit)
+                .disabled(added || !draft.canSubmit)
                 .accessibilityHint("Adds the machine using the connection summary")
             } header: {
                 Text("Other connection methods")
@@ -127,6 +128,10 @@ struct PairingScreen: View {
         }
         .navigationTitle("Add a machine")
         .navigationBarTitleDisplayMode(dynamicTypeSize.isAccessibilitySize ? .inline : .automatic)
+        .onChange(of: draft.mode) { _, _ in added = false }
+        .onChange(of: draft.host) { _, _ in added = false }
+        .onChange(of: draft.port) { _, _ in added = false }
+        .onChange(of: draft.relayToken) { _, _ in added = false }
         .sheet(isPresented: $showingScanner) {
             PairingScannerSheet(
                 phoneFingerprint: publicIdentity?.fingerprint,
@@ -140,6 +145,7 @@ struct PairingScreen: View {
     private func addMachine() {
         guard let endpoint = draft.makeEndpoint() else { return }
         onAddMachine(endpoint)
+        added = true
     }
 
     private func validationMessage(_ issue: AddMachineDraft.ValidationIssue) -> LocalizedStringResource {

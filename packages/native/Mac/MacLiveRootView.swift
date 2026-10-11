@@ -504,6 +504,7 @@ struct MacLiveRootView: View {
                 detail: question.detail,
                 machineID: machine.id,
                 machineName: machine.displayName,
+                sessionID: message.sessionId,
                 sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
                     ?? message.sessionId,
                 options: question.options.map { option in
@@ -512,7 +513,7 @@ struct MacLiveRootView: View {
                         label: option.label,
                         detail: option.description,
                         role: kind.optionRole(isYes: option.isYes, isNo: option.isNo),
-                        grantsForSession: option.standingGrant != nil,
+                        grantsForSession: option.standingGrant != nil || option.sessionGrant != nil,
                         isRecommended: option.isRecommended
                     )
                 },
@@ -1236,7 +1237,7 @@ private struct MacAddMachineSheet: View {
                         Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        if let issue = draft.submissionIssue {
+                        if let issue = draft.submissionIssue ?? draft.validationIssue {
                             Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.red)
                         }
@@ -1244,7 +1245,7 @@ private struct MacAddMachineSheet: View {
                         TextField("Host or IP address", text: $draft.host)
                         TextField("Port", value: $draft.port, format: .number)
                             .onSubmit(addMachine)
-                        if let issue = draft.submissionIssue {
+                        if let issue = draft.submissionIssue ?? draft.validationIssue {
                             Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.red)
                         }
