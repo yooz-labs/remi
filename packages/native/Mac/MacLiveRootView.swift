@@ -74,7 +74,8 @@ struct MacLiveRootView: View {
                         onResume: resume,
                         onRetryApproval: store.retryApproval,
                         onRetryConnection: store.retryConnection,
-                        onNewSession: { showingNewSession = true }
+                        onNewSession: { showingNewSession = true },
+                        onTerminate: store.terminateSession
                     )
                     .navigationSplitViewColumnWidth(min: 380, ideal: 480, max: 620)
                     .navigationTitle("Sessions")
@@ -181,6 +182,13 @@ struct MacLiveRootView: View {
                 }
                 .toolbar {
                     ToolbarItemGroup(placement: .navigation) {
+                        MacMachineSwitcher(
+                            machines: store.machines.map(machinePresentation),
+                            selectedMachineID: selectedMachineID,
+                            onSelect: selectMachine,
+                            onMove: moveMachineSelection
+                        )
+
                         Button {
                             toggleMachineColumn()
                         } label: {
@@ -404,6 +412,19 @@ struct MacLiveRootView: View {
         applyColumnLayout(currentColumnLayout.togglingMachines())
     }
 
+    private func selectMachine(_ machineID: String) {
+        machineSelection.wrappedValue = machineID
+    }
+
+    private func moveMachineSelection(offset: Int) {
+        guard let next = RemiOrderedSelection.shifted(
+            selection: selectedMachineID,
+            orderedIDs: store.machines.map(\.id),
+            offset: offset
+        ) else { return }
+        selectMachine(next)
+    }
+
     private func toggleSessionColumn() {
         applyColumnLayout(currentColumnLayout.togglingNavigation())
     }
@@ -604,6 +625,7 @@ private struct MacSessionsColumn: View {
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
     let onNewSession: () -> Void
+    let onTerminate: (String) -> Void
 
     var body: some View {
         Group {
@@ -615,7 +637,8 @@ private struct MacSessionsColumn: View {
                         machineID: machine.id,
                         sessions: sessions,
                         selection: $selection,
-                        onResume: onResume
+                        onResume: onResume,
+                        onTerminate: onTerminate
                     )
                 }
             } else if let machine {
@@ -641,9 +664,11 @@ private struct MacSessionList: View {
     let sessions: [RemiSessionSummary]
     @Binding var selection: String?
     let onResume: (RemiSessionSummary) -> Void
+    let onTerminate: (String) -> Void
     @State private var searchText = ""
     @State private var showsRecent = false
     @State private var expandedWorkspaces: Set<String> = []
+    @State private var pendingTermination: RemiSessionSummary?
 
     var body: some View {
         List(selection: $selection) {
@@ -691,6 +716,23 @@ private struct MacSessionList: View {
         .onChange(of: selection) { _, _ in expandRelevantWorkspace() }
         .onChange(of: workspaces.map { "\($0.id):\($0.needsAttention)" }) { _, _ in
             expandRelevantWorkspace()
+        }
+        .confirmationDialog(
+            "Exit \(pendingTermination?.name ?? "session")?",
+            isPresented: Binding(
+                get: { pendingTermination != nil },
+                set: { if !$0 { pendingTermination = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Exit session", role: .destructive) {
+                guard let session = pendingTermination else { return }
+                onTerminate(session.id)
+                pendingTermination = nil
+            }
+            Button("Cancel", role: .cancel) { pendingTermination = nil }
+        } message: {
+            Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
     }
 
@@ -749,9 +791,25 @@ private struct MacSessionList: View {
         MacSessionListRow(session: session, onResume: { onResume(session) })
             .tag(session.id)
             .contextMenu {
+                if session.canResume {
+                    Button("Resume session", systemImage: "play.fill") {
+                        onResume(session)
+                    }
+                    .disabled(session.isResuming)
+                }
+                Button("Copy directory", systemImage: "folder") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.projectPath, forType: .string)
+                }
                 Button("Copy session ID", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(session.id, forType: .string)
+                }
+                if session.canTerminate {
+                    Divider()
+                    Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                        pendingTermination = session
+                    }
                 }
             }
     }
@@ -796,6 +854,55 @@ private struct MacSessionList: View {
             orderedIDs: orderedIDs,
             offset: offset
         )
+    }
+}
+
+private struct MacMachineSwitcher: View {
+    let machines: [RemiMachineSummary]
+    let selectedMachineID: String
+    let onSelect: (String) -> Void
+    let onMove: (Int) -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if machines.count > 1 {
+            HStack(spacing: RemiTheme.Spacing.xxs) {
+                Button("Previous machine", systemImage: "chevron.up") {
+                    onMove(-1)
+                }
+                .labelStyle(.iconOnly)
+                .keyboardShortcut(.upArrow, modifiers: [.control, .option])
+                .help("Previous machine (Control-Option-↑)")
+
+                Menu {
+                    ForEach(machines) { machine in
+                        Button {
+                            onSelect(machine.id)
+                        } label: {
+                            Label(
+                                machine.name,
+                                systemImage: machine.id == selectedMachineID ? "checkmark" : "desktopcomputer"
+                            )
+                        }
+                    }
+                } label: {
+                    Label(selectedMachine?.name ?? "Machine", systemImage: "desktopcomputer")
+                }
+                .fixedSize()
+                .help("Switch machine")
+
+                Button("Next machine", systemImage: "chevron.down") {
+                    onMove(1)
+                }
+                .labelStyle(.iconOnly)
+                .keyboardShortcut(.downArrow, modifiers: [.control, .option])
+                .help("Next machine (Control-Option-↓)")
+            }
+        }
+    }
+
+    private var selectedMachine: RemiMachineSummary? {
+        machines.first { $0.id == selectedMachineID } ?? machines.first
     }
 }
 
