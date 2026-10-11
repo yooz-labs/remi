@@ -36,6 +36,10 @@ test('wrapper Ctrl-Z/fg preserves stdin and keeps the PTY child running', async 
       cleanupSignals: Array<{ pid: number; signal: string }>;
       cleanupAttempts: Array<{ pid: number; signal: string }>;
       knownExitedPids: number[];
+      cleanupErrors: unknown[];
+      unknownPids: number[];
+      shellReaped: boolean;
+      reapedShellAbsent: boolean;
     };
     expect(result.cycles).toEqual(['ctrl-z-0', 'ctrl-z-1', 'ctrl-z-2', 'external', 'surrounded']);
     expect(result.signalLogs).toHaveLength(10);
@@ -44,6 +48,10 @@ test('wrapper Ctrl-Z/fg preserves stdin and keeps the PTY child running', async 
     expect(result.cleanupSignals.filter(({ pid }) => pid !== result.shellPid)).toEqual([]);
     expect(result.cleanupAttempts.filter(({ pid }) => pid !== result.shellPid)).toEqual([]);
     expect(result.knownExitedPids.length).toBeGreaterThanOrEqual(2);
+    expect(result.cleanupErrors).toEqual([]);
+    expect(result.unknownPids).toEqual([]);
+    expect(result.shellReaped).toBe(true);
+    expect(result.reapedShellAbsent).toBe(true);
     expect(result.seconds).toBeLessThan(30);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -82,12 +90,20 @@ test('startup timeout cleans up live owned processes with verified identities', 
       shellPid: number;
       cleanupSignals: Array<{ pid: number; signal: string }>;
       seconds: number;
+      cleanupErrors: unknown[];
+      unknownPids: number[];
+      shellReaped: boolean;
+      reapedShellAbsent: boolean;
     };
     expect(result.error).toBe('Timed out: inert child ready');
     expect(
       result.cleanupSignals.filter(({ pid }) => pid !== result.shellPid).length,
     ).toBeGreaterThan(0);
     expect(result.remainingPids).toEqual([]);
+    expect(result.cleanupErrors).toEqual([]);
+    expect(result.unknownPids).toEqual([]);
+    expect(result.shellReaped).toBe(true);
+    expect(result.reapedShellAbsent).toBe(true);
     expect(result.seconds).toBeLessThan(30);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

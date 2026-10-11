@@ -6,6 +6,7 @@ interactive shell. Only PIDs created by this probe may be signalled.
 
 import argparse
 import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -61,15 +62,23 @@ if sys.platform == "darwin":
 def process_identity(pid):
     if sys.platform == "darwin":
         info = BsdInfo()
-        if libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info):
-            return None
+        ctypes.set_errno(0)
+        size = libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+        if size != ctypes.sizeof(info):
+            code = ctypes.get_errno()
+            if size == 0 and code == errno.ESRCH:
+                return None
+            raise OSError(code or errno.EIO, f"proc_pidinfo({pid}) returned {size} bytes")
         return {"start": [info.start_sec, info.start_usec], "parent": info.ppid, "group": info.pgid}
     try:
         # Fields after the final comm ')' start at field 3; starttime is field 22.
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
     except FileNotFoundError:
         return None
-    return {"start": [int(fields[19])], "parent": int(fields[1]), "group": int(fields[2])}
+    try:
+        return {"start": [int(fields[19])], "parent": int(fields[1]), "group": int(fields[2])}
+    except (ValueError, IndexError) as error:
+        raise OSError(errno.EIO, f"cannot parse process identity for {pid}") from error
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -115,34 +124,50 @@ if shell_pid == 0:
 
 transcript = bytearray()
 owned = []
-identities = {shell_pid: process_identity(shell_pid)}
+identities = {}
 handles = {}
 known_exited = set()
 cleanup_signals = []
 cleanup_attempts = []
 cleanup_skipped = []
+cleanup_errors = []
+pidfd_fallbacks = []
+unverified_candidates = set()
 states = []
 cycles = []
 expected = bytearray()
 result = {"shell": shell, "shellPid": shell_pid, "cycles": cycles, "states": states,
           "cleanupSignals": cleanup_signals, "cleanupSkipped": cleanup_skipped}
 result["cleanupAttempts"] = cleanup_attempts
+result["cleanupErrors"] = cleanup_errors
+result["pidfdFallbacks"] = pidfd_fallbacks
 
 
 def remember_owned(pid, parent):
     identity = process_identity(pid)
     assert identity is not None and identity["parent"] == parent, "process is not our descendant"
     assert parent in identities and process_identity(parent) == identities[parent], "parent identity changed"
+    # Capture ownership before an optional capability can fail. An unavailable
+    # pidfd must not leave this independently verified process outside cleanup.
+    identities[pid] = identity
+    owned.append(pid)
     # Linux pidfds bind signalling to this process incarnation. Recheck after
     # opening so a concurrent exit/reuse cannot bind us to a different process.
     if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
-        handle = os.pidfd_open(pid)
-        if process_identity(pid) != identity:
-            os.close(handle)
-            raise AssertionError("process changed while opening pidfd")
-        handles[pid] = handle
-    identities[pid] = identity
-    owned.append(pid)
+        try:
+            handle = os.pidfd_open(pid)
+        except ProcessLookupError:
+            known_exited.add(pid)
+        except OSError as error:
+            pidfd_fallbacks.append({"pid": pid, "errno": error.errno, "error": str(error)})
+        else:
+            try:
+                if process_identity(pid) != identity:
+                    raise AssertionError("process changed while opening pidfd")
+            except (OSError, AssertionError):
+                os.close(handle)
+                raise
+            handles[pid] = handle
 
 
 def same_process(pid):
@@ -164,10 +189,12 @@ def same_process(pid):
 
 
 def cleanup_signal(pid, sig):
-    if not same_process(pid):
-        cleanup_skipped.append({"pid": pid, "signal": sig.name, "reason": "exited-or-changed"})
-        return
     try:
+        # An opened/revalidated pidfd is independently bound to the captured
+        # incarnation, even if a later procfs inspection is unavailable.
+        if pid in known_exited or pid not in handles and not same_process(pid):
+            cleanup_skipped.append({"pid": pid, "signal": sig.name, "reason": "exited-or-changed"})
+            return
         cleanup_attempts.append({"pid": pid, "signal": sig.name, "start": identities[pid]["start"]})
         if pid in handles:
             signal.pidfd_send_signal(handles[pid], sig)
@@ -178,6 +205,8 @@ def cleanup_signal(pid, sig):
         cleanup_signals.append({"pid": pid, "signal": sig.name})
     except ProcessLookupError:
         known_exited.add(pid)
+    except OSError as error:
+        cleanup_errors.append({"stage": sig.name, "pid": pid, "error": str(error)})
 
 
 def drain(seconds=0.02, limit=None):
@@ -257,6 +286,8 @@ def resume_cycle(name, trigger):
 
 try:
     wait_for(lambda: b"SUSPEND_SHELL> " in transcript, "shell ready")
+    identities[shell_pid] = process_identity(shell_pid)
+    assert identities[shell_pid] is not None, "shell identity unavailable"
     command = [args.bun, *([str(args.cli.resolve())] if args.cli else []), "--no-relay"]
     os.write(master, (shlex.join(command) + "\n").encode())
     wait_for(lambda: b"SUSPEND_PROBE_READY" in transcript, "inert child ready")
@@ -286,41 +317,96 @@ try:
 except Exception as error:
     result["error"] = str(error)
 finally:
-    # A wrapper may fail before the child emits its ready marker. Recover its
-    # foreground PID only after proving that it belongs to this owned shell.
-    foreground = os.tcgetpgrp(master)
-    if foreground != shell_pid and foreground not in owned:
-        entry = processes([foreground]).get(foreground)
-        if entry is not None and int(entry[0]) == shell_pid:
-            remember_owned(foreground, shell_pid)
-    metadata_path = root / "pids.json"
-    if metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text())
-        candidate = metadata["child"]
-        entry = processes([candidate]).get(candidate)
-        if candidate not in owned and entry is not None and int(entry[0]) in owned:
-            remember_owned(candidate, int(entry[0]))
-    # Even a stopped wrapper must be ended. SIGCONT/TERM target only the owned
-    # PIDs; after a short teardown window SIGKILL is the bounded fallback.
-    cleanup_deadline = time.monotonic() + 2
-    for pid in owned:
-        for sig in (signal.SIGCONT, signal.SIGTERM):
-            cleanup_signal(pid, sig)
-    drain(0.2, cleanup_deadline)
-    for pid in owned:
-        cleanup_signal(pid, signal.SIGKILL)
-    drain(0.1, cleanup_deadline)
-    cleanup_signal(shell_pid, signal.SIGKILL)
-    os.waitpid(shell_pid, 0)
-    os.close(master)
-    result["remainingPids"] = [pid for pid in owned if pid not in known_exited
-                               and (current := process_identity(pid)) is not None
-                               and current["start"] == identities[pid]["start"]]
+    try:
+        # Recover pre-ready processes independently: one inspection failure
+        # must neither label a process exited nor abort other targets' cleanup.
+        candidate = None
+        try:
+            foreground = os.tcgetpgrp(master)
+            if foreground != shell_pid and foreground not in owned:
+                entry = processes([foreground]).get(foreground)
+                if entry is not None and int(entry[0]) == shell_pid:
+                    candidate = foreground
+                    remember_owned(candidate, shell_pid)
+        except (OSError, AssertionError) as error:
+            if candidate is not None:
+                unverified_candidates.add(candidate)
+            cleanup_errors.append({"stage": "recover-wrapper", "error": str(error)})
+        candidate = None
+        try:
+            metadata_path = root / "pids.json"
+            if metadata_path.exists():
+                metadata = json.loads(metadata_path.read_text())
+                candidate = metadata["child"]
+                entry = processes([candidate]).get(candidate)
+                if candidate not in owned and entry is not None and int(entry[0]) in owned:
+                    remember_owned(candidate, int(entry[0]))
+        except (OSError, ValueError, KeyError, AssertionError) as error:
+            if candidate is not None:
+                unverified_candidates.add(candidate)
+            cleanup_errors.append({"stage": "recover-child", "error": str(error)})
+        cleanup_deadline = time.monotonic() + 2
+        for pid in owned:
+            for sig in (signal.SIGCONT, signal.SIGTERM):
+                cleanup_signal(pid, sig)
+        drain(0.2, cleanup_deadline)
+        for pid in owned:
+            cleanup_signal(pid, signal.SIGKILL)
+        drain(0.1, cleanup_deadline)
+    finally:
+        # The shell is our unreaped direct child. waitpid proves ownership
+        # independently of libproc/procfs and prevents its PID being recycled
+        # before this kill/reap, even if identity inspection is unavailable.
+        try:
+            waited, _ = os.waitpid(shell_pid, os.WNOHANG)
+            if waited == 0:
+                cleanup_attempts.append({"pid": shell_pid, "signal": "SIGKILL", "directChild": True})
+                try:
+                    os.kill(shell_pid, signal.SIGKILL)
+                    cleanup_signals.append({"pid": shell_pid, "signal": "SIGKILL"})
+                except ProcessLookupError:
+                    pass  # It exited after waitpid; still reap it below.
+                except OSError as error:
+                    cleanup_errors.append({"stage": "shell-kill", "error": str(error)})
+                reap_deadline = time.monotonic() + 1
+                while waited == 0 and time.monotonic() < reap_deadline:
+                    waited, _ = os.waitpid(shell_pid, os.WNOHANG)
+                    if waited == 0:
+                        time.sleep(0.01)
+            result["shellReaped"] = waited == shell_pid
+            if waited == 0:
+                cleanup_errors.append({"stage": "shell-reap", "error": "shell did not exit within budget"})
+            else:
+                try:
+                    result["reapedShellAbsent"] = process_identity(shell_pid) is None
+                except OSError as error:
+                    cleanup_errors.append({"stage": "inspect-reaped-shell", "error": str(error)})
+        except OSError as error:
+            cleanup_errors.append({"stage": "shell-reap", "error": str(error)})
+        for fd in [master, *handles.values()]:
+            try:
+                os.close(fd)
+            except OSError as error:
+                cleanup_errors.append({"stage": "close-fd", "error": str(error)})
+    remaining = []
+    unknown = []
+    for pid in set(owned) | unverified_candidates:
+        if pid in known_exited:
+            continue
+        try:
+            current = process_identity(pid)
+        except OSError as error:
+            unknown.append(pid)
+            remaining.append(pid)
+            cleanup_errors.append({"stage": "remaining-inspection", "pid": pid, "error": str(error)})
+            continue
+        if current is not None and (pid not in identities or current["start"] == identities[pid]["start"]):
+            remaining.append(pid)
+    result["remainingPids"] = sorted(remaining)
+    result["unknownPids"] = sorted(unknown)
     result["knownExitedPids"] = sorted(known_exited)
-    for handle in handles.values():
-        os.close(handle)
     result["seconds"] = time.monotonic() - started
     (root / "transcript.bin").write_bytes(transcript)
     (root / "result.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result))
-sys.exit(1 if result.get("error") or result["remainingPids"] else 0)
+sys.exit(1 if result.get("error") or result["remainingPids"] or cleanup_errors else 0)

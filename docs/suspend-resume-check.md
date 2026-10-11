@@ -20,13 +20,25 @@ one input chunk containing ordinary bytes around Ctrl-Z. Every cycle must:
 Ctrl-B d must exit the wrapper, end its child, and return the shell to the
 foreground. Cleanup also continues and terminates owned stopped processes on
 failure; the runner has a 25-second scenario deadline and a 30-second test
-budget. Signals never target the Bun test runner, its parent, or a live hub.
+budget. Cleanup targets are the probe's owned descendants; the tests do not
+intentionally signal the Bun test runner, its parent, or a live hub.
 Once a process is observed exiting, cleanup never signals its saved PID.
-Remaining cleanup targets must still match their captured kernel start time
-and owned ancestry immediately before each signal; Linux also uses a pidfd
-when available. The success check asserts no wrapper/child cleanup signals.
+Remaining numeric cleanup targets must still match their captured kernel
+start time and owned ancestry immediately before each signal; Linux uses a
+pidfd bound to the captured incarnation when available. The success check
+asserts no wrapper/child cleanup signals.
 A second control keeps an actual inert child before its ready marker and
 checks that the startup timeout terminates the live owned processes.
+Unavailable or denied pidfd acquisition is recorded and uses the same
+identity-revalidated numeric fallback as macOS. That fallback has a narrow,
+non-atomic check-to-signal race; Linux start ticks also have finite granularity.
+An available pidfd binds the signal to its captured process incarnation.
+Darwin inspection errors or short records are reported as unknown, not as
+confirmed exits. They fail the check and do not bypass descriptor closing or
+the independently owned shell's bounded reap. Actual disappearance after the
+shell's reap is checked in both controls. Kernel/seccomp pidfd denial and
+Darwin inspection failures have not been induced in the measured environment;
+no simulated syscall failures stand in for execution of those paths.
 
 Run the source check with the Bun version being evaluated:
 
