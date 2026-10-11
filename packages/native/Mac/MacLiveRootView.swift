@@ -1008,7 +1008,7 @@ private struct MacWorkspaceGroupLabel: View {
                     .background(RemiTheme.Color.attention, in: Capsule())
             }
 
-            Text("\(workspace.sessions.count)")
+            Text(workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -1055,7 +1055,8 @@ private struct MacSessionListRow: View {
                             .labelStyle(.iconOnly)
                     }
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .frame(
                     minWidth: RemiTheme.Size.minimumTapTarget,
                     minHeight: RemiTheme.Size.minimumTapTarget
