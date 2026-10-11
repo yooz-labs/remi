@@ -68,6 +68,18 @@ struct TranscriptReviewTests {
         state.reset()
         #expect(state == RemiTranscriptReviewState())
     }
+
+    @Test func latestActivityPrefersPendingQuestionsThenNewestTranscriptEntry() {
+        #expect(RemiTranscriptNavigation.latestActivityID(
+            entryIDs: ["first", "latest-entry"],
+            questionIDs: ["pending-question"]
+        ) == "pending-question")
+        #expect(RemiTranscriptNavigation.latestActivityID(
+            entryIDs: ["first", "latest-entry"],
+            questionIDs: []
+        ) == "latest-entry")
+        #expect(RemiTranscriptNavigation.latestActivityID(entryIDs: [], questionIDs: []) == nil)
+    }
 }
 
 @Suite struct ConversationReviewMemoryTests {
