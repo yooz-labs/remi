@@ -1,7 +1,8 @@
 """Run the real wrapper under an owned shell's job control (#375).
 
 No signal/stdin seams: input enters the OS PTY and `fg` is executed by the
-interactive shell. Only PIDs created by this probe may be signalled.
+interactive shell. Cleanup uses captured start identities and ancestry;
+initial pidfd correlation and numeric signalling retain narrow race windows.
 """
 
 import argparse
@@ -151,8 +152,8 @@ def remember_owned(pid, parent):
     # pidfd must not leave this independently verified process outside cleanup.
     identities[pid] = identity
     owned.append(pid)
-    # Linux pidfds bind signalling to this process incarnation. Recheck after
-    # opening so a concurrent exit/reuse cannot bind us to a different process.
+    # Linux pidfds bind later signals to the opened incarnation. Recheck its
+    # initial correlation; /proc start ticks still have finite granularity.
     if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
         try:
             handle = os.pidfd_open(pid)
