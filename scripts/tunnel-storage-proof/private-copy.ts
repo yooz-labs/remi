@@ -1,4 +1,4 @@
-// #1170 feasibility candidate only; no daemon, quota ledger or transfer caller.
+// #1170 feasibility candidate only; the optional reserved-copy adapter is not a daemon caller.
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';
@@ -17,6 +17,31 @@ const C = fs.constants;
 const CHUNK = 32 * 1024;
 const LIMIT = 10n * 1024n * 1024n;
 const DIRECTORY = C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW;
+
+export class PrivateCopyCleanupError extends Error {
+  constructor(readonly allocatedBytes: number | null) {
+    super('private cleanup failed');
+  }
+}
+
+function ownedAllocation(fd: number, owned: fs.BigIntStats | undefined): number | null {
+  try {
+    if (!owned) return null;
+    const stat = fs.fstatSync(fd, { bigint: true });
+    const bytes = Number(stat.blocks * 512n);
+    return stat.isFile() &&
+      stat.dev === owned.dev &&
+      stat.ino === owned.ino &&
+      stat.uid === owned.uid &&
+      stat.uid === BigInt(process.getuid?.() ?? -1) &&
+      Number.isSafeInteger(bytes) &&
+      bytes >= 0
+      ? bytes
+      : null;
+  } catch {
+    return null; // No path inspection or guessed allocation after losing the owned descriptor.
+  }
+}
 
 function sameName(directory: number, name: string, owned: fs.BigIntStats, openAt: OpenAt): boolean {
   const fd = openAt(directory, name, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK);
@@ -60,6 +85,27 @@ export class PrivateCopy {
     return fs.readSync(this.fd, buffer, 0, Math.min(buffer.length, this.size - offset), offset);
   }
 
+  /** Actual allocated blocks of the same completed descriptor, not its path. */
+  allocatedBytes(): number {
+    if (this.closed) throw new Error('private copy unavailable');
+    const stat = fs.fstatSync(this.fd, { bigint: true });
+    const bytes = Number(stat.blocks * 512n);
+    if (
+      !stat.isFile() ||
+      stat.dev !== this.owned.dev ||
+      stat.ino !== this.owned.ino ||
+      stat.uid !== this.owned.uid ||
+      stat.uid !== BigInt(process.getuid?.() ?? -1) ||
+      stat.nlink !== 1n ||
+      stat.size !== BigInt(this.size) ||
+      (stat.mode & 0o777n) !== 0o600n ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    )
+      throw new Error('private copy unavailable');
+    return bytes;
+  }
+
   close(): void {
     if (this.closed) return;
     // A failed unlink remains visible and retryable; future quota accounting must retain it.
@@ -94,6 +140,7 @@ export function copyToPrivate(
   const final = `${token}.complete`;
   const discard = () => {
     let cleanupFailed = false;
+    let allocatedBytes: number | null = null;
     try {
       for (const [present, name] of [
         [finalOwned, final],
@@ -107,15 +154,25 @@ export function copyToPrivate(
         )
           cleanupFailed = true;
       }
+    } catch {
+      cleanupFailed = true;
     } finally {
+      // The failed unlink may have changed allocation; measure before either descriptor closes.
+      allocatedBytes = ownedAllocation(fd, owned);
       try {
         if (fd >= 0) fs.closeSync(fd);
+      } catch {
+        cleanupFailed = true;
       } finally {
-        if (directory >= 0) fs.closeSync(directory);
+        try {
+          if (directory >= 0) fs.closeSync(directory);
+        } catch {
+          cleanupFailed = true;
+        }
       }
     }
     // Cleanup failure overrides a normal refusal so a future reservation cannot be released.
-    if (cleanupFailed) throw new Error('private cleanup failed');
+    if (cleanupFailed) throw new PrivateCopyCleanupError(allocatedBytes);
   };
   try {
     if (source.size < 0n || source.size > LIMIT || !root.isCurrent()) return null;

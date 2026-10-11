@@ -12,5 +12,5 @@ if (process.argv.includes('--reservation-storage')) {
       process.argv[index + 2],
       process.argv[index + 3],
     );
-  else await probe.reservationProbe();
+  else console.log(JSON.stringify(await probe.reservationProbe()));
 }
