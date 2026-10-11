@@ -343,7 +343,7 @@ private struct ConversationPicker: View {
                     ) { selectedViewID = "" }
                     ForEach(views) { view in
                         RemiConversationChip(
-                            title: view.agentType,
+                            title: RemiConversationSelection.title(for: view, among: views),
                             systemImage: "person.2.fill",
                             active: view.active,
                             selected: selectedViewID == view.agentId

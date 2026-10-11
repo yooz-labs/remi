@@ -38,6 +38,18 @@ import Testing
         #expect(RemiConversationSelection.shiftedViewID(selectedViewID: "", views: views, offset: -4) == "reviewer")
     }
 
+    @Test func duplicateAgentTypesReceiveCompactStableLabels() {
+        let duplicateViews = [
+            SessionViewMeta(agentId: "agent-123456", agentType: " Explore ", active: true),
+            SessionViewMeta(agentId: "agent-abcdef", agentType: "explore", active: false),
+            SessionViewMeta(agentId: "agent-review", agentType: "Reviewer", active: true),
+        ]
+
+        #expect(RemiConversationSelection.title(for: duplicateViews[0], among: duplicateViews) == "Explore · 123456")
+        #expect(RemiConversationSelection.title(for: duplicateViews[1], among: duplicateViews) == "explore · abcdef")
+        #expect(RemiConversationSelection.title(for: duplicateViews[2], among: duplicateViews) == "Reviewer")
+    }
+
     @Test func interactionStatePrioritizesFinishedThenReadOnlySubagentThenPrompt() {
         #expect(RemiSessionInteractionState.resolve(
             sessionIsLive: false,

@@ -2,6 +2,18 @@ import RemiKit
 import SwiftUI
 
 public enum RemiConversationSelection {
+    public static func title(for view: SessionViewMeta, among views: [SessionViewMeta]) -> String {
+        let trimmedType = view.agentType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmedType.isEmpty ? "Subagent" : trimmedType
+        let duplicateCount = views.count { candidate in
+            let candidateType = candidate.agentType.trimmingCharacters(in: .whitespacesAndNewlines)
+            let candidateBase = candidateType.isEmpty ? "Subagent" : candidateType
+            return candidateBase.localizedCaseInsensitiveCompare(base) == .orderedSame
+        }
+        guard duplicateCount > 1 else { return base }
+        return "\(base) · \(view.agentId.suffix(6))"
+    }
+
     public static func reconciledViewID(
         selectedViewID: String,
         views: [SessionViewMeta],
