@@ -7,6 +7,7 @@ struct HomeScreen: View {
     @State private var showingPairing = false
     @State private var showingNewSession = false
     @State private var showingPreferences = false
+    @State private var searchText = ""
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
@@ -114,16 +115,20 @@ struct HomeScreen: View {
                     )
                 }
 
-                if !visibleQuestions.isEmpty {
+                if !snapshot.sessions.isEmpty || !snapshot.questions.isEmpty {
+                    CommandCenterSummary(snapshot: snapshot)
+                }
+
+                if !snapshot.questions.isEmpty {
                     NeedsYouSection(
-                        questions: visibleQuestions,
+                        questions: snapshot.questions,
                         onAnswer: onAnswer,
                         onSubmit: onSubmit,
                         onCancel: onCancel
                     )
                 }
 
-                if visibleSessions.isEmpty {
+                if snapshot.sessions.isEmpty {
                     PhoneNoSessionsState(
                         message: emptySessionsMessage,
                         canCreateSession: !availableSessionMachines.isEmpty,
@@ -131,7 +136,7 @@ struct HomeScreen: View {
                     )
                 } else {
                     SessionsSection(
-                        sessions: visibleSessions,
+                        sessions: snapshot.sessions,
                         machines: visibleMachines,
                         transcriptForSession: transcriptForSession,
                         questionsForSession: questionsForSession,
@@ -167,6 +172,7 @@ struct HomeScreen: View {
             }
         }
         .navigationTitle("Remi")
+        .searchable(text: $searchText, prompt: "Search Remi activity")
         .toolbar {
             if #available(iOS 27.0, *) {
                 ToolbarOverflowMenu {
@@ -253,21 +259,52 @@ struct HomeScreen: View {
         selectedMachineID.isEmpty ? machines : machines.filter { $0.id == selectedMachineID }
     }
 
-    private var visibleSessions: [RemiSessionSummary] {
-        selectedMachineID.isEmpty ? sessions : sessions.filter { $0.machineID == selectedMachineID }
-    }
-
-    private var visibleQuestions: [RemiQuestionCardModel] {
-        guard machines.contains(where: { $0.id == selectedMachineID }) else {
-            return questions
-        }
-        return questions.filter { $0.machineID == selectedMachineID }
+    private var snapshot: RemiCommandCenterSnapshot {
+        RemiCommandCenterSnapshot(
+            sessions: sessions,
+            questions: questions,
+            selectedMachineID: selectedMachineID,
+            query: searchText
+        )
     }
 
     private var emptySessionsMessage: LocalizedStringKey {
-        selectedMachineID.isEmpty
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No sessions match this search."
+        }
+        return selectedMachineID.isEmpty
             ? "Sessions from your connected machines will appear here."
             : "This machine has no available sessions yet."
+    }
+}
+
+private struct CommandCenterSummary: View {
+    let snapshot: RemiCommandCenterSnapshot
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: RemiTheme.Spacing.m) { metrics }
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) { metrics }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var metrics: some View {
+        Label(count(snapshot.activeSessionCount, singular: "active session"), systemImage: "bolt.fill")
+        Label(count(snapshot.workspaceCount, singular: "workspace"), systemImage: "folder")
+        if snapshot.waitingQuestionCount > 0 {
+            Label(
+                count(snapshot.waitingQuestionCount, singular: "request"),
+                systemImage: "questionmark.bubble.fill"
+            )
+            .foregroundStyle(RemiTheme.Color.attentionInk)
+        }
+    }
+
+    private func count(_ value: Int, singular: String) -> String {
+        value == 1 ? "1 \(singular)" : "\(value) \(singular)s"
     }
 }
 
@@ -297,8 +334,10 @@ private struct MachineScopePicker: View {
     @Binding var selectedMachineID: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
-            Text("Machines").font(.title2.weight(.bold))
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+            Text("Machine scope")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
                     ScopeButton(
@@ -338,15 +377,18 @@ private struct ScopeButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-                Label(title, systemImage: systemImage)
+            HStack(spacing: RemiTheme.Spacing.xs) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(selected ? Color.primary : .secondary)
+                Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .frame(minWidth: 116, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
             .padding(.horizontal, RemiTheme.Spacing.s)
-            .padding(.vertical, RemiTheme.Spacing.xs)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -370,11 +412,12 @@ private struct NeedsYouSection: View {
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
+    @State private var showsAllQuestions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             Text("Needs you").font(.title2.weight(.bold))
-            ForEach(questions) { question in
+            ForEach(displayedQuestions) { question in
                 RemiQuestionCard(
                     model: question,
                     onAnswer: { onAnswer(question.sessionID, question.questionID, $0) },
@@ -382,7 +425,32 @@ private struct NeedsYouSection: View {
                     onCancel: { onCancel(question.sessionID, question.questionID) }
                 )
             }
+
+            if questions.count > displayedQuestions.count {
+                Button("Show \(questions.count - displayedQuestions.count) more", systemImage: "chevron.down") {
+                    showsAllQuestions = true
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            } else if questions.count > 2 {
+                Button("Show fewer", systemImage: "chevron.up") {
+                    showsAllQuestions = false
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
         }
+        .onChange(of: questions.map(\.id)) { _, _ in
+            showsAllQuestions = false
+        }
+    }
+
+    private var displayedQuestions: ArraySlice<RemiQuestionCardModel> {
+        questions.prefix(showsAllQuestions ? questions.count : 2)
     }
 }
 
