@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ S1_ARTIFACTS = S1_ROOT / "artifacts"
 spec = importlib.util.spec_from_file_location(
     "storage_approval_matrix", ROOT / "storage-approval-matrix.py"
 )
+assert spec is not None and spec.loader is not None
 approval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(approval)
 
@@ -374,13 +376,24 @@ def main() -> int:
     ):
         raise ValueError("executed mutation runner must match the frozen source snapshot")
     repository_root = approval.reserved.reservation.REPO.resolve()
-    for runtime_module in (
+    support_modules = (
         approval,
         approval.reserved,
         approval.reserved.reservation,
         approval.storage,
-    ):
-        runtime_file = Path(runtime_module.__file__).resolve()
+    )
+    nested_recovery = getattr(approval, "recovery", None)
+    if nested_recovery is not None:
+        if not isinstance(nested_recovery, ModuleType):
+            raise ValueError("nested recovery support must be an actual loaded module")
+        support_modules += (nested_recovery,)
+    for runtime_module in support_modules:
+        runtime_name = getattr(runtime_module, "__file__", None)
+        if not isinstance(runtime_name, str):
+            raise TypeError("loaded mutation support module has no source filename")
+        if not runtime_name:
+            raise ValueError("loaded mutation support module has an empty source filename")
+        runtime_file = Path(runtime_name).resolve()
         try:
             relative = runtime_file.relative_to(repository_root)
         except ValueError as error:

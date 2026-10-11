@@ -7,6 +7,17 @@ import {
   withInterprocessFileLockNonblocking,
 } from '../../packages/daemon/src/storage/interprocess-file-lock';
 import { writeRestrictedJson } from '../../packages/daemon/src/storage/restricted-json';
+import {
+  type JournalBinding,
+  type JournalLease,
+  MARKER_ALLOWANCE,
+  type MarkerWitness,
+  sameLease,
+  sameWitnesses,
+  validBinding,
+  validWitnesses,
+} from './journal-schema';
+import { RecoveryError } from './recovery';
 
 const KIB = 1024;
 const FILE_LIMIT = 10 * 1024 * KIB;
@@ -16,9 +27,15 @@ const HOME_LIMIT = 100 * 1024 * KIB;
 export const CLEANUP_BLOCKING_DEBT = HOME_LIMIT + 4 * KIB;
 const LEDGER_LIMIT = 256 * KIB;
 const STATES = ['active', 'staged', 'cleanup'] as const;
-type State = (typeof STATES)[number];
+type State = (typeof STATES)[number] | 'settled';
 type Owner = { device: string; session: string; hub: string };
-type Record = Owner & { id: string; bytes: number; charge: number; state: State };
+type Record = Owner & {
+  id: string;
+  bytes: number;
+  charge: number;
+  state: State;
+  journal?: JournalBinding;
+};
 const KEYS = ['id', 'device', 'session', 'hub', 'bytes', 'charge', 'state'].sort();
 const HEX = /^[a-f0-9]{64}$/;
 const SESSION = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -47,10 +64,11 @@ function validOwner(value: Owner): boolean {
 }
 
 function overLimits(records: Record[], owner: Owner, extra: number): boolean {
+  const unfinished = records.filter((item) => item.state !== 'settled');
   const active = records.filter((item) => item.state === 'active');
   return (
     records.length + extra > 128 ||
-    records.filter((item) => item.device === owner.device).length + extra > 32 ||
+    unfinished.filter((item) => item.device === owner.device).length + extra > 32 ||
     active.filter((item) => item.device === owner.device).length + extra > 2 ||
     active.filter((item) => item.session === owner.session).length + extra > 4 ||
     active.filter((item) => item.hub === owner.hub).length + extra > 8
@@ -77,7 +95,7 @@ function parse(raw: string): Record[] {
     if (
       typeof item !== 'object' ||
       item === null ||
-      Object.keys(item).sort().join() !== KEYS.join()
+      ![KEYS.join(), [...KEYS, 'journal'].sort().join()].includes(Object.keys(item).sort().join())
     )
       throw new ReservationError('unavailable');
     const record = item as Record;
@@ -90,8 +108,11 @@ function parse(raw: string): Record[] {
       record.bytes < 1 ||
       record.bytes > FILE_LIMIT ||
       !Number.isSafeInteger(record.charge) ||
-      record.charge < rounded(record.bytes) ||
-      !STATES.includes(record.state)
+      (record.state === 'settled'
+        ? record.charge !== 0
+        : record.charge < rounded(record.bytes) + (record.journal ? MARKER_ALLOWANCE : 0)) ||
+      !(record.state === 'settled' ? !!record.journal : STATES.includes(record.state)) ||
+      ('journal' in record && !validBinding(record.journal, record.state))
     )
       throw new ReservationError('unavailable');
     total += record.charge;
@@ -173,7 +194,11 @@ export class Reservations {
         after.ctimeMs !== stat.ctimeMs
       )
         throw new ReservationError('unavailable');
-      return parse(buffer.subarray(0, length).toString('utf8'));
+      const records = parse(buffer.subarray(0, length).toString('utf8'));
+      // Home guard persists across reopen: copying a ledger cannot recapture its authority.
+      if (records.some((record) => record.journal && record.journal.home !== this.homeIdentity))
+        throw new ReservationError('unavailable');
+      return records;
     } finally {
       fs.closeSync(fd);
     }
@@ -190,18 +215,29 @@ export class Reservations {
       });
     } catch (error) {
       if (error instanceof ReservationError) throw error;
+      if (error instanceof RecoveryError) throw new ReservationError(error.code);
       if (error instanceof InterprocessFileLockError && error.retryable)
         throw new ReservationError('busy');
       throw new ReservationError('unavailable');
     }
   }
 
+  private get homeIdentity(): string {
+    return `${this.identity.dev}:${this.identity.ino}`;
+  }
+
+  private write(records: Record[]): void {
+    this.current();
+    if (Buffer.byteLength(JSON.stringify({ version: 1, records })) > LEDGER_LIMIT)
+      throw new ReservationError('unavailable');
+    writeRestrictedJson(this.file, { version: 1, records });
+  }
+
   private transaction<T>(operation: (records: Record[]) => T): T {
     return this.locked(() => {
       const records = this.read();
       const result = operation(records);
-      this.current();
-      writeRestrictedJson(this.file, { version: 1, records });
+      this.write(records);
       return result;
     });
   }
@@ -211,10 +247,31 @@ export class Reservations {
   }
 
   reserve(owner: Owner, bytes: number): string {
+    return this.admit(owner, bytes);
+  }
+
+  reserveJournal(owner: Owner, bytes: number, scratch: string, metadata: string): JournalLease {
+    const journal: JournalBinding = {
+      nonce: randomBytes(16).toString('hex'),
+      home: this.homeIdentity,
+      scratch,
+      metadata,
+    };
+    if (!validBinding(journal, 'active')) throw new ReservationError('unavailable');
+    return { id: this.admit(owner, bytes, journal), ...journal };
+  }
+
+  private admit(owner: Owner, bytes: number, journal?: JournalBinding): string {
     if (!validOwner(owner) || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > FILE_LIMIT)
       throw new ReservationError('unavailable');
     return this.transaction((records) => {
-      const charge = rounded(bytes);
+      const charge = rounded(bytes) + (journal ? MARKER_ALLOWANCE : 0);
+      // History-bound guard: only completed receipts make room; pending rows never disappear.
+      while (records.length >= 128) {
+        const oldest = records.findIndex((item) => item.state === 'settled');
+        if (oldest < 0) break;
+        records.splice(oldest, 1);
+      }
       if (
         overLimits(records, owner, 1) ||
         records.reduce((sum, item) => sum + item.charge, charge) > HOME_LIMIT
@@ -232,6 +289,7 @@ export class Reservations {
         bytes,
         charge,
         state: 'active',
+        ...(journal ? { journal } : {}),
       });
       return id;
     });
@@ -242,6 +300,7 @@ export class Reservations {
       const record = records.find((item) => item.id === id);
       if (
         !record ||
+        record.journal ||
         !['staged', 'cleanup'].includes(state) ||
         (record.state === 'cleanup' && state !== 'cleanup') ||
         !Number.isSafeInteger(allocatedBytes) ||
@@ -261,11 +320,197 @@ export class Reservations {
     });
   }
 
+  bindJournalOwnership(lease: JournalLease, witnesses: MarkerWitness[], allocated: number): void {
+    this.transaction((records) => {
+      const record = records.find((item) => item.id === lease.id);
+      if (
+        !record?.journal ||
+        record.state === 'settled' ||
+        !sameLease(record.journal, lease) ||
+        record.journal.retirement ||
+        !validWitnesses(witnesses, ['intent', 'owned']) ||
+        (record.journal.ownership && !sameWitnesses(record.journal.ownership, witnesses)) ||
+        !Number.isSafeInteger(allocated) ||
+        allocated < 0
+      )
+        throw new ReservationError('unavailable');
+      record.journal.ownership = witnesses;
+      record.charge = Math.max(
+        record.charge,
+        allocated + witnesses.reduce((sum, marker) => sum + Math.max(4096, marker.allocated), 4096),
+      );
+      if (!Number.isSafeInteger(records.reduce((sum, item) => sum + item.charge, 0)))
+        throw new ReservationError('unavailable');
+    });
+  }
+
+  writeJournal(
+    lease: JournalLease,
+    projected: number,
+    measure: () => { ownership: MarkerWitness[]; allocated: number },
+    effect: () => void,
+  ): void {
+    if (!Number.isSafeInteger(projected) || projected < 0)
+      throw new ReservationError('unavailable');
+    this.locked(() => {
+      const records = this.read();
+      const record = records.find((item) => item.id === lease.id);
+      if (
+        !record?.journal?.ownership ||
+        !sameLease(record.journal, lease) ||
+        record.state !== 'active' ||
+        record.journal.retirement
+      )
+        throw new ReservationError('unavailable');
+      const commit = (charge: number) => {
+        if (
+          !Number.isSafeInteger(charge) ||
+          !Number.isSafeInteger(
+            records.reduce((sum, item) => sum + (item === record ? charge : item.charge), 0),
+          )
+        )
+          throw new ReservationError('unavailable');
+        record.charge = charge;
+        this.write(records);
+      };
+      const account = () => {
+        const current = measure(); // Captured roots, held marker identities and exact owned writer FD.
+        if (
+          !record.journal?.ownership ||
+          !validWitnesses(current.ownership, ['intent', 'owned']) ||
+          !sameWitnesses(record.journal.ownership, current.ownership) ||
+          !Number.isSafeInteger(current.allocated) ||
+          current.allocated < 0
+        )
+          throw new ReservationError('unavailable');
+        const markers = current.ownership.reduce(
+          (sum, marker) => sum + Math.max(4096, marker.allocated),
+          4096,
+        );
+        const charge = Math.max(
+          record.charge,
+          current.allocated + markers,
+          rounded(projected) + markers,
+        );
+        if (!Number.isSafeInteger(charge)) throw new ReservationError('unavailable');
+        record.journal.ownership = current.ownership;
+        commit(charge);
+      };
+      try {
+        account();
+      } catch {
+        commit(Math.max(record.charge, CLEANUP_BLOCKING_DEBT));
+        throw new ReservationError('unavailable');
+      }
+      let failedEffect = false;
+      try {
+        effect();
+      } catch {
+        failedEffect = true;
+      }
+      // Persist on failure inside the lock: transaction() would discard this durable debt on throw.
+      try {
+        account();
+      } catch {
+        commit(Math.max(record.charge, CLEANUP_BLOCKING_DEBT));
+        throw new ReservationError('unavailable');
+      }
+      if (failedEffect) throw new ReservationError('unavailable');
+    });
+  }
+
+  reconcileJournal(
+    lease: JournalLease,
+    prepare: (
+      ownership: MarkerWitness[],
+      retainAllocation: (allocated: number, measured: MarkerWitness[]) => void,
+    ) => MarkerWitness[],
+    retire: (
+      witnesses: MarkerWitness[],
+      retainMarkers: (measured: MarkerWitness[]) => void,
+    ) => void,
+    checkpoint?: (stage: 'retirement-committed' | 'settled-committed') => void,
+  ): 'settled' | 'already_settled' {
+    return this.locked(() => {
+      const records = this.read();
+      const index = records.findIndex((item) => item.id === lease.id);
+      const record = records[index];
+      if (!record?.journal || !sameLease(record.journal, lease))
+        throw new ReservationError('unavailable');
+      if (record.state === 'settled') return 'already_settled';
+      // Ownership guard: never reconstruct a missing binding from existing files.
+      if (!record.journal.ownership) throw new ReservationError('unavailable');
+      if (!record.journal.retirement) {
+        const witnesses = prepare(record.journal.ownership, (allocated, measured) => {
+          if (
+            !Number.isSafeInteger(allocated) ||
+            allocated < 0 ||
+            !validWitnesses(measured, ['intent', 'owned']) ||
+            !record.journal?.ownership ||
+            !sameWitnesses(record.journal.ownership, measured)
+          )
+            throw new ReservationError('unavailable');
+          record.journal.ownership = measured;
+          record.charge = Math.max(
+            record.charge,
+            allocated +
+              (record.journal?.ownership ?? []).reduce(
+                (sum, marker) => sum + Math.max(4096, marker.allocated),
+                4096,
+              ),
+          );
+          if (!Number.isSafeInteger(records.reduce((sum, item) => sum + item.charge, 0)))
+            throw new ReservationError('unavailable');
+          this.write(records); // Preserve measured allocation even when cleanup later refuses.
+        });
+        if (
+          !validWitnesses(witnesses, ['intent', 'owned', 'cleaned']) ||
+          !sameWitnesses(record.journal.ownership, witnesses.slice(0, 2))
+        )
+          throw new ReservationError('unavailable');
+        record.journal.retirement = witnesses;
+        record.state = 'cleanup';
+        record.charge = Math.max(
+          record.charge,
+          witnesses.reduce((sum, marker) => sum + Math.max(4096, marker.allocated), 0),
+        );
+        this.write(records); // Persist all witnesses BEFORE the first retirement effect.
+        checkpoint?.('retirement-committed');
+      }
+      // Retirement-before-refund guard: this must complete actual deletion and directory fsync.
+      retire(record.journal.retirement, (measured) => {
+        if (
+          !validWitnesses(measured, ['intent', 'owned', 'cleaned']) ||
+          !record.journal?.retirement ||
+          !sameWitnesses(record.journal.retirement, measured)
+        )
+          throw new ReservationError('unavailable');
+        record.journal.retirement = measured;
+        record.charge = Math.max(
+          record.charge,
+          measured.reduce((sum, marker) => sum + Math.max(4096, marker.allocated), 0),
+        );
+        if (!Number.isSafeInteger(records.reduce((sum, item) => sum + item.charge, 0)))
+          throw new ReservationError('unavailable');
+        this.write(records); // Retained marker allocation debt is durable before unlink attempts.
+      });
+      const { nonce, home, scratch, metadata } = record.journal;
+      record.journal = { nonce, home, scratch, metadata };
+      record.state = 'settled';
+      record.charge = 0;
+      records.splice(index, 1);
+      records.push(record); // Completion order, not admission order, determines eviction.
+      this.write(records);
+      checkpoint?.('settled-committed');
+      return 'settled';
+    });
+  }
+
   /** The caller must have confirmed owned deletion; this is not a filesystem operation. */
   releaseAfterCleanup(id: string): void {
     this.transaction((records) => {
       const index = records.findIndex((item) => item.id === id);
-      if (index < 0) throw new ReservationError('unavailable');
+      if (index < 0 || records[index]?.journal) throw new ReservationError('unavailable');
       records.splice(index, 1);
     });
   }

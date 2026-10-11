@@ -352,6 +352,116 @@ output is rejected as evidence. Production helper adoption, portable decoder
 CPU/memory limits, native decoder startup #1417 and staging contract freeze
 remain separate prerequisites.
 
+## Journal quota settlement candidate (#1443)
+
+`journal-settlement.ts` composes the standalone reservation and immutable journal
+candidates. It selects no production helper, upload API or transfer authority.
+Plain reservation rows and the strict top-level version-1 ledger are unchanged.
+Journal rows bind a fresh 128-bit nonce, ledger directory identity, captured
+scratch/metadata identities and exact generated marker inode/content witnesses.
+The managed writer exposes only a lease, `write` and `close`; it holds the intent
+flock until its owned writer descriptor closes. A close error latches failure,
+refuses later writes/closes and retains the flock until process death. An explicit
+standalone proof callback closes that actual descriptor to induce EBADF; it is
+not a production import or simulated syscall result.
+
+Admission charges the rounded declared artifact cost plus three 4096-byte marker
+allowances. Actual owned allocated blocks raise accounting when larger; this is
+accounting, not a physical allocation ceiling. Immutable identity compares marker
+kind, device, inode and content hash independently of allocated-block measurement.
+Ownership is committed before returning the managed writer. Missing ownership
+binding refuses reconciliation rather than guessing from existing files.
+
+Managed writes hold the same nonblocking home transaction through exact lease,
+root, ownership and original writer-FD checks, precharge, real 64 KiB write chunks,
+and post-write measurement/commit. Precharge is the monotonic maximum of observed
+owned allocation plus marker allowances and rounded projected cumulative logical
+bytes plus markers; it is durable before writes. Empty writes still account actual
+owned preallocation. Observed/projected debt may exceed the home budget; subsequent
+admissions refuse. This adds no public write threshold or physical ceiling.
+An actual partial-write or post-measurement failure commits known charge or the
+existing blocking debt before refusal. Uncertain effects latch failure and hold
+the intent until death; busy refusal before effects remains retryable. The explicit
+proof callback closes the owned FD after one real chunk, causing the next write
+and original-FD measurement to fail with actual EBADF. The lost numeric FD is
+never retried or substituted with a newly opened path FD.
+
+Settlement holds the existing nonblocking per-home transaction through actual
+cleanup, retirement-witness commit, intent flock acquisition, descriptor-relative
+owned/cleaned/intent deletion (intent last), final exact artifact/marker absence
+checks, metadata directory fsync and atomic settled-receipt commit. Persisted
+retirement witnesses permit exact ENOENT after a partial crash. An absent intent
+cannot be reopened for cleanup. A marker replacement, recreated name, unavailable
+root/store or real unlink failure preserves debt and refuses settlement.
+Settled receipts have zero charge and no ownership/retirement arrays. They consume
+bounded history space but no device/session/hub artifact capacity. Admission
+evicts only the oldest completed receipts to keep at most 128 combined rows and
+256 KiB; unfinished rows never make room. An exact recent retry reports
+`already_settled` without adopting or deleting a new artifact. Unknown/evicted
+receipts, mixed IDs/nonces and copied home bindings refuse.
+
+`settlement-matrix.py` preregisters 88 groups: the original 61 plus 27 settlement
+groups. Separate `recovery-matrix.py` (61) and `reserved-copy-matrix.py` (43)
+remain compatibility gates. The new groups cover actual allocation/refund and
+historical retries; managed writer lifetime and actual close failure with FD reuse;
+raw API refusal, mixed/injected nonces and missing ownership; current/recaptured
+scratch, metadata and home identities plus copied ledgers; missing/corrupt/oversize
+and malformed ledger states; ongoing write growth/admission saturation, empty
+preallocation, busy retry and actual partial-write debt; each marker's schema/type/link/mode/content/absence
+controls; real artifact/retirement unlink errors; every persisted witness before
+effects; actual marker preallocation; marker recreation after unlink/fsync;
+SIGKILL after witness commit, each of three marker unlinks, final metadata fsync
+and settled commit before acknowledgment; real intent contention/death release;
+parallel settlements/new admission; and exactly 130 complete cycles for one owner
+(with history beyond the 32-device-artifact limit) with bounded
+history, preserved pending debt, recent retries, evicted refusals and empty owned
+artifact/marker namespaces.
+
+Each owned child has an exact PID/checkpoint handshake, 4 KiB stdout/8 KiB stderr
+limits, awaited exit/signal diagnostics and post-exit ESRCH. The shipping home
+lock's stale policy is unchanged: a live owner and a freshly killed unaged owner
+both cause busy refusal. Only after the lock's PID matches the actual owned dead
+child and ESRCH is confirmed does the fixture explicitly age both `acquiredAt`
+and file mtime. The nonblocking candidate still refuses that stale owner; the
+fixture then explicitly invokes the shipping waiting-owner lock path once to
+reclaim it before nonblocking reconciliation. This maintenance prerequisite is
+not automatic stale recovery in settlement. It measures deliberate fixture
+timestamp aging and real maintenance recovery, not a 30-second wall-clock stale
+interval. Intent flock releases
+immediately on death. The parallel fixture explicitly retries observed busy
+refusals; candidate APIs never wait or silently queue.
+
+Use an empty owned S1 `PYTHONPYCACHEPREFIX` with `PYTHONDONTWRITEBYTECODE=1`
+for every Python command, isolating cache reads as well as writes. Earlier captured
+cache artifacts are quarantined separately from source acceptance. Use fresh S1
+output names; the canary runs only the two compiled Mac Bun gates:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPYCACHEPREFIX=/Volumes/S1/yooz/remi/tmp/jsp/pycache-settlement-unique \
+python3 scripts/tunnel-storage-proof/settlement-matrix.py \
+  --bun-1311 /Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64 \
+  --bun-current /opt/homebrew/Cellar/bun/1.4.2/bin/bun \
+  --out /Volumes/S1/yooz/remi/artifacts/settlement-unique \
+  --linux-arm64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --linux-x64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --linux-pids-limit 64 --runtime-temp-base /Volumes/S1/yooz/remi/tmp/jsp \
+  --canary-only
+```
+
+Remove `--canary-only` for the six supported cells, preserving the same 256 MiB,
+64 PID, one CPU and 32 MiB noexec Linux fixtures and immutable cached image pins.
+`settlement-mutations.py` reuses the strict compiled named-assertion receipt gate
+for `home`, `nonce`, `ownership`, `retirement-before-refund`, `history-bound`
+and `ongoing-accounting`
+on each Mac Bun gate. Its successful witness-looking output and setup-failure
+controls must be rejected. The nested recovery support module also goes through
+the shared immutable helper hash gate; an actual copied-source tamper must refuse
+before mutation setup/build. Linux mutations are not claimed. Full gates,
+independent review, source/artifact verification and publication are separate
+acceptance steps.
+No 47-group held-answer/R7/main runtime result is inferred from this candidate.
+
 ## Held-answer storage load proof
 
 `storage-approval-entry.ts` combines the existing 36 reservation and seven
