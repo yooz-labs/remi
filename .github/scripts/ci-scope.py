@@ -15,6 +15,10 @@ BUILD_SCRIPTS = {
 }
 PROOFS = ("scripts/tunnel-storage-proof/", "scripts/tunnel-decoder-proof/")
 NATIVE_SECURE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts"
+WRAPPER_SUSPEND_INPUTS = (
+    "packages/daemon/tests/cli/wrapper-suspend.test.ts",
+    "packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py",
+)
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -76,6 +80,18 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
+            elif path in WRAPPER_SUSPEND_INPUTS:
+                # Exact real-PTY test producers retain normal gates; no relay caller is changed.
+                consumers = subprocess.run(
+                    ["git", "grep", "-F", "-q", "-e", "wrapper-suspend", base, head, "--",
+                     "packages", "tests", "scripts", ".github/workflows", ".github/actions",
+                     *(f":(exclude){producer}" for producer in WRAPPER_SUSPEND_INPUTS)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                )
+                if consumers.returncode != 1:
+                    return all_gates("Wrapper test reference or scan failure; running all gates")
+                # Never clear relay already selected by a different changed execution input.
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path.startswith(("packages/daemon/", "packages/shared/", "packages/signaling/")):
                 # Cross-package conformance tests import both endpoints: retain all TS gates.
                 gates.update(dict.fromkeys(GATES, True))
