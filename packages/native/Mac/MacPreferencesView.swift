@@ -46,24 +46,27 @@ struct MacPreferencesView: View {
 
     private var notificationCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if notificationPermission.access == .denied {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "bell.slash.fill")
-                        .font(.title3)
-                        .foregroundStyle(.orange)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Notifications are off")
-                            .font(.headline)
-                        Text("Remi can still show waiting questions in the app and menu bar, but macOS will not show banners or play notification sounds.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 12)
-                    Button("Open System Settings") {
-                        openNotificationSettings()
-                    }
-                }
+            if notificationPermission.access == .notDetermined {
+                MacNotificationAccessNotice(
+                    systemImage: "bell.badge",
+                    tint: .secondary,
+                    title: "Allow question alerts",
+                    detail: "macOS permission lets Remi show a banner and play a sound when a connected session needs you.",
+                    actionTitle: "Enable Notifications",
+                    action: { Task { await notificationPermission.request() } }
+                )
+                .padding(.bottom, 8)
+
+                Divider()
+            } else if notificationPermission.access == .denied {
+                MacNotificationAccessNotice(
+                    systemImage: "bell.slash.fill",
+                    tint: .orange,
+                    title: "Notifications are off",
+                    detail: "Remi can still show waiting questions in the app and menu bar, but macOS will not show banners or play notification sounds.",
+                    actionTitle: "Open System Settings",
+                    action: openNotificationSettings
+                )
                 .padding(.bottom, 8)
 
                 Divider()
@@ -184,12 +187,64 @@ struct MacPreferencesView: View {
     }
 }
 
+private struct MacNotificationAccessNotice: View {
+    let systemImage: String
+    let tint: Color
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
+    let actionTitle: LocalizedStringKey
+    let action: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                message
+                Spacer(minLength: 12)
+                Button(actionTitle, action: action)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                message
+                Button(actionTitle, action: action)
+            }
+        }
+    }
+
+    private var message: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 private enum CopiedValue {
     case command
     case identity
 }
 
-#Preview {
+#Preview("Settings · Notifications Not Requested") {
+    MacPreferencesView(
+        publicIdentity: PublicClientIdentity(
+            publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            fingerprint: "6323efd4d1c6c63f"
+        ),
+        notificationPermission: MacNotificationPermission(access: .notDetermined),
+        refreshNotificationPermission: false
+    )
+}
+
+#Preview("Settings · Notifications Denied") {
     MacPreferencesView(
         publicIdentity: PublicClientIdentity(
             publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -198,4 +253,16 @@ private enum CopiedValue {
         notificationPermission: MacNotificationPermission(access: .denied),
         refreshNotificationPermission: false
     )
+}
+
+#Preview("Settings · Accessibility") {
+    MacPreferencesView(
+        publicIdentity: PublicClientIdentity(
+            publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            fingerprint: "6323efd4d1c6c63f"
+        ),
+        notificationPermission: MacNotificationPermission(access: .allowed),
+        refreshNotificationPermission: false
+    )
+    .environment(\.dynamicTypeSize, .accessibility5)
 }

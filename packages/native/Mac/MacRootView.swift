@@ -60,7 +60,7 @@ struct MacFirstRunView: View {
         ContentUnavailableView {
             Label("Add your first machine", systemImage: "desktopcomputer.and.macbook")
         } description: {
-            Text("Connect Remi to a hub to see its repositories, sessions, and questions in one window.")
+            Text("Connect to a machine running Remi to see its repositories, sessions, and questions in one window.")
         } actions: {
             Button("Add machine", systemImage: "plus", action: onAddMachine)
                 .buttonStyle(.glassProminent)

@@ -128,7 +128,9 @@ struct HomeScreen: View {
                     )
                 }
 
-                if snapshot.sessions.isEmpty {
+                if lifecycleState == .firstRun {
+                    FirstRunScreen(onAddMachine: { showingPairing = true })
+                } else if snapshot.sessions.isEmpty {
                     PhoneNoSessionsState(
                         message: emptySessionsMessage,
                         canCreateSession: !availableSessionMachines.isEmpty,
@@ -269,12 +271,23 @@ struct HomeScreen: View {
     }
 
     private var emptySessionsMessage: LocalizedStringKey {
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "No sessions match this search."
+        switch lifecycleState {
+        case .noSearchResults:
+            "No sessions match this search."
+        case .noSessionsForMachine:
+            "This machine has no available sessions yet."
+        default:
+            "Sessions from your connected machines will appear here."
         }
-        return selectedMachineID.isEmpty
-            ? "Sessions from your connected machines will appear here."
-            : "This machine has no available sessions yet."
+    }
+
+    private var lifecycleState: RemiHomeLifecycleState {
+        RemiHomeLifecycleState.resolve(
+            machineCount: machines.count,
+            visibleSessionCount: snapshot.sessions.count,
+            query: searchText,
+            hasSelectedMachine: !selectedMachineID.isEmpty
+        )
     }
 }
 
