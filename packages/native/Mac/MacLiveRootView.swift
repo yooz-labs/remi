@@ -76,7 +76,7 @@ struct MacLiveRootView: View {
                         onRetryConnection: store.retryConnection,
                         onNewSession: { showingNewSession = true }
                     )
-                    .navigationSplitViewColumnWidth(min: 380, ideal: 440, max: 540)
+                    .navigationSplitViewColumnWidth(min: 380, ideal: 480, max: 620)
                     .navigationTitle("Sessions")
                     .toolbar {
                         if #available(macOS 26.1, *) {
@@ -192,7 +192,7 @@ struct MacLiveRootView: View {
                         Button {
                             toggleSessionColumn()
                         } label: {
-                            Label("Focus conversation", systemImage: "rectangle.split.3x1")
+                            Label("Toggle navigation", systemImage: "rectangle.split.3x1")
                         }
                         .labelStyle(.iconOnly)
                         .keyboardShortcut("2", modifiers: [.command, .control])
@@ -400,27 +400,23 @@ struct MacLiveRootView: View {
     }
 
     private func toggleMachineColumn() {
-        if columnVisibility == .all {
-            columnVisibility = .doubleColumn
-            expandedColumnVisibility = .doubleColumn
-        } else if columnVisibility == .doubleColumn {
-            columnVisibility = .all
-            expandedColumnVisibility = .all
-        } else {
-            columnVisibility = .all
-            expandedColumnVisibility = .all
-        }
+        applyColumnLayout(currentColumnLayout.togglingMachines())
     }
 
     private func toggleSessionColumn() {
-        if columnVisibility == .detailOnly {
-            columnVisibility = expandedColumnVisibility
-        } else {
-            if columnVisibility == .all || columnVisibility == .doubleColumn {
-                expandedColumnVisibility = columnVisibility
-            }
-            columnVisibility = .detailOnly
-        }
+        applyColumnLayout(currentColumnLayout.togglingNavigation())
+    }
+
+    private var currentColumnLayout: RemiMacColumnLayout {
+        RemiMacColumnLayout(
+            visibility: columnVisibility,
+            expandedVisibility: expandedColumnVisibility
+        )
+    }
+
+    private func applyColumnLayout(_ layout: RemiMacColumnLayout) {
+        columnVisibility = layout.visibility
+        expandedColumnVisibility = layout.expandedVisibility
     }
 
     private var visibleSessions: [RemiSessionSummary] {
@@ -793,11 +789,11 @@ private struct MacSessionList: View {
 
     private func moveSelection(offsetBy offset: Int) {
         let orderedIDs = workspaces.flatMap { $0.sessions.map(\.id) }
-        guard !orderedIDs.isEmpty else { return }
-        let currentIndex = selection.flatMap { orderedIDs.firstIndex(of: $0) }
-            ?? (offset > 0 ? -1 : orderedIDs.count)
-        let nextIndex = (currentIndex + offset + orderedIDs.count) % orderedIDs.count
-        selection = orderedIDs[nextIndex]
+        selection = RemiOrderedSelection.shifted(
+            selection: selection,
+            orderedIDs: orderedIDs,
+            offset: offset
+        )
     }
 }
 
