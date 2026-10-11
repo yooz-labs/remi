@@ -4,12 +4,8 @@
  * set of characters; these decide how it is applied.
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  boundedEscape,
-  firstCodePoints,
-  hasVisibleText,
-  pushProse,
-} from '../../../src/harness/codex/safe-text.ts';
+import { boundedEscape, pushProse } from '@remi/shared';
+import { firstCodePoints, hasVisibleText } from '../../../src/harness/codex/safe-text.ts';
 
 describe('boundedEscape', () => {
   test('text with nothing to escape and nothing to cut is returned as it is', () => {
@@ -162,6 +158,12 @@ describe('pushProse', () => {
     expect(pushProse('a\u200db')).toBe('a\u200db');
     const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
     expect(pushProse(`${family}!`)).toBe(`${family}!`);
+  });
+
+  test('#1211 bytes are removed while the ZWJ family emoji survives the original helper', () => {
+    const hostile = 'lead\x1b]52;c;QUJD\x07middle\x1b[2K\r\u202eR\u2066L\u200bZ\u200fTtail';
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    expect(pushProse(`${hostile} ${family}`)).toBe(`lead]52;c;QUJDmiddle[2KRLZTtail ${family}`);
   });
 
   test('text with nothing unsafe is unchanged: tabs, newlines, accents, CJK, variation selectors', () => {
