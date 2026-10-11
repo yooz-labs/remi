@@ -20,6 +20,8 @@ ROOT_PACKAGE = {"version": "0.7.17-dev.1", "scripts": {"test": "bun test",
 WEB = {"web", "integration", "test", "relay"}
 METADATA = {"lint", "root", "notices", "test"}
 NATIVE_FIXTURE = "packages/native/RemiKit/Tests/Integration/secure-push-fixture.ts"
+WRAPPER_INPUTS = module["WRAPPER_SUSPEND_INPUTS"]
+WRAPPER_GATES = gates - {"relay"}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -66,6 +68,8 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write("packages/daemon/src/relay/hub.ts", "export const initial = true;\n")
         write("docs/PROVISIONING.md", "# initial executable bootstrap fixture\n")
         write(NATIVE_FIXTURE, "export const owned = true;\n")
+        write(WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py';\n")
+        write(WRAPPER_INPUTS[1], "print('owned fixture')\n")
         for name, text in WORKFLOWS.items():
             write(f".github/workflows/{name}", text)
         write(".github/actions/ci-scope/action.yml", ACTION)
@@ -83,6 +87,9 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("packages/native/RemiKit/Tests/Integration/relay-fixture.ts", "export {};", gates),
             (NATIVE_FIXTURE, "export const changed = true;", {"lint"}),
             ("packages/native/RemiKit/Tests/Integration/secure-push-neighbor.ts", "export {};", gates),
+            (WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py'; export {};", WRAPPER_GATES),
+            (WRAPPER_INPUTS[1], "print('changed fixture')", WRAPPER_GATES),
+            ("packages/daemon/tests/cli/wrapper-suspend-neighbor.test.ts", "export {};", gates),
             ("scripts/tunnel-storage-proof/probe.ts", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.tsx", "export {};", {"lint"}),
             ("scripts/tunnel-storage-proof/probe.mts", "export {};", {"lint"}),
@@ -132,6 +139,79 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (path, expected, result)
             count += 1
+        # Exact wrapper producers keep every normal gate; their self-reference is excluded.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(WRAPPER_INPUTS[0], "const fixture = 'fixtures/wrapper-suspend-pty.py'; export {};")
+        write(WRAPPER_INPUTS[1], "print('changed fixture')")
+        write("docs/suspend-resume-check.md", "Owned wrapper check")
+        assert selected(classify(base, commit())) == WRAPPER_GATES
+        count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            git("reset", "--hard", base); git("clean", "-fdq")
+            if directory == ".github/workflows":
+                write(f"{directory}/consumer.yml", "name: Owned consumer\non: [push]\njobs:\n  fixture:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun " + WRAPPER_INPUTS[0] + "\n")
+            elif directory == ".github/actions":
+                write(f"{directory}/consumer/action.yml", "name: Owned consumer\ndescription: Owned consumer\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: bun " + WRAPPER_INPUTS[0] + "\n")
+            else:
+                write(f"{directory}/consumer.ts", "import 'wrapper-suspend';")
+            consumer_base = commit()
+            write(WRAPPER_INPUTS[1], "print('changed fixture')")
+            result = classify(consumer_base, commit())
+            assert selected(result) == gates and result["reason"].startswith("Wrapper test reference")
+            count += 1
+        for consumer in ("scripts/consumer.ts", ".github/scripts/consumer.py"):
+            for context in ("new-head", "target-base-only", "removed-head"):
+                git("reset", "--hard", base); git("clean", "-fdq")
+                write(consumer, "# wrapper-suspend")
+                consumer_base = commit()
+                if context != "removed-head":
+                    git("reset", "--hard", base)
+                if context == "new-head":
+                    write(consumer, "# wrapper-suspend")
+                elif context == "removed-head":
+                    Path(consumer).unlink()
+                write(WRAPPER_INPUTS[1], "print('changed fixture')")
+                result = classify(base if context == "new-head" else consumer_base, commit())
+                assert selected(result) == gates, (consumer, context, result)
+                # A changed unknown helper may select all gates before the producer;
+                # an unchanged target-base-only helper must be found by the scan.
+                if context == "target-base-only":
+                    assert result["reason"].startswith("Wrapper test reference"), result
+                count += 1
+        # The exact two routing self-tools are excluded; neighboring helpers are not.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for tool in ("ci-scope.py", "check-ci-scope.py"):
+            write(".github/scripts/" + tool, "# wrapper-suspend")
+        self_base = commit()
+        write(WRAPPER_INPUTS[1], "print('changed fixture')")
+        assert selected(classify(self_base, commit())) == WRAPPER_GATES
+        count += 1
+        for producer in WRAPPER_INPUTS:
+            for destination, expected in ((None, WRAPPER_GATES), (producer + ".renamed", gates)):
+                git("reset", "--hard", base); git("clean", "-fdq")
+                if destination:
+                    Path(producer).rename(destination)
+                else:
+                    Path(producer).unlink()
+                assert selected(classify(base, commit())) == expected
+                count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(WRAPPER_INPUTS[1], "print('changed fixture')")
+        write("packages/daemon/src/relay/hub.ts", "export const changed = true;")
+        assert selected(classify(base, commit())) == gates
+        count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(WRAPPER_INPUTS[1], "print('changed fixture')")
+        scan_head = commit()
+        git("config", "grep.threads", "not-a-number")
+        try:
+            result = classify(base, scan_head)
+            assert selected(result) == gates and result["reason"].startswith("Wrapper test reference")
+            count += 1
+        finally:
+            git("config", "--unset", "grep.threads")
         # Real references in every nonnative scan domain remove the exact-path exemption.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling",
                           "packages/web", "packages/macos", "tests", "scripts",

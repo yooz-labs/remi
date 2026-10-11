@@ -17,6 +17,7 @@ always select their existing full gates.
 | Owned tunnel proof scripts | Spelling; TS/JS/JSON also Biome | Skip |
 | Web TS source/tests | Web source/tests and relay integration type checks, full coverage | Run |
 | Daemon/shared/Worker inputs | All existing gates | Run |
+| Exact wrapper suspend test/PTY fixture producers | All normal gates | Skip without external references |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -39,6 +40,16 @@ and head covers daemon/shared/signaling/web/macos packages, root tests/scripts
 and GitHub workflow/action directories (excluding the classifier and these docs);
 any reference or scan failure selects full gates. Unknown native TS neighbors
 remain full-gate inputs. Native acceptance stays separate.
+
+The exact `packages/daemon/tests/cli/wrapper-suspend.test.ts` and
+`packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py` producers retain every
+normal package/type/lint/test/notice/Mac gate while skipping only relay. A fixed
+`wrapper-suspend` scan at both base and head covers all packages (including native),
+root tests/scripts and GitHub workflows/actions/scripts, excluding these two producer
+paths and the exact classifier/corpus self-tools. Their expected test-to-fixture reference does not select relay; any other
+reference or scan error restores all gates. Source, package, unknown neighbor or
+renamed producer changes remain conservative. This is not a generic test exemption.
+Literal scans may match comments/data and cannot discover computed references.
 
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
