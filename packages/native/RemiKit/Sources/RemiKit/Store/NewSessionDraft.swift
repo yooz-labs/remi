@@ -62,8 +62,8 @@ public final class NewSessionDraft {
 
     public var destinationSummary: String {
         guard !trimmedRepository.isEmpty else { return "Choose a repository or directory" }
-        if workspaceCapable, createsWorktree, !trimmedBranch.isEmpty {
-            return "New worktree on \(trimmedBranch)"
+        if workspaceCapable, createsWorktree {
+            return trimmedBranch.isEmpty ? "Branch required for new worktree" : "New worktree on \(trimmedBranch)"
         }
         return workspaceCapable ? "Repository’s main worktree" : "Existing directory"
     }

@@ -26,6 +26,19 @@ import Testing
         #expect(!draft.workspaceCapable)
     }
 
+    @Test func changingBetweenWorkspaceMachinesPreservesWorktreeMode() {
+        let draft = makeDraft(includeSecondWorkspaceMachine: true)
+        draft.createsWorktree = true
+        draft.branch = "feature/native"
+
+        draft.machineID = "laptop:18765"
+
+        #expect(draft.repository == "/src/client")
+        #expect(draft.createsWorktree)
+        #expect(draft.harness == "claude")
+        #expect(draft.destinationSummary == "New worktree on feature/native")
+    }
+
     @Test func sameMachineAssignmentPreservesManualRepository() {
         let draft = makeDraft()
         draft.repository = "/manual/path"
@@ -87,9 +100,13 @@ import Testing
         draft.branch = "  "
         #expect(!draft.canCreate)
         #expect(draft.submission == nil)
+        #expect(draft.destinationSummary == "Branch required for new worktree")
     }
 
-    private func makeDraft(emptyHarnesses: Bool = false) -> NewSessionDraft {
+    private func makeDraft(
+        emptyHarnesses: Bool = false,
+        includeSecondWorkspaceMachine: Bool = false
+    ) -> NewSessionDraft {
         var studio = MachineState(
             endpoint: MachineEndpoint(host: "studio", port: 18765),
             displayName: "Studio"
@@ -103,12 +120,27 @@ import Testing
         )
         legacy.harnesses = ["claude"]
 
-        return NewSessionDraft(
-            machines: [studio, legacy],
-            recentRepositoriesByMachine: [
-                studio.id: [RecentRepository(repository: "/src/remi", name: "remi", lastUsedAt: "now")],
-                legacy.id: [RecentRepository(repository: "/srv/project", name: "project", lastUsedAt: "now")],
+        var machines = [studio, legacy]
+        var repositories = [
+            studio.id: [RecentRepository(repository: "/src/remi", name: "remi", lastUsedAt: "now")],
+            legacy.id: [RecentRepository(repository: "/srv/project", name: "project", lastUsedAt: "now")],
+        ]
+        if includeSecondWorkspaceMachine {
+            var laptop = MachineState(
+                endpoint: MachineEndpoint(host: "laptop", port: 18765),
+                displayName: "Laptop"
+            )
+            laptop.capabilities = ["workspaces"]
+            laptop.harnesses = ["claude"]
+            machines.append(laptop)
+            repositories[laptop.id] = [
+                RecentRepository(repository: "/src/client", name: "client", lastUsedAt: "now"),
             ]
+        }
+
+        return NewSessionDraft(
+            machines: machines,
+            recentRepositoriesByMachine: repositories
         )
     }
 }
