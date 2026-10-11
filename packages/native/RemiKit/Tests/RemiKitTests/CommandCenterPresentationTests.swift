@@ -44,24 +44,40 @@ import Testing
 
     @Test func searchMatchesProjectPathHarnessAndQuestionDetail() {
         let sessions = RemiPreviewData.sessions
-        let questions = RemiPreviewData.questionStates
+        let detailedQuestion = RemiQuestionCardModel(
+            id: "detailed-question",
+            kind: .permission,
+            text: "Allow this command?",
+            detail: "swift test --filter CommandCenter",
+            machineID: "studio",
+            machineName: "Studio",
+            sessionID: sessions[0].id,
+            sessionName: sessions[0].name
+        )
 
         let pathResult = RemiCommandCenterSnapshot(
             sessions: sessions,
-            questions: questions,
+            questions: [],
             selectedMachineID: "",
             query: sessions[0].projectPath
         )
         #expect(pathResult.sessions.contains { $0.id == sessions[0].id })
 
-        let detail = questions.compactMap(\.detail).first
+        let harnessResult = RemiCommandCenterSnapshot(
+            sessions: sessions,
+            questions: [],
+            selectedMachineID: "",
+            query: "Codex"
+        )
+        #expect(harnessResult.sessions.contains { $0.harness == "Codex" })
+
         let questionResult = RemiCommandCenterSnapshot(
             sessions: sessions,
-            questions: questions,
+            questions: [detailedQuestion],
             selectedMachineID: "",
-            query: detail ?? questions[0].text
+            query: "CommandCenter"
         )
-        #expect(!questionResult.questions.isEmpty)
+        #expect(questionResult.questions.map(\.id) == [detailedQuestion.id])
     }
 
     @Test func whitespaceQueryBehavesLikeNoSearch() {
