@@ -52,6 +52,65 @@ public enum RemiOrderedSelection {
     }
 }
 
+public enum RemiSessionScope: String, CaseIterable, Hashable, Sendable {
+    case all
+    case needsYou
+    case live
+    case stored
+
+    public func includes(_ session: RemiSessionSummary) -> Bool {
+        switch self {
+        case .all: true
+        case .needsYou: session.status == .needsYou
+        case .live: session.isLive
+        case .stored: !session.isLive
+        }
+    }
+
+    public func count(in sessions: [RemiSessionSummary]) -> Int {
+        sessions.count(where: includes)
+    }
+}
+
+public enum RemiSessionTriage {
+    public static func filtered(
+        sessions: [RemiSessionSummary],
+        scope: RemiSessionScope,
+        query: String
+    ) -> [RemiSessionSummary] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sessions.filter { session in
+            guard scope.includes(session) else { return false }
+            guard !trimmedQuery.isEmpty else { return true }
+            return session.name.localizedCaseInsensitiveContains(trimmedQuery)
+                || session.project.localizedCaseInsensitiveContains(trimmedQuery)
+                || session.projectPath.localizedCaseInsensitiveContains(trimmedQuery)
+                || session.harness.localizedCaseInsensitiveContains(trimmedQuery)
+                || (session.lastMessage?.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
+        }
+    }
+
+    public static func reconciledSelection(
+        selection: String?,
+        visibleSessionIDs: [String]
+    ) -> String? {
+        guard !visibleSessionIDs.isEmpty else { return nil }
+        if let selection, visibleSessionIDs.contains(selection) { return selection }
+        return visibleSessionIDs.first
+    }
+
+    public static func nextAttentionSessionID(
+        selection: String?,
+        sessions: [RemiSessionSummary]
+    ) -> String? {
+        RemiOrderedSelection.shifted(
+            selection: selection,
+            orderedIDs: sessions.filter { $0.status == .needsYou }.map(\.id),
+            offset: 1
+        )
+    }
+}
+
 public enum RemiMacCompactDestination: Equatable, Sendable {
     case machines
     case sessions

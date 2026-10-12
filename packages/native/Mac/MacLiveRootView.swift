@@ -9,6 +9,8 @@ struct MacLiveRootView: View {
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
     @State private var showingNewSession = false
+    @State private var newSessionMachineID: String?
+    @State private var newSessionRepository: String?
     @State private var showingAddMachine = false
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
@@ -78,7 +80,8 @@ struct MacLiveRootView: View {
                         onResume: resume,
                         onRetryApproval: store.retryApproval,
                         onRetryConnection: store.retryConnection,
-                        onNewSession: { showingNewSession = true },
+                        onNewSession: { presentNewSession() },
+                        onNewSessionHere: { presentNewSession(repository: $0) },
                         onTerminate: store.terminateSession
                     )
                     .navigationSplitViewColumnWidth(min: 380, ideal: 480, max: 620)
@@ -87,7 +90,7 @@ struct MacLiveRootView: View {
                         if #available(macOS 26.1, *) {
                             ToolbarItem {
                                 Button {
-                                    showingNewSession = true
+                                    presentNewSession()
                                 } label: {
                                     Label("New session", systemImage: "plus")
                                 }
@@ -99,7 +102,7 @@ struct MacLiveRootView: View {
                         } else {
                             ToolbarItem {
                                 Button {
-                                    showingNewSession = true
+                                    presentNewSession()
                                 } label: {
                                     Label("New session", systemImage: "plus")
                                 }
@@ -180,7 +183,7 @@ struct MacLiveRootView: View {
                     } else {
                         MacSelectSessionState(
                             canCreateSession: !sessionCreationMachines.isEmpty,
-                            onNewSession: { showingNewSession = true }
+                            onNewSession: { presentNewSession() }
                         )
                     }
                 }
@@ -283,10 +286,15 @@ struct MacLiveRootView: View {
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
                 .frame(minWidth: 440, minHeight: 320)
         }
-        .sheet(isPresented: $showingNewSession) {
+        .sheet(isPresented: $showingNewSession, onDismiss: {
+            newSessionMachineID = nil
+            newSessionRepository = nil
+        }) {
             MacLiveNewSessionSheet(
                 machines: sessionCreationMachines,
-                recentRepositories: store.recentRepositoriesByMachine
+                recentRepositories: store.recentRepositoriesByMachine,
+                preferredMachineID: newSessionMachineID,
+                preferredRepository: newSessionRepository
             ) { endpoint, directory, harness, args, workspace in
                 store.createSession(
                     on: endpoint,
@@ -336,6 +344,12 @@ struct MacLiveRootView: View {
 
     private var selectedMachine: MachineState? {
         store.machines.first { $0.id == selectedMachineID } ?? store.machines.first
+    }
+
+    private func presentNewSession(repository: String? = nil) {
+        newSessionMachineID = selectedMachine?.id
+        newSessionRepository = repository
+        showingNewSession = true
     }
 
     private var machineSelection: Binding<String?> {
@@ -662,6 +676,7 @@ private struct MacSessionsColumn: View {
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
     let onNewSession: () -> Void
+    let onNewSessionHere: (String) -> Void
     let onTerminate: (String) -> Void
 
     var body: some View {
@@ -675,6 +690,7 @@ private struct MacSessionsColumn: View {
                         sessions: sessions,
                         selection: $selection,
                         onResume: onResume,
+                        onNewSessionHere: onNewSessionHere,
                         onTerminate: onTerminate
                     )
                 }
@@ -701,8 +717,10 @@ private struct MacSessionList: View {
     let sessions: [RemiSessionSummary]
     @Binding var selection: String?
     let onResume: (RemiSessionSummary) -> Void
+    let onNewSessionHere: (String) -> Void
     let onTerminate: (String) -> Void
     @State private var searchText = ""
+    @State private var scope = RemiSessionScope.all
     @State private var showsRecent = false
     @State private var expandedWorkspaces: Set<String> = []
     @State private var pendingTermination: RemiSessionSummary?
@@ -733,12 +751,37 @@ private struct MacSessionList: View {
             }
 
             if activeWorkspaces.isEmpty && recentWorkspaces.isEmpty {
-                ContentUnavailableView.search(text: searchText)
+                ContentUnavailableView {
+                    Label(emptyTitle, systemImage: "line.3.horizontal.decrease.circle")
+                } description: {
+                    Text(emptyDescription)
+                } actions: {
+                    if scope != .all || !searchText.isEmpty {
+                        Button("Show all sessions", action: resetFilters)
+                    }
+                }
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            MacSessionTriageBar(
+                scope: $scope,
+                sessions: sessions,
+                visibleCount: filteredSessions.count
+            )
         }
         .searchable(text: $searchText, prompt: "Search sessions")
         .toolbar {
             ToolbarItemGroup {
+                Button("Next session needing attention", systemImage: "questionmark.bubble") {
+                    selection = RemiSessionTriage.nextAttentionSessionID(
+                        selection: selection,
+                        sessions: filteredSessions
+                    )
+                }
+                .labelStyle(.iconOnly)
+                .keyboardShortcut("j", modifiers: [.command, .option])
+                .help("Next session needing attention (Option-Command-J)")
+                .disabled(!filteredSessions.contains { $0.status == .needsYou })
                 navigationButton(title: "Previous session", systemImage: "chevron.up", offset: -1)
                 navigationButton(title: "Next session", systemImage: "chevron.down", offset: 1)
             }
@@ -746,11 +789,18 @@ private struct MacSessionList: View {
         .onAppear { expandRelevantWorkspace() }
         .onChange(of: machineID) { _, _ in
             searchText = ""
+            scope = .all
             showsRecent = false
             expandedWorkspaces.removeAll()
             expandRelevantWorkspace()
         }
         .onChange(of: selection) { _, _ in expandRelevantWorkspace() }
+        .onChange(of: filteredSessions.map(\.id)) { _, ids in
+            selection = RemiSessionTriage.reconciledSelection(
+                selection: selection,
+                visibleSessionIDs: ids
+            )
+        }
         .onChange(of: workspaces.map { "\($0.id):\($0.needsAttention)" }) { _, _ in
             expandRelevantWorkspace()
         }
@@ -774,14 +824,7 @@ private struct MacSessionList: View {
     }
 
     private var filteredSessions: [RemiSessionSummary] {
-        guard !searchText.isEmpty else { return sessions }
-        return sessions.filter { session in
-            session.name.localizedCaseInsensitiveContains(searchText) ||
-                session.project.localizedCaseInsensitiveContains(searchText) ||
-                session.projectPath.localizedCaseInsensitiveContains(searchText) ||
-                session.harness.localizedCaseInsensitiveContains(searchText) ||
-                (session.lastMessage?.localizedCaseInsensitiveContains(searchText) ?? false)
-        }
+        RemiSessionTriage.filtered(sessions: sessions, scope: scope, query: searchText)
     }
 
     private var workspaces: [MacSessionWorkspace] {
@@ -817,6 +860,9 @@ private struct MacSessionList: View {
             MacWorkspaceGroupLabel(workspace: workspace)
         }
         .contextMenu {
+            Button("New session here", systemImage: "plus") {
+                onNewSessionHere(workspace.projectPath)
+            }
             Button("Copy directory", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(workspace.projectPath, forType: .string)
@@ -891,6 +937,64 @@ private struct MacSessionList: View {
             orderedIDs: orderedIDs,
             offset: offset
         )
+    }
+
+    private var emptyTitle: String {
+        searchText.isEmpty ? "No sessions in this view" : "No matching sessions"
+    }
+
+    private var emptyDescription: String {
+        if !searchText.isEmpty { return "Try another search or show all sessions." }
+        return "Choose another session filter to see more work."
+    }
+
+    private func resetFilters() {
+        searchText = ""
+        scope = .all
+    }
+}
+
+private struct MacSessionTriageBar: View {
+    @Binding var scope: RemiSessionScope
+    let sessions: [RemiSessionSummary]
+    let visibleCount: Int
+
+    var body: some View {
+        HStack(spacing: RemiTheme.Spacing.s) {
+            Picker("Session filter", selection: $scope) {
+                ForEach(RemiSessionScope.allCases, id: \.self) { option in
+                    Text(label(option, count: option.count(in: sessions))).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+
+            Spacer(minLength: RemiTheme.Spacing.xs)
+
+            Text(summary)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, RemiTheme.Spacing.m)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var summary: LocalizedStringResource {
+        visibleCount == sessions.count
+            ? "\(sessions.count) total"
+            : "\(visibleCount) of \(sessions.count)"
+    }
+
+    private func label(_ scope: RemiSessionScope, count: Int) -> LocalizedStringResource {
+        switch scope {
+        case .all: "All (\(count))"
+        case .needsYou: "Needs You (\(count))"
+        case .live: "Live (\(count))"
+        case .stored: "Stored (\(count))"
+        }
     }
 }
 
@@ -1640,15 +1744,20 @@ private struct MacLiveNewSessionSheet: View {
     init(
         machines: [MachineState],
         recentRepositories: [String: [RecentRepository]],
+        preferredMachineID: String? = nil,
+        preferredRepository: String? = nil,
         onCreate: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
     ) {
         self.machines = machines
         self.recentRepositories = recentRepositories
         self.onCreate = onCreate
-        _draft = State(initialValue: NewSessionDraft(
+        let initialDraft = NewSessionDraft(
             machines: machines,
-            recentRepositoriesByMachine: recentRepositories
-        ))
+            recentRepositoriesByMachine: recentRepositories,
+            preferredMachineID: preferredMachineID,
+            preferredRepository: preferredRepository
+        )
+        _draft = State(initialValue: initialDraft)
     }
 
     var body: some View {
@@ -1883,6 +1992,64 @@ private var workspacePreviewMachine: MachineState {
 
 #Preview("Add machine · Relay error") {
     MacAddMachineSheet(draft: rejectedRelayMachineDraft, onAdd: { _ in })
+}
+
+#Preview("Session triage · Dark") {
+    MacSessionList(
+        machineID: "studio",
+        sessions: workspacePreviewSessions,
+        selection: .constant("waiting"),
+        onResume: { _ in },
+        onNewSessionHere: { _ in },
+        onTerminate: { _ in }
+    )
+    .frame(width: 460, height: 640)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Session triage · Accessibility") {
+    MacSessionList(
+        machineID: "studio",
+        sessions: workspacePreviewSessions,
+        selection: .constant("waiting"),
+        onResume: { _ in },
+        onNewSessionHere: { _ in },
+        onTerminate: { _ in }
+    )
+    .frame(width: 620, height: 720)
+    .environment(\.dynamicTypeSize, .accessibility5)
+    .environment(\.accessibilityReduceTransparency, true)
+}
+
+private var workspacePreviewSessions: [RemiSessionSummary] {
+    [
+        RemiSessionSummary(
+            id: "waiting",
+            machineID: "studio",
+            machineName: "Studio",
+            name: "Native workspace",
+            harness: "claude",
+            project: "remi",
+            projectPath: "~/Documents/git/remi",
+            status: .needsYou,
+            lastMessage: "Review the workspace navigation changes",
+            openQuestionCount: 1,
+            canTerminate: true
+        ),
+        RemiSessionSummary(
+            id: "stored",
+            machineID: "studio",
+            machineName: "Studio",
+            name: "Notification follow-up",
+            harness: "codex",
+            project: "remi",
+            projectPath: "~/Documents/git/remi",
+            status: .offline,
+            lastMessage: "Finished and ready to revisit",
+            isLive: false,
+            canResume: true
+        ),
+    ]
 }
 
 private var rejectedRelayMachineDraft: AddMachineDraft {
