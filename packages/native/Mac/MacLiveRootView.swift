@@ -1641,7 +1641,7 @@ private struct MacLiveNewSessionSheet: View {
                     }
 
                     if !draft.recentRepositories.isEmpty {
-                        Picker("Recent", selection: $draft.repository) {
+                        Picker("Recent repository", selection: $draft.repository) {
                             Text("Choose a repository").tag("")
                             ForEach(draft.recentRepositories) { item in
                                 Text("\(item.name) — \(item.repository)").tag(item.repository)
@@ -1716,8 +1716,13 @@ private struct MacLiveNewSessionSheet: View {
                 .foregroundStyle(draft.canCreate ? Color.green : Color.secondary)
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text(draft.canCreate ? "Ready to create" : "Complete the required fields")
-                    .font(.subheadline.weight(.semibold))
+                if draft.canCreate {
+                    Text("Ready to create")
+                        .font(.subheadline.weight(.semibold))
+                } else {
+                    Text("Complete the required fields")
+                        .font(.subheadline.weight(.semibold))
+                }
                 Text(summaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1730,7 +1735,7 @@ private struct MacLiveNewSessionSheet: View {
 
     private var summaryText: String {
         [
-            draft.selectedMachine?.displayName ?? "Unavailable",
+            draft.selectedMachine?.displayName ?? String(localized: "Unavailable"),
             draft.destinationSummary,
             NewSessionDraft.harnessName(draft.harness),
         ].joined(separator: " · ")
