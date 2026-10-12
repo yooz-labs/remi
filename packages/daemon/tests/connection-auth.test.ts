@@ -107,12 +107,15 @@ describe('Connection auth state machine', () => {
     test('transitions to connecting after valid auth_response', async () => {
       const ws = new MockWebSocket();
       let authSuccess = false;
+      const authenticated = Promise.withResolvers<void>();
       const conn = new Connection(
         ws as unknown as WebSocket,
         {
           onAuthSuccess: () => {
             authSuccess = true;
+            authenticated.resolve();
           },
+          onAuthFailed: (error) => authenticated.reject(new Error(error)),
         },
         { authenticator },
       );
@@ -128,8 +131,8 @@ describe('Connection auth state machine', () => {
       // Send auth_response to connection
       conn.handleMessage(serialize(response));
 
-      // Wait for async auth processing
-      await new Promise((r) => setTimeout(r, 100));
+      // Wait for the actual auth outcome, within the existing test deadline.
+      await authenticated.promise;
 
       expect(conn.connectionState).toBe('connecting');
       expect(authSuccess).toBe(true);
