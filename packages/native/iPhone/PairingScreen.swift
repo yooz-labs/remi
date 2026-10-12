@@ -18,16 +18,16 @@ struct PairingScreen: View {
     @State private var showingScanner = false
     @State private var added = false
 
-    init(
+    @MainActor init(
         publicIdentity: PublicClientIdentity? = nil,
         machineStates: [MachineState] = [],
-        draft: AddMachineDraft = AddMachineDraft(),
+        draft: AddMachineDraft? = nil,
         onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in }
     ) {
         self.publicIdentity = publicIdentity
         self.machineStates = machineStates
         self.onAddMachine = onAddMachine
-        _draft = State(initialValue: draft)
+        _draft = State(initialValue: draft ?? AddMachineDraft())
     }
 
     var body: some View {

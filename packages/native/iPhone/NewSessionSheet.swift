@@ -14,6 +14,8 @@ struct PhoneNewSessionSheet: View {
     init(
         machines: [MachineState],
         recentRepositories: [String: [RecentRepository]],
+        preferredMachineID: String? = nil,
+        preferredRepository: String? = nil,
         onCreate: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
     ) {
         self.machines = machines
@@ -21,7 +23,9 @@ struct PhoneNewSessionSheet: View {
         self.onCreate = onCreate
         _draft = State(initialValue: NewSessionDraft(
             machines: machines,
-            recentRepositoriesByMachine: recentRepositories
+            recentRepositoriesByMachine: recentRepositories,
+            preferredMachineID: preferredMachineID,
+            preferredRepository: preferredRepository
         ))
     }
 

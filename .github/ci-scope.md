@@ -193,3 +193,31 @@ An old consumer removed by this PR still selects R7, as does a new consumer,
 registry/export/helper/config change or any mixed runtime input. No prior gate
 selection is cleared. Literal scans cannot discover deliberately computed names;
 source ownership and future runtime integration still require review.
+
+## Exact reservation accounting relocation (#1170)
+
+A separate one-time rule owns three new daemon internals under `src/tunnel`
+(`reservations.ts`, `journal-schema.ts`, `recovery-error.ts`), the two existing
+proof adapters, the exact error import/re-export in proof `recovery.ts`, and the
+five target-path changes in `settlement-mutations.py`. The exact optional new
+`packages/daemon/tests/tunnel/reservations-adoption.test.ts` retains ordinary
+coverage and verifies real filesystem accounting plus constructor/adapter identity.
+Every ordinary gate is selected; only dormant relocation R7 work skips.
+
+`ACCOUNTING_ORIGINALS` pins all 13 actual pre-relocation proof consumer blobs at
+both target base and merge-base. `ACCOUNTING_HEAD` pins the seven mechanically
+transformed files and optional test. Required files must make their exact A/M
+transition as regular blobs; adapters have explicit exports and the error has
+one constructor. These pins include implementation bodies, imports, exports,
+comments and mutation strings. Unknown bodies, missing files, D/R/T transitions,
+symlinks/submodules and future edits restore all gates.
+
+Both endpoint trees receive the same strict text/mode/read checks and source
+surfaces as the staging scan. Exact old/new module specifiers and all 13 public
+identifiers are scanned outside the immutable known proof consumers and reviewed
+producers/test. Identifier boundaries avoid unrelated `clientReservations` matches.
+Unrecognized consumers, changed known consumers, unavailable objects, malformed
+UTF8/NULs, errors and mixed runtime inputs restore relay. No previous selection
+is cleared. This rule does not exempt a directory or permit future arbitrary
+dormant edits; literal scans cannot prove the absence of computed references.
+The existing staging export vocabulary and both-endpoint predicate are unchanged.

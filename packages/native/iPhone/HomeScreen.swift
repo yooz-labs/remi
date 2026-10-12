@@ -8,6 +8,10 @@ struct HomeScreen: View {
     @State private var showingNewSession = false
     @State private var showingPreferences = false
     @State private var searchText = ""
+    @State private var activityScope = RemiCommandCenterScope.overview
+    @State private var machinesExpanded = false
+    @State private var newSessionMachineID: String?
+    @State private var newSessionRepository: String?
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
@@ -118,6 +122,13 @@ struct HomeScreen: View {
                     )
                 }
 
+                if !sessions.isEmpty || !questions.isEmpty {
+                    CommandCenterScopePicker(
+                        scope: $activityScope,
+                        counts: snapshot.scopeCounts
+                    )
+                }
+
                 if !snapshot.sessions.isEmpty || !snapshot.questions.isEmpty {
                     CommandCenterSummary(snapshot: snapshot)
                 }
@@ -137,12 +148,14 @@ struct HomeScreen: View {
                     PhoneNoSessionsState(
                         message: emptySessionsMessage,
                         canCreateSession: !availableSessionMachines.isEmpty,
-                        onNewSession: { showingNewSession = true }
+                        onNewSession: { presentNewSession() },
+                        onReset: hasActiveFilters ? resetFilters : nil
                     )
                 } else {
                     SessionsSection(
                         sessions: snapshot.sessions,
-                        machines: visibleMachines,
+                        scope: activityScope,
+                        query: searchText,
                         transcriptForSession: transcriptForSession,
                         questionsForSession: questionsForSession,
                         viewsForSession: viewsForSession,
@@ -153,22 +166,15 @@ struct HomeScreen: View {
                         onOpenSession: onOpenSession,
                         onSend: onSend,
                         onTerminateSession: onTerminateSession,
-                        onResumeSession: onResumeSession
+                        onResumeSession: onResumeSession,
+                        onNewSessionHere: { machineID, repository in
+                            presentNewSession(machineID: machineID, repository: repository)
+                        }
                     )
                 }
 
                 if !machines.isEmpty {
-                    MachinesSection(
-                        machines: machines,
-                        states: sessionMachines,
-                        publicIdentity: publicIdentity,
-                        onRemove: onRemoveMachine,
-                        onRetryApproval: onRetryApproval,
-                        onRetryConnection: onRetryConnection,
-                        onPairAgain: { showingPairing = true },
-                        onEnableRelayNotifications: onEnableRelayNotifications,
-                        enablingRelayNotifications: enablingRelayNotifications
-                    )
+                    machineManagementSection
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -200,7 +206,7 @@ struct HomeScreen: View {
                         }
                     } else {
                         Button("New session", systemImage: "plus.rectangle.on.folder") {
-                            showingNewSession = true
+                            presentNewSession()
                         }
                     }
                 }
@@ -208,7 +214,7 @@ struct HomeScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("New session", systemImage: "plus.rectangle.on.folder") {
-                            showingNewSession = true
+                            presentNewSession()
                         }
                         .disabled(availableSessionMachines.isEmpty)
 
@@ -232,10 +238,12 @@ struct HomeScreen: View {
                 }
             }
         }
-        .sheet(isPresented: $showingNewSession) {
+        .sheet(isPresented: $showingNewSession, onDismiss: clearNewSessionContext) {
             PhoneNewSessionSheet(
                 machines: availableSessionMachines,
                 recentRepositories: recentRepositories,
+                preferredMachineID: newSessionMachineID,
+                preferredRepository: newSessionRepository,
                 onCreate: onCreateSession
             )
         }
@@ -262,27 +270,27 @@ struct HomeScreen: View {
         sessionMachines.filter { $0.status == .connected }
     }
 
-    private var visibleMachines: [RemiMachineSummary] {
-        selectedMachineID.isEmpty ? machines : machines.filter { $0.id == selectedMachineID }
-    }
-
     private var snapshot: RemiCommandCenterSnapshot {
         RemiCommandCenterSnapshot(
             sessions: sessions,
             questions: questions,
             selectedMachineID: selectedMachineID,
-            query: searchText
+            query: searchText,
+            scope: activityScope
         )
     }
 
     private var emptySessionsMessage: LocalizedStringKey {
+        if activityScope != .overview {
+            return "No activity matches this scope."
+        }
         switch lifecycleState {
         case .noSearchResults:
-            "No sessions match this search."
+            return hasActiveFilters ? "No activity matches these filters." : "No sessions match this search."
         case .noSessionsForMachine:
-            "This machine has no available sessions yet."
+            return "This machine has no available sessions yet."
         default:
-            "Sessions from your connected machines will appear here."
+            return "Sessions from your connected machines will appear here."
         }
     }
 
@@ -293,6 +301,95 @@ struct HomeScreen: View {
             query: searchText,
             hasSelectedMachine: !selectedMachineID.isEmpty
         )
+    }
+
+    private var hasActiveFilters: Bool {
+        !selectedMachineID.isEmpty
+            || activityScope != .overview
+            || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasMachineRecoveryWork: Bool {
+        sessionMachines.contains { $0.status != .connected }
+    }
+
+    private var showsMachineManagement: Bool {
+        RemiCommandCenterDisclosure.showsMachineManagement(
+            hasRecoveryWork: hasMachineRecoveryWork,
+            manuallyExpanded: machinesExpanded
+        )
+    }
+
+    @ViewBuilder private var machineManagementSection: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+            Button {
+                if !hasMachineRecoveryWork {
+                    machinesExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                        Text("Machines").font(.title2.weight(.bold))
+                        Text(machineSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: showsMachineManagement ? "chevron.up" : "chevron.down")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(machineManagementHint)
+
+            if showsMachineManagement {
+                MachinesSection(
+                    machines: machines,
+                    states: sessionMachines,
+                    publicIdentity: publicIdentity,
+                    onRemove: onRemoveMachine,
+                    onRetryApproval: onRetryApproval,
+                    onRetryConnection: onRetryConnection,
+                    onPairAgain: { showingPairing = true },
+                    onEnableRelayNotifications: onEnableRelayNotifications,
+                    enablingRelayNotifications: enablingRelayNotifications,
+                    showsTitle: false
+                )
+            }
+        }
+    }
+
+    private var machineSummary: LocalizedStringResource {
+        let connected = machines.count { $0.reachability == .connected }
+        return hasMachineRecoveryWork
+            ? "\(connected) of \(machines.count) connected · Action may be needed"
+            : "\(connected) connected"
+    }
+
+    private var machineManagementHint: LocalizedStringResource {
+        if hasMachineRecoveryWork {
+            return "Machine actions remain visible while attention is needed"
+        }
+        return showsMachineManagement ? "Hides machine management" : "Shows machine management"
+    }
+
+    private func presentNewSession(machineID: String? = nil, repository: String? = nil) {
+        newSessionMachineID = machineID ?? (selectedMachineID.isEmpty ? nil : selectedMachineID)
+        newSessionRepository = repository
+        showingNewSession = true
+    }
+
+    private func clearNewSessionContext() {
+        newSessionMachineID = nil
+        newSessionRepository = nil
+    }
+
+    private func resetFilters() {
+        selectedMachineID = ""
+        searchText = ""
+        activityScope = .overview
     }
 }
 
@@ -330,6 +427,7 @@ private struct PhoneNoSessionsState: View {
     let message: LocalizedStringKey
     let canCreateSession: Bool
     let onNewSession: () -> Void
+    let onReset: (() -> Void)?
 
     var body: some View {
         ContentUnavailableView {
@@ -341,9 +439,100 @@ private struct PhoneNoSessionsState: View {
                 Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
                     .buttonStyle(.glassProminent)
             }
+            if let onReset {
+                Button("Show all activity", action: onReset)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.l)
+    }
+}
+
+private struct CommandCenterScopePicker: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Binding var scope: RemiCommandCenterScope
+    let counts: RemiCommandCenterScopeCounts
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            Picker("Activity scope", selection: $scope) {
+                scopeOptions
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ScrollView(.horizontal) {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    ForEach(RemiCommandCenterScope.allCases, id: \.self) { option in
+                        Button {
+                            scope = option
+                        } label: {
+                            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                                Text(title(option))
+                                    .font(.subheadline.weight(.semibold))
+                                Text(sessionCount(counts[option]))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(minWidth: 70, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
+                            .padding(.horizontal, RemiTheme.Spacing.s)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .background(
+                            option == scope ? Color.primary.opacity(0.1) : Color.primary.opacity(0.045),
+                            in: Capsule()
+                        )
+                        .overlay {
+                            Capsule()
+                                .stroke(
+                                    option == scope ? Color.primary.opacity(0.34) : RemiTheme.Color.hairline,
+                                    lineWidth: 1
+                                )
+                                .allowsHitTesting(false)
+                        }
+                        .accessibilityAddTraits(option == scope ? .isSelected : [])
+                        .accessibilityLabel(label(option))
+                        .accessibilityHint("Filters the command center")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    @ViewBuilder private var scopeOptions: some View {
+        ForEach(RemiCommandCenterScope.allCases, id: \.self) { option in
+            Text(label(option)).tag(option)
+        }
+    }
+
+    private func title(_ scope: RemiCommandCenterScope) -> LocalizedStringResource {
+        switch scope {
+        case .overview: "Overview"
+        case .needsYou: "Needs You"
+        case .active: "Active"
+        case .recent: "Recent"
+        }
+    }
+
+    private func label(_ scope: RemiCommandCenterScope) -> LocalizedStringResource {
+        let count = counts[scope]
+        switch (scope, count == 1) {
+        case (.overview, true): return "Overview, 1 session"
+        case (.overview, false): return "Overview, \(count) sessions"
+        case (.needsYou, true): return "Needs You, 1 session"
+        case (.needsYou, false): return "Needs You, \(count) sessions"
+        case (.active, true): return "Active, 1 session"
+        case (.active, false): return "Active, \(count) sessions"
+        case (.recent, true): return "Recent, 1 session"
+        case (.recent, false): return "Recent, \(count) sessions"
+        }
+    }
+
+    private func sessionCount(_ count: Int) -> LocalizedStringResource {
+        count == 1 ? "1 session" : "\(count) sessions"
     }
 }
 
@@ -474,7 +663,8 @@ private struct NeedsYouSection: View {
 
 private struct SessionsSection: View {
     let sessions: [RemiSessionSummary]
-    let machines: [RemiMachineSummary]
+    let scope: RemiCommandCenterScope
+    let query: String
     let transcriptForSession: (String) -> [RemiTranscriptEntry]
     let questionsForSession: (String) -> [RemiQuestionCardModel]
     let viewsForSession: (String) -> [SessionViewMeta]
@@ -486,57 +676,39 @@ private struct SessionsSection: View {
     let onSend: (String, String) async -> Bool
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
+    let onNewSessionHere: (String, String) -> Void
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
-    @State private var expandedRecentMachines: Set<String> = []
+    @State private var showsRecent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             Text("Workspaces").font(.title2.weight(.bold))
-            ForEach(machines) { machine in
-                let machineWorkspaces = workspaces.filter { $0.machineID == machine.id }
-                let activeWorkspaces = machineWorkspaces.filter { $0.activeCount > 0 }
-                let recentWorkspaces = machineWorkspaces.filter { $0.activeCount == 0 }
-                if !machineWorkspaces.isEmpty {
-                    Text(machine.name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, RemiTheme.Spacing.xs)
+            ForEach(activeWorkspaces) { workspace in
+                workspaceEntry(workspace)
+                if workspace.id != activeWorkspaces.last?.id { Divider() }
+            }
 
-                    ForEach(activeWorkspaces) { workspace in
-                        workspaceEntry(workspace)
-                        if workspace.id != activeWorkspaces.last?.id { Divider() }
-                    }
-
-                    if !recentWorkspaces.isEmpty {
-                        DisclosureGroup(
-                            isExpanded: Binding(
-                                get: { expandedRecentMachines.contains(machine.id) },
-                                set: { expanded in
-                                    if expanded {
-                                        expandedRecentMachines.insert(machine.id)
-                                    } else {
-                                        expandedRecentMachines.remove(machine.id)
-                                    }
-                                }
-                            )
-                        ) {
-                            ForEach(recentWorkspaces) { workspace in
-                                workspaceEntry(workspace)
-                                if workspace.id != recentWorkspaces.last?.id { Divider() }
-                            }
-                        } label: {
-                            Label(recentWorkspaceLabel(recentWorkspaces.count), systemImage: "clock")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .padding(.vertical, RemiTheme.Spacing.xs)
-                        .accessibilityLabel(recentWorkspaceLabel(recentWorkspaces.count))
-                        .accessibilityHint(
-                            expandedRecentMachines.contains(machine.id)
-                                ? "Hides finished workspaces"
-                                : "Shows finished workspaces"
-                        )
-                    }
+            if !recentWorkspaces.isEmpty, automaticallyShowsRecent {
+                Label(recentWorkspaceLabel(recentWorkspaces.count), systemImage: "clock")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, RemiTheme.Spacing.xs)
+                ForEach(recentWorkspaces) { workspace in
+                    workspaceEntry(workspace)
+                    if workspace.id != recentWorkspaces.last?.id { Divider() }
                 }
+            } else if !recentWorkspaces.isEmpty {
+                DisclosureGroup(isExpanded: $showsRecent) {
+                    ForEach(recentWorkspaces) { workspace in
+                        workspaceEntry(workspace)
+                        if workspace.id != recentWorkspaces.last?.id { Divider() }
+                    }
+                } label: {
+                    Label(recentWorkspaceLabel(recentWorkspaces.count), systemImage: "clock")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(.vertical, RemiTheme.Spacing.xs)
+                .accessibilityLabel(recentWorkspaceLabel(recentWorkspaces.count))
+                .accessibilityHint(showsRecent ? "Hides finished workspaces" : "Shows finished workspaces")
             }
         }
         .sheet(item: $focusedWorkspace) { focus in
@@ -553,7 +725,8 @@ private struct SessionsSection: View {
                     onOpenSession: onOpenSession,
                     onSend: onSend,
                     onTerminateSession: onTerminateSession,
-                    onResumeSession: onResumeSession
+                    onResumeSession: onResumeSession,
+                    onNewSessionHere: onNewSessionHere
                 )
             }
         }
@@ -565,11 +738,23 @@ private struct SessionsSection: View {
         }
         .values
         .compactMap(PhoneSessionWorkspace.init(sessions:))
-        .sorted { lhs, rhs in
-            if lhs.machineID != rhs.machineID { return lhs.machineID < rhs.machineID }
-            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
-            return lhs.project.localizedCaseInsensitiveCompare(rhs.project) == .orderedAscending
-        }
+        .sorted { RemiWorkspaceOrdering.sortsBefore($0.sessions, $1.sessions) }
+    }
+
+    private var activeWorkspaces: [PhoneSessionWorkspace] {
+        workspaces.filter { $0.activeCount > 0 }
+    }
+
+    private var recentWorkspaces: [PhoneSessionWorkspace] {
+        workspaces.filter { $0.activeCount == 0 }
+    }
+
+    private var automaticallyShowsRecent: Bool {
+        RemiCommandCenterDisclosure.showsRecent(
+            scope: scope,
+            query: query,
+            manuallyExpanded: false
+        )
     }
 
     private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
@@ -585,6 +770,9 @@ private struct SessionsSection: View {
             }
             Button("Copy directory", systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = workspace.projectPath
+            }
+            Button("New session here", systemImage: "plus.rectangle.on.folder") {
+                onNewSessionHere(workspace.machineID, workspace.projectPath)
             }
             if let resumable = workspace.sessions.first(where: { $0.canResume }) {
                 Button("Resume latest", systemImage: "play.fill") {
@@ -631,7 +819,6 @@ private struct PhoneSessionWorkspace: Identifiable {
         }
     }
 
-    var priority: Int { sessions.first?.displayPriority ?? .max }
     var status: RemiSessionStatus { sessions.first?.status ?? .offline }
     var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
     var activeCount: Int { sessions.count { $0.isLive } }
@@ -688,6 +875,10 @@ private struct PhoneWorkspaceRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                     .truncationMode(.middle)
+
+                Label(workspace.machineName, systemImage: "desktopcomputer")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 let metadataLayout = dynamicTypeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xxs))
@@ -757,6 +948,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let onSend: (String, String) async -> Bool
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
+    let onNewSessionHere: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
@@ -791,6 +983,12 @@ private struct PhoneWorkspaceSessionsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search sessions")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("New session here", systemImage: "plus.rectangle.on.folder") {
+                        dismiss()
+                        onNewSessionHere(workspace.machineID, workspace.projectPath)
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
@@ -929,11 +1127,14 @@ private struct MachinesSection: View {
     let onPairAgain: () -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
+    let showsTitle: Bool
     @State private var pendingRemoval: RemiMachineSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Machines").font(.title2.weight(.bold))
+            if showsTitle {
+                Text("Machines").font(.title2.weight(.bold))
+            }
             ForEach(machines) { machine in
                 let state = states.first { $0.id == machine.id }
                 PhoneMachineManagementRow(
