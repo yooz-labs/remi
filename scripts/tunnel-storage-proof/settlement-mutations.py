@@ -32,7 +32,7 @@ runner = cast(
 runner.approval = load("settlement_matrix", "settlement-matrix.py")
 MUTATIONS = {
     "ongoing-accounting": {
-        "file": "scripts/tunnel-storage-proof/journal-settlement.ts",
+        "file": "packages/daemon/src/tunnel/journal-settlement.ts",
         "old": "          store.writeJournal(lease, projected, measure, effect);",
         "new": "          effect();",
         "witness": "exact ongoing write accounting blocks intervening admission",

@@ -144,3 +144,19 @@ A focused test uses the real native operations to verify constructor identity,
 actual captured directory descriptors and closure. Shared and boundary tests pass
 on both Buns. These results cover the internal move; journal/helper adoption,
 transfer handlers, client upload and capability advertisement remain upcoming.
+
+## Internal journal lifecycle adoption
+
+The daemon owns the existing descriptor-backed recovery and settlement bodies.
+The proof paths explicitly re-export the same implementation and error constructor;
+mutation controls now target the moved source while preserving every guard and witness.
+No package index export, startup initialization or active transfer caller is added.
+
+The unchanged 88-group compiled profile passed all six supported Mac/Linux and
+Bun combinations after the move. Twenty-two exact Mac guard controls passed,
+and their 44 misleading setup/success controls were rejected. Both Bun versions
+passed shared and focused boundary tests; the new filesystem test writes and
+closes the actual private journal, verifies owned cleanup and retires its lease.
+These results cover internal adoption, not a physical allocation ceiling or
+power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
+handlers, a client caller and capability advertisement remain upcoming.
