@@ -34,6 +34,16 @@ ACCOUNTING_ORIGINAL_CONTENT = {
 }
 ACCOUNTING_PROOF = "scripts/tunnel-storage-proof/"
 ACCOUNTING_DAEMON = "packages/daemon/src/tunnel/"
+ACCOUNTING_FULL_BASE = "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7"
+ACCOUNTING_COLLISION_BLOBS = {
+    "packages/native/RemiKit/Sources/RemiKit/Transport/RelayChannelBroker.swift": "41fbabaef6a051bde704610c36bf144ac8a7ca21",
+    "packages/signaling/src/connection-room.ts": "da13ef5fe90c5e452eb29dc039eca1b2afbe1eb7",
+    "packages/signaling/tests/e2e/limits.e2e.test.ts": "2f4e404747aac4d1409bb2882cd23731ae5f38ce",
+}
+ACCOUNTING_COLLISION_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE).decode()
+    for path, blob in ACCOUNTING_COLLISION_BLOBS.items()
+}
 ACCOUNTING_HEAD_CONTENT = {}
 old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "reservations.ts"]
 ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "reservations.ts"] = old.replace(
@@ -523,6 +533,45 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         assert not module["accounting_relocation_is_dormant"](accounting_base, broken_head,
                                                             accounting_base, list(module["ACCOUNTING_HEAD"]))
         assert selected(classify(accounting_base, broken_head)) == gates
+        count += 1
+        for path, text in ACCOUNTING_COLLISION_CONTENT.items():
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write(path, text)
+            collision_base = commit()
+            relocate_accounting()
+            assert selected(classify(collision_base, commit())) == WRAPPER_GATES, path
+            count += 1
+        for syntax in ("import 'reservations';", "import('reservations')", "require('reservations')",
+                       "export {} from 'reservations';", "import 'journal-schema';", "require('recovery-error')",
+                       "import '../tunnel/reservations.ts';", "export * from './journal-schema';",
+                       "const old = 'scripts/tunnel-storage-proof/reservations.ts';"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("scripts/real-module-consumer.ts", syntax)
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, syntax
+            count += 1
+        for text in ('const counts = { "reservations": 1 };', 'const reservations = 1;',
+                     'const count = object.reservations;', '// completed reservations do not hold a slot'):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("packages/signaling/ordinary-counter.ts", text)
+            counter_base = commit()
+            relocate_accounting()
+            assert selected(classify(counter_base, commit())) == WRAPPER_GATES, text
+            count += 1
+        # Preserve every unrelated published repository object/mode, including real counters.
+        # Only this owned temporary index/object database is changed; no future commit is needed.
+        git("fetch", "--quiet", "--no-tags", str(original), ACCOUNTING_FULL_BASE)
+        git("read-tree", ACCOUNTING_FULL_BASE)
+        for path, text in ACCOUNTING_HEAD_CONTENT.items():
+            blob = git("hash-object", "-w", "--stdin", input=text)
+            mode = "100755" if path.endswith("settlement-mutations.py") else "100644"
+            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+        full_tree = git("write-tree")
+        full_head = git("commit-tree", full_tree, "-p", ACCOUNTING_FULL_BASE, "-m", "actual full-tree relocation")
+        assert set(git("diff", "--name-only", ACCOUNTING_FULL_BASE, full_head).splitlines()) == set(ACCOUNTING_HEAD_CONTENT)
+        full_result = classify(ACCOUNTING_FULL_BASE, full_head)
+        assert selected(full_result) == WRAPPER_GATES, full_result
         count += 1
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",

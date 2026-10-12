@@ -221,3 +221,11 @@ UTF8/NULs, errors and mixed runtime inputs restore relay. No previous selection
 is cleared. This rule does not exempt a directory or permit future arbitrary
 dormant edits; literal scans cannot prove the absence of computed references.
 The existing staging export vocabulary and both-endpoint predicate are unchanged.
+
+Module references require a slash-bearing path prefix or a quoted bare name in
+explicit import/from/require syntax. Ordinary lowercase `reservations` comments,
+JSON keys and counter properties are not module references. The corpus retains
+the three actual native/Worker collision blobs and tests the complete published
+repository tree with only the eight reviewed relocation entries replaced. This
+full-tree control uses published ancestor objects and works before adoption;
+it does not require unpublished source commits or new files in the caller tree.
