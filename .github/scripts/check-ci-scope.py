@@ -372,6 +372,410 @@ for phase, contents in COLD_CONTENT.items():
         blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=text.encode(), stderr=subprocess.PIPE).decode().strip()
         assert blob == module["COLD_RELOCATIONS"][phase]["head"][path][1], (phase, path, blob)
 
+# Exact reviewed token splices against public immutable originals; no candidate commit dependency.
+LAUNCH_PUBLIC_BASE = "c1c71ef456d075bd11c6bc01d4648fe6ee24169d"
+DECODE_PUBLIC_BASE = "c04f69541be39ea5ed1aac58abe396ce04e8afbc"
+LAUNCH_REVIEWED_EDITS = {
+    "packages/daemon/src/cli.ts": [
+        [
+            13290,
+            13290,
+            "import { isSessionLaunch, resolveLaunchHarness } from './cli/launch-harness.ts';\n"
+        ],
+        [
+            20124,
+            20390,
+            "// #1473: explicit CLI choice wins over the configured session default.\n// Hub/management commands keep Claude; a hub explicitly selects each child's harness.\nconst { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);\n"
+        ],
+        [
+            20786,
+            20937,
+            "    cliHost !== undefined && cliResume !== undefined && isSessionLaunch(parsedArgs);\n"
+        ],
+        [
+            38757,
+            38867,
+            "if (isSessionLaunch(parsedArgs) && cliHost) {\n"
+        ],
+        [
+            40712,
+            41080,
+            "      // Explicit choices and configured Codex are named. Implicit Claude retains the legacy\n      // omitted field. The remote daemon still validates the arguments after `--`.\n      harness: remoteHarness,\n"
+        ],
+        [
+            41339,
+            41465,
+            "if (isSessionLaunch(parsedArgs) && cliRecent && !cliHost) {\n"
+        ],
+        [
+            42360,
+            42483,
+            "if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {\n"
+        ]
+    ],
+    "packages/daemon/src/cli/arg-parser.ts": [
+        [
+            755,
+            755,
+            "  'claude',\n"
+        ],
+        [
+            13919,
+            13972,
+            "      subcommand !== 'claude' &&\n      !((arg === 'codex' || arg === 'claude') && subcommand !== undefined)\n"
+        ],
+        [
+            13980,
+            14245,
+            "      // Once either harness alias is selected, later command-looking words are its arguments.\n      // An alias only starts a command when none was given: `remi stop codex` still stops.\n"
+        ],
+        [
+            15965,
+            15995,
+            "    (subcommand === 'codex' || subcommand === 'claude') &&\n"
+        ],
+        [
+            16024,
+            16048,
+            "    harness !== subcommand\n"
+        ],
+        [
+            16054,
+            16134,
+            "    error = `Error: --harness ${harness} conflicts with the ${subcommand} subcommand.`;\n"
+        ]
+    ],
+    "packages/daemon/src/cli/handlers/create-session-events.ts": [
+        [
+            6644,
+            6839,
+            " * read as a remi flag (`--no-auth`). An omitted wire harness explicitly selects Claude so\n * the child CLI configuration cannot change the legacy/native request meaning. `noticeFor` builds what a success\n"
+        ],
+        [
+            7398,
+            7485,
+            "  if (harness === undefined && args === undefined) {\n    return { ok: true, spawnArgs: ['--harness', 'claude'] };\n  }\n"
+        ],
+        [
+            8817,
+            8967,
+            "    spawnArgs: ['--harness', id, ...(checked.args.length > 0 ? ['--', ...checked.args] : [])],\n"
+        ]
+    ],
+    "packages/daemon/src/cli/help.ts": [
+        [
+            3531,
+            3572,
+            "    'Create a session using [harness] default (Claude unless configured).',\n"
+        ],
+        [
+            4411,
+            4489,
+            "    entry('--harness ID', 'Override [harness] default: claude or codex'),\n"
+        ],
+        [
+            5023,
+            5023,
+            "  ],\n  claude: [\n    'Start Claude Code with monitoring, overriding [harness] default.',\n    '',\n    bold('Usage:'),\n    entry('remi claude', 'Start Claude explicitly'),\n    entry('remi claude --dir <path>', 'Start Claude in directory'),\n    entry('remi claude --host <ip> -- --model <name>', 'Create Claude session remotely'),\n    entry('remi claude --resume <id>', 'Resume a Claude session'),\n    '',\n    dim('  Remi options are read before `--`; later words belong to Claude Code.'),\n"
+        ],
+        [
+            17954,
+            18005,
+            "    entry('remi', 'Start configured harness (Claude by default)'),\n    entry('remi claude', 'Start Claude explicitly'),\n"
+        ],
+        [
+            20911,
+            20911,
+            "    entry('--harness ID', 'Override session default: claude or codex'),\n"
+        ],
+        [
+            21899,
+            22040,
+            "    dim('  Set [harness] default = \"codex\" in config to use Codex for plain remi/new.'),\n    dim('  Unrecognized flags are passed through to the selected harness.'),\n"
+        ]
+    ],
+    "packages/daemon/src/config/config.ts": [
+        [
+            7771,
+            7771,
+            "/** #1473: the CLI's session launch default; wire/store omission still means Claude. */\nexport interface HarnessConfig {\n  readonly default: 'claude' | 'codex';\n}\n\n"
+        ],
+        [
+            7836,
+            7836,
+            "  readonly harness: HarnessConfig;\n"
+        ],
+        [
+            8284,
+            8284,
+            "  harness: { default: 'claude' },\n"
+        ],
+        [
+            12080,
+            12080,
+            "    harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),\n"
+        ],
+        [
+            14906,
+            14906,
+            "    validateHarnessTable(parsed['harness'], configPath);\n"
+        ],
+        [
+            15916,
+            15916,
+            "  }\n}\n\n/** Validate before merging: scalar/array tables and unknown keys must not disappear. */\nfunction validateHarnessTable(table: unknown, configPath: string): void {\n  if (table === undefined) return;\n  if (typeof table !== 'object' || table === null || Array.isArray(table)) {\n    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);\n  }\n  const prototype = Object.getPrototypeOf(table);\n  if (prototype !== Object.prototype && prototype !== null) {\n    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);\n  }\n  if (Object.keys(table).some((key) => key !== 'default')) {\n    throw new Error(`Invalid harness in ${configPath}: only default is supported`);\n  }\n  const value = (table as Record<string, unknown>)['default'];\n  if (value !== undefined && value !== 'claude' && value !== 'codex') {\n    throw new Error(`Invalid harness.default in ${configPath}: expected \"claude\" or \"codex\"`);\n"
+        ],
+        [
+            26825,
+            26825,
+            "[harness]\n# CLI session launches only; remi claude/remi codex and --harness override this.\ndefault = \"${DEFAULT_CONFIG.harness.default}\"\n\n"
+        ],
+        [
+            31810,
+            31810,
+            "  lines.push('[harness]');\n  lines.push(`  default = \"${config.harness.default}\"`);\n  lines.push('');\n"
+        ]
+    ],
+    "packages/daemon/src/config/index.ts": [
+        [
+            312,
+            312,
+            "  HarnessConfig,\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/arg-parser.test.ts": [
+        [
+            134,
+            134,
+            "\ndescribe('explicit Claude alias (#1473)', () => {\n  test('later command names are Claude arguments, including the other alias', () => {\n    for (const word of ['status', 'config', 'new', 'logs', 'stop', 'claude', 'codex']) {\n      const parsed = parseArgs(['claude', word]);\n      expect(parsed.subcommand).toBe('claude');\n      expect(parsed.claudeArgs).toEqual([word]);\n    }\n  });\n\n  test('a Claude word after a management command is never a launch alias', () => {\n    for (const command of ['stop', 'new', 'serve', 'status', 'ls'] as const) {\n      expect(parseArgs([command, 'claude']).subcommand).toBe(command);\n    }\n  });\n\n  test('alias/flag conflicts are symmetric, before or after the alias', () => {\n    for (const args of [\n      ['claude', '--harness', 'codex'],\n      ['--harness', 'codex', 'claude'],\n    ]) {\n      expect(parseArgs(args).error).toContain('conflicts with the claude subcommand');\n    }\n    expect(parseArgs(['claude', '--harness', 'claude']).error).toBeUndefined();\n    expect(parseArgs(['claude', '--harness', 'opencode']).error).toContain('conflicts');\n  });\n\n  test('the separator prevents aliases and flags from becoming Remi commands', () => {\n    const parsed = parseArgs(['claude', '--', 'codex', 'status', '--harness', 'codex']);\n    expect(parsed.subcommand).toBe('claude');\n    expect(parsed.harness).toBeUndefined();\n    expect(parsed.explicitArgs).toEqual(['codex', 'status', '--harness', 'codex']);\n    expect(parseArgs(['--', 'claude', 'status']).subcommand).toBeUndefined();\n  });\n});\n"
+        ],
+        [
+            31549,
+            31646,
+            "  test('that rule belongs to harness aliases: management subcommands still use the last one', () => {\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/handlers/create-session-events.test.ts": [
+        [
+            5383,
+            5435,
+            "        extraArgs: ['--auth', '--bind', '0.0.0.0', '--harness', 'claude'],\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/handlers/create-session-harness.test.ts": [
+        [
+            908,
+            908,
+            "import { parseArgs } from '../../../src/cli/arg-parser.ts';\n"
+        ],
+        [
+            1032,
+            1032,
+            "import { resolveLaunchHarness } from '../../../src/cli/launch-harness.ts';\n"
+        ],
+        [
+            4632,
+            4773,
+            "    test('a plain request explicitly selects legacy Claude', () => {\n      expect(spawnArgs(undefined)).toEqual(['--harness', 'claude']);\n      expect(spawnArgs({})).toEqual(['--harness', 'claude']);\n      const child = parseArgs(['--daemon', ...spawnArgs(undefined)]);\n      expect(resolveLaunchHarness(child, 'codex').harnessId).toBe('claude');\n"
+        ],
+        [
+            5506,
+            5739,
+            "    test('arguments with no wire harness explicitly launch Claude, behind a --', () => {\n      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual([\n        '--harness',\n        'claude',\n        '--',\n        '--model',\n        'opus',\n      ]);\n      expect(spawnArgs({ args: [] })).toEqual(['--harness', 'claude']);\n"
+        ],
+        [
+            6765,
+            6856,
+            "      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual([\n        '--harness',\n        'claude',\n        '--',\n        '--model',\n        'opus',\n      ]);\n"
+        ],
+        [
+            8563,
+            8611,
+            "      expect(spawnArgs(undefined)).toEqual(['--harness', 'claude']);\n"
+        ],
+        [
+            21891,
+            21996,
+            "    test('a plain request pins Claude after inherited flags regardless of host CLI default', async () => {\n"
+        ],
+        [
+            22114,
+            22210,
+            "      expect(spawns[0]?.extraArgs).toEqual([\n        '--no-auth',\n        '--no-relay',\n        '--bind',\n        '127.0.0.1',\n        '--harness',\n        'claude',\n      ]);\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/handlers/create-session-start.test.ts": [
+        [
+            3558,
+            3641,
+            "        extraArgs: [\n          '--auth',\n          '--bind',\n          '127.0.0.1',\n          '--harness',\n          'claude',\n          '--',\n          '--resume',\n          CLAUDE_ID,\n        ],\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/handlers/create-session-workspace.test.ts": [
+        [
+            4813,
+            4911,
+            "    expect(spawns).toEqual([\n      { port: SPAWNED.port, directory: dir, extraArgs: ['--inherited', '--harness', 'claude'] },\n    ]);\n"
+        ]
+    ],
+    "packages/daemon/tests/cli/help.test.ts": [
+        [
+            133,
+            133,
+            "\ntest('help describes configured CLI default and explicit Claude/Codex overrides', () => {\n  expect(formatHelp('0.0.0')).toContain('remi claude');\n  expect(formatHelp('0.0.0')).toContain('[harness] default');\n  expect(formatCommandHelp('claude')).toContain('overriding [harness] default');\n  expect(formatCommandHelp('new')).toContain('Override [harness] default');\n});\n"
+        ],
+        [
+            1502,
+            1565,
+            "    expect(output).toContain('passed through to the selected harness');\n"
+        ]
+    ],
+    "packages/daemon/tests/config.test.ts": [
+        [
+            593,
+            593,
+            "\ndescribe('configured CLI harness (#1473)', () => {\n  test('missing and empty harness tables preserve built-in Claude', () => {\n    expect(loadConfig(TEST_CONFIG).harness.default).toBe('claude');\n    fs.writeFileSync(TEST_CONFIG, '[harness]\\n');\n    expect(loadConfig(TEST_CONFIG).harness.default).toBe('claude');\n  });\n\n  test('exact choices load from owned TOML and survive unrelated environment overrides', () => {\n    for (const harness of ['claude', 'codex'] as const) {\n      fs.writeFileSync(TEST_CONFIG, `[harness]\\ndefault = \"${harness}\"\\n`);\n      const config = loadConfig(TEST_CONFIG);\n      expect(config.harness.default).toBe(harness);\n      expect(applyEnvOverrides(config).harness.default).toBe(harness);\n      expect(formatConfig(config, TEST_CONFIG)).toContain(`default = \"${harness}\"`);\n    }\n  });\n\n  test('rejects malformed tables, unknown keys and unsupported or wrong-type defaults', () => {\n    for (const toml of [\n      'harness = \"codex\"',\n      'harness = []',\n      'harness = 1979-05-27',\n      '[[harness]]\\ndefault = \"claude\"',\n      '[harness]\\nunknown = true',\n      '[harness]\\ndefault = \"opencode\"',\n      '[harness]\\ndefault = \"Codex\"',\n      '[harness]\\ndefault = false',\n      '[harness]\\ndefault = 1',\n      '[harness]\\ndefault = [\"codex\"]',\n      '[harness]\\ndefault = { value = \"codex\" }',\n    ]) {\n      fs.writeFileSync(TEST_CONFIG, toml);\n      expect(() => loadConfig(TEST_CONFIG)).toThrow('Invalid harness');\n    }\n  });\n\n  test('generated default round-trips with an explicit Claude choice', () => {\n    const generated = generateDefaultConfig();\n    expect(generated).toContain('[harness]');\n    expect(generated).toContain('default = \"claude\"');\n    fs.writeFileSync(TEST_CONFIG, generated);\n    expect(loadConfig(TEST_CONFIG).harness).toEqual(DEFAULT_CONFIG.harness);\n  });\n});\n"
+        ]
+    ]
+}
+LAUNCH_REVIEWED_NEW = {
+    "packages/daemon/src/cli/launch-harness.ts": "import type { HarnessId } from '@remi/shared';\nimport type { ParsedArgs } from './arg-parser.ts';\n\ntype LaunchArgs = Pick<\n  ParsedArgs,\n  'subcommand' | 'harness' | 'install' | 'uninstall' | 'showSessions'\n>;\n\n/** #1473: the configured default belongs to CLI session launches, not hub/management commands. */\nexport function isSessionLaunch(args: LaunchArgs): boolean {\n  if (args.install || args.uninstall || args.showSessions) return false;\n  return (\n    args.subcommand === undefined ||\n    args.subcommand === 'new' ||\n    args.subcommand === 'claude' ||\n    args.subcommand === 'codex'\n  );\n}\n\n/** Keep legacy remote omission for implicit Claude; every explicit choice is named. */\nexport function resolveLaunchHarness(\n  args: LaunchArgs,\n  configuredDefault: 'claude' | 'codex',\n): { harnessId: HarnessId; remoteHarness: HarnessId | undefined } {\n  const alias =\n    args.subcommand === 'claude' || args.subcommand === 'codex' ? args.subcommand : undefined;\n  const explicit = args.harness ?? alias;\n  const harnessId = explicit ?? (isSessionLaunch(args) ? configuredDefault : 'claude');\n  return {\n    harnessId,\n    remoteHarness: explicit ?? (harnessId === 'codex' ? 'codex' : undefined),\n  };\n}\n",
+    "packages/daemon/tests/cli/default-harness-dispatch.test.ts": "/** Real Remi subprocess early dispatch only; no Claude/Codex invocation or LLM acceptance. */\nimport { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport * as path from 'node:path';\n\nconst cli = path.resolve(import.meta.dir, '../../src/cli.ts');\nconst cases = [\n  { args: ['--resume', 'missing'], code: 2, text: \"--resume is remi's flag for Claude\" },\n  {\n    args: ['claude', '--host', '127.0.0.1', '--resume', 'missing'],\n    code: 2,\n    text: 'put it after --',\n  },\n  {\n    args: ['--host', '127.0.0.1', '--resume', 'missing'],\n    code: 2,\n    text: 'for Codex put the resume after --',\n  },\n  { args: ['claude', '--harness', 'codex'], code: 1, text: 'conflicts with the claude subcommand' },\n  { args: ['codex', '--harness', 'claude'], code: 1, text: 'conflicts with the codex subcommand' },\n  { args: ['claude', '--host', '127.0.0.1', 'loose'], code: 2, text: 'not sent: loose' },\n  { args: ['serve', '--harness', 'codex'], code: 2, text: 'The hub hosts no session of its own' },\n  { args: ['claude', '--help'], code: 0, text: 'overriding [harness] default' },\n  { args: ['config'], code: 0, text: 'default = \"codex\"' },\n] as const;\n\nasync function run(args: readonly string[], config: string) {\n  const home = fs.mkdtempSync(path.join(tmpdir(), 'remi-default-harness-'));\n  try {\n    fs.writeFileSync(path.join(home, 'config.toml'), config, { mode: 0o600 });\n    const child = Bun.spawn([process.execPath, '--no-env-file', cli, ...args], {\n      cwd: home,\n      env: { ...process.env, REMI_HOME: home },\n      stdin: 'ignore',\n      stdout: 'pipe',\n      stderr: 'pipe',\n    });\n    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);\n    try {\n      const [code, stdout, stderr] = await Promise.all([\n        child.exited,\n        new Response(child.stdout).text(),\n        new Response(child.stderr).text(),\n      ]);\n      return { code, text: stdout + stderr };\n    } finally {\n      clearTimeout(timer);\n    }\n  } finally {\n    fs.rmSync(home, { recursive: true, force: true });\n  }\n}\n\nfor (const scenario of cases) {\n  test(`real CLI configured Codex early dispatch: ${scenario.args.join(' ')}`, async () => {\n    const result = await run(scenario.args, '[harness]\\ndefault = \"codex\"\\n');\n    expect(result.code).toBe(scenario.code);\n    expect(result.text).toContain(scenario.text);\n  });\n}\n\ntest('real CLI refuses invalid config before any session launch', async () => {\n  const result = await run([], '[harness]\\ndefault = \"opencode\"\\n');\n  expect(result.code).toBe(1);\n  expect(result.text).toContain('Invalid harness.default');\n});\n\ntest('explicit Claude directory dispatch still runs before a harness launch', async () => {\n  const owned = fs.mkdtempSync(path.join(tmpdir(), 'remi-default-harness-dir-'));\n  try {\n    const missing = path.join(owned, 'absent');\n    const result = await run(['claude', '--dir', missing], '[harness]\\ndefault = \"codex\"\\n');\n    expect(result.code).toBe(1);\n    expect(result.text).toContain(missing);\n    expect(result.text).not.toContain('Codex');\n  } finally {\n    fs.rmSync(owned, { recursive: true, force: true });\n  }\n});\n\ntest('real CLI management status ignores configured Codex', async () => {\n  const result = await run(['status'], '[harness]\\ndefault = \"codex\"\\n');\n  expect([0, 1]).toContain(result.code);\n  expect(result.text).not.toContain('Codex');\n  expect(result.text).not.toContain('takes no --harness');\n});\n",
+    "packages/daemon/tests/cli/launch-harness.test.ts": "import { expect, test } from 'bun:test';\nimport { DEFAULT_HARNESS, createCreateSessionRequest } from '@remi/shared';\nimport { parseArgs } from '../../src/cli/arg-parser';\nimport { isSessionLaunch, resolveLaunchHarness } from '../../src/cli/launch-harness';\n\nconst cases = [\n  { args: [], config: 'claude', local: 'claude', remote: undefined },\n  { args: [], config: 'codex', local: 'codex', remote: 'codex' },\n  { args: ['new'], config: 'codex', local: 'codex', remote: 'codex' },\n  { args: ['--daemon'], config: 'codex', local: 'codex', remote: 'codex' },\n  { args: ['claude'], config: 'codex', local: 'claude', remote: 'claude' },\n  { args: ['codex'], config: 'claude', local: 'codex', remote: 'codex' },\n  { args: ['--harness', 'claude'], config: 'codex', local: 'claude', remote: 'claude' },\n  { args: ['--harness', 'codex'], config: 'claude', local: 'codex', remote: 'codex' },\n  { args: ['serve'], config: 'codex', local: 'claude', remote: undefined },\n  { args: ['status'], config: 'codex', local: 'claude', remote: undefined },\n  { args: ['--install'], config: 'codex', local: 'claude', remote: undefined },\n  { args: ['--uninstall'], config: 'codex', local: 'claude', remote: undefined },\n  { args: ['--sessions'], config: 'codex', local: 'claude', remote: undefined },\n  { args: ['--harness', 'opencode'], config: 'codex', local: 'opencode', remote: 'opencode' },\n] as const;\n\nfor (const scenario of cases) {\n  test(`launch choice ${scenario.config}: ${scenario.args.join(' ') || 'plain remi'}`, () => {\n    const parsed = parseArgs(scenario.args);\n    expect(parsed.error).toBeUndefined();\n    expect(resolveLaunchHarness(parsed, scenario.config)).toEqual({\n      harnessId: scenario.local,\n      remoteHarness: scenario.remote,\n    });\n  });\n}\n\ntest('all four launch forms retain host, recent and directory routing', () => {\n  for (const command of [[], ['new'], ['claude'], ['codex']]) {\n    for (const flags of [['--host', 'host'], ['--recent'], ['--dir', '/owned/project']]) {\n      expect(isSessionLaunch(parseArgs([...command, ...flags]))).toBe(true);\n    }\n  }\n  expect(isSessionLaunch(parseArgs(['serve']))).toBe(false);\n});\n\ntest('actual remote factory preserves legacy omission and explicit/configured selection', () => {\n  for (const scenario of cases.slice(0, 8)) {\n    const parsed = parseArgs([...scenario.args, '--host', 'host', '--', '--model', 'model']);\n    const { remoteHarness } = resolveLaunchHarness(parsed, scenario.config);\n    const message = createCreateSessionRequest('/owned/project', {\n      harness: remoteHarness,\n      args: parsed.explicitArgs,\n    });\n    expect(message.harness).toBe(scenario.remote);\n    expect(message.args).toEqual(['--model', 'model']);\n    if (scenario.remote === undefined) expect(Object.hasOwn(message, 'harness')).toBe(false);\n  }\n  expect(DEFAULT_HARNESS).toBe('claude');\n});\n"
+}
+DECODE_REVIEWED_EDITS = {
+    "scripts/tunnel-decoder-proof/decode.ts": [
+        [
+            0,
+            966,
+            "// #1170 proof adapter for the daemon-owned full image decoder.\nexport { decodeImage } from '../../packages/daemon/src/tunnel/image-decode';\n"
+        ]
+    ],
+    "scripts/tunnel-decoder-proof/pngjs.d.ts": [
+        [
+            0,
+            602,
+            "/// <reference path=\"../../packages/daemon/src/tunnel/image-codecs.d.ts\" />\n"
+        ]
+    ],
+    "packages/daemon/package.json": [
+        [
+            689,
+            689,
+            "    \"jpeg-js\": \"0.4.4\",\n    \"pngjs\": \"7.0.0\",\n"
+        ]
+    ],
+    "bun.lock": [
+        [
+            726,
+            726,
+            "        \"jpeg-js\": \"0.4.4\",\n        \"pngjs\": \"7.0.0\",\n"
+        ],
+        [
+            90303,
+            90303,
+            "    \"jpeg-js\": [\"jpeg-js@0.4.4\", \"\", {}, \"sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg==\"],\n\n"
+        ],
+        [
+            121677,
+            121814,
+            "    \"pngjs\": [\"pngjs@7.0.0\", \"\", {}, \"sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==\"],\n"
+        ],
+        [
+            160431,
+            160431,
+            "    \"qrcode/pngjs\": [\"pngjs@5.0.0\", \"\", {}, \"sha512-40QW5YalBNfQo5yRYmiw7Yz6TKKVr3h6970B2YE+3fQpsWcrbj1PzJgxeJ19DRQjhMbKPIuMY8rFaXc8moolVw==\"],\n\n"
+        ]
+    ],
+    "scripts/tunnel-decoder-proof/matrix.py": [
+        [
+            1829,
+            1829,
+            "            \"packages/daemon/package.json\",\n"
+        ]
+    ],
+    "scripts/tunnel-decoder-proof/approval-matrix.py": [
+        [
+            964,
+            964,
+            "            \"packages/daemon/package.json\",\n"
+        ]
+    ],
+    "scripts/tunnel-decoder-proof/THIRD-PARTY-LICENSES.txt": [
+        [
+            0,
+            77,
+            "Decoder dependency notices for the standalone proof and internal daemon decoder.\nThe daemon selects these exact versions; active worker and upload integration are pending.\n"
+        ]
+    ]
+}
+DECODE_ADOPTION_TEST = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport * as path from 'node:path';\nimport { decodeImage as proofDecodeImage } from '../../../../scripts/tunnel-decoder-proof/decode';\nimport inputs from '../../../../scripts/tunnel-decoder-proof/inputs.json';\nimport { admitImage } from '../../src/tunnel/image-admission';\nimport { decodeImage } from '../../src/tunnel/image-decode';\n\nconst fixture = (name: string) =>\n  fs.readFileSync(path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof', name));\nconst sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher('sha256').update(bytes).digest('hex');\n\ntest('proof decoder shares the daemon function and fully decodes the owned image pixels', () => {\n  expect(proofDecodeImage).toBe(decodeImage);\n  for (const [index, mediaType] of (['image/png', 'image/jpeg'] as const).entries()) {\n    const expected = inputs.images[index];\n    if (!expected) throw new Error('owned image fixture metadata missing');\n    const bytes = fixture(expected.filename);\n    expect(sha256(bytes)).toBe(expected.inputSha256);\n    const decoded = decodeImage(bytes, mediaType);\n    expect({ width: decoded.width, height: decoded.height }).toEqual({\n      width: expected.width,\n      height: expected.height,\n    });\n    expect(decoded.data.byteLength).toBe(expected.pixelBytes);\n    expect(sha256(decoded.data)).toBe(expected.pixelSha256);\n  }\n});\n\ntest('full decoding preserves header refusal and normalized PNG CRC refusal', () => {\n  const png = fixture('fixture.png');\n  const jpeg = fixture('fixture.jpg');\n  for (const mediaType of ['image/png', 'image/jpeg'] as const) {\n    expect(() => decodeImage(png.subarray(0, 0), mediaType)).toThrow('IMAGE_ADMISSION_REFUSED');\n  }\n  expect(() => decodeImage(png, 'image/jpeg')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => decodeImage(jpeg, 'image/png')).toThrow('IMAGE_ADMISSION_REFUSED');\n  const corrupt = Buffer.from(png);\n  const crcByte = corrupt[29];\n  if (crcByte === undefined) throw new Error('owned PNG CRC byte missing');\n  corrupt[29] = crcByte ^ 1;\n  expect(admitImage(corrupt, 'image/png')).toEqual({ width: 1024, height: 1024 });\n  expect(() => decodeImage(corrupt, 'image/png')).toThrow('IMAGE_DECODE_REFUSED');\n});\n"
+TRANSITION_CONTENT = {"CLI-default": {}, "Dormant full-decoder": {}}
+for name, edits, additions, policy in (
+        ("CLI-default", LAUNCH_REVIEWED_EDITS, LAUNCH_REVIEWED_NEW, module["SOAK_LAUNCH_TRANSITION"]),
+        ("Dormant full-decoder", DECODE_REVIEWED_EDITS, {}, module["SOAK_DECODE_TRANSITION"])):
+    for path, changes in edits.items():
+        body = subprocess.check_output(["git", "cat-file", "blob", policy[path]["original"][1]],
+                                       stderr=subprocess.PIPE).decode()
+        for start, stop, replacement in reversed(changes):
+            body = body[:start] + replacement + body[stop:]
+        TRANSITION_CONTENT[name][path] = body
+    TRANSITION_CONTENT[name].update(additions)
+old_decode = subprocess.check_output(["git", "cat-file", "blob", module["SOAK_DECODE_TRANSITION"][
+    "scripts/tunnel-decoder-proof/decode.ts"]["original"][1]], stderr=subprocess.PIPE).decode()
+TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/src/tunnel/image-decode.ts"] = old_decode.replace(
+    "// #1170 candidate only. Header admission precedes full decode; process limits are unproved.",
+    "// #1170 internal synchronous decoder; active transfers require the owned child path.", 1
+).replace("from './admission';", "from './image-admission';", 1)
+old_declaration = subprocess.check_output(["git", "cat-file", "blob", module["SOAK_DECODE_TRANSITION"][
+    "scripts/tunnel-decoder-proof/pngjs.d.ts"]["original"][1]], stderr=subprocess.PIPE).decode()
+TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/src/tunnel/image-codecs.d.ts"] = "".join(
+    old_declaration.splitlines(keepends=True)[:23])
+TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/tests/tunnel/image-decode-adoption.test.ts"] = DECODE_ADOPTION_TEST
+for name, contents in TRANSITION_CONTENT.items():
+    policy = module["SOAK_LAUNCH_TRANSITION"] if name == "CLI-default" else module["SOAK_DECODE_TRANSITION"]
+    assert set(contents) == set(policy)
+    for path, body in contents.items():
+        blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=body.encode(),
+                                       stderr=subprocess.PIPE).decode().strip()
+        assert blob == policy[path]["head"][1], (name, path, blob)
+
+# Exact public original controller/worker copies and explicit proof adapters; no93 candidate reads.
+WORKER_CONTENT = {}
+old_process = subprocess.check_output(["git", "cat-file", "blob", module["SOAK_DECODE_WORKER_TRANSITION"][
+    "scripts/tunnel-decoder-proof/process.ts"]["original"][1]], stderr=subprocess.PIPE).decode()
+WORKER_CONTENT["packages/daemon/src/tunnel/image-process.ts"] = old_process.replace(
+    "// #1170 private candidate. Process lifetime controls are not a portable memory ceiling.",
+    "// #1170 internal decoder controller. Process lifetime controls are not a portable memory ceiling.", 1
+).replace("from './admission';", "from './image-admission';", 1)
+old_worker = subprocess.check_output(["git", "cat-file", "blob", module["SOAK_DECODE_WORKER_TRANSITION"][
+    "scripts/tunnel-decoder-proof/worker.ts"]["original"][1]], stderr=subprocess.PIPE).decode()
+WORKER_CONTENT["packages/daemon/src/tunnel/image-worker.ts"] = (
+    "// #1170 internal worker functions; no selected production entry.\n" + old_worker
+).replace("from './admission';", "from './image-admission';", 1).replace("from './decode';", "from './image-decode';", 1)
+WORKER_CONTENT["scripts/tunnel-decoder-proof/process.ts"] = """// #1170 proof adapter for the daemon-owned decoder controller.
+export {
+  DecoderProcess,
+  DecoderProcessError,
+  MAX_RESULT_BYTES,
+  type DecodedPixels,
+  type DecoderChildExit,
+  type RepeatedDecodeReady,
+} from '../../packages/daemon/src/tunnel/image-process';
+"""
+WORKER_CONTENT["scripts/tunnel-decoder-proof/worker.ts"] = """// #1170 proof adapter for the daemon-owned worker functions.
+export {
+  decodeInput,
+  decodeRepeatedWorker,
+  decodeWorker,
+} from '../../packages/daemon/src/tunnel/image-worker';
+"""
+WORKER_CONTENT["packages/daemon/tests/tunnel/image-worker-adoption.test.ts"] = 'import { expect, test } from \'bun:test\';\nimport assert from \'node:assert/strict\';\nimport * as fs from \'node:fs\';\nimport { tmpdir } from \'node:os\';\nimport * as path from \'node:path\';\nimport inputs from \'../../../../scripts/tunnel-decoder-proof/inputs.json\';\nimport * as proofProcess from \'../../../../scripts/tunnel-decoder-proof/process\';\nimport * as proofWorker from \'../../../../scripts/tunnel-decoder-proof/worker\';\nimport {\n  type DecodedPixels,\n  type DecoderChildExit,\n  DecoderProcess,\n  DecoderProcessError,\n  MAX_RESULT_BYTES,\n  type RepeatedDecodeReady,\n} from \'../../src/tunnel/image-process\';\nimport { decodeInput, decodeRepeatedWorker, decodeWorker } from \'../../src/tunnel/image-worker\';\n\nconst fixture = (name: string) =>\n  fs.readFileSync(path.resolve(import.meta.dir, \'../../../../scripts/tunnel-decoder-proof\', name));\nconst sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher(\'sha256\').update(bytes).digest(\'hex\');\n\nfunction exited(controller: DecoderProcess, code: number | null, signal: string | null) {\n  const observed: DecoderChildExit | undefined = controller.lastChildExit;\n  expect(observed).toBeDefined();\n  if (!observed) throw new Error(\'owned decoder child exit metadata missing\');\n  const proofObserved: proofProcess.DecoderChildExit = observed;\n  const pid = controller.lastChildPID;\n  if (pid === undefined) throw new Error(\'owned decoder child PID missing\');\n  expect(proofObserved.pid).toBe(pid);\n  expect(proofObserved.exitCode).toBe(code);\n  expect(proofObserved.signalCode).toBe(signal);\n  expect(Object.isFrozen(proofObserved)).toBe(true);\n  assert.throws(() => process.kill(proofObserved.pid, 0), { code: \'ESRCH\' });\n}\n\ntest(\'proof adapters share daemon controller and worker with actual owned child round trips\', async () => {\n  expect(proofProcess.DecoderProcess).toBe(DecoderProcess);\n  expect(proofProcess.DecoderProcessError).toBe(DecoderProcessError);\n  expect(proofProcess.MAX_RESULT_BYTES).toBe(MAX_RESULT_BYTES);\n  expect(MAX_RESULT_BYTES).toBe(4096);\n  expect(proofWorker.decodeInput).toBe(decodeInput);\n  expect(proofWorker.decodeRepeatedWorker).toBe(decodeRepeatedWorker);\n  expect(proofWorker.decodeWorker).toBe(decodeWorker);\n  const policyKeys = [\'BUN_JSC_useJIT\', \'BUN_JSC_useBaselineJIT\', \'REMI_DECODER_POLICY_SENTINEL\'];\n  const parentPolicy = policyKeys.map((key) => process.env[key]);\n  const home = fs.mkdtempSync(path.join(tmpdir(), \'remi-image-worker-adoption-\'));\n  const entry = path.join(home, \'entry.ts\');\n  const worker = path.resolve(import.meta.dir, \'../../src/tunnel/image-worker.ts\');\n  const code = [\n    "import assert from \'node:assert/strict\';",\n    `import { decodeRepeatedWorker, decodeWorker } from ${JSON.stringify(worker)};`,\n    "assert.equal(process.env[\'BUN_JSC_useJIT\'], \'0\');",\n    "assert(Object.keys(process.env).filter(key => key.startsWith(\'BUN_JSC_\')).every(key => key === \'BUN_JSC_useJIT\'));",\n    "assert.equal(process.env[\'REMI_DECODER_POLICY_SENTINEL\'], undefined);",\n    "if (process.argv.includes(\'--repeat-decode\')) await decodeRepeatedWorker(process.argv.at(-1));",\n    \'else await decodeWorker(process.argv.at(-1));\',\n  ].join(\'\\n\');\n  const controller = new DecoderProcess([process.execPath, \'--no-env-file\', entry]);\n  let cancellation: AbortController | undefined;\n  let repeated: Promise<{ kind: \'completed\' } | { kind: \'refused\'; error: unknown }> | undefined;\n  try {\n    fs.chmodSync(home, 0o700);\n    fs.writeFileSync(entry, `${code}\\n`, { flag: \'wx\', mode: 0o600 });\n    for (const [index, mediaType] of ([\'image/png\', \'image/jpeg\'] as const).entries()) {\n      const expected = inputs.images[index];\n      if (!expected) throw new Error(\'owned image fixture metadata missing\');\n      const bytes = fixture(expected.filename);\n      expect(sha256(bytes)).toBe(expected.inputSha256);\n      const ownedInput = Buffer.from(bytes);\n      const pending = controller.decode(ownedInput, mediaType);\n      ownedInput.fill(0);\n      const result: DecodedPixels = await pending;\n      const proofResult: proofProcess.DecodedPixels = result;\n      expect(proofResult).toEqual({\n        width: expected.width,\n        height: expected.height,\n        pixelBytes: expected.pixelBytes,\n        pixelSha256: expected.pixelSha256,\n      });\n      exited(controller, 0, null);\n    }\n    const png = fixture(\'fixture.png\');\n    const crc = png[29];\n    if (crc === undefined) throw new Error(\'owned PNG CRC byte missing\');\n    const corrupt = Buffer.from(png);\n    corrupt[29] = crc ^ 1;\n    await expect(controller.decode(corrupt, \'image/png\')).rejects.toMatchObject({\n      code: \'refused\',\n    });\n    exited(controller, 1, null);\n    cancellation = new AbortController();\n    let ready: RepeatedDecodeReady | undefined;\n    repeated = controller\n      .decodeRepeated(fixture(\'fixture.jpg\'), \'image/jpeg\', {\n        signal: cancellation.signal,\n        onReady(result) {\n          ready = result;\n          cancellation?.abort();\n        },\n      })\n      .then(\n        () => ({ kind: \'completed\' as const }),\n        (error: unknown) => ({ kind: \'refused\' as const, error }),\n      );\n    await expect(controller.decode(png, \'image/png\')).rejects.toMatchObject({ code: \'busy\' });\n    const outcome = await repeated;\n    expect(outcome.kind).toBe(\'refused\');\n    if (outcome.kind !== \'refused\')\n      throw new Error(\'owned repeated decoder unexpectedly completed\');\n    expect(outcome.error).toBeInstanceOf(DecoderProcessError);\n    expect(outcome.error).toMatchObject({ code: \'cancelled\' });\n    const proofReady: proofProcess.RepeatedDecodeReady | undefined = ready;\n    const jpeg = inputs.images[1];\n    if (!jpeg) throw new Error(\'owned JPEG fixture metadata missing\');\n    expect(proofReady).toEqual({\n      decodes: 2,\n      width: jpeg.width,\n      height: jpeg.height,\n      pixelBytes: jpeg.pixelBytes,\n      pixelSha256: jpeg.pixelSha256,\n    });\n    exited(controller, null, \'SIGKILL\');\n    const recovered = await controller.decode(png, \'image/png\');\n    const expectedPNG = inputs.images[0];\n    if (!expectedPNG) throw new Error(\'owned PNG fixture metadata missing\');\n    expect(recovered.pixelSha256).toBe(expectedPNG.pixelSha256);\n    exited(controller, 0, null);\n    expect(policyKeys.map((key) => process.env[key])).toEqual(parentPolicy);\n  } finally {\n    cancellation?.abort();\n    if (repeated) await repeated;\n    fs.rmSync(home, { recursive: true, force: true });\n  }\n});\n'
+for path, body in WORKER_CONTENT.items():
+    blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=body.encode(),
+                                   stderr=subprocess.PIPE).decode().strip()
+    assert blob == module["SOAK_DECODE_WORKER_TRANSITION"][path]["head"][1], (path, blob)
+
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -2317,6 +2721,298 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = json.loads(subprocess.check_output(["python3", str(SCRIPT)], env=env))
             assert selected(result) == gates and result["relay_soak"]
             count += 1
+        # BEGIN named CLI-default/full-decoder controls: preserve all1608 preceding scenario bodies/order.
+        import re
+        import shutil
+
+        transition_start = count
+        git("fetch", "--quiet", "--no-tags", str(original), LAUNCH_PUBLIC_BASE, DECODE_PUBLIC_BASE)
+        def transition_text(refpath):
+            return subprocess.check_output(["git", "show", refpath], stderr=subprocess.PIPE).decode()
+
+        def transition_updates(name, parent):
+            contents = TRANSITION_CONTENT[name]
+            version = json.loads(transition_text(f"{parent}:package.json"))["version"]
+            return [(path, re.sub(r"(?m)^( +return ')[^'\n]+('; // REMI_COMPILED_VERSION)$",
+                                 lambda match: match[1] + version + match[2], body)
+                     if path == "packages/daemon/src/cli.ts" else body, "100644")
+                    for path, body in contents.items()]
+
+        def transition_assert(left, right, label, skip):
+            global count
+            result = classify(left, right)
+            assert selected(result) == gates and result["typecheck"] and result["relay"] and (
+                result["relay_soak"] is not skip), (label, result)
+            if skip:
+                assert "ordinary and short relay controls retained" in result["reason"], result
+            count += 1
+
+        def owned_missing_transition_objects(public_base, candidate, object_cases, name):
+            # One owned pristine loose store, complete actual tree objects, and no historical commits.
+            objects = set()
+            trees = []
+            for ref in (public_base, candidate):
+                tree = git("rev-parse", f"{ref}^{{tree}}")
+                trees.append(tree)
+                objects.add(tree)
+                for line in git("ls-tree", "-r", "-t", ref).splitlines():
+                    objects.add(line.partition("\t")[0].split()[2])
+            pack = subprocess.check_output(["git", "pack-objects", "--stdout"],
+                                           input="".join(f"{obj}\n" for obj in sorted(objects)).encode(), stderr=subprocess.PIPE)
+            repo_dir = Path.cwd()
+            with tempfile.TemporaryDirectory(prefix="named-pristine-") as pristine:
+                pristine_repo = Path(pristine)
+                try:
+                    os.chdir(pristine_repo)
+                    git("init", "-q")
+                    git("config", "user.name", "Owned unavailable-object control")
+                    git("config", "user.email", "test@example.com")
+                    subprocess.run(["git", "unpack-objects"], input=pack, check=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    private_base = git("commit-tree", trees[0], "-m", "owned pristine original")
+                    private_head = git("commit-tree", trees[1], "-p", private_base, "-m", "owned pristine final")
+                    os.chdir(repo_dir)
+                    for endpoint, path in object_cases:
+                        ref = public_base if endpoint in ("original", "core", "sample") else candidate
+                        omitted = git("rev-parse", f"{ref}:{path}")
+                        with tempfile.TemporaryDirectory(prefix="named-missing-") as private:
+                            private_repo = Path(private) / "repo"
+                            shutil.copytree(pristine_repo, private_repo)
+                            (private_repo / ".git/objects" / omitted[:2] / omitted[2:]).unlink()
+                            try:
+                                os.chdir(private_repo)
+                                transition_assert(private_base, private_head, (name, "unavailable", endpoint, path), False)
+                            finally:
+                                os.chdir(repo_dir)
+                finally:
+                    os.chdir(repo_dir)
+
+        transition_heads = {}
+        for name, public_base, policy in (
+                ("CLI-default", LAUNCH_PUBLIC_BASE, module["SOAK_LAUNCH_TRANSITION"]),
+                ("Dormant full-decoder", DECODE_PUBLIC_BASE, module["SOAK_DECODE_TRANSITION"])):
+            updates = transition_updates(name, public_base)
+            candidate = soak_tree(public_base, updates)
+            transition_heads[name] = candidate
+            transition_assert(public_base, candidate, (name, "complete real tree"), True)
+            docs = ("docs/owned-named-transition.md", "ordinary prose only\n", "100644")
+            transition_assert(public_base, soak_tree(public_base, [*updates, docs]), (name, "ordinary docs"), True)
+            left = soak_tree(public_base, [docs])
+            right = soak_tree(left, updates, source=public_base)
+            transition_assert(left, right, (name, "target docs only"), True)
+            version = json.loads(transition_text(f"{public_base}:package.json"))["version"]
+            package = transition_text(f"{public_base}:package.json").replace(f'"version": "{version}"', '"version": "0.7.17-dev.999"')
+            cli = transition_text(f"{public_base}:packages/daemon/src/cli.ts").replace(f"return '{version}'; // REMI_COMPILED_VERSION", "return '0.7.17-dev.999'; // REMI_COMPILED_VERSION")
+            version_left = soak_tree(public_base, [("package.json", package, "100644"), ("packages/daemon/src/cli.ts", cli, "100644")])
+            transition_assert(version_left, soak_tree(version_left, transition_updates(name, version_left)), (name, "synchronized base version"), True)
+            version_final_cli = {p: body for p, body, _ in updates}.get("packages/daemon/src/cli.ts", cli)
+            version_final_cli = version_final_cli.replace(f"return '{version}'; // REMI_COMPILED_VERSION", "return '0.7.17-dev.999'; // REMI_COMPILED_VERSION")
+            transition_assert(public_base, soak_tree(public_base, [*(u for u in updates if u[0] != "packages/daemon/src/cli.ts"),
+                              ("package.json", package, "100644"), ("packages/daemon/src/cli.ts", version_final_cli, "100644")]), (name, "synchronized head version"), True)
+            for path, roles in policy.items():
+                replacement = next(u for u in updates if u[0] == path)
+                other = [u for u in updates if u[0] != path]
+                transition_assert(public_base, soak_tree(public_base, other), (name, path, "omitted"), False)
+                for body, mode, state in ((replacement[1] + "\n// unreviewed body\n", "100644", "head body"),
+                                          (replacement[1], "100755", "head mode"),
+                                          (replacement[1], "120000", "head symlink")):
+                    transition_assert(public_base, soak_tree(public_base, [*other, (path, body, mode)]), (name, path, state), False)
+                if roles["original"] is not None:
+                    body = transition_text(f"{public_base}:{path}")
+                    for changed_body, mode, state in ((body + "\n// changed original\n", "100644", "base body"),
+                                                     (body, "100755", "base mode")):
+                        left = soak_tree(public_base, [(path, changed_body, mode)])
+                        transition_assert(left, soak_tree(left, updates), (name, path, state), False)
+                    transition_assert(public_base, soak_tree(public_base, other, (path,)), (name, path, "deleted"), False)
+                else:
+                    left = soak_tree(public_base, [replacement])
+                    transition_assert(left, soak_tree(left, updates), (name, path, "preexisting base"), False)
+            # Representative invalid original/merge-base disagreement and rename/type transitions.
+            first = next(p for p, roles in policy.items() if roles["original"] is not None and p != "packages/daemon/src/cli.ts")
+            original_body = transition_text(f"{public_base}:{first}")
+            left = soak_tree(public_base, [(first, original_body + "\n// target drift\n", "100644")])
+            transition_assert(left, soak_tree(public_base, updates), (name, "base-only source drift"), False)
+            transition_assert(public_base, soak_tree(public_base, [*updates, (first + ".moved", original_body, "100644")], (first,)), (name, "rename"), False)
+            transition_assert(public_base, soak_tree(public_base, updates, [*policy]), (name, "reversed/deleted population"), False)
+            # Fixed production lifetime/crypto/authority and test-execution inputs are not mere both-end equal pins.
+            core_controls = ["packages/daemon/src/remote/hub-relay.ts", "packages/daemon/src/auth/authenticator.ts",
+                             "packages/daemon/src/session/session-registry.ts", "packages/daemon/src/harness/claude.ts",
+                             "packages/shared/src/relay/channel.ts", "packages/shared/src/relay/primitives.ts",
+                             "packages/signaling/src/index.ts", "packages/web/tests/relay-r7-soak.test.ts",
+                             ".github/workflows/relay-r7.yml", ".github/workflows/ci.yml", "tsconfig.json"]
+            for path in core_controls:
+                body = transition_text(f"{public_base}:{path}") + "\n// unreviewed core\n"
+                for context in ("head", "base", "base-only"):
+                    drift = (path, body, "100644")
+                    left = soak_tree(public_base, [drift]) if context != "head" else public_base
+                    right = soak_tree(public_base, updates) if context == "base-only" else soak_tree(left, [*updates, *([drift] if context == "head" else [])])
+                    transition_assert(left, right, (name, path, context), False)
+            for path in ("package.json", "packages/daemon/src/cli.ts"):
+                body = transition_text(f"{public_base}:{path}")
+                for context in ("base", "head"):
+                    drift = (path, body + "\n// unreviewed normalized input\n", "100644")
+                    left = soak_tree(public_base, [drift]) if context == "base" else public_base
+                    other = [u for u in updates if u[0] != path]
+                    right = soak_tree(left, [*other, *([drift] if context == "head" else [u for u in updates if u[0] == path])])
+                    transition_assert(left, right, (name, path, context, "byte drift"), False)
+            transition_assert(public_base, soak_tree(public_base, [*updates, ("package.json", package, "100644")]), (name, "unsynchronized version"), False)
+            base_cli = transition_text(f"{public_base}:packages/daemon/src/cli.ts")
+            transition_assert(public_base, soak_tree(public_base, [*(u for u in updates if u[0] != "packages/daemon/src/cli.ts"),
+                              ("packages/daemon/src/cli.ts", base_cli + "\n return '" + version + "'; // REMI_COMPILED_VERSION\n", "100644")]), (name, "third compiled return"), False)
+            # Actual public sample is read; changed/unknown secret names are refused before content read.
+            for context in ("base", "head"):
+                drift = (".env.example", "published sample drift\n", "100644")
+                left = soak_tree(public_base, [drift]) if context == "base" else public_base
+                transition_assert(left, soak_tree(left, [*updates, *([drift] if context == "head" else [])]), (name, "public sample", context), False)
+            transition_assert(public_base, soak_tree(public_base, [*updates, (".env.owned-control", "owned corpus content only\n", "100644")]), (name, "unknown env name"), False)
+            target = "cli/launch-harness" if name == "CLI-default" else "tunnel/image-decode"
+            identifier = "resolveLaunchHarness" if name == "CLI-default" else "decodeImage"
+            caller_controls = [
+                ("root-loader.ts", f"import './packages/daemon/src/{target}';\n"),
+                ("owned-execution.json", json.dumps({"entry": f"./packages/daemon/src/{target}.ts"})),
+                ("packages/daemon/src/owned-reference.ts", f"import './{target}';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"import/* owned */'./{target}.ts';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"export/* owned */{{}}from/* owned */'./{target}';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"require/* owned */(/* owned */'./{target}');\n"),
+                ("packages/daemon/src/owned-reference.ts", f"import/* owned */(/* owned */'@remi/daemon/{target}');\n"),
+                ("packages/daemon/src/owned-reference.ts", f"import '@remi/daemon/./{target}';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"import '@remi/daemon/{target.rsplit('/',1)[0]}/../{target}';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"import './{target[:-1]}\\u{ord(target[-1]):04x}';\n"),
+                ("packages/daemon/src/owned-reference.ts", f"const owned = {identifier};\n"),
+            ]
+            caller_controls.append(("packages/daemon/src/owned-declaration.d.ts", f'/// <reference path="./{target}.ts" />\n'))
+            for index, (path, body) in enumerate(caller_controls):
+                update = (path, body, "100644")
+                for context in ("new", "both", "base-only"):
+                    left = soak_tree(public_base, [update]) if context != "new" else public_base
+                    right = soak_tree(public_base, updates) if context == "base-only" else soak_tree(left, [*updates, *([update] if context == "new" else [])])
+                    transition_assert(left, right, (name, "caller", index, context), False)
+            # Whole-tree equality does not ban genuine unrelated baseline literals / identifier boundaries.
+            unrelated = ("packages/signaling/src/owned-nonconsumer.ts", f"import './{target.rsplit('/',1)[-1]}';\nconst {identifier}Suffix = true;\n", "100644")
+            # A bare same basename is intentionally conservative; a different relative target remains positive.
+            unrelated = (unrelated[0], f"import './different-{target.rsplit('/',1)[-1]}';\nconst {identifier}Suffix = true;\n", "100644")
+            left = soak_tree(public_base, [unrelated])
+            transition_assert(left, soak_tree(left, updates), (name, "unrelated worker relative/identifier boundary"), True)
+            for path in ("packages/daemon/src/owned-runtime.ts", "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "package.json"):
+                body = (transition_text(f"{public_base}:{path}") if path != "packages/daemon/src/owned-runtime.ts" else "export {};\n") + "\n// mixed unrelated change\n"
+                transition_assert(public_base, soak_tree(public_base, [*updates, (path, body, "100644")]), (name, "mixed", path), False)
+            if name == "Dormant full-decoder":
+                final_cli_base = soak_tree(public_base, transition_updates("CLI-default", public_base))
+                transition_assert(final_cli_base, soak_tree(final_cli_base, updates), (name, "whole final CLI state"), True)
+                transition_assert(public_base, soak_tree(public_base, [*updates, *transition_updates("CLI-default", public_base)]), (name, "mixed CLI feature"), False)
+                for path in ("scripts/tunnel-decoder-proof/inputs.json", "scripts/tunnel-decoder-proof/package.json", "scripts/tunnel-decoder-proof/worker.ts", "scripts/tunnel-decoder-proof/process.ts", "packages/daemon/src/tunnel/image-admission.ts"):
+                    drift = (path, transition_text(f"{public_base}:{path}") + "\n// changed decoder support\n", "100644")
+                    for context in ("base", "head"):
+                        left = soak_tree(public_base, [drift]) if context == "base" else public_base
+                        transition_assert(left, soak_tree(left, [*updates, *([drift] if context == "head" else [])]), (name, path, context), False)
+                for path in module["COLD_IMAGE_BINARY"]:
+                    data = subprocess.check_output(["git", "show", f"{public_base}:{path}"])
+                    for context in ("base", "head"):
+                        drift = (path, data + b"owned", "100644")
+                        left = soak_tree(public_base, [drift]) if context == "base" else public_base
+                        transition_assert(left, soak_tree(left, [*updates, *([drift] if context == "head" else [])]), (name, path, context, "bytes"), False)
+                    left = soak_tree(public_base, [(path, data, "100755")])
+                    transition_assert(left, soak_tree(left, updates), (name, path, "mode"), False)
+                lock_body = TRANSITION_CONTENT[name]["bun.lock"]
+                for old, new in (("jpeg-js@0.4.4", "jpeg-js@0.4.5"), ("pngjs@7.0.0", "pngjs@7.0.1"), ("qrcode/pngjs", "qrcode/pngjs-drift"), ("sha512-LKWqWJRh", "sha512-OWNEDRh")):
+                    altered = lock_body.replace(old, new, 1)
+                    assert altered != lock_body
+                    transition_assert(public_base, soak_tree(public_base, [*(u for u in updates if u[0] != "bun.lock"), ("bun.lock", altered, "100644")]), (name, "selected lock identity", old), False)
+                for caller in ("scripts/tunnel-decoder-proof/decode.ts", "scripts/tunnel-decoder-proof/worker.ts", "scripts/tunnel-decoder-proof/matrix.py"):
+                    path = "packages/daemon/src/owned-decoder-caller.ts"
+                    update = (path, f"import '../../../{caller}';\n", "100644")
+                    left = soak_tree(public_base, [update])
+                    transition_assert(left, soak_tree(left, updates), (name, "active caller", caller), False)
+            # Missing pinned original/head/core/sample objects: only owned private copies are modified.
+            object_cases = [("original", next(p for p,v in policy.items() if v["original"] and p != "packages/daemon/src/cli.ts")),
+                            ("head", next(p for p,v in policy.items() if v["original"] is None)),
+                            ("core", "packages/shared/src/relay/channel.ts"), ("sample", ".env.example"),
+                            ("head", "package.json"), ("head", "packages/daemon/src/cli.ts")]
+            if name == "Dormant full-decoder":
+                object_cases.extend(("core", p) for p in ("scripts/tunnel-decoder-proof/worker.ts", "scripts/tunnel-decoder-proof/fixture.png", "scripts/tunnel-decoder-proof/fixture.jpg", "scripts/tunnel-decoder-proof/pngjs.d.ts"))
+            owned_missing_transition_objects(public_base, candidate, object_cases, name)
+        assert count - transition_start > 200
+        # END named CLI-default/full-decoder controls.
+        # BEGIN complete D2+D3 alternative controls; D2-only bodies above remain unchanged.
+        worker_updates = [(path, body, "100644") for path, body in WORKER_CONTENT.items()]
+        decode_updates = transition_updates("Dormant full-decoder", DECODE_PUBLIC_BASE)
+        combined_updates = [*decode_updates, *worker_updates]
+        combined = soak_tree(DECODE_PUBLIC_BASE, combined_updates)
+        transition_assert(DECODE_PUBLIC_BASE, combined, "complete D2+D3 actual tree", True)
+        transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*combined_updates,
+                          ("docs/owned-foundation-note.md", "ordinary foundation prose\n", "100644")]), "complete D2+D3 docs", True)
+        final_cli_base = soak_tree(DECODE_PUBLIC_BASE, transition_updates("CLI-default", DECODE_PUBLIC_BASE))
+        transition_assert(final_cli_base, soak_tree(final_cli_base, combined_updates), "complete D2+D3 final CLI", True)
+        for path, roles in module["SOAK_DECODE_WORKER_TRANSITION"].items():
+            other = [u for u in combined_updates if u[0] != path]
+            replacement = next(u for u in worker_updates if u[0] == path)
+            transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, other), ("D3", path, "omitted"), False)
+            for body, mode, state in ((replacement[1] + "\n// changed worker body\n", "100644", "body"),
+                                      (replacement[1], "100755", "mode"), (replacement[1], "120000", "symlink")):
+                transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*other, (path, body, mode)]), ("D3", path, state), False)
+            if roles["original"] is None:
+                left = soak_tree(DECODE_PUBLIC_BASE, [replacement])
+                transition_assert(left, soak_tree(left, combined_updates), ("D3", path, "preexisting"), False)
+            else:
+                original_body = transition_text(f"{DECODE_PUBLIC_BASE}:{path}")
+                for context in ("both", "base-only"):
+                    left = soak_tree(DECODE_PUBLIC_BASE, [(path, original_body + "\n// wrong original\n", "100644")])
+                    right = soak_tree(DECODE_PUBLIC_BASE, combined_updates) if context == "base-only" else soak_tree(left, combined_updates)
+                    transition_assert(left, right, ("D3", path, context), False)
+            transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, other, (path,)), ("D3", path, "deleted"), False)
+        for path in ("packages/daemon/src/tunnel/image-process.ts", "packages/daemon/src/tunnel/image-worker.ts",
+                     "scripts/tunnel-decoder-proof/process.ts", "scripts/tunnel-decoder-proof/worker.ts"):
+            caller = ("packages/daemon/src/owned-foundation-caller.ts", f"import '../../../{path}';\n", "100644")
+            # Canonical exact asset form exercises both module and launch/config target matching.
+            caller = (caller[0], f"const entry = './{path}';\n", "100644")
+            for context in ("head", "both", "base-only"):
+                left = soak_tree(DECODE_PUBLIC_BASE, [caller]) if context != "head" else DECODE_PUBLIC_BASE
+                right = soak_tree(DECODE_PUBLIC_BASE, combined_updates) if context == "base-only" else soak_tree(left, [*combined_updates, *([caller] if context == "head" else [])])
+                transition_assert(left, right, ("D3 caller", path, context), False)
+        for identifier in ("DecoderProcess", "DecoderProcessError", "MAX_RESULT_BYTES", "decodeInput", "decodeWorker", "decodeRepeatedWorker"):
+            caller = ("root-worker-loader.ts", f"const owned = {identifier};\n", "100644")
+            left = soak_tree(DECODE_PUBLIC_BASE, [caller])
+            transition_assert(left, soak_tree(left, combined_updates), ("D3 identifier", identifier), False)
+        transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, worker_updates), "D3 without D2", False)
+        transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*combined_updates,
+                          *transition_updates("CLI-default", DECODE_PUBLIC_BASE)]), "foundation mixed CLI", False)
+        for path in ("packages/daemon/src/remote/hub-relay.ts", "scripts/tunnel-decoder-proof/inputs.json", ".github/workflows/relay-r7.yml"):
+            drift = (path, transition_text(f"{DECODE_PUBLIC_BASE}:{path}") + "\n// mixed foundation input\n", "100644")
+            transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*combined_updates, drift]), ("foundation mixed", path), False)
+        owned_missing_transition_objects(DECODE_PUBLIC_BASE, combined, [
+            ("head", "packages/daemon/src/tunnel/image-process.ts"), ("head", "packages/daemon/src/tunnel/image-worker.ts"),
+            ("head", "packages/daemon/tests/tunnel/image-worker-adoption.test.ts"),
+            ("original", "scripts/tunnel-decoder-proof/process.ts"), ("original", "scripts/tunnel-decoder-proof/worker.ts")], "D2+D3")
+        # END complete D2+D3 alternative controls.
+        # BEGIN root indirect decoder entry regressions from independent review.
+        decoder_updates = transition_updates("Dormant full-decoder", DECODE_PUBLIC_BASE)
+        root_cases = [
+            ("root-loader.ts", "import './scripts/tunnel-decoder-proof/probe';\n"),
+            ("root-loader.ts", "import/* owned */'./scripts/tunnel-decoder-proof/approval-entry.ts';\n"),
+            ("root-loader.ts", "require/* owned */('./scripts/tunnel-decoder-proof/process-probe');\n"),
+            ("root-loader.ts", "import('./scripts/tunnel-decoder-proof/palette-probe');\n"),
+            ("owned-root-execution.json", json.dumps({"file": "./scripts/tunnel-decoder-proof/probe.ts"})),
+            ("owned-root-execution.json", json.dumps({"entry": "./scripts/tunnel-decoder-proof/approval-entry.ts"})),
+            ("owned-root-execution.json", '{"file":"./scripts/tunnel-decoder-proof/pr\\u006fbe.ts"}'),
+            ("owned-root-execution.json", '{"entry":"./scripts/tunnel-decoder-proof/approval-\\u0065ntry.ts"}'),
+            ("owned-root-execution.json", json.dumps({"entry": "./scripts/tunnel-decoder-proof/matrix.py"})),
+            ("owned-root-execution.json", json.dumps({"file": "./scripts/tunnel-decoder-proof/approval-matrix.py"})),
+        ]
+        for index, (path, body) in enumerate(root_cases):
+            caller = (path, body, "100644")
+            for context in ("head", "both", "base-only"):
+                left = soak_tree(DECODE_PUBLIC_BASE, [caller]) if context != "head" else DECODE_PUBLIC_BASE
+                right = soak_tree(DECODE_PUBLIC_BASE, decoder_updates) if context == "base-only" else soak_tree(left, [*decoder_updates, *([caller] if context == "head" else [])])
+                transition_assert(left, right, ("root indirect decoder", index, context), False)
+        for caller in (
+                ("packages/signaling/src/owned-unrelated-probe.ts", "import './probe';\n", "100644"),
+                ("owned-root-execution.json", json.dumps({"entry": "./packages/signaling/src/probe.ts"}), "100644"),
+                ("root-loader.ts", "import './scripts/tunnel-decoder-proof/probeSuffix';\nconst decodeImageSuffix = true;\n", "100644")):
+            left = soak_tree(DECODE_PUBLIC_BASE, [caller])
+            transition_assert(left, soak_tree(left, decoder_updates), ("unrelated indirect target", caller[0]), True)
+        transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*decoder_updates,
+                          *[(path, body, "100644") for path, body in WORKER_CONTENT.items()]]), "review fixed complete D2+D3", True)
+        # END root indirect decoder entry regressions.
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:

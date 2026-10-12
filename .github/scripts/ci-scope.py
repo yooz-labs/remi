@@ -128,6 +128,269 @@ SOAK_VERSION_TRACE = {'packages/daemon/src/cli.ts': '978dd5a92b65a75644c678d2866
 
 
 # Three exact immutable comment-only references to the auth fixture, not general comment stripping.
+# Two separately named, whole reviewed transitions skip only the attached-session soak.
+# Exact immutable original/final objects; no directory-wide CLI or dependency exemption.
+SOAK_LAUNCH_TRANSITION = {'packages/daemon/src/cli.ts': {'original': ['100644', '3f5c9164ab334223c383381786338b9f80b4186d'],
+                                'head': ['100644', '8b48ff687e9d7919edadf815e56191fd1b4bc5d9']},
+ 'packages/daemon/src/cli/arg-parser.ts': {'original': ['100644', '63ca4b6ef4dafd8a3a7327b556ee745500bbdbd0'],
+                                           'head': ['100644', '39a5a83fb52b3c2db50a765f9562a95a0360dbfb']},
+ 'packages/daemon/src/cli/handlers/create-session-events.ts': {'original': ['100644',
+                                                                            'b3ab5d2ba6c317ef6572b3c87cb15f26fda966ea'],
+                                                               'head': ['100644',
+                                                                        '96900004d7676010ce8a4fcd23ca0a7d4eac5775']},
+ 'packages/daemon/src/cli/help.ts': {'original': ['100644', '542b9239df9dce57eaa8f427b11c4dfe01f1d8bc'],
+                                     'head': ['100644', '89fb1685d96fd1ac00461f1a3ea45ab025aa7c3e']},
+ 'packages/daemon/src/config/config.ts': {'original': ['100644', 'bf3d041e60f2c2cfaeb9d6687f8b286369513502'],
+                                          'head': ['100644', '84898a6ed0122b6fd8f3f52eda51da85ebbcc877']},
+ 'packages/daemon/src/config/index.ts': {'original': ['100644', 'e6837d1ec9f1cc0fc02b92bcc5ba4aaff3e1ad46'],
+                                         'head': ['100644', 'd1d6b33c89e9c09dd71af5f6e52c4f763381262d']},
+ 'packages/daemon/tests/cli/arg-parser.test.ts': {'original': ['100644',
+                                                               'e6d92fae92406e646ff01711256fae368dc69cd4'],
+                                                  'head': ['100644',
+                                                           '31334c50547fe19b062a40f9ca724fe1b9225166']},
+ 'packages/daemon/tests/cli/handlers/create-session-events.test.ts': {'original': ['100644',
+                                                                                   '60be75159a0ad59a0ad7aaace8070d2adc4de42a'],
+                                                                      'head': ['100644',
+                                                                               'cd95c919ade56cdd0079c6a60bfa1c89f3912a10']},
+ 'packages/daemon/tests/cli/handlers/create-session-harness.test.ts': {'original': ['100644',
+                                                                                    'f31ff4dc0459566176114a476e9ecc63acdbf421'],
+                                                                       'head': ['100644',
+                                                                                '52a5dfae90295dd7bf6d388036e2186a3f3d4771']},
+ 'packages/daemon/tests/cli/handlers/create-session-start.test.ts': {'original': ['100644',
+                                                                                  '4a151fb6ad61b98ab95be48ad0eb58dbefa65914'],
+                                                                     'head': ['100644',
+                                                                              '803b4e348ec6a808f2841f537ded7becf166bf61']},
+ 'packages/daemon/tests/cli/handlers/create-session-workspace.test.ts': {'original': ['100644',
+                                                                                      'd6f18d7073c96cf07472743c560b69bbc02034ad'],
+                                                                         'head': ['100644',
+                                                                                  '627ff97e456afb344547a522693f426153a8576c']},
+ 'packages/daemon/tests/cli/help.test.ts': {'original': ['100644',
+                                                         'fe62561faaa68470dd37082c23ede476fc393c81'],
+                                            'head': ['100644', '8471a5e51fbcef0dbcbcf82283b45e6f25c18223']},
+ 'packages/daemon/tests/config.test.ts': {'original': ['100644', 'a226aee6fa50885b3c3a392d3c67e65d4a619f30'],
+                                          'head': ['100644', '0167ee092e8ee44269b78531940561b207b937e5']},
+ 'packages/daemon/src/cli/launch-harness.ts': {'original': None,
+                                               'head': ['100644',
+                                                        'b8cc96c43042a2b53daf71d40d7c651a8ea16e9b']},
+ 'packages/daemon/tests/cli/default-harness-dispatch.test.ts': {'original': None,
+                                                                'head': ['100644',
+                                                                         '23b30b7dc2c2b16af0e0b6018fbb8aedbcda90da']},
+ 'packages/daemon/tests/cli/launch-harness.test.ts': {'original': None,
+                                                      'head': ['100644',
+                                                               '90c33ec54c6848752f6e8c3cdf36020c3aa27497']}}
+
+SOAK_TRANSITION_CORE = {'.github/workflows/ci.yml': ['100644', 'f1e6b81d801d1982009fba8a0a7da8e4436c37d9'],
+ '.github/workflows/macos-app.yml': ['100644', '6ac97a3c8cdf5494f0e13f9cd3cd40560e6d6c29'],
+ '.github/workflows/relay-r7.yml': ['100644', '20bfc74dc79e2485908da8872f0a542a3a36bc6c'],
+ 'bun.lock': ['100644', '49c79ac37de53d49aee967dbdc565634cf9ce541'],
+ 'bunfig.toml': ['100644', '3cdd70fa50576ab11b0ca1d8faeac951c3786196'],
+ 'packages/daemon/package.json': ['100644', '17e53aa7653b3035c947ba58428413c8bfa75ef5'],
+ 'packages/daemon/src/auth/authenticator.ts': ['100644', 'f8a68b408fa1760fd6442369315e440e0d915635'],
+ 'packages/daemon/src/auth/capability-token.ts': ['100644', 'f929cbf0505ef072a353cb2971a6f3368c5daf0f'],
+ 'packages/daemon/src/auth/identity-store.ts': ['100644', '6c4a98a3a0442a500a8f0bd85a269343c80df628'],
+ 'packages/daemon/src/cli/handlers/connection-events.ts': ['100644',
+                                                           '1f30465f9cf1f3de36c6c80e5b147ae7446a0dae'],
+ 'packages/daemon/src/cli/handlers/resume-session-events.ts': ['100644',
+                                                               'f8235e28aa8b70bc14453e0554a1713a37b69e61'],
+ 'packages/daemon/src/cli/handlers/session-events.ts': ['100644', 'a5ac415a44fd9cdbb28dface5ad174539866bf64'],
+ 'packages/daemon/src/cli/pty-quiescence-gate.ts': ['100644', '7f60896799c6193ead7d5851da36bc718e60d676'],
+ 'packages/daemon/src/cli/remote-new-client.ts': ['100644', '8fa803aa17936bcaafe7e0c7ac174f7880f3a406'],
+ 'packages/daemon/src/cli/session-phases/pty-session-setup.ts': ['100644',
+                                                                 'e852d2b1db5032e514db2d6a4eb334a320af8671'],
+ 'packages/daemon/src/cli/startup-env.ts': ['100644', 'd77788e1fad103720001f88f1ae55550c3502236'],
+ 'packages/daemon/src/cli/suspend-handler.ts': ['100644', '9cb31a9ae267df274757ba1ebb7f4f31a7cea926'],
+ 'packages/daemon/src/cli/wrapper-state.ts': ['100644', 'db6b791a5ce1ab391322ef7d2c937f0104c8e425'],
+ 'packages/daemon/src/harness/claude-args.ts': ['100644', '69dc77c474d36faea0760ad84c835abd171d0543'],
+ 'packages/daemon/src/harness/claude-session.ts': ['100644', '1d7362041dcc5c05fcd27057afe4c745b14fdbdf'],
+ 'packages/daemon/src/harness/claude-transcript-path.ts': ['100644',
+                                                           'ef9ce428e53cec6da98567a4812214ac55d47e95'],
+ 'packages/daemon/src/harness/claude.ts': ['100644', 'e89ea479b43b49c367656a10630db45074487d36'],
+ 'packages/daemon/src/harness/codex/app-server-client.ts': ['100644',
+                                                            '6ecf80bc50ac7509a7a83d472095905351e1d7c5'],
+ 'packages/daemon/src/harness/codex/app-server-protocol.ts': ['100644',
+                                                              '55f78c4ec04be6207b1dafd0346d8c9afdf056fb'],
+ 'packages/daemon/src/harness/codex/approval-cards.ts': ['100644',
+                                                         '853098bd80b8d4d46eed4afd8bc89e9236b22db9'],
+ 'packages/daemon/src/harness/codex/attach-hint.ts': ['100644', '883bdbb5429b8b3fd4fe76f22fcc8ab803b612f5'],
+ 'packages/daemon/src/harness/codex/codex-args.ts': ['100644', 'b813c10a27d90c6d09ba564e9030cea5a6c6e00a'],
+ 'packages/daemon/src/harness/codex/codex-chat.ts': ['100644', '6e76f6a81174d94fc72febb0a372cf6ad528f016'],
+ 'packages/daemon/src/harness/codex/codex-decisions.ts': ['100644',
+                                                          'c502557a0c2cd4967904f54196c57fa6ee0bd4c7'],
+ 'packages/daemon/src/harness/codex/codex-session.ts': ['100644', '8409518303eb8e1be39d7bd0352e7d06c95beeaf'],
+ 'packages/daemon/src/harness/codex/codex-socket.ts': ['100644', '2694d71eee5ac9c9f91fd439c05e4e86f67e4e24'],
+ 'packages/daemon/src/harness/codex/codex-turns.ts': ['100644', 'e84752489e3f376db573c9b265d455bdea214061'],
+ 'packages/daemon/src/harness/codex/codex.ts': ['100644', '17fc9707c872684d39a66c2cc5e984a090d32097'],
+ 'packages/daemon/src/harness/codex/describe-error.ts': ['100644',
+                                                         'af315b407659cdf6a8063ba5d29a4f3a84dcb7c6'],
+ 'packages/daemon/src/harness/codex/safe-text.ts': ['100644', 'f223f460eb8aa214414c89c41b44d2168aca7084'],
+ 'packages/daemon/src/harness/codex/startup-output.ts': ['100644',
+                                                         '66ae30df7a5a9300cbda30cd2f59826b4ff870eb'],
+ 'packages/daemon/src/harness/codex/terminal-words.ts': ['100644',
+                                                         'eb9c608c510e9694a0f96c89ce388ac259a36730'],
+ 'packages/daemon/src/harness/codex/thread-id.ts': ['100644', '3c2ecac64b41573708fc92239f09895c5444e3cc'],
+ 'packages/daemon/src/harness/codex/thread-protocol.ts': ['100644',
+                                                          'd741c51c7e13133648368862daedf7e4dd66fd0b'],
+ 'packages/daemon/src/harness/codex/thread-tracker.ts': ['100644',
+                                                         '08c583da4b17c7844a5db98a978bc64ad69e6d37'],
+ 'packages/daemon/src/harness/codex/unix-ws.ts': ['100644', '814cedf9443ba0d58c742e8edf2fc6a3532f65a7'],
+ 'packages/daemon/src/harness/codex/ws-frames.ts': ['100644', 'a1857aecd0319f59bb238a3cd0f94fc978ce86a0'],
+ 'packages/daemon/src/harness/decision.ts': ['100644', 'c51b0c0f2f45370c6cb3660ba4dbf0ba9cd35f38'],
+ 'packages/daemon/src/harness/index.ts': ['100644', '6731514b12fdad0762e29b2d2a3e15414e58c58b'],
+ 'packages/daemon/src/harness/registry.ts': ['100644', '9a3f5ae0fe512d948b1f54062087805f0ffaa565'],
+ 'packages/daemon/src/harness/types.ts': ['100644', 'e98f687aab397f6ba8b9a1f00d481193f0bc0cde'],
+ 'packages/daemon/src/notifications/secure-push-transport.ts': ['100644',
+                                                                '1f4e10710f067d78f13a250f75de1e7aacf233ea'],
+ 'packages/daemon/src/notifications/turn-timer.ts': ['100644', '4741d4e8a0e7bcfebb9df0248b98bf6966be1104'],
+ 'packages/daemon/src/remote/child-proxy.ts': ['100644', 'b0eecb7ace831ced3d80e5f783f9673bba0a05ae'],
+ 'packages/daemon/src/remote/hub-relay.ts': ['100644', 'b7140f1463541708b73d63ee524bc8c0a17fec1b'],
+ 'packages/daemon/src/remote/native-answer-ledger.ts': ['100644', 'f7b9c97ee7d984caf1c23d639d5c8b1f88bf29a4'],
+ 'packages/daemon/src/remote/relay-device-store.ts': ['100644', '1e037163ac4d403824062229fec43ef42e9e8838'],
+ 'packages/daemon/src/remote/relay-url.ts': ['100644', '583585d1ad406ada6f4504e48d21736a65c6bf60'],
+ 'packages/daemon/src/remote/worker-control.ts': ['100644', '87c8261dc84054a9e496fa6ccef25899b5d18457'],
+ 'packages/daemon/src/server/answer-results.ts': ['100644', '2ada4133a85b1a0f32137538dc013531b6dacdd2'],
+ 'packages/daemon/src/server/client-message-events.ts': ['100644',
+                                                         '88e1780e2dc124c45f3063e8213b1c496050b2cb'],
+ 'packages/daemon/src/server/connection.ts': ['100644', 'a0bee1003e89109c853e30aa7a8cd6afc2443111'],
+ 'packages/daemon/src/server/websocket-server.ts': ['100644', '186da5f237c6783602c832633d8e9fa21006f872'],
+ 'packages/daemon/src/session/index.ts': ['100644', '4fd56f7c3f2b7f4a30bd9e647cbc931c4e0c36bd'],
+ 'packages/daemon/src/session/legacy-writers.ts': ['100644', 'b59f67e5b27e482cf525e03a5ba396764b69f073'],
+ 'packages/daemon/src/session/pending-question-created-at-tracker.ts': ['100644',
+                                                                        '7051b1ad41dd4b152084ed152a7367323bb40e17'],
+ 'packages/daemon/src/session/pending-question-label.ts': ['100644',
+                                                           '6ee851b9a581b9542db483f4a8939cf0a6bdf302'],
+ 'packages/daemon/src/session/port-utils.ts': ['100644', 'c9a8af94b6b7d7a31e85688276e6566a41eb4f14'],
+ 'packages/daemon/src/session/process-alive.ts': ['100644', '459c67f8c0cf1dfea6761f3bc5f78b3cce910a12'],
+ 'packages/daemon/src/session/question-store.ts': ['100644', 'c3f70c9877f24ceb13308b27c88a1de6ca1e7cd6'],
+ 'packages/daemon/src/session/question-trace.ts': ['100644', '6598b66870c98761b7b9738aa6fdf0b082abd15b'],
+ 'packages/daemon/src/session/session-binding-store.ts': ['100644',
+                                                          '51047d43c27b9046ca04086fa321c1b1c1454cc7'],
+ 'packages/daemon/src/session/session-name.ts': ['100644', '9d5c9434c92bc84e980ae4f201c2e68b0e0ecc55'],
+ 'packages/daemon/src/session/session-registry-file.ts': ['100644',
+                                                          '0f96f4ddde50359095700538e930d030ae6a5de3'],
+ 'packages/daemon/src/session/session-registry.ts': ['100644', '99e97f2339898bf15e6d341d480f332cd00256bb'],
+ 'packages/daemon/src/session/session-store.ts': ['100644', '9c5c5c9cab4696003a76a0abb59e603032591028'],
+ 'packages/daemon/src/session/shell-quote.ts': ['100644', 'ef81253c90f6c9359e1b8fbff0a47a8e5b6bef9f'],
+ 'packages/daemon/src/session/transcript-index.ts': ['100644', '1604be004ceebbbb705e3dcad59e68e7237fdac2'],
+ 'packages/shared/package.json': ['100644', '8189dd3c4837465936e6d2402dc3bc4c4511c204'],
+ 'packages/shared/src/harness.ts': ['100644', '41650234e78992aa2ab70ba5bce6176d8906c0dc'],
+ 'packages/shared/src/index.ts': ['100644', '8dc617a1964b84e6920fefb63af3531f58ffc62c'],
+ 'packages/shared/src/protocol.ts': ['100644', '2a0bf202aff551d159e7aeb1587aa6cd1a08cd03'],
+ 'packages/shared/src/relay/bytes.ts': ['100644', '9f44a6e8eaf73d74f0d5f118392204b260382511'],
+ 'packages/shared/src/relay/channel.ts': ['100644', 'eaefa6f57c3e1bc0c2dbf3a8a48fc1a1887200e9'],
+ 'packages/shared/src/relay/constants.ts': ['100644', 'd50ceb1bdb8219dd809b2860f4cee437bdbe201f'],
+ 'packages/shared/src/relay/deterministic.ts': ['100644', '98c403c1044fcd846847a8d0a4b91da26d0d8274'],
+ 'packages/shared/src/relay/envelope.ts': ['100644', '64d9980ec5312b5c6e5e528f216d23b51c8dc144'],
+ 'packages/shared/src/relay/errors.ts': ['100644', '16836dc4edccef52c23df5b635c6b3c727bae4f5'],
+ 'packages/shared/src/relay/handshake.ts': ['100644', 'cf58383ce6af7b3d57ec13bfaa7e9aa732c8ac13'],
+ 'packages/shared/src/relay/index.ts': ['100644', 'fa2c8365c701d774baa501329ec06d9f960e146a'],
+ 'packages/shared/src/relay/internal.ts': ['100644', 'd925c04c0687904a1f6d71518205bd589a89fc0b'],
+ 'packages/shared/src/relay/native-answer.ts': ['100644', '60cd4ab2efff2bec763075bbdf9d6dd11270afa8'],
+ 'packages/shared/src/relay/pairing.ts': ['100644', 'dc3ec378b667afd420fd1cc51d9dde9f6bef9ba4'],
+ 'packages/shared/src/relay/primitives.ts': ['100644', '16066615c18269c54de56e2cc7c3155ad3434234'],
+ 'packages/shared/src/relay/push.ts': ['100644', '2e0a4a18d146277c610bd92982a2dbc566128d02'],
+ 'packages/shared/src/relay/seal.ts': ['100644', '9c524aa07dc2fac1bedc13f53da8555e5f784875'],
+ 'packages/shared/src/relay/small-order.ts': ['100644', 'af66d5b95f0cc8b5b02ba752a341c1267d6fcb67'],
+ 'packages/shared/src/relay/strict-json.ts': ['100644', '460e2ebaa82492b7fb2071e142474d6f4396191e'],
+ 'packages/shared/src/relay/worker-wire.ts': ['100644', 'aa1d36699f2ca229f213f714956164b171a1c846'],
+ 'packages/signaling/package.json': ['100644', 'd9d9adf58b99873f04eeaff3ff8a5c3026250305'],
+ 'packages/signaling/src/admission.ts': ['100644', 'e6aa32f1cb2d157fd4e3bdb88440b3b9b72ac76e'],
+ 'packages/signaling/src/apns.ts': ['100644', 'c1c699ec4c88c43a51f877ef3aadc0c5837d8a0d'],
+ 'packages/signaling/src/bearer.ts': ['100644', '27c4b716e903d5dfb8de3754edb50ad2ee9125dc'],
+ 'packages/signaling/src/connection-room.ts': ['100644', 'da13ef5fe90c5e452eb29dc039eca1b2afbe1eb7'],
+ 'packages/signaling/src/enrollment.ts': ['100644', 'd9b76976161bf42fb415237f90ab48f9fceb63e2'],
+ 'packages/signaling/src/index.ts': ['100644', 'a9fc71866c3d172598554f98cd5ad9a8c8e1e868'],
+ 'packages/signaling/src/limiter.ts': ['100644', 'a5e60022d06229cf41381aee45e89a8726dfc461'],
+ 'packages/signaling/src/limits.ts': ['100644', 'fcb2fd3dcb9fe0c85c14489fc1f487d4e75fa2b5'],
+ 'packages/signaling/src/push-gateway.ts': ['100644', '5a3edd565eef97f75df6dc7cc784f68570536e25'],
+ 'packages/signaling/src/push-storage.ts': ['100644', '7de116d157e3fda50159a1d24e82c59ba6c32686'],
+ 'packages/signaling/src/rate-limiter.ts': ['100644', '5d312efc19e656c935b325a8d2711776a9390fdd'],
+ 'packages/signaling/tests/e2e/endpoints.ts': ['100644', '95efbb070e2cae88b306fa9ea1aa50207e95b7e9'],
+ 'packages/signaling/tests/e2e/harness.ts': ['100644', 'df152a92fd95d8dcfd5176e79c3110aa7b500628'],
+ 'packages/signaling/tests/e2e/test-entry.ts': ['100644', 'be546df77024a1e7e3a32023ac53e5175627f526'],
+ 'packages/web/package.json': ['100644', '4baf5ddc324c0b25b4cf13a27c0d1c4a9f43b00c'],
+ 'packages/web/src/lib/relay-machine-channel.ts': ['100644', 'ea1ca3127869e3d82cd85967a2f953bea6d31a25'],
+ 'packages/web/src/lib/relay-requests.ts': ['100644', '118751c5c072a51bfcd921cf68696e1d425209c0'],
+ 'packages/web/tests/helpers/relay-hub.ts': ['100644', 'c7cbf893b5cc3365952da29bed6403b32cda0d52'],
+ 'packages/web/tests/relay-r7-soak.test.ts': ['100644', '62563dd6a34518982397ca0cfb0c8f99a387b412'],
+ 'tsconfig.json': ['100644', '603cbfaa47e2596dc936907599abb2cf04f0e575']}
+
+SOAK_DECODE_TRANSITION = {'packages/daemon/src/tunnel/image-decode.ts': {'original': None,
+                                                'head': ['100644',
+                                                         '25ae95a288670b82cf31fe6001e5645f4d4a2f15']},
+ 'packages/daemon/src/tunnel/image-codecs.d.ts': {'original': None,
+                                                  'head': ['100644',
+                                                           'c50870abd8214f2fcdb5a2b6072da9b31066f0f5']},
+ 'scripts/tunnel-decoder-proof/decode.ts': {'original': ['100644',
+                                                         '8cb073735dcbf664ec33ddc36ff79aae5d157ea4'],
+                                            'head': ['100644', 'b62df2279fb59d141f5b62cf133467d8b81fbd72']},
+ 'scripts/tunnel-decoder-proof/pngjs.d.ts': {'original': ['100644',
+                                                          'f6aacee09c0dcee943fbfd8ecb8414cc293f08b6'],
+                                             'head': ['100644', '1a662b41f542b64f98b3461addf2b98b00fdfd81']},
+ 'packages/daemon/package.json': {'original': ['100644', '17e53aa7653b3035c947ba58428413c8bfa75ef5'],
+                                  'head': ['100644', '063226a265e95c4e2373597db71b8f887eb89a45']},
+ 'bun.lock': {'original': ['100644', '49c79ac37de53d49aee967dbdc565634cf9ce541'],
+              'head': ['100644', '050863afa48b7cbb21fe70f36ee15457523c820a']},
+ 'scripts/tunnel-decoder-proof/matrix.py': {'original': ['100644',
+                                                         'c65994103d1bf600ccb54a1e5bec84c618598de3'],
+                                            'head': ['100644', 'abf3a6744fc4bdfc5f59c1e060b1619a68facb5b']},
+ 'scripts/tunnel-decoder-proof/approval-matrix.py': {'original': ['100644',
+                                                                  'bdf4a799fb2ca40bd72a499d6dfd0bf6af18c488'],
+                                                     'head': ['100644',
+                                                              '4149b35c7cc2ee9d56d647cc3e03c6310d685a29']},
+ 'packages/daemon/tests/tunnel/image-decode-adoption.test.ts': {'original': None,
+                                                                'head': ['100644',
+                                                                         '9a999f774491bb38def97d4b99089ef409823482']},
+ 'scripts/tunnel-decoder-proof/THIRD-PARTY-LICENSES.txt': {'original': ['100644',
+                                                                        '327518768c5623a62095dcb05ddf8f6fb75c6d82'],
+                                                           'head': ['100644',
+                                                                    '8c0cfe6ca437665a04f278c832d148f658368c69']}}
+
+SOAK_DECODE_SUPPORT = {'scripts/tunnel-decoder-proof/admission.ts': ['100644', '9b8d315456b515dd0e51ec441e908462ec3659eb'],
+ 'scripts/tunnel-decoder-proof/process.ts': ['100644', '17228b7b3f5baa869408d517d8d922a610a650f1'],
+ 'scripts/tunnel-decoder-proof/worker.ts': ['100644', '88ad8abb4eec306a4bb041fb45d0f3a6d5d1de25'],
+ 'scripts/tunnel-decoder-proof/probe.ts': ['100644', 'c4785cf9ad96a479ebeb973554d9a1e662a29b3b'],
+ 'scripts/tunnel-decoder-proof/palette-probe.ts': ['100644', 'f91327378f75a49d33b477b4cfccc29395518482'],
+ 'scripts/tunnel-decoder-proof/process-probe.ts': ['100644', 'c2aaafb7043cca567f69639688c19c2281ce930e'],
+ 'scripts/tunnel-decoder-proof/approval-probe.ts': ['100644', 'a9e7ec481c468ece598fd4e3d10c1390101df939'],
+ 'scripts/tunnel-decoder-proof/approval-entry.ts': ['100644', '44838a4a998ab3eacc61f2d91de120811bc5c6cd'],
+ 'scripts/tunnel-decoder-proof/approval-assets.ts': ['100644', '1c452c32c43b8c1e557d7f109c606c5cb9c8100c'],
+ 'scripts/tunnel-decoder-proof/approval-client.ts': ['100644', 'ad6668eb05eee059ab3d9c9b9f1ba331cf9e3f43'],
+ 'scripts/tunnel-decoder-proof/policy-mutations.py': ['100755', 'f68e0f6b27439764f936fa0f027f4dad755b3859'],
+ 'scripts/tunnel-decoder-proof/inputs.json': ['100644', 'f82d772753a90f34e5a798917d88f9889c1f98d0'],
+ 'scripts/tunnel-decoder-proof/package.json': ['100644', '2bc1f4285da0a604eaa6482f88c3533aebcd3ec3'],
+ 'scripts/tunnel-decoder-proof/bun.lock': ['100644', '8c71ddc9da7af35abe29123883aadca38fbbda88'],
+ 'scripts/tunnel-decoder-proof/fixture.png': ['100644', '83a5ef463464d7e49609e7245cc0265ce0094c52'],
+ 'scripts/tunnel-decoder-proof/fixture.jpg': ['100644', '4e7bfe33c2206d1b7b915975bacf7244f7ac4e58'],
+ 'scripts/tunnel-storage-proof/matrix.py': ['100644', 'c339ae6f3b442f3215d5c1d96bcd5dc79924fdaa'],
+ 'scripts/tunnel-storage-proof/storage-approval-mutations.py': ['100755',
+                                                                'f9e338cbed68841b7aa6c4105bd38a50543f09da'],
+ 'tsconfig.json': ['100644', '603cbfaa47e2596dc936907599abb2cf04f0e575'],
+ 'bunfig.toml': ['100644', '3cdd70fa50576ab11b0ca1d8faeac951c3786196'],
+ 'packages/daemon/src/tunnel/image-admission.ts': ['100644', '8abf0289a844fa6cf4350eda66b41bc993334164'],
+ 'packages/daemon/tests/tunnel/image-admission-adoption.test.ts': ['100644',
+                                                                   'bc8c20b40b53804175ea7c058968dd55f299dc70']}
+
+SOAK_DECODE_WORKER_TRANSITION = {'packages/daemon/src/tunnel/image-process.ts': {'original': None,
+                                                 'head': ['100644',
+                                                          '2044a8e538b748c7d64e1e3c3aa388033dca0b89']},
+ 'packages/daemon/src/tunnel/image-worker.ts': {'original': None,
+                                                'head': ['100644',
+                                                         'b5500f17c8499d76876e5c0a61c7ece825f1113e']},
+ 'scripts/tunnel-decoder-proof/process.ts': {'original': ['100644',
+                                                          '17228b7b3f5baa869408d517d8d922a610a650f1'],
+                                             'head': ['100644', 'cd885edf0d140d2eef2d2117288b69f1532cde8e']},
+ 'scripts/tunnel-decoder-proof/worker.ts': {'original': ['100644',
+                                                         '88ad8abb4eec306a4bb041fb45d0f3a6d5d1de25'],
+                                            'head': ['100644', 'b890efc6d27a6695e2896ff2628be85e9338912a']},
+ 'packages/daemon/tests/tunnel/image-worker-adoption.test.ts': {'original': None,
+                                                                'head': ['100644',
+                                                                         '4b520ecb09a68b2af9dfceafea7822c355e64e60']}}
+
+SOAK_LAUNCH_VERSION_TRACE = {
+    **SOAK_VERSION_TRACE,
+    "packages/daemon/src/cli.ts": "64dfa90caf54d92b98fee3ed39cf5f5f058758cb82acc539d8531415401d1fa2",
+}
+
 SOAK_AUTH_COMMENTS = {
     "packages/daemon/tests/connection-unregister-ack-order.test.ts": (
         "5bb330b56694c7642a802e477b132b780acef569",
@@ -880,7 +1143,7 @@ def ordinary_soak_doc(path):
         path.endswith(".md") or path == "CHANGELOG")
 
 
-def soak_versions_reviewed(tree):
+def soak_versions_reviewed(tree, reviewed=None):
     package = tree.get("package.json")
     cli = tree.get("packages/daemon/src/cli.ts")
     if not package or not cli or package[0] != "100644" or cli[0] != "100644":
@@ -905,7 +1168,7 @@ def soak_versions_reviewed(tree):
         "packages/daemon/src/cli.ts": re.sub(cli_pattern, rb"\1<VERSION>\3", cli_data),
         "package.json": re.sub(package_pattern, rb"\1<VERSION>\3", package_data),
     }
-    return all(hashlib.sha256(data).hexdigest() == SOAK_VERSION_TRACE[path]
+    return all(hashlib.sha256(data).hexdigest() == (SOAK_VERSION_TRACE if reviewed is None else reviewed)[path]
                for path, data in normalized.items())
 
 
@@ -1003,6 +1266,157 @@ def soak_fixture_only(base, head, merge_base, paths):
         return False
 
 
+def reviewed_launch_or_decode_only(base, head, merge_base, paths):
+    # Match complete changed-path populations before reading the unchanged published graph.
+    launch_paths = set(SOAK_LAUNCH_TRANSITION)
+    decode_paths = set(SOAK_DECODE_TRANSITION)
+    changed = set(paths)
+    worker = False
+    if launch_paths <= changed:
+        name, policy = "CLI-default", SOAK_LAUNCH_TRANSITION
+    elif decode_paths <= changed:
+        name, policy = "Dormant full-decoder", SOAK_DECODE_TRANSITION
+        if changed & set(SOAK_DECODE_WORKER_TRANSITION):
+            worker = True
+            policy = {**SOAK_DECODE_TRANSITION, **SOAK_DECODE_WORKER_TRANSITION}
+    else:
+        return None
+    required = set(policy)
+    if not required <= changed or any(path not in required and path not in {"package.json", "packages/daemon/src/cli.ts"} and not ordinary_soak_doc(path)
+                                      for path in changed):
+        return None
+    try:
+        trees = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref)
+            if not raw or not raw.endswith(b"\0"):
+                return None
+            tree = {}
+            for entry in raw[:-1].split(b"\0"):
+                header, separator, path_bytes = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return None
+                path = path_bytes.decode()
+                if any(part in ("", ".", "..") for part in path.split("/")) or any(
+                        ord(char) < 32 or ord(char) == 127 for char in path) or path in tree:
+                    return None
+                mode, _, blob = header.decode().split()
+                tree[path] = (mode, blob)
+            trees[ref] = tree
+        for path, roles in policy.items():
+            for ref, role in ((base, "original"), (merge_base, "original"), (head, "head")):
+                expected = roles[role]
+                if name == "CLI-default" and path == "packages/daemon/src/cli.ts":
+                    if trees[ref].get(path, (None,))[0] != "100644":
+                        return None  # Its whole reviewed bytes are normalized below, not weakened.
+                elif trees[ref].get(path) != (tuple(expected) if expected is not None else None):
+                    return None
+            expected_status = "M" if roles["original"] is not None else "A"
+            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                         merge_base, head, "--", path)
+            if status != f"{expected_status}\0{path}\0".encode():
+                return None
+        fixed = {path: value for path, value in SOAK_TRANSITION_CORE.items() if path not in required}
+        if name == "Dormant full-decoder":
+            fixed.update({path: value for path, value in SOAK_DECODE_SUPPORT.items() if path not in required})
+        for path, value in fixed.items():
+            if any(trees[ref].get(path) != tuple(value) for ref in trees):
+                return None
+        # Everything else, including root entry/config/consumers and gate files, stays identical.
+        exceptional = required | {"package.json", "packages/daemon/src/cli.ts"}
+        def remaining(tree):
+            return {path: value for path, value in tree.items()
+                    if path not in exceptional and not ordinary_soak_doc(path)}
+        if any(remaining(trees[ref]) != remaining(trees[merge_base]) for ref in trees):
+            return None
+        if name == "Dormant full-decoder":
+            # Never admit the CLI feature mixed into this separate decoder transition.
+            launch_role = None
+            for role, trace in (("original", SOAK_VERSION_TRACE), ("head", SOAK_LAUNCH_VERSION_TRACE)):
+                if all(all(path == "packages/daemon/src/cli.ts" or
+                           trees[ref].get(path) == (tuple(roles[role]) if roles[role] is not None else None)
+                           for path, roles in SOAK_LAUNCH_TRANSITION.items()) and
+                       soak_versions_reviewed(trees[ref], trace) for ref in trees):
+                    launch_role = role
+                    break
+            if launch_role is None:
+                return None
+        else:
+            if not all(soak_versions_reviewed(trees[ref], SOAK_VERSION_TRACE)
+                       for ref in dict.fromkeys((base, merge_base))) or not soak_versions_reviewed(
+                           trees[head], SOAK_LAUNCH_VERSION_TRACE):
+                return None
+        # Pins prove bytes only after successful type/size/UTF-8/NUL/object reads.
+        # Known published .env.example is a public sample; actual secret-named files are refused unread.
+        scan = {}
+        for tree in trees.values():
+            for path, (mode, blob) in tree.items():
+                filename = Path(path).name
+                if ((filename.startswith(".env") and path != ".env.example") or
+                        Path(path).suffix.lower() in {".pem", ".key", ".p12"} or
+                        filename in {"credentials", "secrets.json"}):
+                    return None
+                if path == ".env.example" and (mode, blob) != COLD_PUBLIC_SAMPLE:
+                    return None
+                if path in fixed or path in required or path in {"package.json", "packages/daemon/src/cli.ts"} or (
+                        not ordinary_soak_doc(path) and Path(path).suffix.lower() not in STAGING_BINARY):
+                    scan[blob] = path
+        data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                       input="".join(f"{blob}\n" for blob in scan).encode(), stderr=subprocess.PIPE)
+        stream = io.BytesIO(data)
+        content_by_blob = {}
+        for blob, path in scan.items():
+            header = stream.readline().decode().split()
+            if (len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit() or
+                    int(header[2]) > 8 * 1024 * 1024):
+                return None
+            content = stream.read(int(header[2]))
+            if len(content) != int(header[2]) or stream.read(1) != b"\n" or hashlib.sha1(
+                    f"blob {len(content)}\0".encode() + content).hexdigest() != blob:
+                return None
+            if name == "Dormant full-decoder" and path in COLD_IMAGE_BINARY:
+                continue  # Exact binary fixture mode/blob fixed at all3refs above.
+            text = content.decode()
+            if "\0" in text:
+                return None
+            content_by_blob[blob] = text
+        if stream.read():
+            return None
+        if name == "CLI-default":
+            targets = {"packages/daemon/src/cli/launch-harness.ts"}
+            identifiers = ("resolveLaunchHarness", "isSessionLaunch", "HarnessConfig")
+            known = required
+        else:
+            targets = {"packages/daemon/src/tunnel/image-decode.ts", "packages/daemon/src/tunnel/image-codecs.d.ts",
+                       "scripts/tunnel-decoder-proof/decode.ts"}
+            identifiers = ("decodeImage",)
+            if worker:
+                targets |= {"packages/daemon/src/tunnel/image-process.ts", "packages/daemon/src/tunnel/image-worker.ts",
+                            "scripts/tunnel-decoder-proof/process.ts", "scripts/tunnel-decoder-proof/worker.ts"}
+                identifiers += ("DecoderProcess", "DecoderProcessError", "MAX_RESULT_BYTES", "decodeInput",
+                                "decodeWorker", "decodeRepeatedWorker", "DecodedPixels", "DecoderChildExit", "RepeatedDecodeReady")
+            known = required | set(SOAK_DECODE_SUPPORT)
+        for tree in trees.values():
+            for path, (_, blob) in tree.items():
+                if path in known or path in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} or (
+                        ordinary_soak_doc(path) or Path(path).suffix.lower() in STAGING_BINARY):
+                    continue
+                text = content_by_blob[blob]
+                # Triple-slash declarations/config entry fields can contain literal relative asset paths.
+                asset_literals = re.findall(r"\b(?:path|entry|file)[\"']?\s*[:=]\s*[\"']([^\"'\n]+)[\"']", text)
+                if asset_literals:
+                    text += "\n" + "\n".join(f"import '{literal}';" for literal in asset_literals)
+                if (cold_image_reference(path, text, targets, identifiers) if name == "Dormant full-decoder" else
+                        cold_reference(path, text, targets, identifiers)):
+                    return None
+                if name == "Dormant full-decoder" and cold_image_reference(
+                        path, text, COLD_IMAGE_CALLERS | COLD_IMAGE_RUNNERS, ()):
+                    return None
+        return name + (" with complete owned worker" if worker else "")
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return None
+
+
 def package_transport_unchanged(base, head):
     # Compare parsed objects, never matching diff text. Unknown/new fields trigger R7.
     def transport_input(ref):
@@ -1026,6 +1440,10 @@ def classify(base, head):
                     merge_base, head, "--").decode().split("\0")[:-1]
         if not paths:
             return all_gates("Empty diff; scope cannot justify skipping")
+        transition = reviewed_launch_or_decode_only(base, head, merge_base, paths)
+        if transition:
+            return {**all_gates(f"Exact reviewed {transition} transition; ordinary and short relay controls retained"),
+                    "relay_soak": False}
         gates = dict.fromkeys(GATES, False)
         cold_paths = cold_relocation_paths(base, head, merge_base, paths)
         cold_inputs = set().union(*(policy["head"] for policy in COLD_RELOCATIONS.values()))
