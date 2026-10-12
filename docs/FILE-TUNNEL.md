@@ -583,6 +583,36 @@ historical evidence; unchanged guards received no new mutation campaign.
 
 This accepts the explicit internal helper packaging.
 An active daemon lifecycle, physical allocation ceiling and power-loss behavior
-are not established by these finite observations. Image admission/full decoding,
-owned worker integration, authenticated staging and a production client caller
-still precede upload availability and capability advertisement.
+are not established by these finite observations. Image header admission is
+recorded below. Full decoding, owned worker integration, authenticated staging
+and a production client caller still precede upload availability and capability
+advertisement.
+
+## Internal image header admission adoption
+
+The existing image header parser now lives in daemon
+`tunnel/image-admission.ts`; descriptor admission keeps its distinct module.
+The proof path explicitly re-exports the same constant, function and type.
+Input, dimension, palette, segment and scan guards retain their existing behavior.
+Thirteen type assertions on byte reads already bounded by those guards satisfy
+the original root TypeScript settings. Their emitted JavaScript is byte-identical
+to the original parser; no runtime guard or configuration is changed.
+
+The default decoder proof now captures the moved daemon source through the same
+repository-tree and compiled-entry facilities used by the held-answer profile.
+The final default 19-group and held 22-group profiles each passed all six
+supported platform/Bun cells. All 24 build/run exits are zero; original controls,
+fixture pixels, the 42-member candidate dependency tree and cleanup results are
+preserved. The header phase passed both root type checks and both focused
+42-test/495-assertion populations with no new static diagnostics or warnings.
+After integration with the journal helper, both unchanged root checks and the
+combined 43-test/520-assertion populations also pass. The four header source
+paths retain their reviewed hashes; these integration checks do not replace the
+source-qualified six-cell decoder receipts.
+
+These observations cover internal header admission and its existing standalone
+proof callers. Full pixel decoding, production decoder dependencies, the owned
+worker entry and active staging lifecycle remain subsequent work.
+No package index export, startup call, upload handler, production client or
+attachment capability is added. Header admission alone does not validate pixels
+or establish a universal process memory/CPU ceiling. Keep #1170 open.
