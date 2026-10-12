@@ -259,7 +259,7 @@ COLD_ORIGINAL_CONTENT = {
     for policy in module["COLD_RELOCATIONS"].values() for path, pin in policy["original"].items()
     if path not in module["COLD_RELOCATIONS"]["descriptor"]["head"] or path in module["COLD_RELOCATIONS"]["descriptor"]["original"]
 }
-COLD_CONTENT = {"descriptor": {}, "journal": {}}
+COLD_CONTENT = {"descriptor": {}, "journal": {}, "native-helper": {}}
 COLD_CONTENT['descriptor']['scripts/tunnel-storage-proof/admission.ts'] = "// #1170 proof adapter: the daemon owns the sole descriptor implementation.\nexport {\n  AdmittedFile,\n  DirectoryRoot,\n  FileAdmission,\n  type OpenAt,\n} from '../../packages/daemon/src/tunnel/admission';\n"
 COLD_CONTENT['descriptor']['packages/daemon/tests/tunnel/descriptors-adoption.test.ts'] = '/// <reference path="../../../../scripts/tunnel-storage-proof/assets.d.ts" />\nimport { expect, test } from \'bun:test\';\nimport * as fs from \'node:fs\';\nimport { tmpdir } from \'node:os\';\nimport * as path from \'node:path\';\nimport * as proofAdmission from \'../../../../scripts/tunnel-storage-proof/admission\';\nimport type { PrivateOps as ProofPrivateOps } from \'../../../../scripts/tunnel-storage-proof/private-copy\';\nimport { recoveryNative } from \'../../../../scripts/tunnel-storage-proof/recovery-native\';\nimport { AdmittedFile, DirectoryRoot, FileAdmission } from \'../../src/tunnel/admission\';\nimport type { PrivateOps } from \'../../src/tunnel/private-ops\';\n\ntest(\'proof descriptor adapters share daemon classes and capture a real owned root\', async () => {\n  expect(proofAdmission.DirectoryRoot).toBe(DirectoryRoot);\n  expect(proofAdmission.AdmittedFile).toBe(AdmittedFile);\n  expect(proofAdmission.FileAdmission).toBe(FileAdmission);\n  const native = await recoveryNative();\n  const proofOps: ProofPrivateOps = native.ops;\n  const ops: PrivateOps = proofOps;\n  const directory = fs.mkdtempSync(path.join(tmpdir(), \'remi-descriptors-adoption-\'));\n  fs.chmodSync(directory, 0o700);\n  let root: DirectoryRoot | null = null;\n  try {\n    root = proofAdmission.DirectoryRoot.capture(directory, ops.openAt.bind(ops));\n    expect(root).toBeInstanceOf(DirectoryRoot);\n    if (!root) throw new Error(\'actual owned root capture failed\');\n    const stat = fs.fstatSync(root.fd, { bigint: true });\n    const named = fs.statSync(directory, { bigint: true });\n    expect(stat.isDirectory()).toBe(true);\n    expect(stat.dev).toBe(named.dev);\n    expect(stat.ino).toBe(named.ino);\n    expect(root.identity).toBe(`${stat.dev}:${stat.ino}`);\n    expect(root.contains(new Set([root.identity]))).toBe(true);\n    expect(root.active).toBe(true);\n    expect(root.isCurrent()).toBe(true);\n    const fd = root.fd;\n    root.close();\n    expect(root.active).toBe(false);\n    expect(root.isCurrent()).toBe(false);\n    expect(() => fs.fstatSync(fd)).toThrow();\n    root.close();\n  } finally {\n    root?.close();\n    native.close();\n    fs.rmSync(directory, { recursive: true, force: true });\n  }\n});\n'
 COLD_CONTENT['journal']['scripts/tunnel-storage-proof/recovery.ts'] = "// #1170 proof adapter: the daemon owns the sole journal implementation.\nexport {\n  RecoveryError,\n  RecoveryIntent,\n  type RecoveryOps,\n  type RecoveryStage,\n  allocatedBlocks,\n} from '../../packages/daemon/src/tunnel/recovery';\n"
@@ -292,6 +292,25 @@ for mutation in ("recovery-mutations.py", "settlement-mutations.py"):
     for name in names:
         text = text.replace(COLD_PROOF + name, COLD_DAEMON + name)
     b_content[COLD_PROOF + mutation] = text
+# Exact helper/C/declaration bytes derive only from published originals.
+NATIVE_FULL_BASE = "b9c2e49a0a5e02186737c041551f5548147b9938"
+NATIVE_REMOVED_C = COLD_PROOF + "recovery-native.c"
+NATIVE_CONTENT = COLD_CONTENT["native-helper"]
+NATIVE_CONTENT[COLD_DAEMON + "recovery-native.ts"] = (
+    '/// <reference path="./native-assets.d.ts" />\n'
+    '// #1170 internal explicit native journal helper; no startup or active transfer caller.\n'
+    + COLD_ORIGINAL_CONTENT[COLD_PROOF + "recovery-native.ts"]
+)
+NATIVE_CONTENT[COLD_DAEMON + "recovery-native.c"] = COLD_ORIGINAL_CONTENT[NATIVE_REMOVED_C]
+original_assets = COLD_ORIGINAL_CONTENT[COLD_PROOF + "assets.d.ts"]
+asset_boundary = original_assets.index("declare module '*.png'")
+NATIVE_CONTENT[COLD_DAEMON + "native-assets.d.ts"] = original_assets[:asset_boundary]
+NATIVE_CONTENT[COLD_PROOF + "assets.d.ts"] = (
+    '/// <reference path="../../packages/daemon/src/tunnel/native-assets.d.ts" />\n'
+    + original_assets[asset_boundary:]
+)
+NATIVE_CONTENT[COLD_PROOF + "recovery-native.ts"] = "// #1170 proof adapter for the explicit daemon-owned native journal factory.\nexport { recoveryNative } from '../../packages/daemon/src/tunnel/recovery-native';\n"
+NATIVE_CONTENT["packages/daemon/tests/tunnel/native-helper-adoption.test.ts"] = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport { constants, tmpdir } from 'node:os';\nimport * as path from 'node:path';\nimport { recoveryNative as proofRecoveryNative } from '../../../../scripts/tunnel-storage-proof/recovery-native';\nimport { DirectoryRoot } from '../../src/tunnel/admission';\nimport { recoveryNative } from '../../src/tunnel/recovery-native';\n\ntest('proof native helper shares the daemon factory and owns real descriptors and locks', async () => {\n  expect(proofRecoveryNative).toBe(recoveryNative);\n  const bytes = fs.readFileSync(\n    path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof/fixture.png'),\n  );\n  const native = await recoveryNative();\n  const opened = new Set<number>();\n  let directory: string | undefined;\n  let root: DirectoryRoot | null = null;\n  const closeFile = (fd: number) => {\n    fs.closeSync(fd);\n    opened.delete(fd);\n  };\n  try {\n    directory = fs.mkdtempSync(path.join(tmpdir(), 'remi-native-helper-adoption-'));\n    fs.chmodSync(directory, 0o700);\n    root = DirectoryRoot.capture(directory, native.ops.openAt.bind(native.ops));\n    expect(root).toBeInstanceOf(DirectoryRoot);\n    if (!root) throw new Error('actual native helper root capture failed');\n    const directoryFD = root.fd;\n    expect(fs.fstatSync(directoryFD).isDirectory()).toBe(true);\n    const directoryFlags = native.cloexec(directoryFD);\n    expect(directoryFlags).toBeGreaterThanOrEqual(0);\n    expect(directoryFlags & 1).toBe(1);\n    const flags = fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;\n    expect(native.ops.openAt(directoryFD, 'missing.png', flags)).toBe(-constants.errno.ENOENT);\n    expect(native.ops.unlink(directoryFD, 'missing.png')).toBe(-constants.errno.ENOENT);\n    const first = native.ops.create(\n      directoryFD,\n      'owned.png',\n      flags | fs.constants.O_CREAT | fs.constants.O_EXCL,\n      0o600,\n    );\n    expect(first).toBeGreaterThanOrEqual(0);\n    if (first < 0) throw new Error('actual owned file creation failed');\n    opened.add(first);\n    fs.writeFileSync(first, bytes);\n    fs.fsyncSync(first);\n    const firstStat = fs.fstatSync(first, { bigint: true });\n    expect(firstStat.isFile()).toBe(true);\n    expect(Number(firstStat.mode & 0o777n)).toBe(0o600);\n    const firstFlags = native.cloexec(first);\n    expect(firstFlags).toBeGreaterThanOrEqual(0);\n    expect(firstFlags & 1).toBe(1);\n    const second = native.ops.openAt(directoryFD, 'owned.png', flags);\n    expect(second).toBeGreaterThanOrEqual(0);\n    if (second < 0) throw new Error('actual owned file reopen failed');\n    opened.add(second);\n    const secondStat = fs.fstatSync(second, { bigint: true });\n    expect(secondStat.dev).toBe(firstStat.dev);\n    expect(secondStat.ino).toBe(firstStat.ino);\n    const secondFlags = native.cloexec(second);\n    expect(secondFlags).toBeGreaterThanOrEqual(0);\n    expect(secondFlags & 1).toBe(1);\n    expect(fs.readFileSync(second)).toEqual(bytes);\n    expect(native.ops.lock(first)).toBe(0);\n    expect(native.ops.lock(second)).toBe(-constants.errno.EWOULDBLOCK);\n    closeFile(first);\n    expect(native.ops.lock(second)).toBe(0);\n    closeFile(second);\n    expect(() => native.ops.link(directoryFD, 'owned.png', 'alias.png')).toThrow(\n      'recovery link unsupported',\n    );\n    expect(native.ops.unlink(directoryFD, 'owned.png')).toBe(0);\n    expect(native.ops.unlink(directoryFD, 'owned.png')).toBe(-constants.errno.ENOENT);\n    expect(fs.readdirSync(directory)).toEqual([]);\n  } finally {\n    try {\n      for (const fd of opened) fs.closeSync(fd);\n    } finally {\n      try {\n        root?.close();\n      } finally {\n        try {\n          native.close();\n        } finally {\n          if (directory) fs.rmSync(directory, { recursive: true, force: true });\n        }\n      }\n    }\n  }\n});\n"
 for phase, contents in COLD_CONTENT.items():
     for path, text in contents.items():
         blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=text.encode(), stderr=subprocess.PIPE).decode().strip()
@@ -1219,6 +1238,180 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                     changes.append(change)
                 cold_expect_all(old, soak_tree(old, changes, removals), ("declaration asset", state))
                 count += 1
+        # Exact helper relocation: one declared deletion, exact C assets and fixed caller provenance.
+        git("fetch", "--quiet", "--no-tags", str(original), NATIVE_FULL_BASE)
+        native_policy = module["COLD_RELOCATIONS"]["native-helper"]
+        native_updates = [(path, text, native_policy["head"][path][0]) for path, text in NATIVE_CONTENT.items()]
+        native_base = NATIVE_FULL_BASE
+        native_head = soak_tree(native_base, native_updates, (NATIVE_REMOVED_C,))
+        def native_all(left, candidate, context):
+            result = classify(left, candidate)
+            assert selected(result) == gates and result["relay_soak"], ("native-helper", context, result)
+        result = classify(native_base, native_head)
+        assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+        count += 1
+        for note in ("docs/owned-native-note.md", "CHANGELOG"):
+            candidate = soak_tree(native_base, [*native_updates, (note, "ordinary prose\n", "100644")], (NATIVE_REMOVED_C,))
+            result = classify(native_base, candidate)
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+            count += 1
+        # Same basename elsewhere is a genuine nonconsumer; longer identifiers also stay distinct.
+        for content in ("import './unrelated/recovery-native.c';\n",
+                        "import '@remi/daemon/unrelated/recovery-native.c';\n",
+                        "const clientrecoveryNative = true;\n"):
+            left = soak_tree(native_base, [("packages/daemon/src/native-nonconsumer.ts", content, "100644")])
+            result = classify(left, soak_tree(left, native_updates, (NATIVE_REMOVED_C,)))
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], (content, result)
+            count += 1
+        # Relative/alias literal C imports and qualified config readers at both endpoints.
+        consumer_cases = (
+            ("packages/daemon/src/native-reader.ts", "import './tunnel/recovery-native.c';\n"),
+            ("packages/daemon/src/native-reader.ts", "export { default } from './tunnel/recovery-native.c';\n"),
+            ("packages/daemon/src/native-reader.ts", "require /* owned */ ('./tunnel/recovery-native.c');\n"),
+            ("packages/daemon/src/native-reader.ts", "import /* owned */ ('@remi/daemon/tunnel/recovery-native.c');\n"),
+            ("packages/daemon/src/native-reader.ts", r"import './tunnel/recovery-nativ\u0065.c';" + "\n"),
+            ("packages/daemon/src/native-reader.ts", r"import '@remi/daemon/tunnel/recovery-nativ\x65.c';" + "\n"),
+            ("packages/daemon/src/native-reader.ts", r"import './tunnel/recovery-nativ\q.c';" + "\n"),
+            ("packages/daemon/src/native-reader.ts", "import 'recovery-" + "native"[:-1] + r"\e.c';" + "\n"),
+            ("packages/daemon/src/native-reader.ts", "import '@remi/daemon/unrelated/../tunnel/recovery-native.c';\n"),
+            ("scripts/native-reader.ts", "import './tunnel-storage-proof/recovery-native.c';\n"),
+            ("scripts/native-reader.ts", r"import './tunnel-storage-proof/recovery-nativ\u{65}.c';" + "\n"),
+            ("root-native-config.json", '"packages/daemon/src/tunnel/recovery-native.c"\n'),
+            ("root-native-config.json", r'"packages/daemon/src/tunnel/recovery-nativ\u0065.c"' + "\n"),
+            ("root-native-config.json", r'"packages\/daemon/src/tunnel/recovery-native.c"' + "\n"),
+            ("root-native-config.json", r'"packages/daemon/src/tunnel/recovery-nativ\e.c"' + "\n"),
+            ("root-native-launch.sh", "cc scripts/tunnel-storage-proof/recovery-native.c\n"),
+            ("packages/native/native-reader.swift", "// recoveryNative\n"),
+            ("packages/daemon/src/native-reader.ts", "import './tunnel/recovery-native';\n"),
+        )
+        # Production cannot launch the helper through these exact verified proof/test callers.
+        proof_modules = ("recovery-probe", "settlement-probe", "recovery-entry", "settlement-entry")
+        consumer_cases += tuple(
+            ("packages/daemon/src/native-reader.ts", f"import '../../../scripts/tunnel-storage-proof/{name}.ts';\n")
+            for name in proof_modules
+        )
+        consumer_cases += (
+            ("packages/daemon/src/native-reader.ts", "import '../../../scripts/tunnel-storage-proof/recovery-probe.js';\n"),
+            ("packages/daemon/src/native-reader.ts", "require /* owned */ ('../../../scripts/tunnel-storage-proof/settlement-probe');\n"),
+            ("packages/daemon/src/native-reader.ts", r"import '../../../scripts/tunnel-storage-proof/recovery-\u0070robe';" + "\n"),
+            ("packages/daemon/src/native-reader.ts", "import '@remi/daemon/../../../scripts/tunnel-storage-proof/recovery-entry';\n"),
+        )
+        consumer_cases += tuple(
+            ("packages/daemon/src/native-reader.ts", f"import '../tests/tunnel/{name}.js';\n")
+            for name in ("descriptors-adoption.test", "journal-adoption.test", "native-helper-adoption.test")
+        )
+        consumer_cases += tuple(
+            ("packages/daemon/src/native-reader.ts", f"const launch = '{target}';\n")
+            for target in sorted(module["COLD_NATIVE_CALLERS"])
+        )
+        for caller_path, content in consumer_cases:
+            caller = (caller_path, content, "100644")
+            for context in ("new", "both", "removed", "target-base-only"):
+                left = soak_tree(native_base, [caller]) if context != "new" else native_base
+                if context == "target-base-only":
+                    candidate = soak_tree(native_base, native_updates, (NATIVE_REMOVED_C,))
+                else:
+                    candidate = soak_tree(left, [*native_updates, *([caller] if context == "new" else [])],
+                                          (NATIVE_REMOVED_C, *([caller_path] if context == "removed" else [])))
+                native_all(left, candidate, (content, context))
+                count += 1
+        for producer, content in NATIVE_CONTENT.items():
+            without = [update for update in native_updates if update[0] != producer]
+            for state in ("body", "missing", "deleted", "renamed", "mode", "symlink", "base-state"):
+                left, updates, removals = native_base, list(without), [NATIVE_REMOVED_C]
+                if state == "body":
+                    updates.append((producer, content + "\n// unreviewed body\n", "100644"))
+                elif state == "deleted":
+                    removals.append(producer)
+                elif state == "renamed":
+                    removals.append(producer)
+                    updates.append(("docs/native-renamed.txt", content, "100644"))
+                elif state in ("mode", "symlink"):
+                    updates.append((producer, content if state == "mode" else "owned-target", "100755" if state == "mode" else "120000"))
+                elif state == "base-state":
+                    left = soak_tree(native_base, [(producer, content + "\n// wrong original\n", "100644")])
+                    updates = native_updates
+                native_all(left, soak_tree(left, updates, removals), (producer, state))
+                count += 1
+        # The sole D pin requires the reviewed original regular blob and exact head absence.
+        original_c = COLD_ORIGINAL_CONTENT[NATIVE_REMOVED_C]
+        native_all(native_base, soak_tree(native_base, native_updates), "old C restored")
+        count += 1
+        native_all(native_head, soak_tree(native_head, [], (), source=native_base), "reversed relocation")
+        count += 1
+        for state, body, mode, missing in (
+                ("changed", original_c + "\n/* changed */\n", "100644", False),
+                ("mode", original_c, "100755", False),
+                ("symlink", "owned-target", "120000", False),
+                ("missing", original_c, "100644", True)):
+            left = soak_tree(native_base, [] if missing else [(NATIVE_REMOVED_C, body, mode)], (NATIVE_REMOVED_C,) if missing else ())
+            native_all(left, soak_tree(left, native_updates, (NATIVE_REMOVED_C,)), ("old C", state))
+            count += 1
+        for caller, pin in native_policy["original"].items():
+            text = subprocess.check_output(["git", "show", f"{native_base}:{caller}"]).decode()
+            for endpoint in ("base", "head"):
+                changed = (caller, text + "\n// unreviewed known consumer\n", pin[0])
+                left = soak_tree(native_base, [changed]) if endpoint == "base" else native_base
+                updates = [*native_updates, *([changed] if endpoint == "head" else [])]
+                removals = () if endpoint == "head" and caller == NATIVE_REMOVED_C else (NATIVE_REMOVED_C,)
+                native_all(left, soak_tree(left, updates, removals), (caller, endpoint))
+                count += 1
+        for other in ("descriptor", "journal"):
+            mixed = cold_updates(other)
+            path, text, mode = mixed[0]
+            mixed[0] = (path, text + "\n// distinct simultaneous producer change\n", mode)
+            native_all(native_base, soak_tree(native_base, [*native_updates, *mixed], (NATIVE_REMOVED_C,)), ("composition", other))
+            count += 1
+        for path, data, mode in (("root-native-invalid.json", b"\xff", "100644"),
+                                 ("scripts/native-invalid.py", b"\0", "100644"),
+                                 ("packages/native/owned-alias", b"owned", "120000"),
+                                 (".env.private-native", b"owned, never read", "100644")):
+            for context in ("base", "head"):
+                left = soak_tree(native_base, [(path, data, mode)]) if context == "base" else native_base
+                updates = [*native_updates, *([(path, data, mode)] if context == "head" else [])]
+                native_all(left, soak_tree(left, updates, (NATIVE_REMOVED_C,)), (path, context))
+                count += 1
+        # Actual missing objects at both scan endpoints, including the deleted original C.
+        object_bytes = {pin[1]: subprocess.check_output(["git", "cat-file", "blob", pin[1]])
+                        for pin in native_policy["original"].values()}
+        for path, text in NATIVE_CONTENT.items():
+            pin = native_policy["head"][path]
+            object_bytes[pin[1]] = text.encode()
+        sample_pin = module["COLD_PUBLIC_SAMPLE"]
+        sample_bytes = subprocess.check_output(["git", "cat-file", "blob", sample_pin[1]])
+        final_pins = {path: pin for path, pin in {**native_policy["original"], **native_policy["head"]}.items() if pin is not None}
+        for endpoint, missing_path in (("complete", None), ("original", NATIVE_REMOVED_C),
+                                       ("original", COLD_PROOF + "recovery-probe.ts"),
+                                       ("head", COLD_DAEMON + "recovery-native.ts"),
+                                       ("head", COLD_DAEMON + "native-assets.d.ts")):
+            omitted = native_policy[endpoint][missing_path][1] if endpoint != "complete" else None
+            corpus_dir = Path.cwd()
+            with tempfile.TemporaryDirectory(prefix="native-missing-pin-") as private:
+                try:
+                    os.chdir(private)
+                    git("init", "-q")
+                    git("config", "user.name", "Owned native missing object control")
+                    git("config", "user.email", "test@example.com")
+                    for blob, data in object_bytes.items():
+                        if blob != omitted:
+                            assert git("hash-object", "-w", "--stdin", input=data.decode()) == blob
+                    assert git("hash-object", "-w", "--stdin", input=sample_bytes.decode()) == sample_pin[1]
+                    refs = []
+                    for pins in (native_policy["original"], final_pins):
+                        git("read-tree", "--empty")
+                        git("update-index", "--add", "--cacheinfo", f"{sample_pin[0]},{sample_pin[1]},.env.example")
+                        for path, pin in pins.items():
+                            git("update-index", "--add", "--cacheinfo", f"{pin[0]},{pin[1]},{path}")
+                        tree = git("write-tree", "--missing-ok")
+                        refs.append(git("commit-tree", tree, *(["-p", refs[0]] if refs else []), "-m", "owned native missing object"))
+                    if endpoint == "complete":
+                        result = classify(*refs)
+                        assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+                    else:
+                        native_all(refs[0], refs[1], ("missing pinned object", endpoint, missing_path))
+                    count += 1
+                finally:
+                    os.chdir(corpus_dir)
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
                           "packages/macos", "packages/native", "tests", "scripts",
