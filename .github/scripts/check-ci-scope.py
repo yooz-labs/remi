@@ -27,7 +27,276 @@ HOOK_SERVER_TEST = module["HOOK_SERVER_TEST"]
 STAGING_SOURCE, STAGING_INPUTS = module["STAGING_SOURCE"], module["STAGING_INPUTS"]
 STAGING_EXPORTS = module["STAGING_EXPORTS"]
 STAGING_TEXT = "".join(f"export const {name} = 'owned';\n" for name in sorted(STAGING_EXPORTS))
+# Actual immutable pre-relocation Git blobs remain available after adapters replace originals.
+ACCOUNTING_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE).decode()
+    for path, blob in module["ACCOUNTING_ORIGINALS"].items()
+}
+ACCOUNTING_PROOF = "scripts/tunnel-storage-proof/"
+ACCOUNTING_DAEMON = "packages/daemon/src/tunnel/"
+ACCOUNTING_FULL_BASE = "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7"
+ACCOUNTING_COLLISION_BLOBS = {
+    "packages/native/RemiKit/Sources/RemiKit/Transport/RelayChannelBroker.swift": "41fbabaef6a051bde704610c36bf144ac8a7ca21",
+    "packages/signaling/src/connection-room.ts": "da13ef5fe90c5e452eb29dc039eca1b2afbe1eb7",
+    "packages/signaling/tests/e2e/limits.e2e.test.ts": "2f4e404747aac4d1409bb2882cd23731ae5f38ce",
+}
+ACCOUNTING_COLLISION_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE).decode()
+    for path, blob in ACCOUNTING_COLLISION_BLOBS.items()
+}
+ACCOUNTING_HEAD_CONTENT = {}
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "reservations.ts"]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "reservations.ts"] = old.replace(
+    "// #1170 standalone budget candidate.", "// #1170 internal reservation accounting.", 1
+).replace("../../packages/daemon/src/storage/", "../storage/").replace(
+    "from './recovery';", "from './recovery-error';", 1
+)
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "journal-schema.ts"]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "journal-schema.ts"] = old.replace(
+    "// #1443 standalone journal accounting;", "// #1443/#1170 internal journal accounting;", 1
+)
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "recovery.ts"]
+error = old[old.index("export class RecoveryError"):old.index("function refuse()")]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "recovery-error.ts"] = error
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_PROOF + "recovery.ts"] = old.replace(error, "", 1).replace(
+    "import * as fs from 'node:fs';\n", "import * as fs from 'node:fs';\n" +
+    "import { RecoveryError } from '../../packages/daemon/src/tunnel/recovery-error';\n", 1
+).replace("export type RecoveryOps", "export { RecoveryError };\n\nexport type RecoveryOps", 1)
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_PROOF + "settlement-mutations.py"] = ACCOUNTING_ORIGINAL_CONTENT[
+    ACCOUNTING_PROOF + "settlement-mutations.py"
+].replace(ACCOUNTING_PROOF + "reservations.ts", ACCOUNTING_DAEMON + "reservations.ts").replace(
+    ACCOUNTING_PROOF + "journal-schema.ts", ACCOUNTING_DAEMON + "journal-schema.ts"
+)
+ACCOUNTING_HEAD_CONTENT["scripts/tunnel-storage-proof/reservations.ts"] = """// #1170 proof adapter for the sole internal accounting implementation.
+export {
+  CLEANUP_BLOCKING_DEBT,
+  ReservationError,
+  Reservations,
+} from '../../packages/daemon/src/tunnel/reservations';
+"""
+ACCOUNTING_HEAD_CONTENT["scripts/tunnel-storage-proof/journal-schema.ts"] = """// #1443/#1170 proof adapter; identifiers carry no transfer authority.
+export {
+  type JournalBinding,
+  type JournalLease,
+  MARKER_ALLOWANCE,
+  type MarkerKind,
+  type MarkerWitness,
+  sameLease,
+  sameWitnesses,
+  validBinding,
+  validWitnesses,
+} from '../../packages/daemon/src/tunnel/journal-schema';
+"""
+ACCOUNTING_HEAD_CONTENT["packages/daemon/tests/tunnel/reservations-adoption.test.ts"] = """import { expect, test } from 'bun:test';
+import { randomBytes, randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import * as proofSchema from '../../../../scripts/tunnel-storage-proof/journal-schema';
+import { RecoveryError as ProofRecoveryError } from '../../../../scripts/tunnel-storage-proof/recovery';
+import * as proofReservations from '../../../../scripts/tunnel-storage-proof/reservations';
+import * as schema from '../../src/tunnel/journal-schema';
+import { RecoveryError } from '../../src/tunnel/recovery-error';
+import {
+  CLEANUP_BLOCKING_DEBT,
+  ReservationError,
+  Reservations,
+} from '../../src/tunnel/reservations';
+
+test('proof adapters share daemon constructors and actual durable reservation accounting', () => {
+  expect(proofReservations.Reservations).toBe(Reservations);
+  expect(proofReservations.ReservationError).toBe(ReservationError);
+  expect(proofReservations.CLEANUP_BLOCKING_DEBT).toBe(CLEANUP_BLOCKING_DEBT);
+  expect(ProofRecoveryError).toBe(RecoveryError);
+  expect(new ProofRecoveryError('busy')).toBeInstanceOf(RecoveryError);
+  expect(new RecoveryError('unavailable')).toBeInstanceOf(ProofRecoveryError);
+  expect(new ProofRecoveryError('busy').message).toBe('recovery busy');
+  expect(proofSchema.MARKER_ALLOWANCE).toBe(schema.MARKER_ALLOWANCE);
+  for (const name of ['sameLease', 'sameWitnesses', 'validBinding', 'validWitnesses'] as const)
+    expect(proofSchema[name]).toBe(schema[name]);
+
+  const root = fs.mkdtempSync(path.join(tmpdir(), 'remi-reservations-adoption-'));
+  try {
+    const home = path.join(root, 'home');
+    const scratch = path.join(root, 'scratch');
+    const metadata = path.join(root, 'metadata');
+    fs.mkdirSync(scratch, { mode: 0o700 });
+    fs.mkdirSync(metadata, { mode: 0o700 });
+    const identity = (directory: string) => {
+      const stat = fs.statSync(directory, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    };
+    const owner = {
+      device: randomBytes(32).toString('hex'),
+      session: randomUUID(),
+      hub: randomBytes(16).toString('hex'),
+    };
+    const store = Reservations.create(home);
+    const lease = store.reserveJournal(owner, 1, identity(scratch), identity(metadata));
+    const { id, ...binding } = lease;
+    expect(schema.validBinding(binding, 'active')).toBe(true);
+    expect(proofSchema.sameLease(binding, lease)).toBe(true);
+    expect(id).toMatch(/^[a-f0-9]{32}$/);
+    store.reserve(owner, 1);
+    expect(() => store.reserve(owner, 1)).toThrow(ReservationError);
+    try {
+      store.reserve(owner, 1);
+    } catch (error) {
+      expect(error).toBeInstanceOf(proofReservations.ReservationError);
+      expect((error as ReservationError).code).toBe('busy');
+    }
+    const reopened = new proofReservations.Reservations(home);
+    expect(reopened.inspect().map((record) => record.charge)).toEqual([16384, 4096]);
+    expect(fs.statSync(path.join(home, 'reservations.json')).mode & 0o777).toBe(0o600);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+"""
+for accounting_path, accounting_text in ACCOUNTING_HEAD_CONTENT.items():
+    accounting_blob = subprocess.check_output(["git", "hash-object", "--stdin"],
+                                              input=accounting_text.encode(), stderr=subprocess.PIPE).decode().strip()
+    assert accounting_blob == module["ACCOUNTING_HEAD"][accounting_path], accounting_path
+# Copied approved fixture edits applied only to actual immutable original Git blobs.
+SOAK_FIXTURE_EDITS = {
+    "tests/integration/relay-r3-drain.test.ts": [
+        (184, 184, "\n\ntype DrainPeer = {\n  ws: WebSocket;\n  channel: import('@remi/shared').relayV2.Channel;\n  receiveTail: Promise<void>;\n  ending?: Promise<void>;\n};\n\n/** Observe real wrapper enqueue and transport completion; crypto still judges BYE. */\nfunction queuedHostBye(running: Awaited<ReturnType<typeof resumed>>) {\n  const peers = (running.relay as unknown as { peers: Map<string, DrainPeer> }).peers;\n  const peer = [...peers.values()][0];\n  if (!peer) throw new Error('ready peer missing');\n  const onmessage = peer.ws.onmessage;\n  const onclose = peer.ws.onclose;\n  if (!onmessage || !onclose) throw new Error('host wrapper handler missing');\n  let queued = 0;\n  let resolve!: () => void;\n  const enqueued = new Promise<void>((done) => {\n    resolve = done;\n  });\n  let closeObserved!: () => void;\n  const closed = new Promise<void>((done) => {\n    closeObserved = done;\n  });\n  let ending: Promise<void> | undefined;\n  const observeMessage = (event: MessageEvent) => {\n    const before = peer.receiveTail;\n    onmessage.call(peer.ws, event);\n    if (event.data instanceof ArrayBuffer && peer.receiveTail !== before && ++queued === 2)\n      resolve();\n  };\n  const observeClose = (event: CloseEvent) => {\n    onclose.call(peer.ws, event);\n    ending = peer.ending;\n    if (!ending) throw new Error('actual host transport ending promise missing');\n    closeObserved();\n  };\n  peer.ws.onmessage = observeMessage;\n  peer.ws.onclose = observeClose;\n  return {\n    peer,\n    enqueued,\n    closed,\n    get ending() {\n      if (!ending) throw new Error('actual host close not observed');\n      return ending;\n    },\n    restore() {\n      if (peer.ws.onmessage === observeMessage) peer.ws.onmessage = onmessage;\n      if (peer.ws.onclose === observeClose) peer.ws.onclose = onclose;\n    },\n  };\n}"),
+        (619, 619, 'let observation: ReturnType<typeof queuedHostBye> | undefined;\n  '),
+        (624, 624, '\n    observation = queuedHostBye(running);'),
+        (778, 778, 'await observation.enqueued;\n    '),
+        (800, 800, ';\n    await observation.closed'),
+        (839, 935, ''),
+        (956, 958, 'observatio'),
+        (960, 962, ''),
+        (963, 969, 'nding'),
+        (1113, 1113, '();\n    observation?.restore'),
+        (1385, 1387, 'obs'),
+        (1389, 1390, 'vation'),
+        (1393, 1393, 'queuedHostBye'),
+        (1394, 1399, ''),
+        (1406, 1486, ''),
+        (1487, 1523, ''),
+        (1533, 1599, '{'),
+        (1605, 1606, '} = observat'),
+        (1607, 1610, 'o'),
+        (1611, 1614, ''),
+        (2306, 2306, 'await observation.enqueued;\n    '),
+        (2328, 2328, ';\n    await observation.closed'),
+        (2367, 2392, ''),
+        (2413, 2415, 'observatio'),
+        (2417, 2419, ''),
+        (2420, 2426, 'nding'),
+        (2603, 2603, 'observation.restore();\n    '),
+    ],
+    "packages/signaling/tests/e2e/push.e2e.test.ts": [
+        (1707, 1707, '\n  '),
+        (1753, 1753, '\n '),
+        (1770, 1770, ',\n  pinPushAudience = true,\n'),
+        (3507, 3509, 'pinP'),
+        (3510, 3510, 'shAudienc'),
+        (15877, 15877, '\n    '),
+        (15928, 15928, ',\n    undefined,\n    false,\n  '),
+        (17101, 17101, '\n      '),
+        (17148, 17148, ',\n      undefined,\n      false,\n    '),
+        (17563, 17563, '\n    '),
+        (17617, 17617, ',\n    undefined,\n    false,\n  '),
+        (37742, 37742, '\n    '),
+        (37744, 37744, '  '),
+        (37781, 37781, '  '),
+        (37798, 37798, '  '),
+        (37821, 37821, '  '),
+        (37822, 37822, ',\n    undefined,\n    false,\n  '),
+    ],
+}
+SOAK_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blobs[0]], stderr=subprocess.PIPE).decode()
+    for path, blobs in module["SOAK_FIXTURES"].items()
+}
+SOAK_FINAL_CONTENT = {}
+for fixture_path, fixture_edits in SOAK_FIXTURE_EDITS.items():
+    fixture_text = SOAK_ORIGINAL_CONTENT[fixture_path]
+    for begin, end, replacement in reversed(fixture_edits):
+        fixture_text = fixture_text[:begin] + replacement + fixture_text[end:]
+    fixture_blob = subprocess.check_output(["git", "hash-object", "--stdin"],
+                                           input=fixture_text.encode(), stderr=subprocess.PIPE).decode().strip()
+    assert fixture_blob == module["SOAK_FIXTURES"][fixture_path][1], fixture_path
+    SOAK_FINAL_CONTENT[fixture_path] = fixture_text
 HOOK_COMMENT_SOURCE = {path: Path(path).read_text() for path in module["HOOK_TEST_COMMENTS"]}
+
+# Exact auth-completion test-slice transformation, derived from its published original.
+SOAK_AUTH_PATH = "packages/daemon/tests/connection-auth.test.ts"
+auth_original = SOAK_ORIGINAL_CONTENT[SOAK_AUTH_PATH]
+auth_start = auth_original.index("    test('two different authenticated clients")
+auth_end = auth_original.index("    test('a forged clientFingerprint", auth_start)
+auth_slice = auth_original[auth_start:auth_end]
+for client in ("A", "B"):
+    before = f"      const conn{client} = new Connection(ws{client} as unknown as WebSocket, {{}}, {{ authenticator }});"
+    after = f"""      const authenticated{client} = Promise.withResolvers<void>();
+      const conn{client} = new Connection(
+        ws{client} as unknown as WebSocket,
+        {{
+          onAuthSuccess: () => authenticated{client}.resolve(),
+          onAuthFailed: (error) => authenticated{client}.reject(new Error(error)),
+        }},
+        {{ authenticator }},
+      );"""
+    assert auth_slice.count(before) == 1
+    auth_slice = auth_slice.replace(before, after, 1)
+    wait = "      await new Promise((r) => setTimeout(r, 100));"
+    assert wait in auth_slice
+    auth_slice = auth_slice.replace(wait, f"      await authenticated{client}.promise;", 1)
+auth_final = auth_original[:auth_start] + auth_slice + auth_original[auth_end:]
+auth_blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=auth_final.encode(), stderr=subprocess.PIPE).decode().strip()
+assert auth_blob == module["SOAK_FIXTURES"][SOAK_AUTH_PATH][1]
+SOAK_FINAL_CONTENT[SOAK_AUTH_PATH] = auth_final
+
+# New candidate bytes are reconstructed from published originals, never unpublished commit objects.
+COLD_FULL_BASE = "a0f0c8502a518aa41ef48145eef3b0cd87a1e593"
+COLD_PROOF = "scripts/tunnel-storage-proof/"
+COLD_DAEMON = "packages/daemon/src/tunnel/"
+COLD_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", pin[1]], stderr=subprocess.PIPE).decode()
+    for policy in module["COLD_RELOCATIONS"].values() for path, pin in policy["original"].items()
+    if path not in module["COLD_RELOCATIONS"]["descriptor"]["head"] or path in module["COLD_RELOCATIONS"]["descriptor"]["original"]
+}
+COLD_CONTENT = {"descriptor": {}, "journal": {}}
+COLD_CONTENT['descriptor']['scripts/tunnel-storage-proof/admission.ts'] = "// #1170 proof adapter: the daemon owns the sole descriptor implementation.\nexport {\n  AdmittedFile,\n  DirectoryRoot,\n  FileAdmission,\n  type OpenAt,\n} from '../../packages/daemon/src/tunnel/admission';\n"
+COLD_CONTENT['descriptor']['packages/daemon/tests/tunnel/descriptors-adoption.test.ts'] = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport * as path from 'node:path';\nimport * as proofAdmission from '../../../../scripts/tunnel-storage-proof/admission';\nimport type { PrivateOps as ProofPrivateOps } from '../../../../scripts/tunnel-storage-proof/private-copy';\nimport { recoveryNative } from '../../../../scripts/tunnel-storage-proof/recovery-native';\nimport { AdmittedFile, DirectoryRoot, FileAdmission } from '../../src/tunnel/admission';\nimport type { PrivateOps } from '../../src/tunnel/private-ops';\n\ntest('proof descriptor adapters share daemon classes and capture a real owned root', async () => {\n  expect(proofAdmission.DirectoryRoot).toBe(DirectoryRoot);\n  expect(proofAdmission.AdmittedFile).toBe(AdmittedFile);\n  expect(proofAdmission.FileAdmission).toBe(FileAdmission);\n  const native = await recoveryNative();\n  const proofOps: ProofPrivateOps = native.ops;\n  const ops: PrivateOps = proofOps;\n  const directory = fs.mkdtempSync(path.join(tmpdir(), 'remi-descriptors-adoption-'));\n  fs.chmodSync(directory, 0o700);\n  let root: DirectoryRoot | null = null;\n  try {\n    root = proofAdmission.DirectoryRoot.capture(directory, ops.openAt.bind(ops));\n    expect(root).toBeInstanceOf(DirectoryRoot);\n    if (!root) throw new Error('actual owned root capture failed');\n    const stat = fs.fstatSync(root.fd, { bigint: true });\n    const named = fs.statSync(directory, { bigint: true });\n    expect(stat.isDirectory()).toBe(true);\n    expect(stat.dev).toBe(named.dev);\n    expect(stat.ino).toBe(named.ino);\n    expect(root.identity).toBe(`${stat.dev}:${stat.ino}`);\n    expect(root.contains(new Set([root.identity]))).toBe(true);\n    expect(root.active).toBe(true);\n    expect(root.isCurrent()).toBe(true);\n    const fd = root.fd;\n    root.close();\n    expect(root.active).toBe(false);\n    expect(root.isCurrent()).toBe(false);\n    expect(() => fs.fstatSync(fd)).toThrow();\n    root.close();\n  } finally {\n    root?.close();\n    native.close();\n    fs.rmSync(directory, { recursive: true, force: true });\n  }\n});\n"
+COLD_CONTENT['journal']['scripts/tunnel-storage-proof/recovery.ts'] = "// #1170 proof adapter: the daemon owns the sole journal implementation.\nexport {\n  RecoveryError,\n  RecoveryIntent,\n  type RecoveryOps,\n  type RecoveryStage,\n  allocatedBlocks,\n} from '../../packages/daemon/src/tunnel/recovery';\n"
+COLD_CONTENT['journal']['scripts/tunnel-storage-proof/journal-settlement.ts'] = "// #1170 proof adapter: the daemon owns the sole settlement implementation.\nexport {\n  type JournalWriter,\n  SETTLEMENT_STAGES,\n  type SettlementStage,\n  beginJournal,\n  settleJournal,\n} from '../../packages/daemon/src/tunnel/journal-settlement';\n"
+COLD_CONTENT['journal']['packages/daemon/tests/tunnel/journal-adoption.test.ts'] = "import { expect, test } from 'bun:test';\nimport { randomBytes, randomUUID } from 'node:crypto';\nimport * as fs from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport * as path from 'node:path';\nimport * as proofJournal from '../../../../scripts/tunnel-storage-proof/journal-settlement';\nimport * as proofRecovery from '../../../../scripts/tunnel-storage-proof/recovery';\nimport { recoveryNative } from '../../../../scripts/tunnel-storage-proof/recovery-native';\nimport { DirectoryRoot } from '../../src/tunnel/admission';\nimport {\n  SETTLEMENT_STAGES,\n  beginJournal,\n  settleJournal,\n} from '../../src/tunnel/journal-settlement';\nimport { RecoveryError, RecoveryIntent, allocatedBlocks } from '../../src/tunnel/recovery';\nimport { Reservations } from '../../src/tunnel/reservations';\n\ntest('proof journal adapters share daemon functions and settle an actual private journal', async () => {\n  expect(proofJournal.beginJournal).toBe(beginJournal);\n  expect(proofJournal.settleJournal).toBe(settleJournal);\n  expect(proofJournal.SETTLEMENT_STAGES).toBe(SETTLEMENT_STAGES);\n  expect(proofRecovery.RecoveryIntent).toBe(RecoveryIntent);\n  expect(proofRecovery.allocatedBlocks).toBe(allocatedBlocks);\n  expect(proofRecovery.RecoveryError).toBe(RecoveryError);\n  expect(new proofRecovery.RecoveryError('busy')).toBeInstanceOf(RecoveryError);\n  expect(new RecoveryError('unavailable')).toBeInstanceOf(proofRecovery.RecoveryError);\n  const bytes = fs.readFileSync(\n    path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof/fixture.png'),\n  );\n  const native = await recoveryNative();\n  const home = fs.mkdtempSync(path.join(tmpdir(), 'remi-journal-adoption-'));\n  fs.chmodSync(home, 0o700);\n  let scratch: DirectoryRoot | null = null;\n  let metadata: DirectoryRoot | null = null;\n  try {\n    const scratchPath = path.join(home, 'scratch');\n    const metadataPath = path.join(home, 'metadata');\n    fs.mkdirSync(scratchPath, { mode: 0o700 });\n    fs.mkdirSync(metadataPath, { mode: 0o700 });\n    scratch = DirectoryRoot.capture(scratchPath, native.ops.openAt.bind(native.ops));\n    metadata = DirectoryRoot.capture(metadataPath, native.ops.openAt.bind(native.ops));\n    expect(scratch).toBeInstanceOf(DirectoryRoot);\n    expect(metadata).toBeInstanceOf(DirectoryRoot);\n    if (!scratch || !metadata) throw new Error('actual journal root capture failed');\n    const store = Reservations.create(path.join(home, 'ledger'));\n    const writer = proofJournal.beginJournal(\n      store,\n      {\n        device: randomBytes(32).toString('hex'),\n        session: randomUUID(),\n        hub: randomBytes(16).toString('hex'),\n      },\n      bytes.length,\n      scratch,\n      metadata,\n      native.ops,\n    );\n    writer.write(bytes.subarray(0, 32));\n    writer.write(bytes.subarray(32));\n    writer.close();\n    expect(fs.readFileSync(path.join(scratchPath, `${writer.lease.id}.artifact`))).toEqual(bytes);\n    expect(store.inspect()[0]?.state).toBe('active');\n    expect(store.inspect()[0]?.charge).toBeGreaterThanOrEqual(bytes.length);\n    const intent = proofRecovery.RecoveryIntent.open(\n      scratch,\n      metadata,\n      writer.lease.id,\n      native.ops,\n    );\n    try {\n      expect(intent.cleanup()).toBe('cleaned');\n      expect(intent.snapshot(['intent', 'owned', 'cleaned'])).toHaveLength(3);\n    } finally {\n      intent.close();\n    }\n    expect(proofJournal.settleJournal(store, writer.lease, scratch, metadata, native.ops)).toBe(\n      'settled',\n    );\n    expect(fs.readdirSync(scratchPath)).toEqual([]);\n    expect(fs.readdirSync(metadataPath)).toEqual([]);\n    expect(store.inspect()[0]?.state).toBe('settled');\n    expect(store.inspect()[0]?.charge).toBe(0);\n    expect(settleJournal(store, writer.lease, scratch, metadata, native.ops)).toBe(\n      'already_settled',\n    );\n  } finally {\n    scratch?.close();\n    metadata?.close();\n    native.close();\n    fs.rmSync(home, { recursive: true, force: true });\n  }\n});\n"
+a_content, b_content = COLD_CONTENT["descriptor"], COLD_CONTENT["journal"]
+old = COLD_ORIGINAL_CONTENT[COLD_PROOF + "admission.ts"]
+a_content[COLD_DAEMON + "admission.ts"] = old.replace(
+    "// #1170 candidate only: real descriptors, no transfer authority or production caller.",
+    "// #1170 internal descriptors; no transfer authority or runtime caller.", 1)
+old = COLD_ORIGINAL_CONTENT[COLD_PROOF + "private-copy.ts"]
+private_ops = old[old.index("export type PrivateOps"):old.index("export type CopyCheckpoint")]
+a_content[COLD_DAEMON + "private-ops.ts"] = "import type { OpenAt } from './admission';\n\n" + private_ops
+a_content[COLD_PROOF + "private-copy.ts"] = old.replace(private_ops, "export type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';\n", 1).replace(
+    "import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';",
+    "import type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';\nimport type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';", 1)
+old = COLD_ORIGINAL_CONTENT[COLD_PROOF + "recovery.ts"]
+b_content[COLD_DAEMON + "recovery.ts"] = old.replace(
+    "// #1440/#1443/#1170 standalone immutable ownership journal; no transfer authority.",
+    "// #1170 internal immutable ownership journal; no transfer authority or runtime caller.", 1).replace(
+    "import { RecoveryError } from '../../packages/daemon/src/tunnel/recovery-error';\n", "", 1).replace(
+    "import type { PrivateOps } from './private-copy';",
+    "import type { PrivateOps } from './private-ops';\nimport { RecoveryError } from './recovery-error';", 1)
+b_content[COLD_DAEMON + "journal-settlement.ts"] = COLD_ORIGINAL_CONTENT[COLD_PROOF + "journal-settlement.ts"].replace(
+    "// #1443/#1170 standalone composition; no shipping caller or transfer authority.",
+    "// #1170 internal journal composition; no transfer authority or runtime caller.", 1)
+for mutation in ("recovery-mutations.py", "settlement-mutations.py"):
+    text = COLD_ORIGINAL_CONTENT[COLD_PROOF + mutation]
+    names = ("recovery.ts",) if mutation == "recovery-mutations.py" else ("journal-settlement.ts",)
+    for name in names:
+        text = text.replace(COLD_PROOF + name, COLD_DAEMON + name)
+    b_content[COLD_PROOF + mutation] = text
+for phase, contents in COLD_CONTENT.items():
+    for path, text in contents.items():
+        blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=text.encode(), stderr=subprocess.PIPE).decode().strip()
+        assert blob == module["COLD_RELOCATIONS"][phase]["head"][path][1], (phase, path, blob)
+
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
@@ -53,6 +322,8 @@ def commit():
 
 
 def selected(result):
+    assert isinstance(result["relay_soak"], bool), result
+    assert not result["relay_soak"] or result["relay"], result
     assert all(isinstance(result[key], bool) for key in gates), result
     assert result["typecheck"] == any(result[key] for key in
                                       ("root", "web", "signaling", "integration", "notices"))
@@ -265,6 +536,664 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
         assert selected(classify(staging_base, commit())) == WRAPPER_GATES
         count += 1
+        # The accounting transition uses actual immutable repository bodies, not substitute producers.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for path, text in ACCOUNTING_ORIGINAL_CONTENT.items():
+            write(path, text)
+        accounting_base = commit()
+        def relocate_accounting():
+            for path, text in ACCOUNTING_HEAD_CONTENT.items():
+                if path != module["ACCOUNTING_TEST"]:
+                    write(path, text)
+        relocate_accounting()
+        accounting_head = commit()
+        assert selected(classify(accounting_base, accounting_head)) == WRAPPER_GATES
+        count += 1
+        write(module["ACCOUNTING_TEST"], ACCOUNTING_HEAD_CONTENT[module["ACCOUNTING_TEST"]])
+        assert selected(classify(accounting_base, commit())) == WRAPPER_GATES
+        count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            for context in ("old-removed", "new", "target-base-only"):
+                git("reset", "--hard", accounting_base); git("clean", "-fdq")
+                consumer = f"{directory}/consumer.ts"
+                content = "export { Reservations as Alias } from './tunnel/reservations';\n"
+                if directory in (".github/workflows", ".github/actions"):
+                    consumer = f"{directory}/consumer.yml"
+                    content = "steps:\n  - run: bun packages/daemon/src/tunnel/reservations.ts\n"
+                write(consumer, content)
+                consumer_base = commit()
+                if context == "old-removed":
+                    Path(consumer).unlink()
+                elif context == "target-base-only":
+                    git("reset", "--hard", accounting_base)
+                relocate_accounting()
+                left = accounting_base if context == "new" else consumer_base
+                assert selected(classify(left, commit())) == gates, (directory, context)
+                count += 1
+        for token in sorted(module["ACCOUNTING_IDENTIFIERS"]) + [
+                "./reservations", "./journal-schema", "./recovery-error",
+                "scripts/tunnel-storage-proof/reservations.ts",
+                "packages/daemon/src/tunnel/journal-schema.ts"]:
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("packages/native/consumer.swift", f'let consumer = "{token}"\n')
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, token
+            count += 1
+        for path in module["ACCOUNTING_HEAD"]:
+            if path == module["ACCOUNTING_TEST"]:
+                continue
+            for operation in ("changed-body", "delete", "rename", "symlink"):
+                git("reset", "--hard", accounting_base); git("clean", "-fdq")
+                relocate_accounting()
+                source = Path(path)
+                if operation == "changed-body":
+                    source.write_text(source.read_text() + "// unexpected body/export\n")
+                elif operation == "rename":
+                    source.rename("docs/unexpected-accounting.md")
+                else:
+                    source.unlink()
+                    if operation == "symlink":
+                        source.symlink_to("unknown-target")
+                assert selected(classify(accounting_base, commit())) == gates, (path, operation)
+                count += 1
+        for path, value in (("packages/daemon/src/tunnel/reservations.ts", "export const UnexpectedAPI = 1;\n"),
+                            ("packages/daemon/src/tunnel/recovery-error.ts", "export class RecoveryError {}\n"),
+                            ("scripts/tunnel-storage-proof/reservations.ts", "export * from '../../packages/daemon/src/tunnel/reservations';\n"),
+                            ("scripts/tunnel-storage-proof/recovery.ts", "export class RecoveryError extends Error {}\n")):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(path, value)
+            assert selected(classify(accounting_base, commit())) == gates, path
+            count += 1
+        for path in ("packages/shared/src/index.ts", "packages/daemon/src/cli.ts", "bun.lock",
+                     "packages/signaling/wrangler.toml", "scripts/unknown-runtime.py"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(path, "changed runtime dependency\n")
+            assert selected(classify(accounting_base, commit())) == gates, path
+            count += 1
+        for path, value in (("packages/shared/src/invalid.ts", b"\xff"),
+                            ("scripts/invalid.py", b"\0"), ("packages/shared/credentials", b"never read")):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(value)
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, path
+            count += 1
+        for path in module["ACCOUNTING_ORIGINALS"]:
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write(path, Path(path).read_text() + "// unreviewed original or consumer\n")
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, path
+            count += 1
+        git("reset", "--hard", accounting_base); git("clean", "-fdq")
+        write("packages/signaling/src/connection-room.ts", "const clientReservations = new Map();\n")
+        boundary_base = commit()
+        relocate_accounting()
+        assert selected(classify(boundary_base, commit())) == WRAPPER_GATES
+        count += 1
+        assert selected(classify(accounting_head, accounting_head)) == gates
+        assert not module["accounting_relocation_is_dormant"](accounting_base, "f" * 40,
+                                                            accounting_base, list(module["ACCOUNTING_HEAD"]))
+        count += 2
+        for value in ("export {};\n", "\0", "export { Reservations as Alias } from './other';\n"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(module["ACCOUNTING_TEST"], value)
+            assert selected(classify(accounting_base, commit())) == gates
+            count += 1
+        for mode in ("preexisting-test", "changed-known-head", "post-relocation-modification"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            if mode == "preexisting-test":
+                write(module["ACCOUNTING_TEST"], ACCOUNTING_HEAD_CONTENT[module["ACCOUNTING_TEST"]])
+                consumer_base = commit()
+                relocate_accounting()
+            elif mode == "changed-known-head":
+                consumer_base = accounting_base
+                relocate_accounting()
+                write("scripts/tunnel-storage-proof/recovery-probe.ts", "unreviewed known consumer\n")
+            else:
+                consumer_base = accounting_head
+                git("reset", "--hard", consumer_base)
+                source = Path("packages/daemon/src/tunnel/reservations.ts")
+                source.write_text(source.read_text() + "// future edit\n")
+            assert selected(classify(consumer_base, commit())) == gates, mode
+            count += 1
+        git("reset", "--hard", accounting_head); git("clean", "-fdq")
+        script_tree = git("rev-parse", f"{accounting_head}:scripts")
+        script_entries = subprocess.check_output(["git", "ls-tree", script_tree]).decode()
+        missing_tree = git("mktree", "--missing", input=script_entries + "100644 blob " + "f" * 40 + "\tunreadable.ts\n")
+        root_entries = subprocess.check_output(["git", "ls-tree", f"{accounting_head}^{{tree}}"]
+                                              ).decode().replace(script_tree, missing_tree)
+        broken_tree = git("mktree", input=root_entries)
+        broken_head = git("commit-tree", broken_tree, "-p", accounting_head, "-m", "unreadable scan blob")
+        assert not module["accounting_relocation_is_dormant"](accounting_base, broken_head,
+                                                            accounting_base, list(module["ACCOUNTING_HEAD"]))
+        assert selected(classify(accounting_base, broken_head)) == gates
+        count += 1
+        for path, text in ACCOUNTING_COLLISION_CONTENT.items():
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write(path, text)
+            collision_base = commit()
+            relocate_accounting()
+            assert selected(classify(collision_base, commit())) == WRAPPER_GATES, path
+            count += 1
+        for syntax in ("import 'reservations';", "import('reservations')", "require('reservations')",
+                       "export {} from 'reservations';", "import 'journal-schema';", "require('recovery-error')",
+                       "import '../tunnel/reservations.ts';", "export * from './journal-schema';",
+                       "const old = 'scripts/tunnel-storage-proof/reservations.ts';"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("scripts/real-module-consumer.ts", syntax)
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, syntax
+            count += 1
+        for text in ('const counts = { "reservations": 1 };', 'const reservations = 1;',
+                     'const count = object.reservations;', '// completed reservations do not hold a slot'):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("packages/signaling/ordinary-counter.ts", text)
+            counter_base = commit()
+            relocate_accounting()
+            assert selected(classify(counter_base, commit())) == WRAPPER_GATES, text
+            count += 1
+        # Preserve every unrelated published repository object/mode, including real counters.
+        # Only this owned temporary index/object database is changed; no future commit is needed.
+        git("fetch", "--quiet", "--no-tags", str(original), ACCOUNTING_FULL_BASE)
+        git("read-tree", ACCOUNTING_FULL_BASE)
+        for path, text in ACCOUNTING_HEAD_CONTENT.items():
+            blob = git("hash-object", "-w", "--stdin", input=text)
+            mode = "100755" if path.endswith("settlement-mutations.py") else "100644"
+            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+        full_tree = git("write-tree")
+        full_head = git("commit-tree", full_tree, "-p", ACCOUNTING_FULL_BASE, "-m", "actual full-tree relocation")
+        assert set(git("diff", "--name-only", ACCOUNTING_FULL_BASE, full_head).splitlines()) == set(ACCOUNTING_HEAD_CONTENT)
+        full_result = classify(ACCOUNTING_FULL_BASE, full_head)
+        assert selected(full_result) == WRAPPER_GATES, full_result
+        count += 1
+        # Every soak-scope case retains the complete actual published repository tree/modes.
+        soak_base = ACCOUNTING_FULL_BASE
+        fixture_paths = tuple(SOAK_FINAL_CONTENT)[:2]  # Retain the original 643 control scenarios.
+        def soak_tree(parent, updates=(), removals=(), source=None):
+            git("read-tree", source or parent)
+            for path, text, mode in updates:
+                data = text.encode() if isinstance(text, str) else text
+                blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                               input=data, stderr=subprocess.PIPE).decode().strip()
+                git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+            for path in removals:
+                git("update-index", "--force-remove", "--", path)
+            tree = git("write-tree", "--missing-ok")
+            return git("commit-tree", tree, "-p", parent, "-m", "owned full-tree soak scope")
+        def fixture_updates(paths):
+            return [(p, SOAK_FINAL_CONTENT[p], "100644") for p in paths]
+        combinations = ((fixture_paths[0],), (fixture_paths[1],), fixture_paths)
+        for changes in combinations:
+            for docs in (False, True):
+                updates = fixture_updates(changes)
+                if docs:
+                    updates.append(("docs/owned-soak-note.md", "ordinary nonexecuting prose\n", "100644"))
+                head = soak_tree(soak_base, updates)
+                result = classify(soak_base, head)
+                assert selected(result) == gates and not result["relay_soak"], (changes, docs, result)
+                assert set(git("diff", "--name-only", soak_base, head).splitlines()) == {
+                    *changes, *(["docs/owned-soak-note.md"] if docs else [])}
+                count += 1
+        for first, second in (fixture_paths, fixture_paths[::-1]):
+            left = soak_tree(soak_base, fixture_updates((first,)))
+            right = soak_tree(left, fixture_updates((second,)))
+            result = classify(left, right)
+            assert selected(result) == gates and not result["relay_soak"]
+            count += 1
+        # Reviewed entry/import/launch wiring must remain current even after an upstream edit.
+        for path in module["SOAK_TRACE"]:
+            body = git("show", f"{soak_base}:{path}") + "\n// unreviewed upstream trace change\n"
+            left = soak_tree(soak_base, [(path, body, "100644")])
+            result = classify(left, soak_tree(left, fixture_updates(fixture_paths)))
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        package_text = subprocess.check_output(["git", "show", f"{soak_base}:package.json"]).decode()
+        cli_text = subprocess.check_output(["git", "show", f"{soak_base}:packages/daemon/src/cli.ts"]).decode()
+        previous_version = json.loads(package_text)["version"]
+        next_version = "0.7.17-dev.999"
+        version_package = package_text.replace(f'"version": "{previous_version}"', f'"version": "{next_version}"', 1)
+        marker = f"return '{previous_version}'; // REMI_COMPILED_VERSION"
+        assert cli_text.count(marker) == 2
+        version_cli = cli_text.replace(marker, f"return '{next_version}'; // REMI_COMPILED_VERSION")
+        version_updates = [("package.json", version_package, "100644"),
+                           ("packages/daemon/src/cli.ts", version_cli, "100644")]
+        version_base = soak_tree(soak_base, version_updates)
+        result = classify(version_base, soak_tree(version_base, fixture_updates(fixture_paths)))
+        assert selected(result) == gates and not result["relay_soak"], result
+        count += 1
+        for state in ("mismatched-version", "missing-marker", "other-package-field"):
+            changes = list(version_updates)
+            if state == "mismatched-version":
+                changes[1] = ("packages/daemon/src/cli.ts", cli_text, "100644")
+            elif state == "missing-marker":
+                changes[1] = ("packages/daemon/src/cli.ts", version_cli.replace("// REMI_COMPILED_VERSION", "// missing marker", 1), "100644")
+            else:
+                changes[0] = ("package.json", version_package.replace('"private": true', '"private": false', 1), "100644")
+            left = soak_tree(soak_base, changes)
+            result = classify(left, soak_tree(left, fixture_updates(fixture_paths)))
+            assert selected(result) == gates and result["relay_soak"], (state, result)
+            count += 1
+        result = classify(soak_base, soak_tree(soak_base, [*version_updates, *fixture_updates(fixture_paths)]))
+        assert selected(result) == gates and result["relay_soak"], result
+        count += 1
+        for producer in fixture_paths:
+            for state in ("body", "delete", "rename", "symlink", "executable", "addition"):
+                left = soak_base
+                updates = fixture_updates((producer,))
+                removals = []
+                if state == "body":
+                    updates = [(producer, "export const changed = true;\n", "100644")]
+                elif state == "delete":
+                    updates = []; removals = [producer]
+                elif state == "rename":
+                    updates = [("docs/moved-soak-fixture.md", SOAK_FINAL_CONTENT[producer], "100644")]
+                    removals = [producer]
+                elif state == "symlink":
+                    updates = [(producer, "unknown-target", "120000")]
+                elif state == "executable":
+                    updates = [(producer, SOAK_FINAL_CONTENT[producer], "100755")]
+                else:
+                    left = soak_tree(soak_base, removals=(producer,))
+                result = classify(left, soak_tree(left, updates, removals))
+                assert selected(result) == gates and result["relay_soak"], (producer, state, result)
+                count += 1
+        runtime = ("packages/web/tests/relay-r7-soak.test.ts", "packages/web/tests/helpers/relay-hub.ts",
+                   "packages/signaling/tests/e2e/harness.ts", "packages/signaling/tests/e2e/endpoints.ts",
+                   "packages/signaling/tests/e2e/test-entry.ts", "packages/daemon/src/cli.ts",
+                   "packages/shared/src/protocol.ts", "bunfig.toml", "package.json", "bun.lock",
+                   "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "scripts/unknown-runtime.py")
+        for path in runtime:
+            updates = [*fixture_updates(fixture_paths), (path, "changed runtime or measurement input\n", "100644")]
+            result = classify(soak_base, soak_tree(soak_base, updates))
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/native", "packages/macos", "tests", "scripts", ".github/scripts",
+                          ".github/workflows", ".github/actions"):
+            for context in ("both", "new-head", "removed", "target-base-only"):
+                path = f"{directory}/soak-consumer.ts"
+                relative = os.path.relpath(fixture_paths[0], Path(path).parent)
+                text = f"import '{relative}';\n"
+                if directory in (".github/workflows", ".github/actions"):
+                    path = f"{directory}/soak-consumer.yml"
+                    text = f"steps:\n  - run: bun test {fixture_paths[0]}\n"
+                caller = (path, text, "100644")
+                left = soak_tree(soak_base, [caller]) if context != "new-head" else soak_base
+                if context == "target-base-only":
+                    right = soak_tree(soak_base, fixture_updates(fixture_paths))
+                else:
+                    updates = fixture_updates(fixture_paths)
+                    if context == "new-head":
+                        updates.append(caller)
+                    right = soak_tree(left, updates, (path,) if context == "removed" else ())
+                result = classify(left, right)
+                assert selected(result) == gates and result["relay_soak"], (directory, context, result)
+                count += 1
+        for path, data, mode in (("packages/shared/src/invalid.ts", b"\xff", "100644"),
+                                 ("scripts/invalid.py", b"\0", "100644"),
+                                 ("packages/shared/credentials", b"never read", "100644"),
+                                 ("packages/shared/alias", b"unavailable", "120000")):
+            left = soak_tree(soak_base, [(path, data, mode)])
+            right = soak_tree(left, fixture_updates(fixture_paths))
+            result = classify(left, right)
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        git("read-tree", soak_base)
+        git("update-index", "--add", "--cacheinfo", "100644," + "f" * 40 + ",scripts/unreadable.ts")
+        missing_tree = git("write-tree", "--missing-ok")
+        missing_base = git("commit-tree", missing_tree, "-p", soak_base, "-m", "missing scan object")
+        result = classify(missing_base, soak_tree(missing_base, fixture_updates(fixture_paths)))
+        assert selected(result) == gates and result["relay_soak"]
+        count += 1
+        assert not module["soak_fixture_only"](soak_base, "f" * 40, soak_base, list(fixture_paths))
+        count += 1
+
+
+        # The third reviewed fixture alone or with either/both prior fixtures omits only the soak.
+        auth_paths = (*fixture_paths, SOAK_AUTH_PATH)
+        for choices in ((SOAK_AUTH_PATH,), (fixture_paths[0], SOAK_AUTH_PATH),
+                        (fixture_paths[1], SOAK_AUTH_PATH), auth_paths):
+            for docs in (False, True):
+                updates = fixture_updates(choices)
+                if docs:
+                    updates.append(("docs/owned-auth-note.md", "ordinary prose\n", "100644"))
+                result = classify(soak_base, soak_tree(soak_base, updates))
+                assert selected(result) == gates and not result["relay_soak"], (choices, result)
+                count += 1
+        for first, second in ((SOAK_AUTH_PATH, fixture_paths[0]), (fixture_paths[0], SOAK_AUTH_PATH),
+                              (SOAK_AUTH_PATH, fixture_paths[1]), (fixture_paths[1], SOAK_AUTH_PATH)):
+            old = soak_tree(soak_base, fixture_updates((first,)))
+            result = classify(old, soak_tree(old, fixture_updates((second,))))
+            assert selected(result) == gates and not result["relay_soak"]
+            count += 1
+        for state in ("body", "wrong-base", "deleted", "renamed", "mode", "symlink", "addition"):
+            old, changes, removals = soak_base, fixture_updates((SOAK_AUTH_PATH,)), ()
+            if state == "body":
+                changes = [(SOAK_AUTH_PATH, auth_final + "\n// unreviewed test body\n", "100644")]
+            elif state == "wrong-base":
+                old = soak_tree(soak_base, [(SOAK_AUTH_PATH, auth_original + "\n// unreviewed original\n", "100644")])
+            elif state == "deleted":
+                changes, removals = [], (SOAK_AUTH_PATH,)
+            elif state == "renamed":
+                changes, removals = [("docs/moved-auth-fixture.md", auth_final, "100644")], (SOAK_AUTH_PATH,)
+            elif state == "mode":
+                changes = [(SOAK_AUTH_PATH, auth_final, "100755")]
+            elif state == "symlink":
+                changes = [(SOAK_AUTH_PATH, "owned-target", "120000")]
+            elif state == "addition":
+                old = soak_tree(soak_base, removals=(SOAK_AUTH_PATH,))
+            result = classify(old, soak_tree(old, changes, removals))
+            assert selected(result) == gates and result["relay_soak"], (state, result)
+            count += 1
+        for directory in ("packages/daemon/src", "packages/shared/src", "packages/signaling/src",
+                          "packages/web/src", "packages/native", "packages/macos", "tests", "scripts",
+                          ".github/scripts", ".github/workflows", ".github/actions"):
+            caller = (f"{directory}/auth-fixture-reader.ts", f"import '{SOAK_AUTH_PATH}';\n", "100644")
+            for context in ("new", "both", "removed", "target-base-only"):
+                old = soak_tree(soak_base, [caller]) if context != "new" else soak_base
+                if context == "target-base-only":
+                    candidate = soak_tree(soak_base, fixture_updates((SOAK_AUTH_PATH,)))
+                else:
+                    candidate = soak_tree(old, [*fixture_updates((SOAK_AUTH_PATH,)), *([caller] if context == "new" else [])],
+                                          (caller[0],) if context == "removed" else ())
+                result = classify(old, candidate)
+                assert selected(result) == gates and result["relay_soak"], (directory, context, result)
+                count += 1
+        for root_path in ("root-auth-loader.ts", "root-auth-config.json", "root-auth-reader.sh"):
+            caller = (root_path, f"import './{SOAK_AUTH_PATH}';\n", "100644")
+            for context in ("new", "both", "removed", "target-base-only"):
+                old = soak_tree(soak_base, [caller]) if context != "new" else soak_base
+                if context == "target-base-only":
+                    candidate = soak_tree(soak_base, fixture_updates((SOAK_AUTH_PATH,)))
+                else:
+                    candidate = soak_tree(old, [*fixture_updates((SOAK_AUTH_PATH,)), *([caller] if context == "new" else [])],
+                                          (caller[0],) if context == "removed" else ())
+                result = classify(old, candidate)
+                assert selected(result) == gates and result["relay_soak"], (root_path, context, result)
+                count += 1
+        for context in ("base", "head"):
+            changed_sample = (".env.example", "owned unreviewed public sample\n", "100644")
+            old = soak_tree(soak_base, [changed_sample]) if context == "base" else soak_base
+            result = classify(old, soak_tree(old, [*fixture_updates((SOAK_AUTH_PATH,)), *([changed_sample] if context == "head" else [])]))
+            assert selected(result) == gates and result["relay_soak"]
+            count += 1
+        for bad_path, data in (("root-auth-invalid.ts", b"\xff"), ("root-auth-nul.ts", b"\0"),
+                               (".env.private-auth-owned", b"owned control, never read")):
+            old = soak_tree(soak_base, [(bad_path, data, "100644")])
+            result = classify(old, soak_tree(old, fixture_updates((SOAK_AUTH_PATH,))))
+            assert selected(result) == gates and result["relay_soak"]
+            count += 1
+        for comment_path, pin in module["SOAK_AUTH_COMMENTS"].items():
+            original_comment = subprocess.check_output(["git", "show", f"{soak_base}:{comment_path}"]).decode()
+            for state in ("base-comment", "head-comment", "base-caller", "head-caller"):
+                body = original_comment + ("\n// changed commentary\n" if "comment" in state else
+                                             f"\nimport '{SOAK_AUTH_PATH}';\n")
+                changed_comment = (comment_path, body, "100644")
+                old = soak_tree(soak_base, [changed_comment]) if state.startswith("base") else soak_base
+                candidate = soak_tree(old, [*fixture_updates((SOAK_AUTH_PATH,)),
+                                           *([changed_comment] if state.startswith("head") else [])])
+                result = classify(old, candidate)
+                assert selected(result) == gates and result["relay_soak"], (comment_path, state, result)
+                count += 1
+        # Paired private stores validate actual immutable comment readability, with no shared-object removal.
+        auth_pin_paths = {**module["SOAK_TRACE"], **{path: pin[0] for path, pin in module["SOAK_AUTH_COMMENTS"].items()}}
+        auth_pin_paths.update({path: blobs[0] for path, blobs in module["SOAK_FIXTURES"].items()})
+        for path in module["SOAK_VERSION_TRACE"]:
+            auth_pin_paths[path] = git("rev-parse", f"{soak_base}:{path}")
+        auth_objects = {blob: subprocess.check_output(["git", "cat-file", "blob", blob]) for blob in auth_pin_paths.values()}
+        auth_objects[module["SOAK_FIXTURES"][SOAK_AUTH_PATH][1]] = auth_final.encode()
+        public_sample = subprocess.check_output(["git", "cat-file", "blob", module["COLD_PUBLIC_SAMPLE"][1]])
+        auth_pin_paths[".env.example"] = module["COLD_PUBLIC_SAMPLE"][1]
+        auth_objects[module["COLD_PUBLIC_SAMPLE"][1]] = public_sample
+        for omitted_path in (None, *module["SOAK_AUTH_COMMENTS"], ".env.example"):
+            omitted = auth_pin_paths.get(omitted_path)
+            corpus_dir = Path.cwd()
+            with tempfile.TemporaryDirectory(prefix="auth-missing-comment-") as private:
+                try:
+                    os.chdir(private)
+                    git("init", "-q")
+                    git("config", "user.name", "Owned auth comment control")
+                    git("config", "user.email", "test@example.com")
+                    for blob, data in auth_objects.items():
+                        if blob != omitted:
+                            assert git("hash-object", "-w", "--stdin", input=data.decode()) == blob
+                    refs = []
+                    for final in (False, True):
+                        git("read-tree", "--empty")
+                        for path, blob in auth_pin_paths.items():
+                            if final and path == SOAK_AUTH_PATH:
+                                blob = module["SOAK_FIXTURES"][path][1]
+                            git("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
+                        tree = git("write-tree", "--missing-ok")
+                        refs.append(git("commit-tree", tree, *(["-p", refs[0]] if refs else []), "-m", "owned comment object control"))
+                    result = classify(*refs)
+                    assert selected(result) == gates and result["relay_soak"] == (omitted_path is not None), (omitted_path, result)
+                    count += 1
+                finally:
+                    os.chdir(corpus_dir)
+
+        # Full actual published trees: A, B from A, and the ordered combined A -> B diff.
+        git("fetch", "--quiet", "--no-tags", str(original), COLD_FULL_BASE)
+        def cold_updates(phase):
+            policy = module["COLD_RELOCATIONS"][phase]
+            return [(path, text, policy["head"][path][0]) for path, text in COLD_CONTENT[phase].items()]
+        descriptor_base = COLD_FULL_BASE
+        descriptor_head = soak_tree(descriptor_base, cold_updates("descriptor"))
+        journal_base = descriptor_head
+        journal_head = soak_tree(journal_base, cold_updates("journal"))
+        for left, right in ((descriptor_base, descriptor_head), (journal_base, journal_head),
+                            (descriptor_base, journal_head)):
+            result = classify(left, right)
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], (left, right, result)
+            count += 1
+        worker_path = "packages/signaling/src/connection-room.ts"
+        worker_text = subprocess.check_output(["git", "show", f"{descriptor_base}:{worker_path}"]).decode()
+        assert "from './admission.ts'" in worker_text
+        assert not module["cold_reference"](worker_path, worker_text,
+                   set(module["COLD_RELOCATIONS"]["descriptor"]["head"]),
+                   module["COLD_RELOCATIONS"]["descriptor"]["identifiers"])
+        result = classify(descriptor_base, descriptor_head)
+        assert selected(result) == WRAPPER_GATES and not result["relay_soak"]
+        count += 1
+        # Lowercase fields and longer identifiers do not claim the actual tunnel API.
+        for phase, left in (("descriptor", descriptor_base), ("journal", journal_base)):
+            policy = module["COLD_RELOCATIONS"][phase]
+            updates = cold_updates(phase)
+            def cold_expect_all(target_base, candidate, context, phase=phase):
+                result = classify(target_base, candidate)
+                assert selected(result) == gates and result["relay_soak"], (phase, context, result)
+            for content in ("const admission = { recovery: true };\n",
+                            "const clientDirectoryRoot = true; const clientRecoveryOps = true;\n",
+                            "import './unrelated/admission.ts'; import './unrelated/recovery.ts';\n"):
+                caller = ("packages/daemon/src/cold-nonconsumer.ts", content, "100644")
+                unchanged = soak_tree(left, [caller])
+                result = classify(unchanged, soak_tree(unchanged, updates))
+                assert selected(result) == WRAPPER_GATES and not result["relay_soak"], (phase, content, result)
+                count += 1
+            # Exact API names, relative imports, namespace/re-export/require and the real alias.
+            target = COLD_DAEMON + ("admission.ts" if phase == "descriptor" else "recovery.ts")
+            for content in (f"import '../tunnel/{Path(target).name}';\n",
+                            f"export * from '../tunnel/{Path(target).name}';\n",
+                            f"import * as candidate from '@remi/daemon/tunnel/{Path(target).stem}';\n",
+                            f"const candidate = require('../tunnel/{Path(target).name}');\n",
+                            f"const candidate = import('../tunnel/{Path(target).name}');\n",
+                            f"import '{Path(target).stem}';\n",
+                            f"import '@remi/daemon/./tunnel/{Path(target).stem}';\n",
+                            f"import '@remi/daemon/tunnel/../tunnel/{Path(target).stem}';\n",
+                            "import '../tunnel/" + r"\u" + f"{ord(Path(target).stem[0]):04x}" + Path(target).stem[1:] + ".ts';\n",
+                            "import '@remi/daemon/tunnel/" + r"\u{" + f"{ord(Path(target).stem[0]):x}" + "}" + Path(target).stem[1:] + ".ts';\n",
+                            "import '../tunnel/" + r"\x" + f"{ord(Path(target).stem[0]):02x}" + Path(target).stem[1:] + ".ts';\n",
+                            f"const path = '{target}';\n",
+                            f"import/* owned */'../tunnel/{Path(target).name}';\n",
+                            f"export * from/* owned */'../tunnel/{Path(target).name}';\n",
+                            f"const candidate = require/* owned */(/* owned */'../tunnel/{Path(target).name}');\n",
+                            f"const candidate = import/* owned */(/* owned */'../tunnel/{Path(target).name}');\n"):
+                caller = ("packages/daemon/src/entry/cold-consumer.ts", content, "100644")
+                for context in ("new", "both", "removed", "target-base-only"):
+                    old = soak_tree(left, [caller]) if context != "new" else left
+                    if context == "target-base-only":
+                        candidate = soak_tree(left, updates)
+                    else:
+                        candidate = soak_tree(old, [*updates, *([caller] if context == "new" else [])],
+                                              (caller[0],) if context == "removed" else ())
+                    cold_expect_all(old, candidate, (content, context))
+                    count += 1
+            for identifier in policy["identifiers"]:
+                path = "packages/native/RemiKit/cold-consumer.swift"
+                caller = (path, f"// {identifier}\n", "100644")
+                old = soak_tree(left, [caller])
+                cold_expect_all(old, soak_tree(old, updates), identifier)
+                count += 1
+            for directory in ("packages/shared/src", "packages/signaling/src", "packages/web/src",
+                              "packages/macos", "tests", "scripts", ".github/scripts",
+                              ".github/workflows", ".github/actions", ".github/administration"):
+                caller = (f"{directory}/cold-reader.yml", f"run: bun test {target}\n", "100644")
+                for context in ("new", "both", "removed", "target-base-only"):
+                    old = soak_tree(left, [caller]) if context != "new" else left
+                    if context == "target-base-only":
+                        candidate = soak_tree(left, updates)
+                    else:
+                        candidate = soak_tree(old, [*updates, *([caller] if context == "new" else [])],
+                                              (caller[0],) if context == "removed" else ())
+                    cold_expect_all(old, candidate, (directory, context))
+                    count += 1
+            for root_path in ("root-cold-entry.ts", "root-cold-config.json", "root-cold-launch.sh"):
+                caller = (root_path, f"./{target}\n", "100644")
+                for context in ("new", "both", "removed", "target-base-only"):
+                    old = soak_tree(left, [caller]) if context != "new" else left
+                    if context == "target-base-only":
+                        candidate = soak_tree(left, updates)
+                    else:
+                        candidate = soak_tree(old, [*updates, *([caller] if context == "new" else [])],
+                                              (caller[0],) if context == "removed" else ())
+                    cold_expect_all(old, candidate, (root_path, context))
+                    count += 1
+            # Every exact producer must transition with its reviewed body and regular mode.
+            for producer in policy["head"]:
+                without = [u for u in updates if u[0] != producer]
+                for state in ("body", "exports", "missing", "deleted", "renamed", "mode", "symlink", "base-state"):
+                    old, changes, removals = left, list(without), ()
+                    content = COLD_CONTENT[phase][producer]
+                    if state == "body":
+                        changes.append((producer, content + "\n// unreviewed body\n", policy["head"][producer][0]))
+                    elif state == "exports":
+                        changes.append((producer, content + "\nexport const unreviewed = true;\n", policy["head"][producer][0]))
+                    elif state == "deleted":
+                        removals = (producer,)
+                    elif state == "renamed":
+                        removals = (producer,)
+                        changes.append(("docs/cold-renamed.txt", content, policy["head"][producer][0]))
+                    elif state == "mode":
+                        mode = "100755" if policy["head"][producer][0] == "100644" else "100644"
+                        changes.append((producer, content, mode))
+                    elif state == "symlink":
+                        changes.append((producer, "owned-target", "120000"))
+                    elif state == "base-state":
+                        old = soak_tree(left, [(producer, content + "\n// wrong original\n", policy["head"][producer][0])])
+                        changes = updates
+                    cold_expect_all(old, soak_tree(old, changes, removals), (producer, state))
+                    count += 1
+            # Excluded known consumers/dependencies have immutable whole-file provenance.
+            for consumer, pin in policy["original"].items():
+                body = subprocess.check_output(["git", "show", f"{left}:{consumer}"]).decode()
+                for endpoint in ("base", "head"):
+                    changed_consumer = (consumer, body + "\n// unreviewed consumer\n", pin[0])
+                    old = soak_tree(left, [changed_consumer]) if endpoint == "base" else left
+                    candidate = soak_tree(old, [*updates, *([changed_consumer] if endpoint == "head" else [])])
+                    cold_expect_all(old, candidate, (consumer, endpoint))
+                    count += 1
+            for mixed in ("packages/daemon/src/cli.ts", "packages/daemon/src/tunnel/index.ts",
+                          "scripts/tunnel-storage-proof/recovery-native.c", "packages/shared/src/index.ts",
+                          "package.json", "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "_typos.toml"):
+                candidate = soak_tree(left, [*updates, (mixed, "unreviewed runtime input\n", "100644")])
+                cold_expect_all(left, candidate, mixed)
+                count += 1
+            for bad, data, mode in (("scripts/invalid.py", b"\xff", "100644"),
+                                    ("packages/shared/src/invalid.ts", b"\0", "100644"),
+                                    ("packages/shared/alias", b"owned", "120000"),
+                                    ("packages/shared/credentials", b"never read", "100644"),
+                                    (".env.private-owned", b"owned control, never read", "100644")):
+                old = soak_tree(left, [(bad, data, mode)])
+                cold_expect_all(old, soak_tree(old, updates), bad)
+                count += 1
+            git("read-tree", left)
+            git("update-index", "--add", "--cacheinfo", "100644," + "f" * 40 + ",scripts/unreadable.ts")
+            missing_tree = git("write-tree", "--missing-ok")
+            missing_base = git("commit-tree", missing_tree, "-p", left, "-m", "missing cold scan blob")
+            cold_expect_all(missing_base, soak_tree(missing_base, updates), "missing object")
+            count += 1
+            assert not module["cold_relocation_paths"](left, "f" * 40, left, list(policy["head"]))
+            count += 1
+            git("read-tree", left)
+            git("update-index", "--add", "--cacheinfo", f"160000,{left},packages/shared/owned-submodule")
+            submodule_tree = git("write-tree")
+            submodule_base = git("commit-tree", submodule_tree, "-p", left, "-m", "owned submodule reference")
+            cold_expect_all(submodule_base, soak_tree(submodule_base, updates), "submodule")
+            count += 1
+            old = soak_tree(left, [("docs/owned-alias.md", "owned-target", "120000")])
+            cold_expect_all(old, soak_tree(old, updates), "ordinary-doc symlink")
+            count += 1
+            for context in ("base", "head"):
+                changed_sample = (".env.example", "unreviewed public sample\n", "100644")
+                old = soak_tree(left, [changed_sample]) if context == "base" else left
+                candidate = soak_tree(old, [*updates, *([changed_sample] if context == "head" else [])])
+                cold_expect_all(old, candidate, ("public sample", context))
+                count += 1
+            # Private object stores prove exclusions cannot hide unreadable pinned blobs.
+            all_pins = {**policy["original"], **policy["head"]}
+            object_bytes = {pin[1]: subprocess.check_output(["git", "cat-file", "blob", pin[1]])
+                            for pin in (*policy["original"].values(), *policy["head"].values())}
+            sample_bytes = subprocess.check_output(["git", "cat-file", "blob", module["COLD_PUBLIC_SAMPLE"][1]])
+            known = next(path for path in policy["original"] if path not in policy["head"])
+            modified = next(path for path in policy["head"] if path in policy["original"])
+            added = next(path for path in policy["head"] if path not in policy["original"])
+            missing_cases = [("complete", None), ("original", modified), ("original", known), ("head", added)]
+            if phase == "descriptor":
+                missing_cases.append(("original", COLD_PROOF + "storage-approval-mutations.py"))
+            for endpoint, path in missing_cases:
+                omitted = policy[endpoint][path][1] if endpoint != "complete" else None
+                corpus_dir = Path.cwd()
+                with tempfile.TemporaryDirectory(prefix="cold-missing-pin-") as private:
+                    try:
+                        os.chdir(private)
+                        git("init", "-q")
+                        git("config", "user.name", "Owned missing object control")
+                        git("config", "user.email", "test@example.com")
+                        for blob, data in object_bytes.items():
+                            if blob != omitted:
+                                assert git("hash-object", "-w", "--stdin", input=data.decode()) == blob
+                        sample = git("hash-object", "-w", "--stdin", input=sample_bytes.decode())
+                        refs = []
+                        for pins in (policy["original"], all_pins):
+                            git("read-tree", "--empty")
+                            git("update-index", "--add", "--cacheinfo", f"100644,{sample},.env.example")
+                            for name, pin in pins.items():
+                                git("update-index", "--add", "--cacheinfo", f"{pin[0]},{pin[1]},{name}")
+                            tree = git("write-tree", "--missing-ok")
+                            refs.append(git("commit-tree", tree, *(["-p", refs[0]] if refs else []),
+                                            "-m", "owned missing pinned object"))
+                        if endpoint == "complete":
+                            result = classify(refs[0], refs[1])
+                            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], (phase, result)
+                        else:
+                            assert not module["cold_relocation_paths"](refs[0], refs[1], refs[0], list(policy["head"]))
+                            cold_expect_all(refs[0], refs[1], ("missing pinned object", endpoint, path))
+                        count += 1
+                    finally:
+                        os.chdir(corpus_dir)
+            # Ordinary prose companions are allowed; changing execution is handled above.
+            candidate = soak_tree(left, [*updates, ("docs/owned-cold-note.md", "ordinary prose\n", "100644")])
+            result = classify(left, candidate)
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"]
+            count += 1
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
                           "packages/macos", "packages/native", "tests", "scripts",
@@ -737,6 +1666,15 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 raise AssertionError("validator accepted an unrecognized routing contract")
         routing_refusal("ci.yml", lambda w: w["on"].pop("push"))
         routing_refusal("ci.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]))
+        routing_refusal("relay-r7.yml", lambda w: w["jobs"]["scope"]["outputs"].pop("relay_soak"))
+        routing_refusal("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"]
+                        if s.get("name") == "Same attached session for 61 actual minutes").update(
+                        **{"if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'"}))
+        routing_refusal("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"]
+                        if s.get("name") == "Existing actual wire and authority controls").update(
+                        **{"if": "needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false'"}))
+        routing_refusal("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(
+                        steps=[s for s in w["jobs"]["local-relay"]["steps"] if s.get("name") != "Report scoped soak skip"]))
         routing_refusal("relay-r7.yml", lambda w: w["on"].pop("workflow_dispatch"))
         routing_refusal("ci.yml", lambda w: w["concurrency"].update(**{"cancel-in-progress": "true"}))
         routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["typecheck"]["steps"] if s.get("run") == "bun run typecheck").update(**{"if": "needs.scope.result == 'success' && needs.scope.outputs.web != 'false'"}))
@@ -782,6 +1720,20 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 count += 1
             else:
                 raise AssertionError("actual actionlint tool/format failure accepted")
+        for state in ("missing-soak-output", "missing-soak-env", "aliased-soak-output"):
+            action = yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"])
+            if state == "missing-soak-output":
+                action["outputs"].pop("relay_soak")
+            elif state == "missing-soak-env":
+                action["runs"]["steps"][-1]["env"].pop("CI_SCOPE_RELAY_SOAK")
+            else:
+                action["outputs"]["relay_soak"]["value"] = "${{ steps.scope.outputs.relay }}"
+            try:
+                WORKFLOW_TOOLS["validate_action"](action)
+            except AssertionError:
+                count += 1
+            else:
+                raise AssertionError("scope action accepted invalid soak output wiring")
         outputs = runpy.run_path(str(SCRIPT.with_name("check-scope-output.py")))["OUTPUTS"]
         for change, expected in (("valid-false", 0), ("valid-unknown-full", 0), ("missing", 1),
                                  ("blank", 1), ("invalid", 1), ("none", 1)):
@@ -797,6 +1749,25 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = subprocess.run([sys.executable, str(SCRIPT.with_name("check-scope-output.py"))],
                                     env=env, capture_output=True, text=True)
             assert (result.returncode == 0) == (expected == 0), (change, result)
+            count += 1
+        # Exercise the real mandatory-output subprocess for the additive soak field.
+        for state, expected in (("short-only", 0), ("full-relay", 0), ("missing-soak", 1),
+                                ("blank-soak", 1), ("invalid-soak", 1), ("inconsistent", 1)):
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CI_SCOPE_")}
+            env.update({f"CI_SCOPE_{key.upper()}": "false" for key in outputs})
+            env["CI_SCOPE_RELAY"] = "true"
+            env["CI_SCOPE_RELAY_SOAK"] = "true" if state in {"full-relay", "inconsistent"} else "false"
+            if state == "missing-soak":
+                env.pop("CI_SCOPE_RELAY_SOAK")
+            elif state == "blank-soak":
+                env["CI_SCOPE_RELAY_SOAK"] = ""
+            elif state == "invalid-soak":
+                env["CI_SCOPE_RELAY_SOAK"] = "False"
+            elif state == "inconsistent":
+                env["CI_SCOPE_RELAY"] = "false"
+            result = subprocess.run([sys.executable, str(SCRIPT.with_name("check-scope-output.py"))],
+                                    env=env, capture_output=True, text=True, check=False)
+            assert (result.returncode == 0) == (expected == 0), (state, result)
             count += 1
         # Execute the actual stable-job failure body. Exact validated conditions keep every
         # following runtime step inactive for tool, validator or mandatory-output failure.
@@ -861,7 +1832,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             for key in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
                 env.pop(key, None)
             result = json.loads(subprocess.check_output(["python3", str(SCRIPT)], env=env))
-            assert selected(result) == gates
+            assert selected(result) == gates and result["relay_soak"]
             count += 1
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))

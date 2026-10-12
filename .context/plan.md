@@ -114,3 +114,18 @@ Still open:
   - the integration scripts and browser tests when the daemon wire or the web client changes.
 - Each PR gets a Sonnet review, and every finding is fixed or recorded with its reason.
 - Owner hardware gates (signed builds, real devices, a deployed Worker) are listed in their milestone and are never claimed as passed without the owner's run (ADR 0011).
+
+## Internal file-tunnel accounting adoption
+
+The existing reservation and strict journal schema now live under
+`packages/daemon/src/tunnel`, with proof adapters sharing the same implementation
+and `RecoveryError` constructor.
+The accounting bodies, limits and registered guard variants are preserved.
+Six supported compiled executions each passed the unchanged 88 groups; twelve
+exact Mac guard controls passed, alongside both-Bun actual filesystem and boundary checks.
+The one-time CI relocation rule in #1462 preserves ordinary gates and skips the
+unrelated relay soak only while reviewed producer/consumer provenance remains exact.
+
+Next adopt the descriptor-backed journal/helper and disposable decoder into the
+production lifecycle, then the authenticated direct upload handler and one client.
+No attachment capability or runtime transfer caller is available from this move.

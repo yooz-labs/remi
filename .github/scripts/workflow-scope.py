@@ -13,6 +13,12 @@ CONTRACTS = json.loads(Path(__file__).with_name("workflow-contracts.json").read_
 FAIL_SCOPE = {"name": "Fail unvalidated scope", "if": "needs.scope.result != 'success'",
               "run": 'echo "CI scope validation failed; runtime checks were not started." >&2\nexit 1\n'}
 
+SOAK_SKIP = {
+    "name": "Report scoped soak skip",
+    "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'",
+    "run": 'echo "61-minute soak scoped out for reviewed fixture changes; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
+}
+
 
 def validate_action(action):
     # The independent corpus invokes this too; deleting the validator step cannot evade it.
@@ -71,7 +77,7 @@ def execution(value, path):
             job.pop(key, None)
         steps = []
         for original in job["steps"]:
-            if original == FAIL_SCOPE:
+            if original == FAIL_SCOPE or original == SOAK_SKIP:
                 continue  # Dedicated cheap failure routing, with no runtime execution.
             step = dict(original)
             step.pop("if", None)
@@ -157,14 +163,20 @@ def validate():
         job = workflow["jobs"][job_name]
         assert job["needs"] == ["scope"] and job["if"] == "${{ !cancelled() }}"
         assert job["steps"][0] == FAIL_SCOPE
+        if job_name == "local-relay":
+            assert job["steps"].count(SOAK_SKIP) == 1
         for step in job["steps"]:
             condition = step.get("if", "")
             if step.get("name") == "Fail unvalidated scope":
                 assert step == FAIL_SCOPE
+            elif step.get("name") == "Report scoped soak skip":
+                assert job_name == "local-relay" and step == SOAK_SKIP
             elif step.get("name") == "Report scoped skip":
                 assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
             else:
                 step_flag = flag
+                if job_name == "local-relay" and step.get("name") == "Same attached session for 61 actual minutes":
+                    step_flag = "relay_soak"
                 if job_name == "typecheck":
                     step_flag = {"bun run typecheck": "root", "bun run typecheck:web": "web",
                         "bun run typecheck:web-tests": "web", "bun run typecheck:signaling": "signaling",
@@ -178,7 +190,7 @@ def validate():
         assert set(scope) == {"name", "runs-on", "permissions", "outputs", "steps"}
         assert scope["permissions"] == {"contents": "read"}
         assert scope["runs-on"] == "ubuntu-latest"
-        output_keys = {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test"} if workflow is ci else {flag}
+        output_keys = {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test"} if workflow is ci else ({"relay", "relay_soak"} if workflow is relay else {flag})
         assert scope["outputs"] == {key: f"${{{{ steps.scope.outputs.{key} }}}}" for key in output_keys}
         assert scope["steps"] == [
             {"uses": "actions/checkout@v5", "with": {"fetch-depth": "0"}},
@@ -210,7 +222,7 @@ def validate():
     action = yaml.load((root / ".github/actions/ci-scope/action.yml").read_text(), Loader=UniqueLoader)
     validate_action(action)
     assert action["runs"]["using"] == "composite"
-    assert set(action["outputs"]) == {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test", "relay", "macos"}
+    assert set(action["outputs"]) == {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test", "relay", "relay_soak", "macos"}
     for key, value in action["outputs"].items():
         assert value["value"] == f"${{{{ steps.scope.outputs.{key} }}}}"
     assert action["runs"]["steps"][0] == {

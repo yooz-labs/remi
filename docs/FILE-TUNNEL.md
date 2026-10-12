@@ -500,3 +500,26 @@ A passing parser or build does not establish filesystem confinement, harness del
 
 This preparation uses one lead and one independent security reviewer.
 Implementation reviews and owner hardware/signing are separate future gates.
+
+## Internal reservation accounting preparation
+
+The sole reservation and journal-schema implementations now live in
+`packages/daemon/src/tunnel/`; the standalone proof paths re-export them.
+`RecoveryError` is extracted once and shared by both paths, preserving constructor identity.
+No daemon source imports the proof directory.
+
+This move preserves all accounting guards and limits, trusted private metadata,
+nonblocking locking, retained cleanup debt and bounded settled receipts.
+It stores no transfer authority and initializes no owner state at startup.
+The package index has no new export or runtime caller; native descriptor-helper
+selection, journal/lifecycle adoption and upload availability remain upcoming.
+
+Both Bun gates passed a pre-edit actual-ledger characterization and the
+88-group compiled Mac baseline.
+After the move, all six supported compiled cells passed the unchanged 88 groups,
+and twelve exact Mac guard controls passed with their registered witnesses.
+The focused filesystem test verifies proof/daemon constructor and schema-function
+identity, actual private ledger persistence and device-cap refusal.
+Full shared and focused license/harness boundary populations pass on both Buns.
+These observations establish the mechanical internal move, not a production
+transfer, physical allocation ceiling or power-loss guarantee.

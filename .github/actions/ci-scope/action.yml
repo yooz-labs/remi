@@ -27,6 +27,9 @@ outputs:
     description: Full Bun coverage suite
   relay:
     value: ${{ steps.scope.outputs.relay }}
+    description: Short relay wire and authority controls
+  relay_soak:
+    value: ${{ steps.scope.outputs.relay_soak }}
     description: Actual 61-minute relay gate
   macos:
     value: ${{ steps.scope.outputs.macos }}
@@ -77,5 +80,6 @@ runs:
         CI_SCOPE_NOTICES: ${{ steps.scope.outputs.notices }}
         CI_SCOPE_TEST: ${{ steps.scope.outputs.test }}
         CI_SCOPE_RELAY: ${{ steps.scope.outputs.relay }}
+        CI_SCOPE_RELAY_SOAK: ${{ steps.scope.outputs.relay_soak }}
         CI_SCOPE_MACOS: ${{ steps.scope.outputs.macos }}
       run: python3 .github/scripts/check-scope-output.py
