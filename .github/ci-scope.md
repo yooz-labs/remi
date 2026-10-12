@@ -334,3 +334,12 @@ regular root execution/config text at both endpoints, including the exact
 public `.env.example` sample. Other secret names, unreadable root inputs and root
 callers restore the soak. The original two-fixture-only scan surfaces and token
 matching remain unchanged.
+
+The two exact adoption tests also carry the reviewed leading triple-slash
+reference to `scripts/tunnel-storage-proof/assets.d.ts`. The single declaration
+line supplies the existing native-helper asset types to root TypeScript analysis;
+every runtime test byte stays identical. Only the corrected whole test blobs
+qualify, including the corrected descriptor-test base pin for B. The referenced
+published declaration asset is pinned unchanged as a regular read-validated known
+input at both endpoints. Removed/altered references or changed/missing declaration
+assets restore full runtime gates; this is not a generic type-change exemption.
