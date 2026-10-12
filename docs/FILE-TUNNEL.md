@@ -511,8 +511,9 @@ No daemon source imports the proof directory.
 This move preserves all accounting guards and limits, trusted private metadata,
 nonblocking locking, retained cleanup debt and bounded settled receipts.
 It stores no transfer authority and initializes no owner state at startup.
-The package index has no new export or runtime caller; native descriptor-helper
-selection, journal/lifecycle adoption and upload availability remain upcoming.
+The package index has no new export or runtime caller.
+Descriptor, journal and explicit native-helper ownership are recorded below;
+active transfer lifecycle and upload availability remain upcoming.
 
 Both Bun gates passed a pre-edit actual-ledger characterization and the
 88-group compiled Mac baseline.
@@ -537,8 +538,8 @@ Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
 A focused test uses the real native operations to verify constructor identity,
 actual captured directory descriptors and closure. Shared and boundary tests pass
 on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
-is recorded below. Helper packaging, transfer handlers, client upload and
-capability advertisement remain upcoming.
+and journal-helper packaging are recorded below. Transfer handlers, client
+upload and capability advertisement remain upcoming.
 
 ## Internal journal lifecycle adoption
 
@@ -553,5 +554,35 @@ and their 44 misleading setup/success controls were rejected. Both Bun versions
 passed shared and focused boundary tests; the new filesystem test writes and
 closes the actual private journal, verifies owned cleanup and retires its lease.
 These results cover internal adoption, not a physical allocation ceiling or
-power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
-handlers, a client caller and capability advertisement remain upcoming.
+power-loss guarantee. Helper adoption is recorded below; decoder adoption,
+authenticated upload handlers, a client caller and capability advertisement
+remain upcoming.
+
+## Internal native journal helper adoption
+
+The daemon owns the existing `recoveryNative` factory, its byte-identical C
+asset and the sole C filename declaration. The proof module re-exports that same
+function; the old proof C source is removed. Both the factory and proof asset
+declaration reference the daemon-owned type declaration, so the original root
+TypeScript graph resolves the bundled asset without a focused-only files override.
+
+The factory preserves descriptor-relative open/create, exact native errno,
+close-on-exec, nonblocking flock and unlink. Its link operation remains explicitly
+unsupported. The selected helper supplies the journal operations; the private-copy
+path retains its existing helper. The caller closes dependent descriptors before
+exactly one factory close.
+No package index export, startup initialization or active transfer caller is added.
+
+All six supported platform/Bun compiled cells passed the unchanged 88-group
+settlement profile, with matching frozen inputs and clean owned temporary state.
+Both original root TypeScript checks pass. Both Bun versions passed 41 focused
+tests and 500 assertions; the new real-filesystem test checks function identity,
+owned image bytes, exact errno, raw successful CLOEXEC results, nonblocking lock
+contention/release and ordered closure. Earlier guard receipts remain qualified
+historical evidence; unchanged guards received no new mutation campaign.
+
+This accepts the explicit internal helper packaging.
+An active daemon lifecycle, physical allocation ceiling and power-loss behavior
+are not established by these finite observations. Image admission/full decoding,
+owned worker integration, authenticated staging and a production client caller
+still precede upload availability and capability advertisement.
