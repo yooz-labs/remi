@@ -53,8 +53,9 @@ diagnostic. Neither count establishes stability or a production failure rate.
 Older matching reports coincide with the failed CRC and cancellation matrix
 windows, but those receipts omitted child PIDs, so exact per-request linkage
 remains unproved. Native startup availability and portable resource enforcement
-remain adoption gates; there is no automatic retry, JIT-setting change or host
-security/signing change in this candidate.
+remain adoption gates; there is no automatic retry or host security/signing change.
+The standalone child interpreter policy below changes only disposable decoder
+worker environments.
 
 The first 300 ms busy-child readiness assertion failed on emulated Linux x64:
 an unchanged child needed about 494 ms to start. The short whole-lifetime
@@ -73,6 +74,68 @@ The synchronous interlaced branch of pngjs 7.0.0 calls `zlib.inflateSync` withou
 an output limit; this candidate refuses interlace before decode. This is a
 candidate subset, not a production format contract. Malformed-header admission
 does not prove bounded decoder allocations or complete format validity.
+
+## Disposable worker interpreter policy (#1417)
+
+`process.ts` uses one private environment builder for both one-shot and repeated
+decoder children. It supplies only the existing PATH/LANG/TMPDIR whitelist plus
+`BUN_JSC_useJIT=0`; it does not inherit parent tuning or application credentials,
+modify the parent environment, or change constructor/outcomes/caps/deadlines.
+The setting takes effect before child initialization. Retained workers on both
+pinned Bun versions reported effective `useJIT=false`, and each interpreter and
+default mode passed 100 actual serial CRC refusals in that finite diagnostic.
+Those 402 diagnostic children were awaited and ESRCH-confirmed. These observations
+do not establish general startup stability or repair the historical SIGTRAP.
+
+One new controller-owned policy group runs before ordinary child lifecycle
+controls. An actual child exits 23 before decoding if interpreter mode or parent
+environment isolation is violated. Successful children fully decode the original
+PNG once and JPEG repeatedly, with exact original pixel hashes. The parent sets
+owned JSC tuning and an application sentinel, verifies both are excluded from the
+worker and remain unchanged in the parent, then restores those fixture variables.
+Receipts record actual bounded exit metadata and ESRCH; no decoder result or
+readiness is substituted. Existing five-second maximum lifetime, 1000 ms held
+response and two-second reap thresholds stay unchanged.
+
+The default profile now has 19 groups, retaining its original 18; the held profile
+has 22, retaining its original 21. Linux limits remain the original 256 MiB/32 PID
+default and 512 MiB/64 PID held fixtures. Portable CPU/resident-memory enforcement,
+production decoder selection and transfer authority remain separate gates.
+
+`policy-mutations.py` reuses the shared strict compiled assertion predicate and
+source-bound real support modules. Removing the shared interpreter setting must
+fail the named parent assertion and also produce exactly one actual one-shot
+child exit 23, no signal, a positive PID, finite elapsed time within 5000 ms and
+awaited/reaped ESRCH metadata. Unrelated SIGTRAP, input faults, setup failures or
+successful witness-looking output cannot be accepted. The existing base false
+controls remain unchanged and are explicitly control-only. Both copied codec
+trees retain exact pinned versions and full membership/file hashes.
+
+Use an empty owned S1 `PYTHONPYCACHEPREFIX` and `PYTHONDONTWRITEBYTECODE=1` for all
+Python loaders. New source/dependency snapshots, binaries, temporary files and
+logs stay on S1. Run each profile with `--canary-only` on both Mac Buns before
+the same immutable source is executed on all six supported platform/Bun cells.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPYCACHEPREFIX=/Volumes/S1/yooz/remi/artifacts/decoder-policy-unique/pycache \
+python3 scripts/tunnel-decoder-proof/approval-matrix.py \
+  --bun-1311 /Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64 \
+  --bun-current /opt/homebrew/Cellar/bun/1.4.2/bin/bun \
+  --node-modules /path/to/pinned/standalone/node_modules \
+  --out /Volumes/S1/yooz/remi/artifacts/decoder-policy-unique/held \
+  --runtime-temp-base /Volumes/S1/yooz/remi/tmp/dwp \
+  --linux-arm64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --linux-x64-image oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 \
+  --linux-memory-mib 512 --linux-pids-limit 64
+```
+
+Use `matrix.py` with 256 MiB/32 PIDs for the default profile. For each Mac Bun,
+run `policy-mutations.py --mutation interpreter-policy --bun-label 1311` (or
+`current`) with the same compiler/image/dependency/temporary flags, an immutable
+repository `--source-root` snapshot and a fresh output directory. Final worker
+option diagnostics are separate finite observations. No production caller or
+helper is selected by these standalone proofs.
 
 ## Reproduce
 
@@ -105,7 +168,7 @@ ceiling or a kernel CPU budget.
 
 ## Held-approval continuation
 
-`approval-matrix.py` extends the 18 decoder groups (including the three palette
+`approval-matrix.py` extends the 19 decoder groups (including the three palette
 groups) with three source-backed
 checks: PNG and JPEG decode load while a phone-shaped No answer reaches the
 original held `PermissionRequest` HTTP response, plus a synchronous 1200 ms

@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -45,6 +46,9 @@ MUTATIONS = {
     },
 }
 BUN_VERSIONS = {"1311": "1.3.11", "current": "1.4.2"}
+# Optional proof adapters supply actual loaded modules, never a facade or alternate root.
+SUPPORT_MODULES: tuple[ModuleType, ...] | list[ModuleType] | None = None
+EXTRA_RUNTIME_REJECTION_REASONS: Callable[[str, dict], list[str] | tuple[str, ...]] | None = None
 
 
 def digest(path: Path) -> str:
@@ -341,6 +345,7 @@ def main() -> int:
     parser.add_argument("--linux-arm64-image", required=True)
     parser.add_argument("--linux-x64-image", required=True)
     parser.add_argument("--runtime-temp-base", type=Path, required=True)
+    parser.add_argument("--node-modules", type=Path)
     args = parser.parse_args()
 
     selected_binary = args.bun_1311 if args.bun_label == "1311" else args.bun_current
@@ -375,18 +380,34 @@ def main() -> int:
         or digest(frozen_runner) != digest(Path(__file__).resolve())
     ):
         raise ValueError("executed mutation runner must match the frozen source snapshot")
-    repository_root = approval.reserved.reservation.REPO.resolve()
-    support_modules = (
-        approval,
-        approval.reserved,
-        approval.reserved.reservation,
-        approval.storage,
-    )
-    nested_recovery = getattr(approval, "recovery", None)
-    if nested_recovery is not None:
-        if not isinstance(nested_recovery, ModuleType):
-            raise ValueError("nested recovery support must be an actual loaded module")
-        support_modules += (nested_recovery,)
+    repository_root = ROOT.parents[1].resolve()
+    if SUPPORT_MODULES is None:
+        support_modules = (
+            approval,
+            approval.reserved,
+            approval.reserved.reservation,
+            approval.storage,
+        )
+        nested_recovery = getattr(approval, "recovery", None)
+        if nested_recovery is not None:
+            if not isinstance(nested_recovery, ModuleType):
+                raise ValueError("nested recovery support must be an actual loaded module")
+            support_modules += (nested_recovery,)
+    else:
+        if (
+            not isinstance(SUPPORT_MODULES, (tuple, list))
+            or not SUPPORT_MODULES
+            or not all(isinstance(module, ModuleType) for module in SUPPORT_MODULES)
+            or approval not in SUPPORT_MODULES
+        ):
+            raise ValueError("proof support graph must contain its actual executed approval module")
+        support_modules = tuple(SUPPORT_MODULES)
+    if EXTRA_RUNTIME_REJECTION_REASONS is not None:
+        if not callable(EXTRA_RUNTIME_REJECTION_REASONS):
+            raise TypeError("extra runtime evidence hook must be callable")
+        owner = sys.modules.get(getattr(EXTRA_RUNTIME_REJECTION_REASONS, "__module__", ""))
+        if not isinstance(owner, ModuleType) or owner not in support_modules:
+            raise ValueError("extra runtime evidence hook must belong to the verified support graph")
     for runtime_module in support_modules:
         runtime_name = getattr(runtime_module, "__file__", None)
         if not isinstance(runtime_name, str):
@@ -437,6 +458,8 @@ def main() -> int:
         str(runtime_temp_base),
         "--canary-only",
     ]
+    if args.node_modules is not None:
+        sys.argv.extend(("--node-modules", str(args.node_modules)))
     selected_proof = approval.proof_for(mutant_root)
     selected_proof["compiler_labels"] = (args.bun_label,)
     runner_error = None
@@ -561,6 +584,21 @@ def main() -> int:
         executable_name,
         selected_compiler,
     )
+    extra_reasons = []
+    if EXTRA_RUNTIME_REJECTION_REASONS is not None:
+        try:
+            result = EXTRA_RUNTIME_REJECTION_REASONS(log_text, runtime_evidence)
+            if (
+                not isinstance(result, (tuple, list))
+                or len(result) > 32
+                or any(not isinstance(reason, str) or not reason or len(reason) > 256 for reason in result)
+            ):
+                extra_reasons = ["extra runtime evidence hook returned malformed reasons"]
+            else:
+                extra_reasons = list(result)
+        except Exception:  # noqa: BLE001 - Adapter failures reject evidence without retaining payload/error text.
+            extra_reasons = ["extra runtime evidence hook failed"]
+    private_source_rejection_reasons.extend(extra_reasons)
     success_control = run_acceptance_control(
         mutation["witness"],
         artifact_path,
@@ -624,6 +662,7 @@ def main() -> int:
         "runnerStatus": status,
         "runtimeEvidence": runtime_evidence,
         "privateSourceRejectionReasons": private_source_rejection_reasons,
+        "extraRuntimeRejectionReasons": extra_reasons,
         "receiptAcceptanceControls": {
             "successfulWitnessOutput": success_control,
             "setupFailureWithWitnessText": setup_failure_control,
