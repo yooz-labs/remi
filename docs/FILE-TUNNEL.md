@@ -1,6 +1,6 @@
 # Image and file tunnel: threat model and freeze plan
 
-Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), started 2026-10-08; candidate contract updated 2026-10-09.
+Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), started 2026-10-08; concrete staging ADR prepared 2026-10-11.
 This document specifies work to review before implementation; it adds no messages, capabilities, endpoints or native attachment controls.
 It is not an accepted protocol freeze or an implemented feature.
 The owner included the tunnel's frames in the protocol freeze (#1233, comment on #1170); native attachment and preview UI remains X5 (#1245).
@@ -172,6 +172,8 @@ The following is candidate vocabulary for the protocol ADR, not permission to in
 ## Candidate direct staging contract
 
 All names and fields below are proposals for review, not additions to the protocol registry.
+The concrete owner/native review packet is [proposed ADR 0041](../.context/decisions/0041-direct-image-staging.md), collecting these existing fields and bounds with shape/state validation and retained retry deadlines.
+Its proposed `image_staging` capability remains unregistered; the ADR requires owner acceptance and production handler/caller conformance before availability.
 Initial staging targets an attached live Claude session with a known, non-null harness binding.
 It writes private storage only and never types a reference, presses Enter or starts a turn.
 
@@ -460,7 +462,7 @@ retained separately, and only the executed controls count as acceptance.
 |---|---|---|
 | T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
 | T0b: decoder packaging proof | Compare explicitly declared PNG/JPEG decoder candidates and license/runtime assets; proposed `tunnel/image-validation.ts` and decoder corpus. Do not import Miniflare's development dependency as an implicit runtime dependency. | Standalone compiled execution on all targets, full decode with admission before excessive allocation, finite CPU/memory/deadline/concurrency limits and cancellation. A real held approval stays responsive. No chosen dependency before evidence. |
-| T0c: accept the staging contract | Reuse ADR 0035, protocol registry and fixture rules. Add the reviewed ADR, strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | T0a/T0b settle implementation feasibility. Owner reviews the concrete fields, bounds, outcomes and cleanup policy; an independent review finds no unresolved critical decision. Fixtures alone do not advertise support. |
+| T0c: accept the staging contract | Review proposed [ADR 0041](../.context/decisions/0041-direct-image-staging.md), then reuse ADR 0035, protocol registry and fixture rules for strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | T0a/T0b settle production adoption feasibility. Owner reviews the concrete fields, bounds, outcomes and cleanup policy; an independent review finds no unresolved critical decision. Fixtures alone do not advertise support. |
 | T1a storage: reservations and recovery | Reuse `storage/interprocess-file-lock.ts`; proposed `tunnel/reservations.ts`, private artifact ledger and startup recovery. | Reserve bytes and artifact slots across actual processes before creation; retain failed-cleanup reservations. Crash recovery touches only captured private roots. This internal preparation exposes no upload API. |
 | T1a lifecycle: authenticated direct staging | Reuse server-derived identity, `withAuthorizationEpoch`, hub/child session routing and frozen validators; proposed `cli/handlers/image-upload-events.ts` and `tunnel/transfers.ts`. | Exact bytes/digest/decode; revoke/regrant, detach, rebind, lost-ack, cancellation, saturation and cleanup controls against real hub/child. Keep the capability unadvertised until its production client caller lands. |
 | T1a caller: one direct client upload | Reuse `packages/web/src/components/chat/InputArea.tsx`, connection dispatch and `hubSupport`; add explicit file selection, progress, staged result and cancellation. | One shipping caller completes an image against the source hub; rendered select/cancel/refusal/reconnect states pass. Advertise staging only with the accepted handler and caller. Completion never inserts a reference. |
