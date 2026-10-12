@@ -382,3 +382,47 @@ incomplete or reversed moves, changed pins, modes, status, restored old C source
 missing/malformed objects and consumers at either endpoint restore full gates.
 This qualification does not activate transfer handling, client support or a
 capability advertisement.
+
+
+## Exact image header admission adoption (#1170)
+
+The named D1 policy qualifies only four exact source transitions with ordinary
+prose companions. Every ordinary gate remains selected; relay and soak may skip
+only after the complete fixed producer, caller, dependency and runner checks.
+D1 compositions with descriptor, journal or native-helper changes are refused.
+Previous A/B/C policies and their reference matcher remain unchanged.
+
+The reviewed header parser has 13 exact bound-proven number assertions and three
+required parentheses; its emitted JavaScript is identical to the original proof.
+Only its exact new whole blob qualifies, together with the explicit proof adapter,
+fixed snapshot matrix transforms and identity/refusal test. This is no generic
+parser, directory or type-assertion exemption. Header admission does not establish
+full pixel validity, portable resource limits, active transfer handling or clients.
+
+Both target base and merge-base retain exact published original producers and
+fixed proof caller/dependency/runner blobs; the head retains their exact reviewed
+successors. Root config/lock inputs are pinned. The existing synchronized package
+and CLI version checker validates all three tree contexts, retaining its exact
+published normalized bytes and rejecting any other runtime or metadata changes.
+Only the two exact pinned PNG/JPEG fixtures have a D1 binary read branch: batch
+object type, length and framing plus the actual Git blob digest are checked before
+text decoding. All other strict tree, mode, read, UTF8, NUL and secret-name rules
+stay unchanged.
+
+Unique `admitImage` and `MAX_INPUT_BYTES` identifiers and exact old/new producer
+and exact decoder/approval/policy runner paths scan tracked text. The generic
+`Dimensions` type name is resolved
+through module references rather than a global word scan. Daemon production
+source also refuses references to the eight verified decoder/process/probe/entry
+callers and the new direct test; their pinned standalone uses remain allowed.
+A small D1 wrapper reuses the existing resolver for original, Unicode/hex-decoded
+and conservatively identity-unescaped spellings. D1 runner asset imports, readers
+and launch strings resolve only the three exact Python paths with `.py` intact;
+unrelated resolved same-basename files stay nonconsumers. The old TS matcher is
+unchanged and no generic import graph or Python namespace rule is added. Literal scans do not prove absence of computed references.
+
+The real-Git corpus constructs the four candidates from published originals plus
+exact count-guarded transforms and adapter/test literals, asserting their Git IDs.
+It needs no unpublished source object. Existing 1,451 scenarios remain intact;
+D1-specific producer, caller, runner, asset, metadata and mixed-transition controls
+reuse the same owned histories and generic conservative fallback campaign.
