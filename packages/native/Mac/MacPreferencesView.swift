@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MacPreferencesView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let store: MachineStore
     private let refreshNotificationPermission: Bool
 
@@ -153,25 +154,21 @@ struct MacPreferencesView: View {
                     }
                 }
 
-                HStack(alignment: .center, spacing: 12) {
-                    Image(systemName: machine.endpoint.relayPin == nil ? "desktopcomputer" : "network")
-                        .font(.title2)
-                        .foregroundStyle(statusTint(machine.status))
-                        .frame(width: 36, height: 36)
-                        .background(statusTint(machine.status).opacity(0.12), in: .circle)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(machine.displayName)
-                            .font(.title2.weight(.semibold))
-                            .lineLimit(1)
-                        Text(statusLabel(machine.status))
-                            .font(.callout)
-                            .foregroundStyle(statusTint(machine.status))
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 12) {
+                        machineDetailIcon(machine)
+                        machineDetailTitle(machine)
+                        Spacer()
+                        machineActionsMenu(machine)
                     }
-                    Spacer()
-                    Menu("Actions", systemImage: "ellipsis.circle") { machineMenu(machine) }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 12) {
+                            machineDetailIcon(machine)
+                            machineDetailTitle(machine)
+                        }
+                        machineActionsMenu(machine)
+                    }
                 }
 
                 PreferencesCard(title: "Connection", systemImage: "point.3.connected.trianglepath.dotted") {
@@ -267,6 +264,33 @@ struct MacPreferencesView: View {
             Button("Enable relay alerts", systemImage: "bell.badge") { relayNotifications.enable(on: machine.endpoint) }
                 .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
         }
+    }
+
+    private func machineDetailIcon(_ machine: MachineState) -> some View {
+        Image(systemName: machine.endpoint.relayPin == nil ? "desktopcomputer" : "network")
+            .font(.title2)
+            .foregroundStyle(.primary)
+            .frame(width: 36, height: 36)
+            .background(statusTint(machine.status).opacity(0.12), in: .circle)
+            .accessibilityHidden(true)
+    }
+
+    private func machineDetailTitle(_ machine: MachineState) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(machine.displayName)
+                .font(.title2.weight(.semibold))
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .accessibilityAddTraits(.isHeader)
+            Text(statusLabel(machine.status))
+                .font(.callout)
+                .foregroundStyle(.primary)
+        }
+    }
+
+    private func machineActionsMenu(_ machine: MachineState) -> some View {
+        Menu("Actions", systemImage: "ellipsis.circle") { machineMenu(machine) }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
     }
 
     @ViewBuilder private func machineMenu(_ machine: MachineState) -> some View {
@@ -471,6 +495,7 @@ private struct PreferencesPage<Content: View>: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.title2.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
                     Text(subtitle).foregroundStyle(.secondary)
                 }
                 content
@@ -498,7 +523,9 @@ private struct PreferencesCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage).font(.headline)
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
             content
         }
         .padding(16)
@@ -508,6 +535,7 @@ private struct PreferencesCard<Content: View>: View {
 }
 
 private struct MachinePreferencesRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let machine: MachineState
 
     var body: some View {
@@ -517,11 +545,12 @@ private struct MachinePreferencesRow: View {
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(machine.displayName).lineLimit(1)
+                Text(machine.displayName)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 Text(machine.endpoint.displayAddress)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
         }
         .padding(.vertical, 3)

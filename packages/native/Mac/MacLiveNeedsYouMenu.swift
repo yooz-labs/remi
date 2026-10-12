@@ -159,39 +159,74 @@ private struct MacNeedsYouMachineGroup: View {
 }
 
 private struct MacNeedsYouMachineHeader: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let group: RemiPendingQuestionGroup
 
     var body: some View {
-        HStack(spacing: RemiTheme.Spacing.xs) {
-            Image(systemName: icon)
-                .foregroundStyle(group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk)
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text(group.machineName).font(.subheadline.weight(.semibold))
-                Text("\(group.transport.rawValue.capitalized) · \(group.address)")
-                    .font(RemiTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    HStack(spacing: RemiTheme.Spacing.xs) {
+                        machineIcon
+                        Text(group.machineName).font(.subheadline.weight(.semibold))
+                    }
+                    machineAddress
+                    HStack(spacing: RemiTheme.Spacing.xs) {
+                        statusBadge
+                        itemCount
+                    }
+                }
+            } else {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    machineIcon
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                        Text(group.machineName).font(.subheadline.weight(.semibold))
+                        machineAddress
+                    }
+                    Spacer(minLength: RemiTheme.Spacing.xs)
+                    statusBadge
+                    itemCount
+                }
             }
-            Spacer(minLength: RemiTheme.Spacing.xs)
-            Text(statusLabel.capitalized)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(
-                    group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk
-                )
-                .padding(.horizontal, RemiTheme.Spacing.xs)
-                .padding(.vertical, RemiTheme.Spacing.xxxs)
-                .background(
-                    group.reachability == .connected
-                        ? Color.secondary.opacity(0.12)
-                        : RemiTheme.Color.attention,
-                    in: Capsule()
-                )
-            Text(group.items.count, format: .number)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(group.machineName), \(statusLabel), \(group.items.count) pending requests")
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private var machineIcon: some View {
+        Image(systemName: icon)
+            .foregroundStyle(group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk)
+            .accessibilityHidden(true)
+    }
+
+    private var machineAddress: some View {
+        Text("\(group.transport.rawValue.capitalized) · \(group.address)")
+            .font(RemiTheme.Typography.metadata)
+            .foregroundStyle(.secondary)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+    }
+
+    private var statusBadge: some View {
+        Text(statusLabel.capitalized)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(
+                group.reachability == .connected ? Color.secondary : RemiTheme.Color.attentionInk
+            )
+            .padding(.horizontal, RemiTheme.Spacing.xs)
+            .padding(.vertical, RemiTheme.Spacing.xxxs)
+            .background(
+                group.reachability == .connected
+                    ? Color.secondary.opacity(0.12)
+                    : RemiTheme.Color.attention,
+                in: Capsule()
+            )
+    }
+
+    private var itemCount: some View {
+        Text(group.items.count, format: .number)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
     }
 
     private var icon: String {
@@ -266,48 +301,78 @@ private struct MacNeedsYouHeader: View {
     let availability: RemiNeedsYouAvailability
 
     var body: some View {
-        HStack(spacing: RemiTheme.Spacing.s) {
-            Image(systemName: questionCount == 0 ? "checkmark" : "person.wave.2.fill")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(questionCount == 0 ? Color.secondary : RemiTheme.Color.attentionInk)
-                .frame(width: 38, height: 38)
-                .background(
-                    questionCount == 0 ? Color.secondary.opacity(0.12) : RemiTheme.Color.attention,
-                    in: Circle()
-                )
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: RemiTheme.Spacing.s) {
+                headerIcon
+                headerText
+                Spacer(minLength: RemiTheme.Spacing.s)
+                countBadge
+            }
 
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text("Needs you")
-                    .font(.headline)
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                HStack(spacing: RemiTheme.Spacing.s) {
+                    headerIcon
+                    Text("Needs you")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: RemiTheme.Spacing.xs)
+                    countBadge
+                }
                 Text(summary)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let connectionSummary {
-                    Label(connectionSummary, systemImage: connectionSymbol)
-                        .font(.caption)
-                        .foregroundStyle(connectionTint)
-                        .labelStyle(.titleAndIcon)
-                        .accessibilityLabel(connectionSummary)
-                }
-            }
-
-            Spacer(minLength: RemiTheme.Spacing.s)
-
-            if questionCount > 0 {
-                Text(questionCount, format: .number)
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .padding(.horizontal, RemiTheme.Spacing.xs)
-                    .padding(.vertical, RemiTheme.Spacing.xxxs)
-                    .foregroundStyle(RemiTheme.Color.attentionInk)
-                    .background(RemiTheme.Color.attention, in: Capsule())
-                    .accessibilityLabel(
-                        questionCount == 1 ? "1 pending request" : "\(questionCount) pending requests"
-                    )
+                connectionLabel
             }
         }
         .padding(RemiTheme.Spacing.m)
+    }
+
+    private var headerIcon: some View {
+        Image(systemName: questionCount == 0 ? "checkmark" : "person.wave.2.fill")
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(questionCount == 0 ? Color.secondary : RemiTheme.Color.attentionInk)
+            .frame(width: 38, height: 38)
+            .background(
+                questionCount == 0 ? Color.secondary.opacity(0.12) : RemiTheme.Color.attention,
+                in: Circle()
+            )
+            .accessibilityHidden(true)
+    }
+
+    private var headerText: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+            Text("Needs you")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(summary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            connectionLabel
+        }
+    }
+
+    @ViewBuilder private var connectionLabel: some View {
+        if let connectionSummary {
+            Label(connectionSummary, systemImage: connectionSymbol)
+                .font(.caption)
+                .foregroundStyle(connectionTint)
+                .labelStyle(.titleAndIcon)
+                .accessibilityLabel(connectionSummary)
+        }
+    }
+
+    @ViewBuilder private var countBadge: some View {
+        if questionCount > 0 {
+            Text(questionCount, format: .number)
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.vertical, RemiTheme.Spacing.xxxs)
+                .foregroundStyle(RemiTheme.Color.attentionInk)
+                .background(RemiTheme.Color.attention, in: Capsule())
+                .accessibilityHidden(true)
+        }
     }
 
     private var summary: String {
@@ -337,7 +402,7 @@ private struct MacNeedsYouHeader: View {
 
     private var connectionTint: Color {
         if case .connected = availability { return .secondary }
-        return .orange
+        return .primary
     }
 }
 
