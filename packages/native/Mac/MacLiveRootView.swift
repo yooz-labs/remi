@@ -1627,9 +1627,16 @@ private struct MacLiveNewSessionSheet: View {
 
             Form {
                 Section {
-                    Picker("Machine", selection: $draft.machineID) {
-                        ForEach(machines) { machine in
-                            Text(machine.displayName).tag(machine.id)
+                    if machines.count == 1 {
+                        LabeledContent(
+                            "Machine",
+                            value: draft.selectedMachine?.displayName ?? "Unavailable"
+                        )
+                    } else {
+                        Picker("Machine", selection: $draft.machineID) {
+                            ForEach(machines) { machine in
+                                Text(machine.displayName).tag(machine.id)
+                            }
                         }
                     }
 
@@ -1674,28 +1681,22 @@ private struct MacLiveNewSessionSheet: View {
                 } header: {
                     Label("Agent", systemImage: "sparkles")
                 }
-
-                Section {
-                    LabeledContent("Machine", value: draft.selectedMachine?.displayName ?? "Unavailable")
-                    LabeledContent("Destination", value: draft.destinationSummary)
-                    LabeledContent("Harness", value: NewSessionDraft.harnessName(draft.harness))
-                } header: {
-                    Label("Launch summary", systemImage: "checklist")
-                }
             }
             .formStyle(.grouped)
 
             Divider()
 
             ViewThatFits(in: .horizontal) {
-                HStack {
-                    Spacer()
+                HStack(spacing: RemiTheme.Spacing.m) {
+                    launchSummary
+                    Spacer(minLength: RemiTheme.Spacing.m)
                     actionButtons
                 }
-                VStack(alignment: .trailing, spacing: RemiTheme.Spacing.s) {
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+                    launchSummary
                     actionButtons
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(RemiTheme.Spacing.m)
         }
@@ -1703,10 +1704,41 @@ private struct MacLiveNewSessionSheet: View {
             minWidth: 520,
             idealWidth: dynamicTypeSize.isAccessibilitySize ? 720 : 620,
             maxWidth: 760,
-            minHeight: dynamicTypeSize.isAccessibilitySize ? 620 : 560,
-            idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 620,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 620 : 500,
+            idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 560,
             maxHeight: 760
         )
+    }
+
+    private var launchSummary: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Image(systemName: draft.canCreate ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(draft.canCreate ? Color.green : Color.secondary)
+
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                if draft.canCreate {
+                    Text("Ready to create")
+                        .font(.subheadline.weight(.semibold))
+                } else {
+                    Text("Complete the required fields")
+                        .font(.subheadline.weight(.semibold))
+                }
+                Text(summaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var summaryText: String {
+        [
+            draft.selectedMachine?.displayName ?? String(localized: "Unavailable"),
+            draft.destinationSummary,
+            NewSessionDraft.harnessName(draft.harness),
+        ].joined(separator: " · ")
     }
 
     @ViewBuilder private var actionButtons: some View {
