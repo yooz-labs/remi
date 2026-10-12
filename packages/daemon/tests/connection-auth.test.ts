@@ -201,22 +201,38 @@ describe('Connection auth state machine', () => {
       await store.addAuthorizedKey(otherIdFile.publicKey, 'Other Client');
 
       const wsA = new MockWebSocket();
-      const connA = new Connection(wsA as unknown as WebSocket, {}, { authenticator });
+      const authenticatedA = Promise.withResolvers<void>();
+      const connA = new Connection(
+        wsA as unknown as WebSocket,
+        {
+          onAuthSuccess: () => authenticatedA.resolve(),
+          onAuthFailed: (error) => authenticatedA.reject(new Error(error)),
+        },
+        { authenticator },
+      );
       const challengeA = wsA.sentMessages[0] as ProtocolMessage & { challenge: string };
       const sigA = await sign(clientIdentity.privateKey, fromBase64(challengeA.challenge));
       connA.handleMessage(
         serialize(createAuthResponse(clientPublicKeyBase64, sigA, clientFingerprint)),
       );
-      await new Promise((r) => setTimeout(r, 100));
+      await authenticatedA.promise;
 
       const wsB = new MockWebSocket();
-      const connB = new Connection(wsB as unknown as WebSocket, {}, { authenticator });
+      const authenticatedB = Promise.withResolvers<void>();
+      const connB = new Connection(
+        wsB as unknown as WebSocket,
+        {
+          onAuthSuccess: () => authenticatedB.resolve(),
+          onAuthFailed: (error) => authenticatedB.reject(new Error(error)),
+        },
+        { authenticator },
+      );
       const challengeB = wsB.sentMessages[0] as ProtocolMessage & { challenge: string };
       const sigB = await sign(otherIdentity.privateKey, fromBase64(challengeB.challenge));
       connB.handleMessage(
         serialize(createAuthResponse(otherIdFile.publicKey, sigB, otherIdFile.fingerprint)),
       );
-      await new Promise((r) => setTimeout(r, 100));
+      await authenticatedB.promise;
 
       expect(connA.connectionClientFingerprint).toBe(clientFingerprint);
       expect(connB.connectionClientFingerprint).toBe(otherIdFile.fingerprint);

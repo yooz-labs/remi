@@ -49,7 +49,11 @@ afterEach(async () => {
 });
 
 /** A `vars` entry of `undefined` removes that Worker variable (the harness otherwise merges). */
-async function setup(vars: Record<string, string | undefined> = {}, persist?: string) {
+async function setup(
+  vars: Record<string, string | undefined> = {},
+  persist?: string,
+  pinPushAudience = true,
+) {
   const p8 = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
     'sign',
     'verify',
@@ -92,7 +96,7 @@ async function setup(vars: Record<string, string | undefined> = {}, persist?: st
   const config = Object.fromEntries(
     Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );
-  worker = await startWorker(config, true, persist ? { path: persist } : undefined);
+  worker = await startWorker(config, pinPushAudience, persist ? { path: persist } : undefined);
   const machine = await newMachine();
   activeRid = machine.ridHex;
   const device = await newIdentity();
@@ -394,7 +398,11 @@ async function legacyPush(w: TestWorker, headers: Record<string, string> = beare
   });
 }
 test('legacy plaintext route is on by default and still requires the bearer', async () => {
-  const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: undefined });
+  const { worker: w } = await setup(
+    { APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: undefined },
+    undefined,
+    false,
+  );
   expect((await legacyPush(w)).status).toBe(500);
   expect(((await (await legacyPush(w)).json()) as { error: string }).error).toBe(
     'APNS_NOT_CONFIGURED',
@@ -429,7 +437,11 @@ for (const [value, enabled] of [
   ['off', false],
 ] as const)
   test(`LEGACY_PUSH_ENABLED=${JSON.stringify(value)} ${enabled ? 'leaves' : 'turns off'} the legacy route`, async () => {
-    const { worker: w } = await setup({ APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: value });
+    const { worker: w } = await setup(
+      { APNS_KEY_ID: '', LEGACY_PUSH_ENABLED: value },
+      undefined,
+      false,
+    );
     const res = await legacyPush(w);
     if (enabled) expect(res.status).toBe(500);
     else {
@@ -440,7 +452,11 @@ for (const [value, enabled] of [
   }, 15000);
 
 test('legacy route accepts the secret as configured with surrounding whitespace', async () => {
-  const { worker: w } = await setup({ APNS_KEY_ID: '', PUSH_SECRET: `  ${PUSH_SECRET}\n` });
+  const { worker: w } = await setup(
+    { APNS_KEY_ID: '', PUSH_SECRET: `  ${PUSH_SECRET}\n` },
+    undefined,
+    false,
+  );
   expect((await legacyPush(w)).status).toBe(500);
 }, 15000);
 
@@ -911,11 +927,15 @@ test('real gateway byte bounds, canonical routes and wrong audience all refuse b
 }, 15000);
 
 test('legacy compatibility flag without secret remains refused on actual Worker', async () => {
-  const { worker: w } = await setup({
-    LEGACY_PUSH_ENABLED: 'true',
-    PUSH_SECRET: '',
-    APNS_KEY_ID: '',
-  });
+  const { worker: w } = await setup(
+    {
+      LEGACY_PUSH_ENABLED: 'true',
+      PUSH_SECRET: '',
+      APNS_KEY_ID: '',
+    },
+    undefined,
+    false,
+  );
   const res = await get(`${w.url}/push`, {
     method: 'POST',
     body: JSON.stringify({ token: 'owned', title: 'owned', body: 'owned' }),
