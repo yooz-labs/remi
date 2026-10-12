@@ -161,3 +161,23 @@ closes the actual private journal, verifies owned cleanup and retires its lease.
 These results cover internal adoption, not a physical allocation ceiling or
 power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
 handlers, a client caller and capability advertisement remain upcoming.
+
+## Configurable CLI harness (#1473)
+
+The owner requested a local CLI default on 2026-10-12.
+`[harness] default` selects Claude or Codex, with Claude as the built-in default.
+Explicit `remi claude`, `remi codex` and `--harness` override it; conflicting
+explicit choices and invalid tables/values are refused.
+One resolver drives local and remote creation plus resume/recent/directory guards.
+Hub and management commands stay session-less or administrative.
+Each hub child receives its resolved harness explicitly, including Claude for
+legacy/native omitted requests and hub resume. Wire and stored omissions retain
+their existing Claude identity meaning.
+
+Both original root type checks pass. Both focused populations pass 471 tests
+and 1,776 assertions across 12 files, with no failures or formatting warnings.
+A repeatable actual-config/parser/protocol scenario suite scores 36/36 after
+versus 18/36 using the original selector expressions. Owned CLI subprocess
+checks verify configuration, help, management and early routing refusals.
+These observations do not claim a new real Claude/Codex turn or device acceptance.
+Independent review precedes publication; fresh hosted CI precedes landing.

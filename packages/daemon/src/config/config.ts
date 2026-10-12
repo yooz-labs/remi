@@ -180,8 +180,14 @@ export interface FeaturesConfig {
   readonly transcript_binder_enabled: boolean;
 }
 
+/** #1473: the CLI's session launch default; wire/store omission still means Claude. */
+export interface HarnessConfig {
+  readonly default: 'claude' | 'codex';
+}
+
 /** Complete Remi configuration */
 export interface RemiConfig {
+  readonly harness: HarnessConfig;
   readonly daemon: DaemonConfig;
   readonly network: NetworkConfig;
   readonly auth: AuthConfig;
@@ -195,6 +201,7 @@ export interface RemiConfig {
 
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
+  harness: { default: 'claude' },
   daemon: {
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
@@ -298,6 +305,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
   }
 
   return {
+    harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),
     daemon: mergeSection(base.daemon, partial['daemon'] as Record<string, unknown> | undefined),
     network: mergeSection(base.network, partial['network'] as Record<string, unknown> | undefined),
     auth: mergeSection(base.auth, partial['auth'] as Record<string, unknown> | undefined),
@@ -370,6 +378,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
 
   try {
     const parsed = parseToml(raw) as Record<string, unknown>;
+    validateHarnessTable(parsed['harness'], configPath);
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     const legacy = legacyAutoApprove(parsed);
     const config = legacy.subagentAlert
@@ -396,6 +405,25 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
+  }
+}
+
+/** Validate before merging: scalar/array tables and unknown keys must not disappear. */
+function validateHarnessTable(table: unknown, configPath: string): void {
+  if (table === undefined) return;
+  if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);
+  }
+  const prototype = Object.getPrototypeOf(table);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);
+  }
+  if (Object.keys(table).some((key) => key !== 'default')) {
+    throw new Error(`Invalid harness in ${configPath}: only default is supported`);
+  }
+  const value = (table as Record<string, unknown>)['default'];
+  if (value !== undefined && value !== 'claude' && value !== 'codex') {
+    throw new Error(`Invalid harness.default in ${configPath}: expected "claude" or "codex"`);
   }
 }
 
@@ -654,6 +682,10 @@ export function generateDefaultConfig(): string {
 # Priority: CLI flags > environment variables > this file > built-in defaults
 # Run 'remi reload' to validate changes. Restart the daemon to apply.
 
+[harness]
+# CLI session launches only; remi claude/remi codex and --harness override this.
+default = "${DEFAULT_CONFIG.harness.default}"
+
 [daemon]
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
 port_range = ${DEFAULT_CONFIG.daemon.port_range}
@@ -759,6 +791,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   const lines: string[] = [];
 
   lines.push(`Config file: ${configPath} (${fileExists ? 'loaded' : 'not found, using defaults'})`);
+  lines.push('');
+  lines.push('[harness]');
+  lines.push(`  default = "${config.harness.default}"`);
   lines.push('');
   lines.push('[daemon]');
   lines.push(`  base_port = ${config.daemon.base_port}`);

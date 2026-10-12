@@ -31,10 +31,11 @@ bun install -g @yooz-labs/remi
 # If an older install step left that one on your machine, remove it:
 bun remove -g remi
 
-# Start Claude Code with Remi (session persists if terminal closes)
-remi -- claude
+# Start your configured harness (Claude Code by default; session persists if terminal closes)
+remi
 
-# Start Codex with Remi (status, command approvals, turn notifications and chat, see below)
+# Choose explicitly
+remi claude
 remi codex
 
 # Detach: Ctrl+B d
@@ -51,6 +52,25 @@ remi ls --network
 remi attach --host 192.168.1.5 macbook/remi/main
 ```
 
+### Choose the CLI default
+
+Set the default in `~/.remi/config.toml`:
+
+```toml
+[harness]
+default = "codex"
+```
+
+The next `remi` or `remi new` launch uses Codex.
+Use `default = "claude"` for Claude Code, the built-in default.
+`remi claude`, `remi codex` and `--harness` choose explicitly;
+conflicting explicit choices are refused.
+This setting also applies to CLI remote starts with `--host`.
+App-created sessions use the harness selected by that client.
+
+Use `remi claude --resume <session-id>` for a Claude resume when Codex is your
+default, or `remi codex resume <thread-id>` for Codex.
+
 ### From Your Phone
 
 1. Open the web app or install the mobile app (iOS/Android)
@@ -59,7 +79,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 ### Codex (status, command approvals, turn notifications and chat; approvals checked live against Codex 0.160.0 on 2026-10-04, except subagents; bounded turn and chat checks on 2026-10-05)
 
-`remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
+`remi codex` runs `codex --no-alt-screen` the way `remi claude` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
 A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes and No (Codex's own No), and "Yes, and don't ask again for this command this session" if Codex ever offers it.
 Codex shows the command as `/bin/zsh -lc '<command>'`, so the shell wrapper counts toward the cut below.
 A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; a card with a detail (a cut command, or one that runs in another directory) has no lock-screen buttons, so Yes needs the app.
