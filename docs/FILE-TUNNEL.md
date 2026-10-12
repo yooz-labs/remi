@@ -654,8 +654,43 @@ control exceeded it. Original child lifetime, output and reap controls remain.
 These finite observations do not establish universal process memory/CPU ceilings.
 
 This accepts internal decoder dependency/body ownership. Synchronous decoding
-is not an active transfer path: the existing owned child controller/worker needs
-production packaging and a trusted pre-CLI entry before lifecycle integration.
+is not an active transfer path: controller/worker ownership is recorded below,
+and a trusted pre-CLI entry still precedes lifecycle integration.
 Authenticated staging, current transfer authority and one production client still
 precede capability advertisement. No upload caller or `image_staging` capability
 is added. Keep #1170 open.
+
+## Internal image controller and worker adoption
+
+`tunnel/image-process.ts` and `tunnel/image-worker.ts` now own the existing
+controller and worker bodies. Only ownership comments and admission/decoder
+import targets change. The proof modules explicitly re-export the same runtime
+and type symbols. No production child entry, startup caller, message registration
+or upload capability is added.
+
+The controller retains owned input, its single busy slot, 4,096-byte output cap,
+at-most-5,000-ms deadline, SIGKILL cancellation and awaited child exit before
+slot release. Its child environment still admits PATH, LANG and TMPDIR plus the
+fixed interpreter policy; the parent environment remains unchanged. Worker input
+bounds, normalized refusal, scalar pixel result and repeated proof mode retain
+their measured behavior.
+
+Both original root TypeScript checks pass. Both focused populations pass 54 tests
+and 662 assertions. The new actual-child test checks shared symbol identity,
+PNG/JPEG input and pixel hashes, input ownership, CRC refusal, busy rejection,
+repeated cancellation, reaping, slot reuse and parent policy isolation.
+Scoped formatting, spelling and diff checks pass with no new warnings.
+The decoder graph selects its existing two packages; the CLI keeps its unchanged
+17-package graph and licenses.
+
+Both existing default 19-group and held 22-group profiles pass all six supported
+platform/Bun cells; all 24 build/run exits are zero. Original ordered controls,
+fixture pixels, the 42-member decoder dependency tree and clean owned temporary
+state are preserved. Actual held No latency under repeated decoding was
+0.55-15.29 ms against the unchanged 1,000-ms limit; all six deliberate parent-block
+controls exceeded it. These finite observations do not establish a universal
+process memory/CPU ceiling or an active upload path.
+
+Next select the trusted pre-CLI worker entry and its actual build/source callers,
+then implement the authenticated staging lifecycle and one production client.
+Keep #1170 open; capability availability follows that completed path.
