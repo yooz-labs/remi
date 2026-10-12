@@ -180,7 +180,32 @@ focused populations pass. The new test verifies actual descriptor operations,
 successful CLOEXEC results and lock contention/release before ordered closure.
 Prior guard receipts remain source-qualified historical observations.
 
-Next reuse the existing image admission/decoder bodies and owned worker policy,
-then integrate authenticated direct staging and one production client.
+Image header admission is recorded below. Next reuse the existing full decoder
+and owned worker policy, then integrate authenticated direct staging and one
+production client.
 These internal packaging results do not establish a physical allocation ceiling,
 power-loss guarantee, active lifecycle or upload availability. Keep #1170 open.
+
+## Internal image header admission adoption
+
+The daemon owns the existing bounded image header parser in
+`tunnel/image-admission.ts`, distinct from descriptor admission.
+Proof callers use explicit re-exports of the same function, constant and type.
+Thirteen bound-proven numeric type assertions satisfy the unchanged root
+TypeScript configuration while preserving byte-identical emitted JavaScript.
+Runtime guards, input/format/dimension limits and decoder worker policy are unchanged.
+
+The existing default runner now captures the actual moved daemon implementation
+through its shared tree/entry/snapshot support. Final default 19-group and held
+22-group profiles each pass all six supported platform/Bun cells, preserving
+original controls, full-decoded fixture pixels, pinned 42-member proof dependencies
+and clean owned temporary state. The header phase passed both root type checks
+and focused 42-test/495-assertion populations with no new diagnostics or warnings.
+After journal-helper integration, both unchanged root checks and the combined
+43-test/520-assertion populations also pass; the four header source paths retain
+their reviewed hashes.
+
+This selects internal header-parser ownership. Full decoding and production
+dependencies, owned worker/entry/lifecycle, authenticated upload and one client
+remain subsequent phases. Header admission is not full pixel validation;
+no active upload caller or capability is advertised. Keep #1170 open.
