@@ -62,19 +62,37 @@ SETTLEMENT_CHECKS = {
     "actual parallel settlement retry and new admission conserve exact quota",
     "130 actual complete cycles bound 128 rows preserve pending and refuse evicted retries",
 }
-CHECKS = recovery.CHECKS | SETTLEMENT_CHECKS
+STAGING_CHECKS = {
+    "journal closed owned PNG JPEG reads are bounded and expose no raw capability",
+    "journal staged conversion frees active slots preserves all debt and same artifact",
+    "journal staged rows keep device home artifact and byte admission barriers",
+    "journal staged byte debt remains under the original home admission accounting",
+    "journal open read needs successful close and preeffect busy creates no new debt",
+    *(f"journal owned {fault} artifact refuses and retains blocking debt" for fault in
+      ("missing", "short", "replacement", "growth", "mutation", "mode", "link")),
+    *(f"journal captured {root} replacement refuses read and staged retention" for root in
+      ("scratch", "metadata")),
+    "journal held read view blocks cleanup until close then settles staged once",
+    *(f"journal actual {mode} retains intent until death without recycled FD retry" for mode in
+      ("staging-writer-close-fault", "staging-reader-close-fault")),
+}
+CHECKS = recovery.CHECKS | SETTLEMENT_CHECKS | STAGING_CHECKS
 storage = recovery.storage
 reserved = recovery.reserved
 
 
 def proof_for(source=None):
     proof = recovery.proof_for() if source is None else recovery.proof_for(source)
+    proof["files"] = (*proof["files"], "scripts/tunnel-decoder-proof/fixture.jpg",
+                      "scripts/tunnel-decoder-proof/pngjs.d.ts")
+    proof["expected"]["journalStagingJpegInputSha256"] = storage.digest(
+        proof["source"] / "scripts/tunnel-decoder-proof/fixture.jpg")
     proof.update(
         {
             "entry": "scripts/tunnel-storage-proof/settlement-entry.ts",
             "container_prefix": "remi-settlement-proof",
             "checks": CHECKS,
-            "scope": "61 predecessor and 27 settlement groups; no production adoption, transfer authority, held-answer or R7 rerun",
+            "scope": "88 preserved predecessor and 17 owned staging groups; no transfer authority, held-answer or R7 rerun",
         }
     )
     return proof

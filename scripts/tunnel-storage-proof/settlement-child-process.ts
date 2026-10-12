@@ -24,8 +24,12 @@ export async function settlementProcess(
   children: ChildReceipt[],
   killStage?: string,
   contention?: (pid: number) => Promise<void>,
+  sourceEntryForProof?: string,
 ): Promise<string> {
-  const proc = Bun.spawn([...executable(), '--owned-spike', '--settlement-child', ...args], {
+  const command = sourceEntryForProof
+    ? [process.execPath, '--no-env-file', sourceEntryForProof]
+    : executable();
+  const proc = Bun.spawn([...command, '--owned-spike', '--settlement-child', ...args], {
     env: { PATH: '/usr/bin:/bin', LANG: 'C', TMPDIR: os.tmpdir() },
     stdin: 'ignore',
     stdout: 'pipe',
