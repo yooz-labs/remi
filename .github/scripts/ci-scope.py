@@ -102,9 +102,13 @@ ACCOUNTING_REFERENCES = re.compile(
 SOAK_FIXTURES = {
     "tests/integration/relay-r3-drain.test.ts": ("c0747830bac50fed23d96c057df3dc68f98078ea", "917d6178be63d0b7428c8228366a359b429342a1"),
     "packages/signaling/tests/e2e/push.e2e.test.ts": ("8619bb6b4c833708590061046338183a636aa652", "71b2cb846cca049e8f0a87ccb86d50d07fb89847"),
+    "packages/daemon/tests/connection-auth.test.ts": ("843726b2347cfc5b99718e914e08f8dd5fffc7f3", "e189888fc0f39dd8684d735784c295803e35b807"),
 }
-SOAK_FIXTURE_TOKENS = ("relay-r3-drain", "push.e2e")
+SOAK_FIXTURE_TOKENS = ("relay-r3-drain", "push.e2e", "connection-auth")
 SOAK_TRACE = {
+    "packages/daemon/src/server/connection.ts": "a0bee1003e89109c853e30aa7a8cd6afc2443111",
+    "packages/daemon/src/auth/authenticator.ts": "f8a68b408fa1760fd6442369315e440e0d915635",
+    "packages/daemon/src/auth/identity-store.ts": "6c4a98a3a0442a500a8f0bd85a269343c80df628",
     "packages/web/tests/relay-r7-soak.test.ts": "62563dd6a34518982397ca0cfb0c8f99a387b412",
     "packages/web/tests/helpers/relay-hub.ts": "c7cbf893b5cc3365952da29bed6403b32cda0d52",
     "packages/signaling/tests/e2e/harness.ts": "df152a92fd95d8dcfd5176e79c3110aa7b500628",
@@ -121,6 +125,118 @@ SOAK_TRACE = {
     "packages/signaling/wrangler.toml": "f898c79be3ea9b76aa772b34c066f8a0e0e08374",
 }
 SOAK_VERSION_TRACE = {'packages/daemon/src/cli.ts': '978dd5a92b65a75644c678d286639ddbfc4a604fa88663397b8a5de75b43986f', 'package.json': '1e9ae2a08a0baf363838c236363a3810df477ef378c8e78d7385509acda4148d'}
+
+
+# Three exact immutable comment-only references to the auth fixture, not general comment stripping.
+SOAK_AUTH_COMMENTS = {
+    "packages/daemon/tests/connection-unregister-ack-order.test.ts": (
+        "5bb330b56694c7642a802e477b132b780acef569",
+        21,
+        "/** Mock WebSocket that captures sent messages (same pattern as connection-auth.test.ts). */",
+    ),
+    "packages/daemon/tests/server/handle-message-seam-guard.test.ts": (
+        "b9400ba9e33ce35462c4b4de33aa3de4bda94af1",
+        56,
+        " *  connection-auth.test.ts: a real WebSocket-shaped object, not a mock of",
+    ),
+    "packages/daemon/tests/server/connection-answer-message.test.ts": (
+        "99afb022d3f4f716f03bf102fae0d811933f5880",
+        7,
+        " * connection-auth.test.ts).",
+    ),
+}
+
+# Two exact cold relocations; target paths distinguish tunnel admission from Worker admission.
+COLD_RELOCATIONS = {'descriptor': {'original': {'scripts/tunnel-storage-proof/admission.ts': ['100644',
+                                                                           'b3f165554abf5a3a6ff8a7cdb8a05a561dc68c2c'],
+                             'scripts/tunnel-storage-proof/private-copy.ts': ['100644',
+                                                                              'b31e80880f1f73e4198c2629ddcd54c5316992f7'],
+                             'scripts/tunnel-storage-proof/admission-probe.ts': ['100644',
+                                                                                 '1d88c31c7be8deed30e56a6a3e3af00a652fab64'],
+                             'scripts/tunnel-storage-proof/copy-probe.ts': ['100644',
+                                                                            '62b55ad1aa00224a49e5a4c7c435598040cf6338'],
+                             'scripts/tunnel-storage-proof/journal-settlement.ts': ['100644',
+                                                                                    '2d662ff7de2779abf9e0903ba98c1f5dedbd4200'],
+                             'scripts/tunnel-storage-proof/recovery-probe.ts': ['100644',
+                                                                                'f310d3d29628572a27ce3ecba4088a11de6e699b'],
+                             'scripts/tunnel-storage-proof/recovery.ts': ['100644',
+                                                                          '266b9db3cdfc1de295c2a7190277da6c11a9e5ff'],
+                             'scripts/tunnel-storage-proof/reserved-copy-probe.ts': ['100644',
+                                                                                     '7f37292c530cbaebdf19b2540303d70ac000dafa'],
+                             'scripts/tunnel-storage-proof/reserved-copy.ts': ['100644',
+                                                                               '7dc52af2c8146d8bac3ab0f127818456f1248954'],
+                             'scripts/tunnel-storage-proof/settlement-fixture.ts': ['100644',
+                                                                                    '0fd828d6765a85743f82090aa9042cfd2fc2bc7d'],
+                             'scripts/tunnel-storage-proof/storage-approval-child.ts': ['100644',
+                                                                                        '5c101f45514ae284e1a08ab6bf5e138281cf6e52'],
+                             'scripts/tunnel-storage-proof/storage-approval-native.ts': ['100644',
+                                                                                         '2a8dd22c4468e89cfdff84c4611a453b1356301c'],
+                             'scripts/tunnel-storage-proof/storage-approval-mutations.py': ['100755',
+                                                                                            'f9e338cbed68841b7aa6c4105bd38a50543f09da']},
+                'head': {'packages/daemon/src/tunnel/admission.ts': ['100644',
+                                                                     '9b6ba62331eae2b52d31a5e5ebb6793acc14fb72'],
+                         'packages/daemon/src/tunnel/private-ops.ts': ['100644',
+                                                                       '2f9fc8a41331a74e86216c58257847397492f68f'],
+                         'scripts/tunnel-storage-proof/admission.ts': ['100644',
+                                                                       'fa70712d1cfa04ff8eb28a942c8eb88b3a093713'],
+                         'scripts/tunnel-storage-proof/private-copy.ts': ['100644',
+                                                                          '95d51d1c639c1ecb25fd615f361c5a3cd6b2d69a'],
+                         'packages/daemon/tests/tunnel/descriptors-adoption.test.ts': ['100644',
+                                                                                       'e5f974bf5d085054ce0d82c05460b992961f13e1']},
+                'identifiers': ['OpenAt', 'DirectoryRoot', 'AdmittedFile', 'FileAdmission', 'PrivateOps']},
+ 'journal': {'original': {'scripts/tunnel-storage-proof/recovery.ts': ['100644',
+                                                                       '266b9db3cdfc1de295c2a7190277da6c11a9e5ff'],
+                          'scripts/tunnel-storage-proof/journal-settlement.ts': ['100644',
+                                                                                 '2d662ff7de2779abf9e0903ba98c1f5dedbd4200'],
+                          'scripts/tunnel-storage-proof/recovery-native.ts': ['100644',
+                                                                              '749fedcb836744a55a409f59757ecb191f80ec02'],
+                          'scripts/tunnel-storage-proof/recovery-probe.ts': ['100644',
+                                                                             'f310d3d29628572a27ce3ecba4088a11de6e699b'],
+                          'scripts/tunnel-storage-proof/settlement-fixture.ts': ['100644',
+                                                                                 '0fd828d6765a85743f82090aa9042cfd2fc2bc7d'],
+                          'scripts/tunnel-storage-proof/settlement-probe.ts': ['100644',
+                                                                               'eca0b3d2cc2cb17c5f26b21c8bbc412983948764'],
+                          'scripts/tunnel-storage-proof/recovery-mutations.py': ['100755',
+                                                                                 'def04c097129b754a394bdae233695da0a0941a8'],
+                          'scripts/tunnel-storage-proof/settlement-mutations.py': ['100755',
+                                                                                   'a245d6c57204405ae871b59f8022ec96d646b0d4'],
+                          'packages/daemon/src/tunnel/admission.ts': ['100644',
+                                                                      '9b6ba62331eae2b52d31a5e5ebb6793acc14fb72'],
+                          'packages/daemon/src/tunnel/private-ops.ts': ['100644',
+                                                                        '2f9fc8a41331a74e86216c58257847397492f68f'],
+                          'packages/daemon/tests/tunnel/descriptors-adoption.test.ts': ['100644',
+                                                                                        'e5f974bf5d085054ce0d82c05460b992961f13e1'],
+                          'packages/daemon/src/tunnel/recovery-error.ts': ['100644',
+                                                                           '6855b1b94ede69f9ee85cd6219c813e8f9d0729d'],
+                          'packages/daemon/src/tunnel/reservations.ts': ['100644',
+                                                                         '4cc18f1200a5f15276cdc0a14377c0985e9d5d7d'],
+                          'packages/daemon/src/tunnel/journal-schema.ts': ['100644',
+                                                                           'bbabfa4bbcdd60eee532839750b945615dba09e4'],
+                          'packages/daemon/tests/tunnel/reservations-adoption.test.ts': ['100644',
+                                                                                         'd811bdecf69236b37a7abe840fe7507a147c1e24']},
+             'head': {'packages/daemon/src/tunnel/recovery.ts': ['100644',
+                                                                 '1f5afab7bf9aa6bb80a2d11aed8548023f88f568'],
+                      'packages/daemon/src/tunnel/journal-settlement.ts': ['100644',
+                                                                           'd3f468de721a52ea782b338bfafd883dcb980643'],
+                      'scripts/tunnel-storage-proof/recovery.ts': ['100644',
+                                                                   '32c62e286a3327eb9c7b0e18634efe0e1fce35bb'],
+                      'scripts/tunnel-storage-proof/journal-settlement.ts': ['100644',
+                                                                             'e34ed12f9839a08c611dad5e0b8ea13a25c05c71'],
+                      'scripts/tunnel-storage-proof/recovery-mutations.py': ['100755',
+                                                                             'a755492d2b9113e69b35afd310b85001d726ce93'],
+                      'scripts/tunnel-storage-proof/settlement-mutations.py': ['100755',
+                                                                               'f41ae56da627d187229905c8c551ddc59c5297e8'],
+                      'packages/daemon/tests/tunnel/journal-adoption.test.ts': ['100644',
+                                                                                '9aff5cd5bba605b63b584435de58e468eb3413dc']},
+             'identifiers': ['RecoveryOps',
+                             'RecoveryStage',
+                             'allocatedBlocks',
+                             'RecoveryIntent',
+                             'SettlementStage',
+                             'SETTLEMENT_STAGES',
+                             'JournalWriter',
+                             'beginJournal',
+                             'settleJournal']}}
 
 
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
@@ -339,6 +455,153 @@ def accounting_relocation_is_dormant(base, head, merge_base, paths):
         return False
 
 
+# Exact published public sample only; actual .env/secret files are refused before reads.
+COLD_PUBLIC_SAMPLE = ("100644", "c3b51a1265174180067d21b01009507e122a88ce")
+
+
+# A small target resolver, not an import graph: literal relative and known daemon aliases only.
+COLD_TRIVIA = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*"
+COLD_MODULE_REFERENCE = re.compile(
+    r"\b(?:from" + COLD_TRIVIA + r"|import" + COLD_TRIVIA + r"(?:\(" + COLD_TRIVIA + r")?|require" +
+    COLD_TRIVIA + r"\(" + COLD_TRIVIA + r")['\"]([^'\"\n]+)['\"]"
+)
+
+
+def cold_reference(path, text, targets, identifiers):
+    # Literal necessary conditions avoid repeated whole-text regex scans; exact rules stay unchanged.
+    if any(identifier in text for identifier in identifiers) and re.search(
+            r"(?<![\w$])(?:" + "|".join(identifiers) + r")(?![\w$])", text):
+        return True
+    # Exact qualified paths are references even outside import syntax (launch/config readers).
+    for target in targets:
+        if target.removesuffix(".ts") in text and re.search(
+                r"(?<![\w$./-])(?:\./)?" + re.escape(target.removesuffix(".ts")) +
+                     r"(?:\.[cm]?[jt]s)?(?![\w$./-])", text):
+            return True
+    for match in COLD_MODULE_REFERENCE.finditer(text):
+        specifier = re.sub(r"\\(?:u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]+)\}|x([0-9a-fA-F]{2}))",
+                           lambda escape: chr(int(next(value for value in escape.groups() if value is not None), 16)),
+                           match.group(1))
+        if "\\" in specifier and specifier.startswith((".", "@remi/daemon/")):
+            return True
+        leaf = re.sub(r"\.[cm]?[jt]s$", "", specifier.replace("\\", "/").rsplit("/", 1)[-1])
+        if leaf not in {Path(target).stem for target in targets}:
+            continue
+        if "\\" in specifier or "\0" in specifier:
+            return True
+        if specifier.startswith("."):
+            parts = list(Path(path).parent.parts)
+            for part in specifier.split("/"):
+                if part == "..":
+                    if not parts:
+                        return True
+                    parts.pop()
+                elif part not in ("", "."):
+                    parts.append(part)
+            resolved = "/".join(parts)
+        elif specifier.startswith("@remi/daemon/"):
+            # Alias dot segments can name this producer; keep such spellings conservative.
+            if any(part in (".", "..") for part in specifier.removeprefix("@remi/daemon/").split("/")):
+                return True
+            resolved = "packages/daemon/src/" + specifier.removeprefix("@remi/daemon/")
+        else:
+            leaf = re.sub(r"\.[cm]?[jt]s$", "", specifier.rsplit("/", 1)[-1])
+            if leaf in {Path(target).stem for target in targets}:
+                return True
+            continue
+        resolved = re.sub(r"\.[cm]?[jt]s$", "", resolved)
+        if resolved in {target.removesuffix(".ts") for target in targets}:
+            return True
+    return False
+
+
+def cold_relocation_paths(base, head, merge_base, paths):
+    changed = set(paths)
+    selected = [policy for policy in COLD_RELOCATIONS.values() if changed & set(policy["head"])]
+    if not selected:
+        return set()
+    original, final, identifiers = {}, {}, set()
+    for policy in selected:
+        original.update(policy["original"])
+        final.update(policy["head"])
+        identifiers.update(policy["identifiers"])
+    if len(selected) == 2:
+        # The ordered combined transition starts before A, not from A's new producer state.
+        for path in COLD_RELOCATIONS["descriptor"]["head"]:
+            if path not in COLD_RELOCATIONS["descriptor"]["original"]:
+                original.pop(path, None)
+        original.update(COLD_RELOCATIONS["descriptor"]["original"])
+    required = set(final)
+    if not required <= changed or any(path not in required and not ordinary_soak_doc(path) for path in changed):
+        return set()
+    try:
+        trees = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref)
+            if not raw or not raw.endswith(b"\0"):
+                return set()
+            tree = {}
+            for entry in raw[:-1].split(b"\0"):
+                header, separator, name = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return set()
+                path = name.decode()
+                if any(part in ("", ".", "..") for part in path.split("/")) or any(
+                        ord(char) < 32 or ord(char) == 127 for char in path):
+                    return set()
+                tree[path] = (header.split()[0].decode(), header.split()[-1].decode())
+            trees[ref] = tree
+            if tree.get(".env.example") != COLD_PUBLIC_SAMPLE:
+                return set()
+        for ref in (base, merge_base):
+            if any(trees[ref].get(path) != tuple(pin) for path, pin in original.items()):
+                return set()
+        expected_head = {**original, **final}
+        if any(trees[head].get(path) != tuple(pin) for path, pin in expected_head.items()):
+            return set()
+        for path in required:
+            kind = "M" if path in original else "A"
+            if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
+                return set()
+            if git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                   merge_base, head, "--", path) != f"{kind}\0{path}\0".encode():
+                return set()
+        names = {Path(p).name for p in final if p.endswith(".ts")}
+        targets = {p for p in original | final if p.endswith(".ts") and Path(p).name in names}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            scan = {}
+            for path, (_, blob) in trees[ref].items():
+                name = Path(path).name
+                if ((name.startswith(".env") and path != ".env.example") or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
+                        or name in {"credentials", "secrets.json"}):
+                    return set()
+                if ref not in (base, head) and path not in expected_head:
+                    continue
+                if path in expected_head or path == STAGING_EXECUTABLE_DOC or Path(path).suffix.lower() not in {".md", *STAGING_BINARY}:
+                    scan[path] = blob
+            data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                           input="".join(f"{blob}\n" for blob in scan.values()).encode(),
+                                           stderr=subprocess.PIPE)
+            stream = io.BytesIO(data)
+            for path, blob in scan.items():
+                header = stream.readline().decode().split()
+                if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
+                    return set()
+                content = stream.read(int(header[2]))
+                if len(content) != int(header[2]) or stream.read(1) != b"\n":
+                    return set()
+                text = content.decode()
+                if "\0" in text:
+                    return set()
+                if path not in expected_head and path not in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} and cold_reference(path, text, targets, identifiers):
+                    return set()
+            if stream.read():
+                return set()
+        return required
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return set()
+
+
 def ordinary_soak_doc(path):
     return path not in {"docs/PROVISIONING.md", "docs/relay-r7-gates.md"} and (
         path.endswith(".md") or path == "CHANGELOG")
@@ -375,6 +638,7 @@ def soak_versions_reviewed(tree):
 
 def soak_fixture_only(base, head, merge_base, paths):
     changed = set(paths) & set(SOAK_FIXTURES)
+    auth_changed = "packages/daemon/tests/connection-auth.test.ts" in changed
     if not changed or any(path not in changed and not ordinary_soak_doc(path) for path in paths):
         return False
     try:
@@ -398,6 +662,10 @@ def soak_fixture_only(base, head, merge_base, paths):
                 tree[path] = (mode, blob)
             trees[ref] = tree
         for ref in (base, head):
+            if auth_changed and trees[ref].get(".env.example") != COLD_PUBLIC_SAMPLE:
+                return False
+            if any(trees[ref].get(path) != ("100644", pin[0]) for path, pin in SOAK_AUTH_COMMENTS.items()):
+                return False
             if any(trees[ref].get(path) != ("100644", blob) for path, blob in SOAK_TRACE.items()):
                 return False
             if not soak_versions_reviewed(trees[ref]):
@@ -423,10 +691,10 @@ def soak_fixture_only(base, head, merge_base, paths):
         for ref in (base, head):
             scan = {}
             for path, (_, blob) in trees[ref].items():
-                if not path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig")):
+                if not auth_changed and not path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig")):
                     continue
                 name = Path(path).name
-                if (name.startswith(".env") or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
+                if ((name.startswith(".env") and not (auth_changed and path == ".env.example")) or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
                         or name in {"credentials", "secrets.json"}):
                     return False
                 if path in SOAK_FIXTURES or path in {
@@ -438,7 +706,7 @@ def soak_fixture_only(base, head, merge_base, paths):
                                            input="".join(f"{blob}\n" for blob in scan.values()).encode(),
                                            stderr=subprocess.PIPE)
             stream = io.BytesIO(data)
-            for blob in scan.values():
+            for path, blob in scan.items():
                 header = stream.readline().decode().split()
                 if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
                     return False
@@ -446,8 +714,15 @@ def soak_fixture_only(base, head, merge_base, paths):
                 if len(content) != int(header[2]) or stream.read(1) != b"\n":
                     return False
                 text = content.decode()
-                if "\0" in text or any(token in text for token in SOAK_FIXTURE_TOKENS):
+                in_original_surfaces = path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig"))
+                if "\0" in text or (in_original_surfaces and any(token in text for token in SOAK_FIXTURE_TOKENS[:2])):
                     return False
+                if "connection-auth" in text:
+                    pin = SOAK_AUTH_COMMENTS.get(path)
+                    occurrences = [(number, line) for number, line in enumerate(text.splitlines(), 1)
+                                   if "connection-auth" in line]
+                    if not pin or occurrences != [(pin[1], pin[2])]:
+                        return False
             if stream.read():
                 return False
         return True
@@ -479,9 +754,15 @@ def classify(base, head):
         if not paths:
             return all_gates("Empty diff; scope cannot justify skipping")
         gates = dict.fromkeys(GATES, False)
+        cold_paths = cold_relocation_paths(base, head, merge_base, paths)
+        cold_inputs = set().union(*(policy["head"] for policy in COLD_RELOCATIONS.values()))
+        accounting_paths = set(paths) & (set(ACCOUNTING_HEAD) - cold_paths)
+        accounting_dormant = bool(accounting_paths) and accounting_relocation_is_dormant(base, head, merge_base, paths)
+        if set(paths) & cold_inputs and not cold_paths and not accounting_dormant:
+            return all_gates("Cold relocation, consumer or scan failure; running all gates")
         if set(paths) & STAGING_INPUTS and not staging_is_dormant(base, head, merge_base, paths):
             return all_gates("Staging consumer, producer state or scan failure; running all gates")
-        if set(paths) & set(ACCOUNTING_HEAD) and not accounting_relocation_is_dormant(base, head, merge_base, paths):
+        if accounting_paths and not accounting_dormant:
             return all_gates("Accounting relocation, consumer or scan failure; running all gates")
         for path in paths:
             # Bun discovers tests even in documentation, metadata and standalone proof dirs.
@@ -492,7 +773,7 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
-            elif path in STAGING_INPUTS or path in ACCOUNTING_HEAD:
+            elif path in cold_paths or path in STAGING_INPUTS or path in ACCOUNTING_HEAD:
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(
