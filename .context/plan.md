@@ -180,9 +180,9 @@ focused populations pass. The new test verifies actual descriptor operations,
 successful CLOEXEC results and lock contention/release before ordered closure.
 Prior guard receipts remain source-qualified historical observations.
 
-Image header admission is recorded below. Next reuse the existing full decoder
-and owned worker policy, then integrate authenticated direct staging and one
-production client.
+Image header admission and full decoding are recorded below. Next integrate the
+existing owned worker/controller and trusted entry, then authenticated direct
+staging and one production client.
 These internal packaging results do not establish a physical allocation ceiling,
 power-loss guarantee, active lifecycle or upload availability. Keep #1170 open.
 
@@ -205,7 +205,37 @@ After journal-helper integration, both unchanged root checks and the combined
 43-test/520-assertion populations also pass; the four header source paths retain
 their reviewed hashes.
 
-This selects internal header-parser ownership. Full decoding and production
-dependencies, owned worker/entry/lifecycle, authenticated upload and one client
-remain subsequent phases. Header admission is not full pixel validation;
+This selects internal header-parser ownership. Full-decoder ownership and
+dependencies are recorded below; owned worker/entry/lifecycle, authenticated
+upload and one client remain subsequent phases.
+Header admission is not full pixel validation;
 no active upload caller or capability is advertised. Keep #1170 open.
+
+## Internal full image decoder adoption
+
+The daemon owns the existing synchronous `decodeImage` implementation and exact
+PNG declarations. Proof callers explicitly re-export the same function and
+reference that declaration, retaining their image asset types.
+Direct dependencies select the measured pngjs 7.0.0 and jpeg-js 0.4.4 bytes.
+The generated lock preserves every other package entry and qrcode's PNG 5.0.0
+resolution. Actual bundle/license checks show the decoder's two selected
+packages; the CLI still has its original 17-package graph with PNG 5 only.
+There is no startup or active transfer decoder caller.
+
+Both unchanged root type checks and both focused 53-test/618-assertion populations
+pass. The real-fixture test preserves input and pixel hashes, shared function
+identity, header refusal and normalized PNG CRC refusal. Python diagnostics are
+unchanged; formatting and spelling checks pass. The two existing profiles now
+capture daemon metadata as well as moved source and the root lock.
+
+Final default 19-group and held 22-group profiles each pass all six supported
+platform/Bun cells, with all 24 build/run exits zero, original ordered controls
+and pixels, exact 42-member dependencies and clean owned temporary state.
+Actual held No latency under decoder load was 0.72-61.16 ms against the unchanged
+1,000-ms limit; all six deliberate parent-block controls exceeded that limit.
+These are finite standalone results, not portable memory/CPU ceilings.
+
+Next adopt the existing owned controller/worker and select a trusted entry before
+CLI initialization, then implement authenticated staging and one production
+client. Dependency/body ownership does not advertise upload availability.
+Keep #1170 open.
