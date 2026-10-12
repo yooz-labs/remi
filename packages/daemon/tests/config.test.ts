@@ -22,6 +22,51 @@ import {
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
 const TEST_CONFIG = path.join(TEST_DIR, 'config.toml');
 
+describe('configured CLI harness (#1473)', () => {
+  test('missing and empty harness tables preserve built-in Claude', () => {
+    expect(loadConfig(TEST_CONFIG).harness.default).toBe('claude');
+    fs.writeFileSync(TEST_CONFIG, '[harness]\n');
+    expect(loadConfig(TEST_CONFIG).harness.default).toBe('claude');
+  });
+
+  test('exact choices load from owned TOML and survive unrelated environment overrides', () => {
+    for (const harness of ['claude', 'codex'] as const) {
+      fs.writeFileSync(TEST_CONFIG, `[harness]\ndefault = "${harness}"\n`);
+      const config = loadConfig(TEST_CONFIG);
+      expect(config.harness.default).toBe(harness);
+      expect(applyEnvOverrides(config).harness.default).toBe(harness);
+      expect(formatConfig(config, TEST_CONFIG)).toContain(`default = "${harness}"`);
+    }
+  });
+
+  test('rejects malformed tables, unknown keys and unsupported or wrong-type defaults', () => {
+    for (const toml of [
+      'harness = "codex"',
+      'harness = []',
+      'harness = 1979-05-27',
+      '[[harness]]\ndefault = "claude"',
+      '[harness]\nunknown = true',
+      '[harness]\ndefault = "opencode"',
+      '[harness]\ndefault = "Codex"',
+      '[harness]\ndefault = false',
+      '[harness]\ndefault = 1',
+      '[harness]\ndefault = ["codex"]',
+      '[harness]\ndefault = { value = "codex" }',
+    ]) {
+      fs.writeFileSync(TEST_CONFIG, toml);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow('Invalid harness');
+    }
+  });
+
+  test('generated default round-trips with an explicit Claude choice', () => {
+    const generated = generateDefaultConfig();
+    expect(generated).toContain('[harness]');
+    expect(generated).toContain('default = "claude"');
+    fs.writeFileSync(TEST_CONFIG, generated);
+    expect(loadConfig(TEST_CONFIG).harness).toEqual(DEFAULT_CONFIG.harness);
+  });
+});
+
 beforeEach(() => {
   fs.mkdirSync(TEST_DIR, { recursive: true });
 });
