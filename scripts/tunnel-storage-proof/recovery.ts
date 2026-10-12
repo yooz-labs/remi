@@ -1,9 +1,12 @@
 // #1440/#1443/#1170 standalone immutable ownership journal; no transfer authority.
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import { RecoveryError } from '../../packages/daemon/src/tunnel/recovery-error';
 import type { DirectoryRoot } from './admission';
 import { type MarkerKind, type MarkerWitness, validWitnesses } from './journal-schema';
 import type { PrivateOps } from './private-copy';
+
+export { RecoveryError };
 
 export type RecoveryOps = PrivateOps & { lock: (fd: number) => number };
 export type RecoveryStage =
@@ -22,11 +25,6 @@ const TOKEN = /^[a-f0-9]{32}$/;
 const NUMBER = /^(0|[1-9][0-9]*)$/;
 const UID = BigInt(process.getuid?.() ?? -1);
 
-export class RecoveryError extends Error {
-  constructor(readonly code: 'busy' | 'unavailable') {
-    super(`recovery ${code}`);
-  }
-}
 function refuse(): never {
   throw new RecoveryError('unavailable');
 }

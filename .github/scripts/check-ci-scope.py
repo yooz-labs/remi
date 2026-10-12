@@ -34,6 +34,16 @@ ACCOUNTING_ORIGINAL_CONTENT = {
 }
 ACCOUNTING_PROOF = "scripts/tunnel-storage-proof/"
 ACCOUNTING_DAEMON = "packages/daemon/src/tunnel/"
+ACCOUNTING_FULL_BASE = "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7"
+ACCOUNTING_COLLISION_BLOBS = {
+    "packages/native/RemiKit/Sources/RemiKit/Transport/RelayChannelBroker.swift": "41fbabaef6a051bde704610c36bf144ac8a7ca21",
+    "packages/signaling/src/connection-room.ts": "da13ef5fe90c5e452eb29dc039eca1b2afbe1eb7",
+    "packages/signaling/tests/e2e/limits.e2e.test.ts": "2f4e404747aac4d1409bb2882cd23731ae5f38ce",
+}
+ACCOUNTING_COLLISION_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE).decode()
+    for path, blob in ACCOUNTING_COLLISION_BLOBS.items()
+}
 ACCOUNTING_HEAD_CONTENT = {}
 old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "reservations.ts"]
 ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "reservations.ts"] = old.replace(
@@ -147,6 +157,70 @@ for accounting_path, accounting_text in ACCOUNTING_HEAD_CONTENT.items():
     accounting_blob = subprocess.check_output(["git", "hash-object", "--stdin"],
                                               input=accounting_text.encode(), stderr=subprocess.PIPE).decode().strip()
     assert accounting_blob == module["ACCOUNTING_HEAD"][accounting_path], accounting_path
+# Copied approved fixture edits applied only to actual immutable original Git blobs.
+SOAK_FIXTURE_EDITS = {
+    "tests/integration/relay-r3-drain.test.ts": [
+        (184, 184, "\n\ntype DrainPeer = {\n  ws: WebSocket;\n  channel: import('@remi/shared').relayV2.Channel;\n  receiveTail: Promise<void>;\n  ending?: Promise<void>;\n};\n\n/** Observe real wrapper enqueue and transport completion; crypto still judges BYE. */\nfunction queuedHostBye(running: Awaited<ReturnType<typeof resumed>>) {\n  const peers = (running.relay as unknown as { peers: Map<string, DrainPeer> }).peers;\n  const peer = [...peers.values()][0];\n  if (!peer) throw new Error('ready peer missing');\n  const onmessage = peer.ws.onmessage;\n  const onclose = peer.ws.onclose;\n  if (!onmessage || !onclose) throw new Error('host wrapper handler missing');\n  let queued = 0;\n  let resolve!: () => void;\n  const enqueued = new Promise<void>((done) => {\n    resolve = done;\n  });\n  let closeObserved!: () => void;\n  const closed = new Promise<void>((done) => {\n    closeObserved = done;\n  });\n  let ending: Promise<void> | undefined;\n  const observeMessage = (event: MessageEvent) => {\n    const before = peer.receiveTail;\n    onmessage.call(peer.ws, event);\n    if (event.data instanceof ArrayBuffer && peer.receiveTail !== before && ++queued === 2)\n      resolve();\n  };\n  const observeClose = (event: CloseEvent) => {\n    onclose.call(peer.ws, event);\n    ending = peer.ending;\n    if (!ending) throw new Error('actual host transport ending promise missing');\n    closeObserved();\n  };\n  peer.ws.onmessage = observeMessage;\n  peer.ws.onclose = observeClose;\n  return {\n    peer,\n    enqueued,\n    closed,\n    get ending() {\n      if (!ending) throw new Error('actual host close not observed');\n      return ending;\n    },\n    restore() {\n      if (peer.ws.onmessage === observeMessage) peer.ws.onmessage = onmessage;\n      if (peer.ws.onclose === observeClose) peer.ws.onclose = onclose;\n    },\n  };\n}"),
+        (619, 619, 'let observation: ReturnType<typeof queuedHostBye> | undefined;\n  '),
+        (624, 624, '\n    observation = queuedHostBye(running);'),
+        (778, 778, 'await observation.enqueued;\n    '),
+        (800, 800, ';\n    await observation.closed'),
+        (839, 935, ''),
+        (956, 958, 'observatio'),
+        (960, 962, ''),
+        (963, 969, 'nding'),
+        (1113, 1113, '();\n    observation?.restore'),
+        (1385, 1387, 'obs'),
+        (1389, 1390, 'vation'),
+        (1393, 1393, 'queuedHostBye'),
+        (1394, 1399, ''),
+        (1406, 1486, ''),
+        (1487, 1523, ''),
+        (1533, 1599, '{'),
+        (1605, 1606, '} = observat'),
+        (1607, 1610, 'o'),
+        (1611, 1614, ''),
+        (2306, 2306, 'await observation.enqueued;\n    '),
+        (2328, 2328, ';\n    await observation.closed'),
+        (2367, 2392, ''),
+        (2413, 2415, 'observatio'),
+        (2417, 2419, ''),
+        (2420, 2426, 'nding'),
+        (2603, 2603, 'observation.restore();\n    '),
+    ],
+    "packages/signaling/tests/e2e/push.e2e.test.ts": [
+        (1707, 1707, '\n  '),
+        (1753, 1753, '\n '),
+        (1770, 1770, ',\n  pinPushAudience = true,\n'),
+        (3507, 3509, 'pinP'),
+        (3510, 3510, 'shAudienc'),
+        (15877, 15877, '\n    '),
+        (15928, 15928, ',\n    undefined,\n    false,\n  '),
+        (17101, 17101, '\n      '),
+        (17148, 17148, ',\n      undefined,\n      false,\n    '),
+        (17563, 17563, '\n    '),
+        (17617, 17617, ',\n    undefined,\n    false,\n  '),
+        (37742, 37742, '\n    '),
+        (37744, 37744, '  '),
+        (37781, 37781, '  '),
+        (37798, 37798, '  '),
+        (37821, 37821, '  '),
+        (37822, 37822, ',\n    undefined,\n    false,\n  '),
+    ],
+}
+SOAK_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blobs[0]], stderr=subprocess.PIPE).decode()
+    for path, blobs in module["SOAK_FIXTURES"].items()
+}
+SOAK_FINAL_CONTENT = {}
+for fixture_path, fixture_edits in SOAK_FIXTURE_EDITS.items():
+    fixture_text = SOAK_ORIGINAL_CONTENT[fixture_path]
+    for begin, end, replacement in reversed(fixture_edits):
+        fixture_text = fixture_text[:begin] + replacement + fixture_text[end:]
+    fixture_blob = subprocess.check_output(["git", "hash-object", "--stdin"],
+                                           input=fixture_text.encode(), stderr=subprocess.PIPE).decode().strip()
+    assert fixture_blob == module["SOAK_FIXTURES"][fixture_path][1], fixture_path
+    SOAK_FINAL_CONTENT[fixture_path] = fixture_text
 HOOK_COMMENT_SOURCE = {path: Path(path).read_text() for path in module["HOOK_TEST_COMMENTS"]}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
@@ -173,6 +247,8 @@ def commit():
 
 
 def selected(result):
+    assert isinstance(result["relay_soak"], bool), result
+    assert not result["relay_soak"] or result["relay"], result
     assert all(isinstance(result[key], bool) for key in gates), result
     assert result["typecheck"] == any(result[key] for key in
                                       ("root", "web", "signaling", "integration", "notices"))
@@ -523,6 +599,186 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         assert not module["accounting_relocation_is_dormant"](accounting_base, broken_head,
                                                             accounting_base, list(module["ACCOUNTING_HEAD"]))
         assert selected(classify(accounting_base, broken_head)) == gates
+        count += 1
+        for path, text in ACCOUNTING_COLLISION_CONTENT.items():
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write(path, text)
+            collision_base = commit()
+            relocate_accounting()
+            assert selected(classify(collision_base, commit())) == WRAPPER_GATES, path
+            count += 1
+        for syntax in ("import 'reservations';", "import('reservations')", "require('reservations')",
+                       "export {} from 'reservations';", "import 'journal-schema';", "require('recovery-error')",
+                       "import '../tunnel/reservations.ts';", "export * from './journal-schema';",
+                       "const old = 'scripts/tunnel-storage-proof/reservations.ts';"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("scripts/real-module-consumer.ts", syntax)
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, syntax
+            count += 1
+        for text in ('const counts = { "reservations": 1 };', 'const reservations = 1;',
+                     'const count = object.reservations;', '// completed reservations do not hold a slot'):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("packages/signaling/ordinary-counter.ts", text)
+            counter_base = commit()
+            relocate_accounting()
+            assert selected(classify(counter_base, commit())) == WRAPPER_GATES, text
+            count += 1
+        # Preserve every unrelated published repository object/mode, including real counters.
+        # Only this owned temporary index/object database is changed; no future commit is needed.
+        git("fetch", "--quiet", "--no-tags", str(original), ACCOUNTING_FULL_BASE)
+        git("read-tree", ACCOUNTING_FULL_BASE)
+        for path, text in ACCOUNTING_HEAD_CONTENT.items():
+            blob = git("hash-object", "-w", "--stdin", input=text)
+            mode = "100755" if path.endswith("settlement-mutations.py") else "100644"
+            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+        full_tree = git("write-tree")
+        full_head = git("commit-tree", full_tree, "-p", ACCOUNTING_FULL_BASE, "-m", "actual full-tree relocation")
+        assert set(git("diff", "--name-only", ACCOUNTING_FULL_BASE, full_head).splitlines()) == set(ACCOUNTING_HEAD_CONTENT)
+        full_result = classify(ACCOUNTING_FULL_BASE, full_head)
+        assert selected(full_result) == WRAPPER_GATES, full_result
+        count += 1
+        # Every soak-scope case retains the complete actual published repository tree/modes.
+        soak_base = ACCOUNTING_FULL_BASE
+        fixture_paths = tuple(SOAK_FINAL_CONTENT)
+        def soak_tree(parent, updates=(), removals=(), source=None):
+            git("read-tree", source or parent)
+            for path, text, mode in updates:
+                data = text.encode() if isinstance(text, str) else text
+                blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                               input=data, stderr=subprocess.PIPE).decode().strip()
+                git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+            for path in removals:
+                git("update-index", "--force-remove", "--", path)
+            tree = git("write-tree", "--missing-ok")
+            return git("commit-tree", tree, "-p", parent, "-m", "owned full-tree soak scope")
+        def fixture_updates(paths):
+            return [(p, SOAK_FINAL_CONTENT[p], "100644") for p in paths]
+        combinations = ((fixture_paths[0],), (fixture_paths[1],), fixture_paths)
+        for changes in combinations:
+            for docs in (False, True):
+                updates = fixture_updates(changes)
+                if docs:
+                    updates.append(("docs/owned-soak-note.md", "ordinary nonexecuting prose\n", "100644"))
+                head = soak_tree(soak_base, updates)
+                result = classify(soak_base, head)
+                assert selected(result) == gates and not result["relay_soak"], (changes, docs, result)
+                assert set(git("diff", "--name-only", soak_base, head).splitlines()) == {
+                    *changes, *(["docs/owned-soak-note.md"] if docs else [])}
+                count += 1
+        for first, second in (fixture_paths, fixture_paths[::-1]):
+            left = soak_tree(soak_base, fixture_updates((first,)))
+            right = soak_tree(left, fixture_updates((second,)))
+            result = classify(left, right)
+            assert selected(result) == gates and not result["relay_soak"]
+            count += 1
+        # Reviewed entry/import/launch wiring must remain current even after an upstream edit.
+        for path in module["SOAK_TRACE"]:
+            body = git("show", f"{soak_base}:{path}") + "\n// unreviewed upstream trace change\n"
+            left = soak_tree(soak_base, [(path, body, "100644")])
+            result = classify(left, soak_tree(left, fixture_updates(fixture_paths)))
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        package_text = subprocess.check_output(["git", "show", f"{soak_base}:package.json"]).decode()
+        cli_text = subprocess.check_output(["git", "show", f"{soak_base}:packages/daemon/src/cli.ts"]).decode()
+        previous_version = json.loads(package_text)["version"]
+        next_version = "0.7.17-dev.999"
+        version_package = package_text.replace(f'"version": "{previous_version}"', f'"version": "{next_version}"', 1)
+        marker = f"return '{previous_version}'; // REMI_COMPILED_VERSION"
+        assert cli_text.count(marker) == 2
+        version_cli = cli_text.replace(marker, f"return '{next_version}'; // REMI_COMPILED_VERSION")
+        version_updates = [("package.json", version_package, "100644"),
+                           ("packages/daemon/src/cli.ts", version_cli, "100644")]
+        version_base = soak_tree(soak_base, version_updates)
+        result = classify(version_base, soak_tree(version_base, fixture_updates(fixture_paths)))
+        assert selected(result) == gates and not result["relay_soak"], result
+        count += 1
+        for state in ("mismatched-version", "missing-marker", "other-package-field"):
+            changes = list(version_updates)
+            if state == "mismatched-version":
+                changes[1] = ("packages/daemon/src/cli.ts", cli_text, "100644")
+            elif state == "missing-marker":
+                changes[1] = ("packages/daemon/src/cli.ts", version_cli.replace("// REMI_COMPILED_VERSION", "// missing marker", 1), "100644")
+            else:
+                changes[0] = ("package.json", version_package.replace('"private": true', '"private": false', 1), "100644")
+            left = soak_tree(soak_base, changes)
+            result = classify(left, soak_tree(left, fixture_updates(fixture_paths)))
+            assert selected(result) == gates and result["relay_soak"], (state, result)
+            count += 1
+        result = classify(soak_base, soak_tree(soak_base, [*version_updates, *fixture_updates(fixture_paths)]))
+        assert selected(result) == gates and result["relay_soak"], result
+        count += 1
+        for producer in fixture_paths:
+            for state in ("body", "delete", "rename", "symlink", "executable", "addition"):
+                left = soak_base
+                updates = fixture_updates((producer,))
+                removals = []
+                if state == "body":
+                    updates = [(producer, "export const changed = true;\n", "100644")]
+                elif state == "delete":
+                    updates = []; removals = [producer]
+                elif state == "rename":
+                    updates = [("docs/moved-soak-fixture.md", SOAK_FINAL_CONTENT[producer], "100644")]
+                    removals = [producer]
+                elif state == "symlink":
+                    updates = [(producer, "unknown-target", "120000")]
+                elif state == "executable":
+                    updates = [(producer, SOAK_FINAL_CONTENT[producer], "100755")]
+                else:
+                    left = soak_tree(soak_base, removals=(producer,))
+                result = classify(left, soak_tree(left, updates, removals))
+                assert selected(result) == gates and result["relay_soak"], (producer, state, result)
+                count += 1
+        runtime = ("packages/web/tests/relay-r7-soak.test.ts", "packages/web/tests/helpers/relay-hub.ts",
+                   "packages/signaling/tests/e2e/harness.ts", "packages/signaling/tests/e2e/endpoints.ts",
+                   "packages/signaling/tests/e2e/test-entry.ts", "packages/daemon/src/cli.ts",
+                   "packages/shared/src/protocol.ts", "bunfig.toml", "package.json", "bun.lock",
+                   "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "scripts/unknown-runtime.py")
+        for path in runtime:
+            updates = [*fixture_updates(fixture_paths), (path, "changed runtime or measurement input\n", "100644")]
+            result = classify(soak_base, soak_tree(soak_base, updates))
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/native", "packages/macos", "tests", "scripts", ".github/scripts",
+                          ".github/workflows", ".github/actions"):
+            for context in ("both", "new-head", "removed", "target-base-only"):
+                path = f"{directory}/soak-consumer.ts"
+                relative = os.path.relpath(fixture_paths[0], Path(path).parent)
+                text = f"import '{relative}';\n"
+                if directory in (".github/workflows", ".github/actions"):
+                    path = f"{directory}/soak-consumer.yml"
+                    text = f"steps:\n  - run: bun test {fixture_paths[0]}\n"
+                caller = (path, text, "100644")
+                left = soak_tree(soak_base, [caller]) if context != "new-head" else soak_base
+                if context == "target-base-only":
+                    right = soak_tree(soak_base, fixture_updates(fixture_paths))
+                else:
+                    updates = fixture_updates(fixture_paths)
+                    if context == "new-head":
+                        updates.append(caller)
+                    right = soak_tree(left, updates, (path,) if context == "removed" else ())
+                result = classify(left, right)
+                assert selected(result) == gates and result["relay_soak"], (directory, context, result)
+                count += 1
+        for path, data, mode in (("packages/shared/src/invalid.ts", b"\xff", "100644"),
+                                 ("scripts/invalid.py", b"\0", "100644"),
+                                 ("packages/shared/credentials", b"never read", "100644"),
+                                 ("packages/shared/alias", b"unavailable", "120000")):
+            left = soak_tree(soak_base, [(path, data, mode)])
+            right = soak_tree(left, fixture_updates(fixture_paths))
+            result = classify(left, right)
+            assert selected(result) == gates and result["relay_soak"], (path, result)
+            count += 1
+        git("read-tree", soak_base)
+        git("update-index", "--add", "--cacheinfo", "100644," + "f" * 40 + ",scripts/unreadable.ts")
+        missing_tree = git("write-tree", "--missing-ok")
+        missing_base = git("commit-tree", missing_tree, "-p", soak_base, "-m", "missing scan object")
+        result = classify(missing_base, soak_tree(missing_base, fixture_updates(fixture_paths)))
+        assert selected(result) == gates and result["relay_soak"]
+        count += 1
+        assert not module["soak_fixture_only"](soak_base, "f" * 40, soak_base, list(fixture_paths))
         count += 1
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
@@ -996,6 +1252,15 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 raise AssertionError("validator accepted an unrecognized routing contract")
         routing_refusal("ci.yml", lambda w: w["on"].pop("push"))
         routing_refusal("ci.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]))
+        routing_refusal("relay-r7.yml", lambda w: w["jobs"]["scope"]["outputs"].pop("relay_soak"))
+        routing_refusal("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"]
+                        if s.get("name") == "Same attached session for 61 actual minutes").update(
+                        **{"if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'"}))
+        routing_refusal("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"]
+                        if s.get("name") == "Existing actual wire and authority controls").update(
+                        **{"if": "needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false'"}))
+        routing_refusal("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(
+                        steps=[s for s in w["jobs"]["local-relay"]["steps"] if s.get("name") != "Report scoped soak skip"]))
         routing_refusal("relay-r7.yml", lambda w: w["on"].pop("workflow_dispatch"))
         routing_refusal("ci.yml", lambda w: w["concurrency"].update(**{"cancel-in-progress": "true"}))
         routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["typecheck"]["steps"] if s.get("run") == "bun run typecheck").update(**{"if": "needs.scope.result == 'success' && needs.scope.outputs.web != 'false'"}))
@@ -1041,6 +1306,20 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 count += 1
             else:
                 raise AssertionError("actual actionlint tool/format failure accepted")
+        for state in ("missing-soak-output", "missing-soak-env", "aliased-soak-output"):
+            action = yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"])
+            if state == "missing-soak-output":
+                action["outputs"].pop("relay_soak")
+            elif state == "missing-soak-env":
+                action["runs"]["steps"][-1]["env"].pop("CI_SCOPE_RELAY_SOAK")
+            else:
+                action["outputs"]["relay_soak"]["value"] = "${{ steps.scope.outputs.relay }}"
+            try:
+                WORKFLOW_TOOLS["validate_action"](action)
+            except AssertionError:
+                count += 1
+            else:
+                raise AssertionError("scope action accepted invalid soak output wiring")
         outputs = runpy.run_path(str(SCRIPT.with_name("check-scope-output.py")))["OUTPUTS"]
         for change, expected in (("valid-false", 0), ("valid-unknown-full", 0), ("missing", 1),
                                  ("blank", 1), ("invalid", 1), ("none", 1)):
@@ -1056,6 +1335,25 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = subprocess.run([sys.executable, str(SCRIPT.with_name("check-scope-output.py"))],
                                     env=env, capture_output=True, text=True)
             assert (result.returncode == 0) == (expected == 0), (change, result)
+            count += 1
+        # Exercise the real mandatory-output subprocess for the additive soak field.
+        for state, expected in (("short-only", 0), ("full-relay", 0), ("missing-soak", 1),
+                                ("blank-soak", 1), ("invalid-soak", 1), ("inconsistent", 1)):
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CI_SCOPE_")}
+            env.update({f"CI_SCOPE_{key.upper()}": "false" for key in outputs})
+            env["CI_SCOPE_RELAY"] = "true"
+            env["CI_SCOPE_RELAY_SOAK"] = "true" if state in {"full-relay", "inconsistent"} else "false"
+            if state == "missing-soak":
+                env.pop("CI_SCOPE_RELAY_SOAK")
+            elif state == "blank-soak":
+                env["CI_SCOPE_RELAY_SOAK"] = ""
+            elif state == "invalid-soak":
+                env["CI_SCOPE_RELAY_SOAK"] = "False"
+            elif state == "inconsistent":
+                env["CI_SCOPE_RELAY"] = "false"
+            result = subprocess.run([sys.executable, str(SCRIPT.with_name("check-scope-output.py"))],
+                                    env=env, capture_output=True, text=True, check=False)
+            assert (result.returncode == 0) == (expected == 0), (state, result)
             count += 1
         # Execute the actual stable-job failure body. Exact validated conditions keep every
         # following runtime step inactive for tool, validator or mandatory-output failure.
@@ -1120,7 +1418,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             for key in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
                 env.pop(key, None)
             result = json.loads(subprocess.check_output(["python3", str(SCRIPT)], env=env))
-            assert selected(result) == gates
+            assert selected(result) == gates and result["relay_soak"]
             count += 1
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
