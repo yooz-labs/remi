@@ -36,6 +36,7 @@ const SUBCOMMAND_LIST = [
   'model',
   'migrate-permissions',
   'codex',
+  'claude',
   'pair',
 ] as const;
 
@@ -418,11 +419,11 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     } else if (
       isSubcommand(arg as string) &&
       subcommand !== 'codex' &&
-      !(arg === 'codex' && subcommand !== undefined)
+      subcommand !== 'claude' &&
+      !((arg === 'codex' || arg === 'claude') && subcommand !== undefined)
     ) {
-      // Once `codex` is the subcommand, the words after it are Codex's (a prompt may say
-      // "status" or "config"), so a later subcommand name is not a subcommand. And `codex`
-      // itself is a subcommand only when none was given: `remi stop codex` stops.
+      // Once either harness alias is selected, later command-looking words are its arguments.
+      // An alias only starts a command when none was given: `remi stop codex` still stops.
       subcommand = arg as Subcommand;
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
@@ -480,11 +481,11 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
 
   if (
     error === undefined &&
-    subcommand === 'codex' &&
+    (subcommand === 'codex' || subcommand === 'claude') &&
     harness !== undefined &&
-    harness !== 'codex'
+    harness !== subcommand
   ) {
-    error = `Error: --harness ${harness} conflicts with the codex subcommand.`;
+    error = `Error: --harness ${harness} conflicts with the ${subcommand} subcommand.`;
   }
 
   return {

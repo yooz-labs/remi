@@ -25,6 +25,8 @@ always select their existing full gates.
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
 | Normal CI execution changes | Affected Lint/Type Check/Test commands + workflow validation | Skip unless toolchain/global inputs change |
 | R7 commands/actions/env/pin/runner/timeout/test-list changes | Workflow validation | Run |
+| Exact complete CLI default transition (#1473) | All existing gates and short relay controls | Skip only attached-session soak |
+| Exact complete dormant full-decoder transition (#1170) | All existing gates and short relay controls | Skip only attached-session soak |
 | Dependencies, toolchain/global config, unknown input or unavailable comparison | All existing gates | Run |
 
 Root package exemptions compare parsed JSON objects. Only `version` and named
@@ -426,3 +428,95 @@ exact count-guarded transforms and adapter/test literals, asserting their Git ID
 It needs no unpublished source object. Existing 1,451 scenarios remain intact;
 D1-specific producer, caller, runner, asset, metadata and mixed-transition controls
 reuse the same owned histories and generic conservative fallback campaign.
+
+
+## Exact CLI default and dormant decoder transitions
+
+Two separately named transitions keep every ordinary gate, type check and actual
+short relay control enabled. Only the 61-minute attached-session soak can skip.
+The workflow, test list, assertions and deadlines are unchanged. This exception
+does not claim that the soak ran or passed.
+
+The CLI default transition requires all 16 reviewed source/test paths: exact
+original modifications and absent additions at base and merge-base, and exact
+final regular modes/blobs at head. Both child-launch paths explicitly select
+Claude for omitted legacy/native requests; the existing resume starter reaches
+that same path. Shared wire/store omission remains Claude. The two compiled CLI
+version returns and root version may change only together, through the existing
+normalization; every other CLI/package byte must match the reviewed role.
+
+The full decoder transition requires all 10 exact source/support paths, including
+the two daemon dependencies, Bun-generated lock, declarations, proof adapters,
+both snapshot runners, notices and real-fixture test. PNG 7.0.0 and JPEG 0.4.4
+are pinned; qrcode retains PNG 5.0.0 and every other lock entry stays unchanged.
+The selected 42-member dependency tree and unchanged 17-package CLI license graph
+were measured during source acceptance; scope classification matches their exact
+source metadata, rather than repeating installations or claiming runtime use.
+The CLI may be the entire reviewed old or final default-harness state, identical
+through the decoder transition apart from synchronized version normalization.
+
+Both rules bind 115 published production/gate inputs at base, head and merge-base
+(the decoder's exact package/lock transition replaces those two original roles).
+These cover relay counters/AEAD/BYE, timers, attached-session lifetime, authority,
+child/session/harness wiring and test execution. Every other non-doc object/mode
+is identical across the three refs. Ordinary prose may accompany the transition;
+executable provisioning and R7 gate documents retain their usual checks.
+
+Full-tree reference scans include root launch/config files. They reuse the
+existing target-qualified relative/known-alias module matcher, trivia, literal
+Unicode/hex escape handling and identifier boundaries. Exact producers and known
+proof consumers are excluded only after strict object type/size/hash/UTF-8/NUL
+reads; binary fixtures have exact mode/blob identities. The published root
+`.env.example` sample is validated and scanned, while unknown actual secret-named
+files are refused before content reads. These literal checks can conservatively
+match data/comments and cannot prove the absence of arbitrary computed callers.
+Unknown, partial, mixed, malformed, changed-core, new-caller and unavailable-object
+cases retain all gates including the soak. No generic CLI/dependency exemption is
+introduced, and the existing fixture and dormant-relocation policies are retained.
+
+
+The decoder also has one exact complete D2+D3 alternative: all 10 decoder paths
+plus all five controller/worker adoption paths must change together. The two
+original proof controller/worker objects become exact adapter roles, with three
+new daemon source/test paths absent at base and merge-base. The internal worker
+functions and controller remain dormant; no production entry is selected. Partial
+adoption, active production references, changed worker bodies or a mixed CLI
+feature restore the soak. D2-only cases and all previous policies are preserved.
+
+## Validation runs when its inputs change (#1476)
+
+The composite action always installs the pinned tools, classifies the actual PR
+diff and validates every mandatory gate output. A separate
+`ci-scope.py --validation-needed` decision conditions only the full classifier
+corpus and workflow YAML/execution-contract commands. Both conditions compare
+`validation_required != 'false'`; absent or invalid outputs cannot disable them.
+The action's existing failure routing and all regular feature tests, commands,
+coverage thresholds and relay deadlines remain unchanged.
+
+One conservative input union covers the classifier, corpus, output validator,
+workflow validator/contracts, this policy document, every CI script and scope
+action file, both workflow YAML extensions and both current hook fixture files
+read by `HOOK_TEST_COMMENTS`. Changed inputs, deletions, renamed old paths and mode
+changes require full validation. The complete existing 2,098 controls remain in
+the corpus; validation decision controls are appended.
+
+A skip needs a readable ordinary pull-request event with exact commit IDs,
+complete non-shallow refs/diff/merge-base and known checkout context. The current
+HEAD must equal `GITHUB_SHA` in the declared workspace. It must be the exact head
+or the event's merge commit with exact base/head parents. Input inventories,
+modes and blobs must agree at base, head, merge-base and checkout, and current
+input bytes must match those objects. Dirty or untracked validator files and
+unknown Git/environment/context inputs retain full validation.
+
+Availability checks bind five published reconstruction roots and 222 published
+original blob objects, including strict type/size/body/hash reads. They require
+the roots' history/tree closure to remain available and never require the 31
+unpublished candidate head objects reconstructed by the corpus. Missing,
+malformed, corrupt, UTF-8/NUL or unavailable validation inputs select full
+validation. No cached verdict or cross-workflow artifact trust is used.
+
+On #1475 the unchanged 1,608-control predecessor corpus took 252.407 seconds in
+CI and 324.713 seconds in R7. These are historical command-to-result costs,
+separate from whole-job elapsed time. This change does not claim that an ordinary
+hosted feature PR has skipped validation until such a run is measured; actual
+classification and mandatory output checking remain required on that run.

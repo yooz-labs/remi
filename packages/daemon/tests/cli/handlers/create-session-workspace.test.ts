@@ -117,7 +117,9 @@ describe('create requests with a workspace (#1236)', () => {
       workspace: { repository: repo, worktree: { branch: 'feature/x' } },
     });
     const dir = worktreeDir('feature-x');
-    expect(spawns).toEqual([{ port: SPAWNED.port, directory: dir, extraArgs: ['--inherited'] }]);
+    expect(spawns).toEqual([
+      { port: SPAWNED.port, directory: dir, extraArgs: ['--inherited', '--harness', 'claude'] },
+    ]);
     expect(response()).toMatchObject({
       success: true,
       sessionId: SPAWNED.sessionId,

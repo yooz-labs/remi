@@ -85,7 +85,16 @@ describe('startSession (#1129)', () => {
       {
         port: 20005,
         directory: dir,
-        extraArgs: ['--auth', '--bind', '127.0.0.1', '--', '--resume', CLAUDE_ID],
+        extraArgs: [
+          '--auth',
+          '--bind',
+          '127.0.0.1',
+          '--harness',
+          'claude',
+          '--',
+          '--resume',
+          CLAUDE_ID,
+        ],
       },
     ]);
     expect(sent).toEqual([]);
