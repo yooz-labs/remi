@@ -343,3 +343,42 @@ qualify, including the corrected descriptor-test base pin for B. The referenced
 published declaration asset is pinned unchanged as a regular read-validated known
 input at both endpoints. Removed/altered references or changed/missing declaration
 assets restore full runtime gates; this is not a generic type-change exemption.
+
+
+## Exact native journal helper relocation (#1170)
+
+One named helper transition retains all ordinary gates and skips relay only for
+the complete seven-path move. The factory body and fixed C source remain exact;
+the proof factory becomes a single explicit re-export, its declaration moves to
+the daemon with an exact reference, and the new real filesystem test shares the
+same factory. Existing proof probes and descriptor/journal adoption tests have
+immutable whole-blob and regular-mode provenance at both endpoints.
+
+Only the old proof `recovery-native.c` has a null head pin: its original regular
+blob must exist at both bases, the head must omit it, and Git must report its
+exact D transition. Every other pin keeps its existing strict A/M semantics.
+Helper compositions are refused; the reviewed descriptor-plus-journal transition
+remains unchanged. No directory, deletion or native-helper exemption is added.
+
+Helper-only reference checks include the exact old and new C assets. Relative
+and known daemon-alias literal imports resolve with the `.c` extension intact;
+qualified launch/config strings and Unicode/hex escapes are checked too. Unknown
+relative escapes, bare candidate identity escapes and qualified C string escapes
+stay conservative. A same-basename
+C asset elsewhere does not name this helper. Existing A/B TypeScript resolution
+and whole-tree mode/read/type/length/UTF8/NUL/secret-name checks stay intact.
+Daemon production source also checks exact references to the two verified factory-
+calling proof probes, their two actual dispatch wrappers and the three direct
+helper-calling tests. It reuses the existing literal relative/alias/suffix/escape
+resolver without an import graph or generic directory rule. The existing proof
+entry/probe uses remain allowed as pinned standalone inputs; both dispatch wrapper
+blobs are additionally pinned unchanged and read-validated.
+Literal checks cannot establish absence of computed references.
+
+The real Git corpus reconstructs the move from published originals plus the exact
+prefix, declaration split, adapter and reviewed test literal. Candidate commit
+objects are unnecessary. Complete moves and ordinary prose companions qualify;
+incomplete or reversed moves, changed pins, modes, status, restored old C source,
+missing/malformed objects and consumers at either endpoint restore full gates.
+This qualification does not activate transfer handling, client support or a
+capability advertisement.
