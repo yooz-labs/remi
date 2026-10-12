@@ -1,6 +1,7 @@
 """Classify the complete PR diff; every unclassified input runs all gates (#1359)."""
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -97,6 +98,31 @@ ACCOUNTING_REFERENCES = re.compile(
 )
 
 
+# Exact reviewed short-suite fixture transitions; the 61-minute body stays unchanged.
+SOAK_FIXTURES = {
+    "tests/integration/relay-r3-drain.test.ts": ("c0747830bac50fed23d96c057df3dc68f98078ea", "917d6178be63d0b7428c8228366a359b429342a1"),
+    "packages/signaling/tests/e2e/push.e2e.test.ts": ("8619bb6b4c833708590061046338183a636aa652", "71b2cb846cca049e8f0a87ccb86d50d07fb89847"),
+}
+SOAK_FIXTURE_TOKENS = ("relay-r3-drain", "push.e2e")
+SOAK_TRACE = {
+    "packages/web/tests/relay-r7-soak.test.ts": "62563dd6a34518982397ca0cfb0c8f99a387b412",
+    "packages/web/tests/helpers/relay-hub.ts": "c7cbf893b5cc3365952da29bed6403b32cda0d52",
+    "packages/signaling/tests/e2e/harness.ts": "df152a92fd95d8dcfd5176e79c3110aa7b500628",
+    "packages/signaling/tests/e2e/test-entry.ts": "be546df77024a1e7e3a32023ac53e5175627f526",
+    "packages/signaling/tests/e2e/endpoints.ts": "95efbb070e2cae88b306fa9ea1aa50207e95b7e9",
+    "packages/web/src/lib/relay-machine-channel.ts": "ea1ca3127869e3d82cd85967a2f953bea6d31a25",
+    "packages/web/src/lib/relay-requests.ts": "118751c5c072a51bfcd921cf68696e1d425209c0",
+    "packages/shared/src/index.ts": "8dc617a1964b84e6920fefb63af3531f58ffc62c",
+    "bunfig.toml": "3cdd70fa50576ab11b0ca1d8faeac951c3786196",
+    "packages/daemon/tests/debug/test-harness-marker.ts": "e0e598b09ea569730495b91e42a485e0541fafd2",
+    "packages/daemon/tests/unset-remi-home.ts": "5183f291018ec6e71d63708c35edcaddc926eb09",
+    "packages/daemon/tests/session/port-test-helpers.ts": "5505b2f8ab4556e86d36b32e13c28f85009db7d7",
+    "packages/daemon/src/session/port-utils.ts": "c9a8af94b6b7d7a31e85688276e6566a41eb4f14",
+    "packages/signaling/wrangler.toml": "f898c79be3ea9b76aa772b34c066f8a0e0e08374",
+}
+SOAK_VERSION_TRACE = {'packages/daemon/src/cli.ts': '978dd5a92b65a75644c678d286639ddbfc4a604fa88663397b8a5de75b43986f', 'package.json': '1e9ae2a08a0baf363838c236363a3810df477ef378c8e78d7385509acda4148d'}
+
+
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -122,7 +148,7 @@ def git(*args):
 
 
 def all_gates(reason):
-    return {**dict.fromkeys(GATES, True), "typecheck": True, "reason": reason}
+    return {**dict.fromkeys(GATES, True), "typecheck": True, "relay_soak": True, "reason": reason}
 
 
 def hook_test_references_reviewed(base, head):
@@ -313,6 +339,122 @@ def accounting_relocation_is_dormant(base, head, merge_base, paths):
         return False
 
 
+def ordinary_soak_doc(path):
+    return path not in {"docs/PROVISIONING.md", "docs/relay-r7-gates.md"} and (
+        path.endswith(".md") or path == "CHANGELOG")
+
+
+def soak_versions_reviewed(tree):
+    package = tree.get("package.json")
+    cli = tree.get("packages/daemon/src/cli.ts")
+    if not package or not cli or package[0] != "100644" or cli[0] != "100644":
+        return False
+    package_data = git("cat-file", "blob", package[1])
+    metadata = json.loads(package_data)
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("version"), str):
+        return False
+    version = metadata["version"]
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?", version):
+        return False
+    cli_data = git("cat-file", "blob", cli[1])
+    cli_pattern = rb"(?m)^( +return ')([^'\n]+)('; // REMI_COMPILED_VERSION)$"
+    values = re.findall(cli_pattern, cli_data)
+    if len(values) != 2 or any(value[1] != version.encode() for value in values):
+        return False
+    package_pattern = rb'(?m)^(  "version": ")([^"\n]+)(",)$'
+    values = re.findall(package_pattern, package_data)
+    if len(values) != 1 or values[0][1] != version.encode():
+        return False
+    normalized = {
+        "packages/daemon/src/cli.ts": re.sub(cli_pattern, rb"\1<VERSION>\3", cli_data),
+        "package.json": re.sub(package_pattern, rb"\1<VERSION>\3", package_data),
+    }
+    return all(hashlib.sha256(data).hexdigest() == SOAK_VERSION_TRACE[path]
+               for path, data in normalized.items())
+
+
+def soak_fixture_only(base, head, merge_base, paths):
+    changed = set(paths) & set(SOAK_FIXTURES)
+    if not changed or any(path not in changed and not ordinary_soak_doc(path) for path in paths):
+        return False
+    try:
+        trees = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref)
+            if not raw or not raw.endswith(b"\0"):
+                return False
+            tree = {}
+            for entry in raw[:-1].split(b"\0"):
+                header, separator, name = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return False
+                path = name.decode()
+                if any(part in ("", ".", "..") for part in path.split("/")) or any(
+                        ord(char) < 32 or ord(char) == 127 for char in path):
+                    return False
+                mode, _, blob = header.decode().split()
+                if path in tree:
+                    return False
+                tree[path] = (mode, blob)
+            trees[ref] = tree
+        for ref in (base, head):
+            if any(trees[ref].get(path) != ("100644", blob) for path, blob in SOAK_TRACE.items()):
+                return False
+            if not soak_versions_reviewed(trees[ref]):
+                return False
+        for path, (old, new) in SOAK_FIXTURES.items():
+            for ref in (base, head):
+                if trees[ref].get(path) not in {("100644", old), ("100644", new)}:
+                    return False
+            if path in changed:
+                if any(trees[ref].get(path) != ("100644", old) for ref in (base, merge_base)):
+                    return False
+                if trees[head].get(path) != ("100644", new):
+                    return False
+                status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                             merge_base, head, "--", path)
+                if status != f"M\0{path}\0".encode():
+                    return False
+        # Trace wiring, helpers/config and every non-doc object/mode stay identical at both ends.
+        def remaining(tree):
+            return {p: value for p, value in tree.items() if p not in changed and not ordinary_soak_doc(p)}
+        if remaining(trees[base]) != remaining(trees[head]):
+            return False
+        for ref in (base, head):
+            scan = {}
+            for path, (_, blob) in trees[ref].items():
+                if not path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig")):
+                    continue
+                name = Path(path).name
+                if (name.startswith(".env") or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
+                        or name in {"credentials", "secrets.json"}):
+                    return False
+                if path in SOAK_FIXTURES or path in {
+                        ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"}:
+                    continue
+                if not ordinary_soak_doc(path) and Path(path).suffix.lower() not in STAGING_BINARY:
+                    scan[path] = blob
+            data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                           input="".join(f"{blob}\n" for blob in scan.values()).encode(),
+                                           stderr=subprocess.PIPE)
+            stream = io.BytesIO(data)
+            for blob in scan.values():
+                header = stream.readline().decode().split()
+                if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
+                    return False
+                content = stream.read(int(header[2]))
+                if len(content) != int(header[2]) or stream.read(1) != b"\n":
+                    return False
+                text = content.decode()
+                if "\0" in text or any(token in text for token in SOAK_FIXTURE_TOKENS):
+                    return False
+            if stream.read():
+                return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
 def package_transport_unchanged(base, head):
     # Compare parsed objects, never matching diff text. Unknown/new fields trigger R7.
     def transport_input(ref):
@@ -467,7 +609,7 @@ def classify(base, head):
                 continue
             else:
                 return all_gates("Unknown path or global/gate configuration changed")
-        return {**gates, "typecheck": any(gates[key] for key in
+        return {**gates, "relay_soak": gates["relay"] and not soak_fixture_only(base, head, merge_base, paths), "typecheck": any(gates[key] for key in
                 ("root", "web", "signaling", "integration", "notices")),
                 "reason": f"Classified complete PR diff ({len(paths)} paths)"}
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
@@ -500,7 +642,7 @@ def main():
         with open(summary, "a") as stream:
             stream.write(f"### CI scope\n\n{result['reason']}\n\n")
             stream.write("| Gate | Selected |\n| --- | --- |\n")
-            for key in GATES:
+            for key in (*GATES, "relay_soak"):
                 stream.write(f"| {key} | {'Run' if result[key] else 'Scoped skip'} |\n")
 
 

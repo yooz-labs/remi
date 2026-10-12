@@ -229,3 +229,38 @@ the three actual native/Worker collision blobs and tests the complete published
 repository tree with only the eight reviewed relocation entries replaced. This
 full-tree control uses published ancestor objects and works before adoption;
 it does not require unpublished source commits or new files in the caller tree.
+
+## Short R7 fixture controls and the unchanged long soak
+
+`relay` still selects setup, the entire existing short wire/authority suite and
+artifacts. The separate mandatory `relay_soak` output defaults to `relay`; it is
+not part of `GATES`, so existing staging/accounting selections stay unchanged.
+Only the 61-minute step uses `relay_soak`. Its command/body hash, environment,
+assertion, runner and timeout remain unchanged. An explicit report records a
+scoped-out soak; it is not a receipt that the measurement passed. Manual/main
+and unknown-input fallbacks retain full behavior.
+
+Either or both exact M-only changes to `tests/integration/relay-r3-drain.test.ts`
+and `packages/signaling/tests/e2e/push.e2e.test.ts` may omit only the soak. Both
+original/final full blobs and regular0644 modes must match the reviewed pins.
+Companions may be ordinary nonexecuting Markdown/CHANGELOG only; PROVISIONING
+and R7 acceptance documentation are excluded. Every ordinary gate and the short
+relay flag remain selected. Other runtime/helper/config/unknown inputs retain
+both phases.
+
+Both complete endpoint trees retain identical non-doc objects/modes outside
+the changed fixtures. Reviewed direct soak entry/import/launch nodes are pinned
+at both ends, and strict whole-text caller scans cover both fixture basenames.
+Unavailable objects, malformed UTF8/NULs, unexpected modes/paths/provenance or
+new/removed/existing callers restore the soak. Literal scans cannot discover
+computed references; reviewed trace pins and conservative inputs constrain this
+exception. CLI trace normalization masks only its two compiled-version return
+values, both equal to the package version; package normalization masks only its
+single version value. Every other byte/field stays fixed. This permits a normal
+consistent upstream counter bump at both endpoints, not version companion edits
+in the fixture PR.
+
+Action outputs/env and YAML contracts require explicit true/false for both flags;
+missing, blank, malformed or soak=true/relay=false values fail scope before runtime
+work. Actual full-tree controls use published ancestor objects and copied approved
+fixture bytes, without depending on unpublished fixture commits or files.
