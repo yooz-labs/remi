@@ -165,3 +165,31 @@ success. An action step validates every mandatory output as explicit true/false.
 The corpus executes the actual failure shell and output-validator subprocesses,
 while dedicated YAML checks enforce every runtime condition. Valid unknown input
 classification still selects full relevant runtime checks.
+
+## Dormant image staging codec (#1170)
+
+Only the exact `STAGING_INPUTS` paths in `ci-scope.py` qualify: the shared
+`image-staging.ts` module, its test, the generator/vectors/PNG/JPEG/README fixtures,
+and the three named standalone staging codec proof adapters. They select every
+ordinary lint/type/test/notice/Mac gate. Only R7 skips while the codec is dormant.
+This is not a shared-package or proof-directory exemption.
+
+The classifier checks actual merge-base-to-head A/M status and regular blob modes.
+An addition must be absent at both merge-base and target base; a modification
+must already exist at both. Missing source, deletions, renames, type changes or
+unexpected exports restore all gates. The source's 19 reviewed public identifiers
+must match `STAGING_EXPORTS`; adding an API requires reviewing this policy too.
+
+Both target-base and head trees are scanned across packages, root tests/scripts
+and all GitHub CI source/config surfaces, plus the exact executable fixture
+`docs/PROVISIONING.md`. Only the exact producers and the exact
+classifier/corpus self-tools may reference the module basename, public identifiers,
+`image_staging` or `image_upload_` wire family. Whole text blobs are decoded as
+strict UTF8; malformed text, NULs, unavailable objects or malformed tree metadata
+restore all gates. Markdown prose and known binary assets are excluded from text
+scans; the provisioning fixture remains scanned. Tracked symlinks/submodules and
+secret file names fail closed before reads.
+An old consumer removed by this PR still selects R7, as does a new consumer,
+registry/export/helper/config change or any mixed runtime input. No prior gate
+selection is cleared. Literal scans cannot discover deliberately computed names;
+source ownership and future runtime integration still require review.
