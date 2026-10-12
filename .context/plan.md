@@ -271,6 +271,53 @@ state are preserved. Actual held No latency under repeated decoding was
 controls exceeded it. These finite observations do not establish a universal
 process memory/CPU ceiling or an active upload path.
 
-Next select the trusted pre-CLI worker entry and its actual build/source callers,
-then implement the authenticated staging lifecycle and one production client.
+Trusted pre-CLI entry packaging is recorded below. Next implement the
+authenticated staging lifecycle and one production client.
 Keep #1170 open; capability availability follows that completed path.
+
+## Trusted image worker entry
+
+The daemon entry now selects the exact local `--internal-image-worker` mode
+before importing CLI, home or configuration modules. It accepts one PNG/JPEG
+media argument; malformed internal shapes are refused before imports.
+Every other invocation imports the existing CLI. Only the first operand selects
+the internal mode, so words after `--` retain their ordinary harness meaning.
+Root and daemon source/build scripts, the release compiler, integration Docker
+compiler and default notice graph now point to this entry. The compiled-version
+marker stays in `cli.ts`, whose implementation bytes are unchanged.
+
+The fixed local factory derives the source entry from its own module or uses the
+actual compiled executable, including arbitrary artifact names. It requires a
+locally generated private empty directory owned by the service; it accepts no
+client executable or command. The service must retain that directory exclusively
+until its child is reaped. The factory check does not protect against later
+mutation by the owning user. The controller adds only an optional cwd and two
+spawn properties; absent cwd preserves the original proof callers.
+Child environment, JIT policy, bounds, input ownership, cancellation and awaited
+exit remain unchanged. Normal CLI runtime configuration behavior is preserved;
+the private worker cwd prevents loading a repository's runtime configuration.
+
+Both original root checks and both focused populations pass on Bun 1.3.11 and
+1.4.2: 58 tests and 741 assertions. The new integration profile has a separate
+strict type check using the unchanged root options and exact existing declarations.
+Actual default-entry bundle/license checks include PNG 5, PNG 7 and JPEG across
+19 packages. Two Mac source controls and all six supported compiled platform/Bun
+cells pass 36 identical ordered controls each, covering actual entry pixels,
+private-cwd factory/self-exec, argument boundaries, normal help/version, a real
+sessionless hub and an inert child. All 20 entry build/run exits are zero.
+Owned dotenv and bunfig positive controls are observable on every runtime cell;
+private-cwd controls remain clear. Linux source-runtime acceptance is not claimed.
+
+The unchanged default 19-group and held 22-group profiles also pass all six
+supported compiled cells, for 24 additional zero-exit rows. Original ordered
+controls, pixels, 42 dependency members, fixture limits, reaping and cleanup are
+preserved. Held No latency was 0.52-69.21 ms below the unchanged 1,000-ms limit;
+all six deliberate parent-block controls exceeded it. Earlier test-only CLI
+environment and remote-argument failures remain superseded evidence. No
+production guard or deadline was weakened to pass them.
+
+This establishes the owned child entry and its finite packaging acceptance.
+The authenticated staging lifecycle still owns reservations, current transfer
+authority, private worker-directory lifetime and staged cleanup. One production
+client remains required before `image_staging` advertisement. No upload handler
+or capability is added here. Keep #1170 open.
