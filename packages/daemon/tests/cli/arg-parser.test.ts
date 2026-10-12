@@ -1,6 +1,41 @@
 import { describe, expect, test } from 'bun:test';
 import { looseArgs, parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
 
+describe('explicit Claude alias (#1473)', () => {
+  test('later command names are Claude arguments, including the other alias', () => {
+    for (const word of ['status', 'config', 'new', 'logs', 'stop', 'claude', 'codex']) {
+      const parsed = parseArgs(['claude', word]);
+      expect(parsed.subcommand).toBe('claude');
+      expect(parsed.claudeArgs).toEqual([word]);
+    }
+  });
+
+  test('a Claude word after a management command is never a launch alias', () => {
+    for (const command of ['stop', 'new', 'serve', 'status', 'ls'] as const) {
+      expect(parseArgs([command, 'claude']).subcommand).toBe(command);
+    }
+  });
+
+  test('alias/flag conflicts are symmetric, before or after the alias', () => {
+    for (const args of [
+      ['claude', '--harness', 'codex'],
+      ['--harness', 'codex', 'claude'],
+    ]) {
+      expect(parseArgs(args).error).toContain('conflicts with the claude subcommand');
+    }
+    expect(parseArgs(['claude', '--harness', 'claude']).error).toBeUndefined();
+    expect(parseArgs(['claude', '--harness', 'opencode']).error).toContain('conflicts');
+  });
+
+  test('the separator prevents aliases and flags from becoming Remi commands', () => {
+    const parsed = parseArgs(['claude', '--', 'codex', 'status', '--harness', 'codex']);
+    expect(parsed.subcommand).toBe('claude');
+    expect(parsed.harness).toBeUndefined();
+    expect(parsed.explicitArgs).toEqual(['codex', 'status', '--harness', 'codex']);
+    expect(parseArgs(['--', 'claude', 'status']).subcommand).toBeUndefined();
+  });
+});
+
 describe('parseArgs', () => {
   // -------------------------------------------------------------------------
   // The main bug fix: remi new + flags
@@ -908,7 +943,7 @@ describe('parseArgs - remi codex and --harness (#1177)', () => {
     expect(parseArgs(['--host', 'h', 'codex']).subcommand).toBe('codex');
   });
 
-  test("that rule is codex's alone: for every other subcommand the last one still wins", () => {
+  test('that rule belongs to harness aliases: management subcommands still use the last one', () => {
     expect(parseArgs(['new', 'ls']).subcommand).toBe('ls');
     expect(parseArgs(['status', 'config']).subcommand).toBe('config');
   });
