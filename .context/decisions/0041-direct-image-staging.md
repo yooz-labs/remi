@@ -1,6 +1,6 @@
 # ADR 0041: Direct image staging contract
 
-**Status:** proposed for owner review (#1170)
+**Status:** accepted contract (#1170); implementation and capability availability pending
 **Date:** 2026-10-11
 **Owner:** Yahya
 
@@ -15,10 +15,16 @@ The disposable decoder worker policy landed in [#1453](https://github.com/yooz-l
 Those are standalone results; production helper/budget selection and transfer handlers remain pending.
 The owner deferred extra OS resource-limit investigation and asked to continue practical file-transfer work.
 
-This ADR remains proposed until the owner reviews its fields, bounds, outcomes and cleanup policy.
-Its publication adds no wire types, advertised capability or runnable upload path.
+The owner accepted these fields, bounds, outcomes, cleanup rules and the `image_staging` name on 2026-10-11.
+Contract acceptance fixes the vocabulary; protocol registration, advertised capability and runnable upload integration remain pending.
 
-## Proposed decision
+The dormant [`image-staging.ts`](../../packages/shared/src/image-staging.ts) codec implements strict structural decoding and encoding.
+Its [fixture corpus](../../packages/shared/tests/fixtures/image-staging/README.md) contains 33 positive and 470 negative vectors with exact PNG/JPEG bytes.
+Both Bun gates preserve 408 existing protocol tests and pass 508 codec tests; all six supported compiled executions and twelve exact guard-removal controls passed.
+The corrected entire vector document loads in Foundation; a Swift wire codec still needs to execute the cases.
+These are structural conformance results, with transfer authority, state, content and cleanup enforced by the later lifecycle.
+
+## Decision
 
 ### 1. One explicit operation: stage an image
 
@@ -26,7 +32,7 @@ The user selects a PNG or JPEG and uploads it to private storage belonging to th
 Completion returns an opaque artifact identifier and a staged result.
 Harness insertion is a separate explicit operation with a separate contract and capability.
 
-The proposed additive capability is `image_staging`.
+The additive capability name is `image_staging`, reserved for the completed upload path.
 Following [ADR 0035](0035-protocol-version-and-capabilities.md), a client enables its picker only when the connected daemon advertises that capability.
 Register and advertise it only with the accepted handler, conformance fixtures and one production client upload caller.
 Existing protocol version 1 remains unchanged by the additive operation.
@@ -149,10 +155,10 @@ Retries keep these original deadlines; a fresh response timestamp never extends 
 
 ## Implementation and native handoff
 
-1. Obtain owner acceptance of this concrete contract and settle production storage/decoder adoption.
-2. Add strict typed validators and golden positive/refusal/boundary vectors to `packages/shared`, with registry/direction/dispatch coverage.
+1. Add the strict typed codec and golden positive/refusal/boundary vectors to `packages/shared`.
    Run byte-identical conformance vectors through TypeScript and Swift; preserve existing protocol fixtures.
-3. Adopt the existing storage/reservation/recovery work and implement the authenticated direct transfer lifecycle.
+2. Settle production storage/decoder adoption and adopt the existing storage/reservation/recovery work.
+3. Register the accepted messages with registry/direction/dispatch coverage and implement the authenticated direct transfer lifecycle.
    Exercise a real source hub/child for exact bytes/digest, ordering, lost acknowledgments, cancellation, capacity, cleanup and changed device/grant/session/binding.
    A real held answer must remain responsive during decode.
 4. Add one production web upload caller and verify rendered selection, progress, cancellation, refusal and reconnect states.
@@ -160,11 +166,10 @@ Retries keep these original deadlines; a fresh response timestamp never extends 
 5. X5 consumes the landed fields and conformance vectors for native picker/progress/staged-result UI in the existing native worktree.
    Relay transfer, harness insertion, links and file fetch follow their separate contracts and acceptance.
 
-## Review decisions still open
+## Remaining implementation gates
 
-- Owner acceptance of the exact existing bounds, nine message shapes, refusal outcomes and cleanup/retry policy, plus the proposed `image_staging` capability name.
 - Production storage-helper and bounded-decoder adoption. Finite packaging and interpreter-policy observations remain distinct from a production allocation ceiling.
-- TypeScript/Swift strict parsing and runtime caller acceptance, which this documentation phase does not implement.
+- TypeScript/Swift strict parsing, protocol integration and runtime caller acceptance. A directly imported codec or fixture suite alone does not make uploads available.
 
 This scope requires no new machine hardening, host signing setting, account grant or device setup.
 The practical boundaries are the intended client, session, bytes, private storage and predictable cleanup.
