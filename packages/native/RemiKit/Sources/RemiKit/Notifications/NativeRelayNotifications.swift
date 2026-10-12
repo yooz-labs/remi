@@ -158,7 +158,8 @@ public final class NativeRelayNotifications {
                 let current = MachineStore(endpoints: Self.startupEndpoints(from: saved),
                     identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-                    clientId: clientID(), pushStore: pushStore)
+                    clientId: clientID(), pushStore: pushStore,
+                    displayNames: MachineConfigurationStore.shared.loadDisplayNames())
                 // A preference cannot install missing or revoked SQLite trust.
                 for endpoint in current.persistableEndpoints where intents.contains(endpoint.id) {
                     current.restoreRelayNotificationIntent(on: endpoint)
@@ -216,6 +217,10 @@ public final class NativeRelayNotifications {
 
     public func clearNotice() {
         notice = nil
+    }
+
+    public func hasRelayNotificationIntent(for endpoint: MachineEndpoint) -> Bool {
+        intents.contains(endpoint.id)
     }
 
     /// Local categories share the app/NSE publication lease and preserve secure IDs.

@@ -41,7 +41,7 @@ struct RemiMacApp: App {
         Settings {
             Group {
                 if let store = notifications.store {
-                    MacPreferencesView(publicIdentity: store.publicIdentity)
+                    MacPreferencesView(store: store)
                 } else {
                     identityUnavailableView
                     .frame(width: 520, height: 360)

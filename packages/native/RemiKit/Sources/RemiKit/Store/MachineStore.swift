@@ -478,14 +478,18 @@ public final class MachineStore {
         identity: ClientIdentity,
         clientVersion: String,
         clientId: String,
-        pushStore: RemiPushStore? = nil
+        pushStore: RemiPushStore? = nil,
+        displayNames: [String: String] = [:]
     ) {
         self.identity = identity
         self.clientVersion = clientVersion
         self.clientId = clientId
         self.pushStore = pushStore
         machines = endpoints.map {
-            MachineState(endpoint: $0.publicConfiguration, displayName: $0.displayAddress)
+            MachineState(
+                endpoint: $0.publicConfiguration,
+                displayName: displayNames[$0.id] ?? $0.displayAddress
+            )
         }
         for endpoint in endpoints {
             if let secret = endpoint.relayPairingSecret {
@@ -557,6 +561,13 @@ public final class MachineStore {
         }
         machines.append(MachineState(endpoint: publicEndpoint, displayName: displayName ?? endpoint.displayAddress))
         connect(publicEndpoint, parent: publicEndpoint)
+    }
+
+    public func renameMachine(_ endpoint: MachineEndpoint, to proposedName: String) {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 80,
+              let index = machines.firstIndex(where: { $0.endpoint == endpoint }) else { return }
+        machines[index].displayName = name
     }
 
     @discardableResult public func removeMachine(_ endpoint: MachineEndpoint) -> Bool {
