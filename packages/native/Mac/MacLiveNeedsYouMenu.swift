@@ -11,17 +11,19 @@ struct MacLiveNeedsYouMenu: View {
     var body: some View {
         let groups = pendingGroups
         let questionCount = groups.reduce(0) { $0 + $1.items.count }
+        let availability = RemiNeedsYouAvailability.resolve(machines: store.machines)
 
         VStack(spacing: 0) {
             MacNeedsYouHeader(
                 questionCount: questionCount,
-                machineCount: groups.count
+                attentionMachineCount: groups.count,
+                availability: availability
             )
 
             Divider()
 
             if groups.isEmpty {
-                MacNeedsYouEmptyState()
+                MacNeedsYouEmptyState(availability: availability)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
@@ -44,7 +46,11 @@ struct MacLiveNeedsYouMenu: View {
             MacNeedsYouFooter(onOpen: { open(nil) })
         }
         .frame(minWidth: 380, idealWidth: 420, maxWidth: 460)
-        .frame(minHeight: 190, idealHeight: groups.isEmpty ? 220 : 520, maxHeight: 660)
+        .frame(
+            minHeight: 190,
+            idealHeight: groups.isEmpty ? 220 : min(620, 270 + CGFloat(min(questionCount, 2)) * 150),
+            maxHeight: 660
+        )
         .background(.background)
     }
 
@@ -112,6 +118,7 @@ private struct MacNeedsYouMachineGroup: View {
             ForEach(visibleItems) { item in
                 MacNeedsYouQuestionItem(
                     item: item,
+                    canAnswer: group.reachability == .connected,
                     onAnswer: { onAnswer(item, $0) },
                     onSubmit: { onSubmit(item, $0) },
                     onCancel: { onCancel(item) },
@@ -209,6 +216,7 @@ private struct MacNeedsYouMachineHeader: View {
 private struct MacNeedsYouQuestionItem: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let item: RemiPendingQuestionItem
+    let canAnswer: Bool
     let onAnswer: (String) -> Void
     let onSubmit: ([RemiQuestionStepSelection]) -> Void
     let onCancel: () -> Void
@@ -234,9 +242,18 @@ private struct MacNeedsYouQuestionItem: View {
                 onSubmit: onSubmit,
                 onCancel: onCancel
             )
+            .disabled(!canAnswer)
+
+            if !canAnswer {
+                Label("Reconnect this machine in Remi to answer", systemImage: "wifi.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             Button("Open conversation", systemImage: "arrow.up.forward.app", action: onOpen)
                 .buttonStyle(.glass)
+                .controlSize(.small)
                 .accessibilityLabel("Open \(item.model.sessionName) conversation")
                 .accessibilityHint("Opens this exact request in the Remi window")
         }
@@ -245,7 +262,8 @@ private struct MacNeedsYouQuestionItem: View {
 
 private struct MacNeedsYouHeader: View {
     let questionCount: Int
-    let machineCount: Int
+    let attentionMachineCount: Int
+    let availability: RemiNeedsYouAvailability
 
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.s) {
@@ -265,6 +283,13 @@ private struct MacNeedsYouHeader: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let connectionSummary {
+                    Label(connectionSummary, systemImage: connectionSymbol)
+                        .font(.caption)
+                        .foregroundStyle(connectionTint)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityLabel(connectionSummary)
+                }
             }
 
             Spacer(minLength: RemiTheme.Spacing.s)
@@ -286,10 +311,33 @@ private struct MacNeedsYouHeader: View {
     }
 
     private var summary: String {
-        guard questionCount > 0 else { return "All connected agents can continue." }
+        guard questionCount > 0 else {
+            return availability == .unconfigured ? "No machines are configured." : "Nothing is waiting for your response."
+        }
         let requestLabel = questionCount == 1 ? "request" : "requests"
-        let machineLabel = machineCount == 1 ? "machine" : "machines"
-        return "\(questionCount) \(requestLabel) across \(machineCount) \(machineLabel)"
+        let machineLabel = attentionMachineCount == 1 ? "machine" : "machines"
+        return "\(questionCount) \(requestLabel) across \(attentionMachineCount) \(machineLabel)"
+    }
+
+    private var connectionSummary: String? {
+        switch availability {
+        case .unconfigured: nil
+        case .offline(let total): "0 of \(total) machines connected"
+        case .partiallyConnected(let connected, let total): "\(connected) of \(total) machines connected"
+        case .connected(let total): total == 1 ? "1 machine connected" : "All \(total) machines connected"
+        }
+    }
+
+    private var connectionSymbol: String {
+        switch availability {
+        case .connected: "checkmark.circle.fill"
+        case .unconfigured, .offline, .partiallyConnected: "exclamationmark.circle.fill"
+        }
+    }
+
+    private var connectionTint: Color {
+        if case .connected = availability { return .secondary }
+        return .orange
     }
 }
 
@@ -314,13 +362,44 @@ private struct MacNeedsYouFooter: View {
 }
 
 private struct MacNeedsYouEmptyState: View {
+    let availability: RemiNeedsYouAvailability
+
     var body: some View {
         ContentUnavailableView {
-            Label("Nothing waiting", systemImage: "checkmark.circle")
+            Label(title, systemImage: symbol)
         } description: {
-            Text("Questions and permission requests will appear here when an agent needs you.")
+            Text(detail)
         }
         .padding(RemiTheme.Spacing.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var title: LocalizedStringKey {
+        switch availability {
+        case .unconfigured: "No machines configured"
+        case .offline: "Machines are offline"
+        case .partiallyConnected, .connected: "Nothing waiting"
+        }
+    }
+
+    private var symbol: String {
+        switch availability {
+        case .unconfigured: "desktopcomputer"
+        case .offline: "wifi.slash"
+        case .partiallyConnected, .connected: "checkmark.circle"
+        }
+    }
+
+    private var detail: LocalizedStringKey {
+        switch availability {
+        case .unconfigured:
+            "Add a machine in Remi to start monitoring sessions."
+        case .offline:
+            "Open Remi to reconnect and review machine details."
+        case .partiallyConnected:
+            "Nothing needs you on the connected machines. Open Remi to review offline machines."
+        case .connected:
+            "Questions and permission requests will appear here when an agent needs you."
+        }
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import Testing
+import RemiKit
 @testable import RemiUI
 
 @Suite struct MacWorkspaceNavigationTests {
@@ -61,5 +62,25 @@ import Testing
         #expect(RemiMacCompactDestination.resolve(hasMachine: true, hasSession: false) == .sessions)
         #expect(RemiMacCompactDestination.resolve(hasMachine: true, hasSession: true) == .conversation)
         #expect(RemiMacCompactDestination.conversation.column == .detail)
+    }
+
+    @Test func needsYouAvailabilityDistinguishesEmptyOfflineAndPartialStates() {
+        var connected = MachineState(
+            endpoint: MachineEndpoint(host: "one.example", port: 18765),
+            displayName: "One"
+        )
+        connected.status = .connected
+        let offline = MachineState(
+            endpoint: MachineEndpoint(host: "two.example", port: 18765),
+            displayName: "Two"
+        )
+
+        #expect(RemiNeedsYouAvailability.resolve(machines: []) == .unconfigured)
+        #expect(RemiNeedsYouAvailability.resolve(machines: [offline]) == .offline(total: 1))
+        #expect(
+            RemiNeedsYouAvailability.resolve(machines: [connected, offline])
+                == .partiallyConnected(connected: 1, total: 2)
+        )
+        #expect(RemiNeedsYouAvailability.resolve(machines: [connected]) == .connected(total: 1))
     }
 }
