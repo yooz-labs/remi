@@ -1317,23 +1317,52 @@ private struct MacAuthorizationState: View {
                     LabeledContent("Machine", value: machineName)
                     LabeledContent("Endpoint", value: endpoint)
                     Divider()
-                    Text("Fingerprint")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(fingerprint)
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                        .textSelection(.enabled)
+                    HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
+                        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                            Group {
+                                if authorizeCommand == nil {
+                                    Text("Compare the fingerprint")
+                                } else {
+                                    Text("1. Compare the fingerprint")
+                                }
+                            }
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(fingerprint)
+                                .font(.system(.body, design: .monospaced).weight(.semibold))
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        copyButton(
+                            title: "Copy fingerprint",
+                            copiedTitle: "Fingerprint copied",
+                            systemImage: "number",
+                            value: fingerprint,
+                            copiedValue: .fingerprint
+                        )
+                    }
 
                     if let authorizeCommand {
-                        Text("Run on the machine")
+                        Text("2. Run on the machine")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(authorizeCommand)
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(RemiTheme.Spacing.s)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
+                        HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
+                            Text(authorizeCommand)
+                                .font(.system(.callout, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            copyButton(
+                                title: "Copy authorization command",
+                                copiedTitle: "Command copied",
+                                systemImage: "doc.on.doc",
+                                value: authorizeCommand,
+                                copiedValue: .command
+                            )
+                        }
+                        .padding(RemiTheme.Spacing.s)
+                        .background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
                     }
                 }
                 .padding(RemiTheme.Spacing.m)
@@ -1355,9 +1384,10 @@ private struct MacAuthorizationState: View {
                     .foregroundStyle(.secondary)
                 }
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: RemiTheme.Spacing.s) { actionButtons }
-                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) { actionButtons }
+                if let onRetry {
+                    Button("3. Retry connection", systemImage: "arrow.clockwise", action: onRetry)
+                        .buttonStyle(.borderedProminent)
+                        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
                 }
             }
             .frame(maxWidth: 560, alignment: .leading)
@@ -1366,30 +1396,28 @@ private struct MacAuthorizationState: View {
         }
     }
 
-    @ViewBuilder private var actionButtons: some View {
-        Button(
-            copiedValue == .fingerprint ? "Fingerprint copied" : "Copy fingerprint",
-            systemImage: copiedValue == .fingerprint ? "checkmark" : "number"
-        ) {
-            copy(fingerprint, value: .fingerprint)
+    private func copyButton(
+        title: LocalizedStringKey,
+        copiedTitle: LocalizedStringKey,
+        systemImage: String,
+        value: String,
+        copiedValue: CopiedAuthorizationValue
+    ) -> some View {
+        Button {
+            copy(value, value: copiedValue)
+        } label: {
+            Label(
+                self.copiedValue == copiedValue ? copiedTitle : title,
+                systemImage: self.copiedValue == copiedValue ? "checkmark" : systemImage
+            )
+            .labelStyle(.iconOnly)
+            .frame(
+                minWidth: RemiTheme.Size.minimumTapTarget,
+                minHeight: RemiTheme.Size.minimumTapTarget
+            )
         }
-        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-
-        if let authorizeCommand {
-            Button(
-                copiedValue == .command ? "Command copied" : "Copy authorization command",
-                systemImage: copiedValue == .command ? "checkmark" : "doc.on.doc"
-            ) {
-                copy(authorizeCommand, value: .command)
-            }
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-        }
-
-        if let onRetry {
-            Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
-                .buttonStyle(.borderedProminent)
-                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-        }
+        .buttonStyle(.bordered)
+        .help(self.copiedValue == copiedValue ? copiedTitle : title)
     }
 
     private func copy(_ text: String, value: CopiedAuthorizationValue) {
@@ -1399,7 +1427,7 @@ private struct MacAuthorizationState: View {
     }
 }
 
-private enum CopiedAuthorizationValue {
+private enum CopiedAuthorizationValue: Equatable {
     case fingerprint
     case command
 }
@@ -1494,7 +1522,7 @@ private struct MacAddMachineSheet: View {
                     LabeledContent("Connection", value: draft.connectionSummary)
                     MacMachineAccessNotice(relayMode: draft.mode == .relay)
                 } header: {
-                    Label("Machine authorization", systemImage: "lock.shield")
+                    Label("System access", systemImage: "lock.shield")
                 }
             }
 
@@ -1573,22 +1601,27 @@ private struct MacMachineAccessNotice: View {
     let relayMode: Bool
 
     var body: some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            if !relayMode {
+                Label {
+                    Text("Direct connections are not encrypted by Remi. Use loopback, an SSH tunnel, or a trusted VPN.")
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "exclamationmark.shield")
+                        .foregroundStyle(.orange)
+                }
+                .font(.footnote.weight(.medium))
+            }
+
+            DisclosureGroup {
                 Text("After approval, this Mac can view sessions and transcripts, answer prompts, send chat, and start, resume, or stop sessions exposed by this machine.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-
-                if !relayMode {
-                    Text("Remi does not add transport encryption to direct connections. Use loopback, an SSH tunnel, or a trusted VPN.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                    .padding(.top, RemiTheme.Spacing.xs)
+            } label: {
+                Label("View, answer, and manage exposed sessions", systemImage: "checkmark.shield")
+                    .font(.subheadline.weight(.semibold))
             }
-            .padding(.top, RemiTheme.Spacing.xs)
-        } label: {
-            Label("View, answer, and manage exposed sessions", systemImage: "checkmark.shield")
-                .font(.subheadline.weight(.semibold))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, RemiTheme.Spacing.xxs)
