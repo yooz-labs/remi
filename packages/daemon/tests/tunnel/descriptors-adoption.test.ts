@@ -1,3 +1,4 @@
+/// <reference path="../../../../scripts/tunnel-storage-proof/assets.d.ts" />
 import { expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';

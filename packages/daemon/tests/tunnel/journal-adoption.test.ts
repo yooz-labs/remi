@@ -1,3 +1,4 @@
+/// <reference path="../../../../scripts/tunnel-storage-proof/assets.d.ts" />
 import { expect, test } from 'bun:test';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
