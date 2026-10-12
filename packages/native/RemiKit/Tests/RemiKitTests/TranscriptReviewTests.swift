@@ -80,6 +80,18 @@ struct TranscriptReviewTests {
         ) == "latest-entry")
         #expect(RemiTranscriptNavigation.latestActivityID(entryIDs: [], questionIDs: []) == nil)
     }
+
+    @Test func firstActivityUsesOldestTranscriptThenPendingQuestionFallback() {
+        #expect(RemiTranscriptNavigation.firstActivityID(
+            entryIDs: ["entry-one", "entry-two"],
+            questionIDs: ["question-one", "question-two"]
+        ) == "entry-one")
+        #expect(RemiTranscriptNavigation.firstActivityID(
+            entryIDs: [],
+            questionIDs: ["question-one", "question-two"]
+        ) == "question-one")
+        #expect(RemiTranscriptNavigation.firstActivityID(entryIDs: [], questionIDs: []) == nil)
+    }
 }
 
 @Suite struct ConversationReviewMemoryTests {

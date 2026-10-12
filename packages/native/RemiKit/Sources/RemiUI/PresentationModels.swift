@@ -324,6 +324,13 @@ public struct RemiTranscriptReviewState: Sendable, Equatable {
 }
 
 public enum RemiTranscriptNavigation {
+    public static func firstActivityID(
+        entryIDs: [String],
+        questionIDs: [String]
+    ) -> String? {
+        entryIDs.first ?? questionIDs.first
+    }
+
     public static func latestActivityID(
         entryIDs: [String],
         questionIDs: [String]

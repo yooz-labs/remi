@@ -12,6 +12,29 @@ import Testing
         #expect(draft.workspaceCapable)
     }
 
+    @Test func workspaceActionPrefillsItsExactMachineAndDirectory() {
+        var studio = MachineState(
+            endpoint: MachineEndpoint(host: "studio", port: 18765),
+            displayName: "Studio"
+        )
+        studio.capabilities = ["workspaces"]
+        var laptop = MachineState(
+            endpoint: MachineEndpoint(host: "laptop", port: 18765),
+            displayName: "Laptop"
+        )
+        laptop.capabilities = ["workspaces"]
+
+        let draft = NewSessionDraft(
+            machines: [studio, laptop],
+            recentRepositoriesByMachine: [:],
+            preferredMachineID: laptop.id,
+            preferredRepository: "/src/exact-worktree"
+        )
+
+        #expect(draft.machineID == laptop.id)
+        #expect(draft.repository == "/src/exact-worktree")
+    }
+
     @Test func changingMachineReplacesRepositoryAndRepairsCapabilities() {
         let draft = makeDraft()
         draft.repository = "/manual/path"

@@ -31,12 +31,17 @@ public final class NewSessionDraft {
 
     public init(
         machines: [MachineState],
-        recentRepositoriesByMachine: [String: [RecentRepository]]
+        recentRepositoriesByMachine: [String: [RecentRepository]],
+        preferredMachineID: String? = nil,
+        preferredRepository: String? = nil
     ) {
         self.machines = machines
         self.recentRepositoriesByMachine = recentRepositoriesByMachine
-        machineID = machines.first?.id ?? ""
+        machineID = preferredMachineID.flatMap { preferredID in
+            machines.contains(where: { $0.id == preferredID }) ? preferredID : nil
+        } ?? machines.first?.id ?? ""
         selectDefaultsForCurrentMachine(replaceRepository: true)
+        if let preferredRepository { repository = preferredRepository }
     }
 
     public var selectedMachine: MachineState? {

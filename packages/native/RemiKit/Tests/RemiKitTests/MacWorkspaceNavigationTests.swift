@@ -57,6 +57,39 @@ import RemiKit
         ) == nil)
     }
 
+    @Test func sessionScopesSeparateAttentionLiveAndStoredWork() {
+        let sessions = triageSessions
+
+        #expect(RemiSessionScope.all.count(in: sessions) == 4)
+        #expect(RemiSessionScope.needsYou.count(in: sessions) == 1)
+        #expect(RemiSessionScope.live.count(in: sessions) == 3)
+        #expect(RemiSessionScope.stored.count(in: sessions) == 1)
+    }
+
+    @Test func triageCombinesScopeAndSearchAcrossUsefulMetadata() {
+        let sessions = triageSessions
+
+        #expect(RemiSessionTriage.filtered(sessions: sessions, scope: .live, query: "remi").map(\.id) == ["waiting", "working"])
+        #expect(RemiSessionTriage.filtered(sessions: sessions, scope: .all, query: "codex").map(\.id) == ["idle"])
+        #expect(RemiSessionTriage.filtered(sessions: sessions, scope: .stored, query: "review later").map(\.id) == ["stored"])
+        #expect(RemiSessionTriage.filtered(sessions: sessions, scope: .needsYou, query: "  ").map(\.id) == ["waiting"])
+    }
+
+    @Test func triagePreservesVisibleSelectionAndFallsBackDeterministically() {
+        #expect(RemiSessionTriage.reconciledSelection(selection: "working", visibleSessionIDs: ["waiting", "working"]) == "working")
+        #expect(RemiSessionTriage.reconciledSelection(selection: "stored", visibleSessionIDs: ["waiting", "working"]) == "waiting")
+        #expect(RemiSessionTriage.reconciledSelection(selection: "stored", visibleSessionIDs: []) == nil)
+    }
+
+    @Test func attentionNavigationWrapsAndIgnoresOtherStatuses() {
+        var sessions = triageSessions
+        sessions.append(session(id: "waiting-two", status: .needsYou))
+
+        #expect(RemiSessionTriage.nextAttentionSessionID(selection: "waiting", sessions: sessions) == "waiting-two")
+        #expect(RemiSessionTriage.nextAttentionSessionID(selection: "waiting-two", sessions: sessions) == "waiting")
+        #expect(RemiSessionTriage.nextAttentionSessionID(selection: "working", sessions: sessions) == "waiting")
+    }
+
     @Test func compactDestinationFollowsTheDeepestValidSelection() {
         #expect(RemiMacCompactDestination.resolve(hasMachine: false, hasSession: false) == .machines)
         #expect(RemiMacCompactDestination.resolve(hasMachine: true, hasSession: false) == .sessions)
@@ -82,5 +115,35 @@ import RemiKit
                 == .partiallyConnected(connected: 1, total: 2)
         )
         #expect(RemiNeedsYouAvailability.resolve(machines: [connected]) == .connected(total: 1))
+    }
+
+    private var triageSessions: [RemiSessionSummary] {
+        [
+            session(id: "waiting", status: .needsYou, project: "remi"),
+            session(id: "working", status: .working, project: "remi"),
+            session(id: "idle", status: .idle, harness: "codex"),
+            session(id: "stored", status: .offline, lastMessage: "Review later", isLive: false),
+        ]
+    }
+
+    private func session(
+        id: String,
+        status: RemiSessionStatus,
+        project: String = "transit",
+        harness: String = "claude",
+        lastMessage: String? = nil,
+        isLive: Bool = true
+    ) -> RemiSessionSummary {
+        RemiSessionSummary(
+            id: id,
+            machineName: "Studio",
+            name: id.capitalized,
+            harness: harness,
+            project: project,
+            projectPath: "/Projects/\(project)",
+            status: status,
+            lastMessage: lastMessage,
+            isLive: isLive
+        )
     }
 }

@@ -69,6 +69,8 @@ struct MacSessionDetail: View {
         VStack(spacing: 0) {
             MacSessionToolbarHeader(
                 session: session,
+                onCopyID: { copyToPasteboard(session.id) },
+                onCopyDirectory: { copyToPasteboard(session.projectPath) },
                 onResume: onResume,
                 onTerminate: { confirmingTermination = true }
             )
@@ -200,12 +202,14 @@ struct MacSessionDetail: View {
         .toolbar {
             if #available(macOS 26.1, *) {
                 ToolbarItemGroup {
+                    firstActivityButton
                     latestActivityButton
                     searchButton
                 }
                 .visibilityPriority(.high)
             } else {
                 ToolbarItemGroup {
+                    firstActivityButton
                     latestActivityButton
                     searchButton
                 }
@@ -245,12 +249,32 @@ struct MacSessionDetail: View {
         .help("Jump to latest activity (Command-↓)")
     }
 
+    private var firstActivityButton: some View {
+        Button("Jump to first activity", systemImage: "arrow.up.to.line") {
+            guard let firstActivityID else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                visibleEntryID = firstActivityID
+            }
+        }
+        .labelStyle(.iconOnly)
+        .keyboardShortcut(.upArrow, modifiers: .command)
+        .disabled(firstActivityID == nil || visibleEntryID == firstActivityID)
+        .help("Jump to first activity (Command-↑)")
+    }
+
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
     }
 
     private var latestActivityID: String? {
         RemiTranscriptNavigation.latestActivityID(
+            entryIDs: visibleTranscript.map(\.id),
+            questionIDs: visibleQuestions.map(\.questionID)
+        )
+    }
+
+    private var firstActivityID: String? {
+        RemiTranscriptNavigation.firstActivityID(
             entryIDs: visibleTranscript.map(\.id),
             questionIDs: visibleQuestions.map(\.questionID)
         )
@@ -366,10 +390,31 @@ private struct MacConversationPicker: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .foregroundStyle(.secondary)
-                .frame(minWidth: RemiTheme.Size.minimumTapTarget)
-                .accessibilityLabel("Conversations")
+            Menu {
+                Button {
+                    selectedViewID = ""
+                } label: {
+                    Label("Main", systemImage: selectedViewID.isEmpty ? "checkmark" : "bubble.left.fill")
+                }
+                if !views.isEmpty { Divider() }
+                ForEach(views) { view in
+                    Button {
+                        selectedViewID = view.agentId
+                    } label: {
+                        Label(
+                            RemiConversationSelection.title(for: view, among: views),
+                            systemImage: selectedViewID == view.agentId ? "checkmark" : "person.2.fill"
+                        )
+                    }
+                }
+            } label: {
+                Label("Choose conversation", systemImage: "bubble.left.and.bubble.right")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Choose a main or subagent conversation")
 
             ScrollView(.horizontal) {
                 HStack(spacing: RemiTheme.Spacing.xs) {
@@ -475,6 +520,8 @@ private struct MacConversationEmptyState: View {
 private struct MacSessionToolbarHeader: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
+    let onCopyID: () -> Void
+    let onCopyDirectory: () -> Void
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
 
@@ -534,23 +581,26 @@ private struct MacSessionToolbarHeader: View {
                 .disabled(session.isResuming)
                 .help("Resume this session")
             }
-            if session.canTerminate {
-                Menu {
+            Menu {
+                Button("Copy session ID", systemImage: "doc.on.doc", action: onCopyID)
+                Button("Copy directory", systemImage: "folder", action: onCopyDirectory)
+                if session.canTerminate {
+                    Divider()
                     Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
                         onTerminate()
                     }
-                } label: {
-                    Label("Session actions", systemImage: "ellipsis.circle")
-                        .labelStyle(.iconOnly)
-                        .frame(
-                            minWidth: RemiTheme.Size.minimumTapTarget,
-                            minHeight: RemiTheme.Size.minimumTapTarget
-                        )
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Session actions")
+            } label: {
+                Label("Session actions", systemImage: "ellipsis.circle")
+                    .labelStyle(.iconOnly)
+                    .frame(
+                        minWidth: RemiTheme.Size.minimumTapTarget,
+                        minHeight: RemiTheme.Size.minimumTapTarget
+                    )
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Session actions")
         }
     }
 
