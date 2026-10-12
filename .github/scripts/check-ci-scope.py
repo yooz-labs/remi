@@ -257,9 +257,10 @@ COLD_DAEMON = "packages/daemon/src/tunnel/"
 COLD_ORIGINAL_CONTENT = {
     path: subprocess.check_output(["git", "cat-file", "blob", pin[1]], stderr=subprocess.PIPE).decode()
     for policy in module["COLD_RELOCATIONS"].values() for path, pin in policy["original"].items()
-    if path not in module["COLD_RELOCATIONS"]["descriptor"]["head"] or path in module["COLD_RELOCATIONS"]["descriptor"]["original"]
+    if (path not in module["COLD_RELOCATIONS"]["descriptor"]["head"] or path in module["COLD_RELOCATIONS"]["descriptor"]["original"])
+    and path not in module["COLD_IMAGE_BINARY"]
 }
-COLD_CONTENT = {"descriptor": {}, "journal": {}, "native-helper": {}}
+COLD_CONTENT = {"descriptor": {}, "journal": {}, "native-helper": {}, "image-admission": {}}
 COLD_CONTENT['descriptor']['scripts/tunnel-storage-proof/admission.ts'] = "// #1170 proof adapter: the daemon owns the sole descriptor implementation.\nexport {\n  AdmittedFile,\n  DirectoryRoot,\n  FileAdmission,\n  type OpenAt,\n} from '../../packages/daemon/src/tunnel/admission';\n"
 COLD_CONTENT['descriptor']['packages/daemon/tests/tunnel/descriptors-adoption.test.ts'] = '/// <reference path="../../../../scripts/tunnel-storage-proof/assets.d.ts" />\nimport { expect, test } from \'bun:test\';\nimport * as fs from \'node:fs\';\nimport { tmpdir } from \'node:os\';\nimport * as path from \'node:path\';\nimport * as proofAdmission from \'../../../../scripts/tunnel-storage-proof/admission\';\nimport type { PrivateOps as ProofPrivateOps } from \'../../../../scripts/tunnel-storage-proof/private-copy\';\nimport { recoveryNative } from \'../../../../scripts/tunnel-storage-proof/recovery-native\';\nimport { AdmittedFile, DirectoryRoot, FileAdmission } from \'../../src/tunnel/admission\';\nimport type { PrivateOps } from \'../../src/tunnel/private-ops\';\n\ntest(\'proof descriptor adapters share daemon classes and capture a real owned root\', async () => {\n  expect(proofAdmission.DirectoryRoot).toBe(DirectoryRoot);\n  expect(proofAdmission.AdmittedFile).toBe(AdmittedFile);\n  expect(proofAdmission.FileAdmission).toBe(FileAdmission);\n  const native = await recoveryNative();\n  const proofOps: ProofPrivateOps = native.ops;\n  const ops: PrivateOps = proofOps;\n  const directory = fs.mkdtempSync(path.join(tmpdir(), \'remi-descriptors-adoption-\'));\n  fs.chmodSync(directory, 0o700);\n  let root: DirectoryRoot | null = null;\n  try {\n    root = proofAdmission.DirectoryRoot.capture(directory, ops.openAt.bind(ops));\n    expect(root).toBeInstanceOf(DirectoryRoot);\n    if (!root) throw new Error(\'actual owned root capture failed\');\n    const stat = fs.fstatSync(root.fd, { bigint: true });\n    const named = fs.statSync(directory, { bigint: true });\n    expect(stat.isDirectory()).toBe(true);\n    expect(stat.dev).toBe(named.dev);\n    expect(stat.ino).toBe(named.ino);\n    expect(root.identity).toBe(`${stat.dev}:${stat.ino}`);\n    expect(root.contains(new Set([root.identity]))).toBe(true);\n    expect(root.active).toBe(true);\n    expect(root.isCurrent()).toBe(true);\n    const fd = root.fd;\n    root.close();\n    expect(root.active).toBe(false);\n    expect(root.isCurrent()).toBe(false);\n    expect(() => fs.fstatSync(fd)).toThrow();\n    root.close();\n  } finally {\n    root?.close();\n    native.close();\n    fs.rmSync(directory, { recursive: true, force: true });\n  }\n});\n'
 COLD_CONTENT['journal']['scripts/tunnel-storage-proof/recovery.ts'] = "// #1170 proof adapter: the daemon owns the sole journal implementation.\nexport {\n  RecoveryError,\n  RecoveryIntent,\n  type RecoveryOps,\n  type RecoveryStage,\n  allocatedBlocks,\n} from '../../packages/daemon/src/tunnel/recovery';\n"
@@ -311,6 +312,61 @@ NATIVE_CONTENT[COLD_PROOF + "assets.d.ts"] = (
 )
 NATIVE_CONTENT[COLD_PROOF + "recovery-native.ts"] = "// #1170 proof adapter for the explicit daemon-owned native journal factory.\nexport { recoveryNative } from '../../packages/daemon/src/tunnel/recovery-native';\n"
 NATIVE_CONTENT["packages/daemon/tests/tunnel/native-helper-adoption.test.ts"] = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport { constants, tmpdir } from 'node:os';\nimport * as path from 'node:path';\nimport { recoveryNative as proofRecoveryNative } from '../../../../scripts/tunnel-storage-proof/recovery-native';\nimport { DirectoryRoot } from '../../src/tunnel/admission';\nimport { recoveryNative } from '../../src/tunnel/recovery-native';\n\ntest('proof native helper shares the daemon factory and owns real descriptors and locks', async () => {\n  expect(proofRecoveryNative).toBe(recoveryNative);\n  const bytes = fs.readFileSync(\n    path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof/fixture.png'),\n  );\n  const native = await recoveryNative();\n  const opened = new Set<number>();\n  let directory: string | undefined;\n  let root: DirectoryRoot | null = null;\n  const closeFile = (fd: number) => {\n    fs.closeSync(fd);\n    opened.delete(fd);\n  };\n  try {\n    directory = fs.mkdtempSync(path.join(tmpdir(), 'remi-native-helper-adoption-'));\n    fs.chmodSync(directory, 0o700);\n    root = DirectoryRoot.capture(directory, native.ops.openAt.bind(native.ops));\n    expect(root).toBeInstanceOf(DirectoryRoot);\n    if (!root) throw new Error('actual native helper root capture failed');\n    const directoryFD = root.fd;\n    expect(fs.fstatSync(directoryFD).isDirectory()).toBe(true);\n    const directoryFlags = native.cloexec(directoryFD);\n    expect(directoryFlags).toBeGreaterThanOrEqual(0);\n    expect(directoryFlags & 1).toBe(1);\n    const flags = fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;\n    expect(native.ops.openAt(directoryFD, 'missing.png', flags)).toBe(-constants.errno.ENOENT);\n    expect(native.ops.unlink(directoryFD, 'missing.png')).toBe(-constants.errno.ENOENT);\n    const first = native.ops.create(\n      directoryFD,\n      'owned.png',\n      flags | fs.constants.O_CREAT | fs.constants.O_EXCL,\n      0o600,\n    );\n    expect(first).toBeGreaterThanOrEqual(0);\n    if (first < 0) throw new Error('actual owned file creation failed');\n    opened.add(first);\n    fs.writeFileSync(first, bytes);\n    fs.fsyncSync(first);\n    const firstStat = fs.fstatSync(first, { bigint: true });\n    expect(firstStat.isFile()).toBe(true);\n    expect(Number(firstStat.mode & 0o777n)).toBe(0o600);\n    const firstFlags = native.cloexec(first);\n    expect(firstFlags).toBeGreaterThanOrEqual(0);\n    expect(firstFlags & 1).toBe(1);\n    const second = native.ops.openAt(directoryFD, 'owned.png', flags);\n    expect(second).toBeGreaterThanOrEqual(0);\n    if (second < 0) throw new Error('actual owned file reopen failed');\n    opened.add(second);\n    const secondStat = fs.fstatSync(second, { bigint: true });\n    expect(secondStat.dev).toBe(firstStat.dev);\n    expect(secondStat.ino).toBe(firstStat.ino);\n    const secondFlags = native.cloexec(second);\n    expect(secondFlags).toBeGreaterThanOrEqual(0);\n    expect(secondFlags & 1).toBe(1);\n    expect(fs.readFileSync(second)).toEqual(bytes);\n    expect(native.ops.lock(first)).toBe(0);\n    expect(native.ops.lock(second)).toBe(-constants.errno.EWOULDBLOCK);\n    closeFile(first);\n    expect(native.ops.lock(second)).toBe(0);\n    closeFile(second);\n    expect(() => native.ops.link(directoryFD, 'owned.png', 'alias.png')).toThrow(\n      'recovery link unsupported',\n    );\n    expect(native.ops.unlink(directoryFD, 'owned.png')).toBe(0);\n    expect(native.ops.unlink(directoryFD, 'owned.png')).toBe(-constants.errno.ENOENT);\n    expect(fs.readdirSync(directory)).toEqual([]);\n  } finally {\n    try {\n      for (const fd of opened) fs.closeSync(fd);\n    } finally {\n      try {\n        root?.close();\n      } finally {\n        try {\n          native.close();\n        } finally {\n          if (directory) fs.rmSync(directory, { recursive: true, force: true });\n        }\n      }\n    }\n  }\n});\n"
+IMAGE_FULL_BASE = "c1c71ef456d075bd11c6bc01d4648fe6ee24169d"
+IMAGE_PROOF = "scripts/tunnel-decoder-proof/"
+IMAGE_DAEMON = "packages/daemon/src/tunnel/image-admission.ts"
+IMAGE_CONTENT = COLD_CONTENT["image-admission"]
+image_body = COLD_ORIGINAL_CONTENT[IMAGE_PROOF + "admission.ts"]
+IMAGE_CASTS = (
+    ("bitDepth = bytes[offset + 16];", "bitDepth = bytes[offset + 16] as number;", 1),
+    ("colorType = bytes[offset + 17];", "colorType = bytes[offset + 17] as number;", 1),
+    ("const next = bytes[offset + 1];", "const next = bytes[offset + 1] as number;", 1),
+    ("const marker = bytes[offset++];", "const marker = bytes[offset++] as number;", 1),
+    ("componentCount = bytes[payload + 5];", "componentCount = bytes[payload + 5] as number;", 1),
+    ("const id = bytes[start];", "const id = bytes[start] as number;", 1),
+    ("const horizontal = bytes[start + 1] >> 4;", "const horizontal = (bytes[start + 1] as number) >> 4;", 1),
+    ("const vertical = bytes[start + 1] & 15;", "const vertical = (bytes[start + 1] as number) & 15;", 1),
+    ("bytes[start + 2] > 3", "(bytes[start + 2] as number) > 3", 1),
+    ("const components = bytes[payload];", "const components = bytes[payload] as number;", 1),
+    ("const spec = bytes[offset++];", "const spec = bytes[offset++] as number;", 2),
+    ("const count = bytes[offset++];", "const count = bytes[offset++] as number;", 1),
+)
+assert sum(count for _, _, count in IMAGE_CASTS) == 13
+for before, after, count in IMAGE_CASTS:
+    assert image_body.count(before) == count, (before, count)
+    image_body = image_body.replace(before, after)
+IMAGE_CONTENT[IMAGE_DAEMON] = (
+    "// #1170 internal image header admission; no active transfer caller or full pixel validation.\n" + image_body
+)
+image_matrix = COLD_ORIGINAL_CONTENT[IMAGE_PROOF + "matrix.py"]
+for before, after in (
+        ("ROOT = Path(__file__).resolve().parent\n", "ROOT = Path(__file__).resolve().parent\nREPO = ROOT.parents[1]\n"),
+        ('inputs = json.loads((ROOT / "inputs.json").read_text())\n', 'inputs = json.loads((ROOT / "inputs.json").read_text())\nsnapshot_scripts = "scripts/tunnel-decoder-proof"\n'),
+        ("def proof_for(source=ROOT):", "def proof_for(source=REPO):")):
+    assert image_matrix.count(before) == 1
+    image_matrix = image_matrix.replace(before, after, 1)
+old_files = image_matrix[image_matrix.index('        "files": ('):image_matrix.index('        "checks": CHECKS,')]
+new_files = '''        "files": (
+            "tsconfig.json",
+            "package.json",
+            "bun.lock",
+            "bunfig.toml",
+            "scripts/tunnel-storage-proof/matrix.py",
+            "scripts/tunnel-storage-proof/storage-approval-mutations.py",
+        ),
+        "source_trees": (
+            "packages/daemon/src",
+            "packages/shared/src",
+            snapshot_scripts,
+        ),
+        "source_tree_excludes": (snapshot_scripts + "/node_modules",),
+        "entry": snapshot_scripts + "/probe.ts",
+        "compile_from_snapshot": True,
+'''
+image_matrix = image_matrix.replace(old_files, new_files, 1)
+IMAGE_CONTENT[IMAGE_PROOF + "matrix.py"] = image_matrix
+IMAGE_CONTENT[IMAGE_PROOF + "admission.ts"] = "// #1170 proof adapter for the daemon-owned image header admission.\nexport { MAX_INPUT_BYTES, admitImage } from '../../packages/daemon/src/tunnel/image-admission';\nexport type { Dimensions } from '../../packages/daemon/src/tunnel/image-admission';\n"
+IMAGE_CONTENT["packages/daemon/tests/tunnel/image-admission-adoption.test.ts"] = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport * as path from 'node:path';\nimport * as proofAdmission from '../../../../scripts/tunnel-decoder-proof/admission';\nimport type { Dimensions as ProofDimensions } from '../../../../scripts/tunnel-decoder-proof/admission';\nimport inputs from '../../../../scripts/tunnel-decoder-proof/inputs.json';\nimport { MAX_INPUT_BYTES, admitImage } from '../../src/tunnel/image-admission';\nimport type { Dimensions } from '../../src/tunnel/image-admission';\n\nconst fixture = (name: string) =>\n  fs.readFileSync(path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof', name));\n\ntest('proof image admission shares daemon exports and admits the owned PNG and JPEG headers', () => {\n  expect(proofAdmission.admitImage).toBe(admitImage);\n  expect(proofAdmission.MAX_INPUT_BYTES).toBe(MAX_INPUT_BYTES);\n  expect(MAX_INPUT_BYTES).toBe(10 * 1024 * 1024);\n  for (const [index, mediaType] of (['image/png', 'image/jpeg'] as const).entries()) {\n    const expected = inputs.images[index];\n    if (!expected) throw new Error('owned image fixture metadata missing');\n    const bytes = fixture(expected.filename);\n    expect(new Bun.CryptoHasher('sha256').update(bytes).digest('hex')).toBe(expected.inputSha256);\n    const dimensions: Dimensions = admitImage(bytes, mediaType);\n    const proofDimensions: ProofDimensions = proofAdmission.admitImage(bytes, mediaType);\n    expect(dimensions).toEqual({ width: expected.width, height: expected.height });\n    expect(proofDimensions).toEqual(dimensions);\n    expect(Object.isFrozen(dimensions)).toBe(true);\n  }\n});\n\ntest('owned image admission retains input size and format refusals', () => {\n  const png = fixture('fixture.png');\n  const jpeg = fixture('fixture.jpg');\n  for (const mediaType of ['image/png', 'image/jpeg'] as const) {\n    expect(() => admitImage(png.subarray(0, 0), mediaType)).toThrow('IMAGE_ADMISSION_REFUSED');\n    expect(() => admitImage(Buffer.alloc(MAX_INPUT_BYTES + 1), mediaType)).toThrow(\n      'IMAGE_ADMISSION_REFUSED',\n    );\n  }\n  expect(() => admitImage(png, 'image/jpeg')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => admitImage(jpeg, 'image/png')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => admitImage(png.subarray(0, 32), 'image/png')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => admitImage(jpeg.subarray(0, 32), 'image/jpeg')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => admitImage(png, 'unsupported' as 'image/png')).toThrow('IMAGE_ADMISSION_REFUSED');\n});\n"
 for phase, contents in COLD_CONTENT.items():
     for path, text in contents.items():
         blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=text.encode(), stderr=subprocess.PIPE).decode().strip()
@@ -1409,6 +1465,215 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                         assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
                     else:
                         native_all(refs[0], refs[1], ("missing pinned object", endpoint, missing_path))
+                    count += 1
+                finally:
+                    os.chdir(corpus_dir)
+        # D1-specific controls reuse the existing complete actual-Git runner and generic fallback campaign.
+        git("fetch", "--quiet", "--no-tags", str(original), IMAGE_FULL_BASE)
+        image_policy = module["COLD_RELOCATIONS"]["image-admission"]
+        image_updates = [(path, text, image_policy["head"][path][0]) for path, text in IMAGE_CONTENT.items()]
+        image_base = IMAGE_FULL_BASE
+        image_head = soak_tree(image_base, image_updates)
+        def image_all(left, candidate, context):
+            result = classify(left, candidate)
+            assert selected(result) == gates and result["relay_soak"], ("image-admission", context, result)
+        for note in (False, True):
+            candidate = soak_tree(image_base, [*image_updates, *([("docs/owned-image-note.md", "ordinary prose\n", "100644")] if note else [])])
+            result = classify(image_base, candidate)
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+            count += 1
+        for content in ("const clientadmitImage = true; const Dimensions = {};\n",
+                        "import './unrelated/image-admission';\n",
+                        "import './admission.ts';\n"):
+            left = soak_tree(image_base, [("packages/signaling/src/image-nonconsumer.ts", content, "100644")])
+            result = classify(left, soak_tree(left, image_updates))
+            assert selected(result) == WRAPPER_GATES and not result["relay_soak"], (content, result)
+            count += 1
+        direct_cases = (
+            ("packages/daemon/src/image-reader.ts", "import type { Dimensions } from '../../../scripts/tunnel-decoder-proof/admission';\n"),
+            ("packages/daemon/src/image-reader.ts", "export * from './tunnel/image-admission';\n"),
+            ("packages/native/image-reader.swift", "// admitImage\n"),
+            ("root-image-reader.ts", "const consume = MAX_INPUT_BYTES;\n"),
+        )
+        for path, text in direct_cases:
+            caller = (path, text, "100644")
+            for context in ("new", "both", "removed", "target-base-only"):
+                left = soak_tree(image_base, [caller]) if context != "new" else image_base
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(
+                    left, [*image_updates, *([caller] if context == "new" else [])], (path,) if context == "removed" else ())
+                image_all(left, candidate, (text, context))
+                count += 1
+        # Exact traced indirect TS callers are refused only from daemon production source.
+        for target in sorted(module["COLD_IMAGE_CALLERS"]):
+            specifier = "../../../" + target if target.startswith("scripts/") else "../tests/tunnel/" + Path(target).name
+            caller = ("packages/daemon/src/image-reader.ts", f"import '{specifier}';\n", "100644")
+            for context in ("both", "target-base-only"):
+                left = soak_tree(image_base, [caller])
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(left, image_updates)
+                image_all(left, candidate, (target, context))
+                count += 1
+        # Existing resolver spelling rules, plus the exact D1 escaped producer spellings.
+        spellings = (
+            ("packages/daemon/src/image-reader.ts", r"import '@remi/daemon/tunnel/image-\u0061dmission.js';" + "\n"),
+            ("packages/daemon/src/image-reader.ts", "import 'image-" + "\\" + "admission';\n"),
+            ("root-image-config.json", r'"scripts/tunnel-decoder-proof/\u0061dmission.ts"' + "\n"),
+            ("packages/daemon/src/image-reader.ts", "require /* owned */ ('../../../scripts/tunnel-decoder-proof/decode.js');\n"),
+        )
+        for path, text in spellings:
+            caller = (path, text, "100644")
+            for context in ("both", "target-base-only"):
+                left = soak_tree(image_base, [caller])
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(left, image_updates)
+                image_all(left, candidate, (text, context))
+                count += 1
+        for target in (IMAGE_PROOF + "matrix.py", IMAGE_PROOF + "approval-matrix.py", IMAGE_PROOF + "policy-mutations.py"):
+            caller = ("root-image-launch.sh", f"python {target}\n", "100644")
+            for context in ("both", "target-base-only"):
+                left = soak_tree(image_base, [caller])
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(left, image_updates)
+                image_all(left, candidate, (target, context))
+                count += 1
+        # D1 runner asset imports/readers keep their exact .py extension and target identity.
+        for target in sorted(module["COLD_IMAGE_RUNNERS"]):
+            caller = ("packages/daemon/src/image-reader.ts", f"import runner from '../../../{target}' with {{ type: 'file' }};\n", "100644")
+            for context in ("both", "target-base-only"):
+                left = soak_tree(image_base, [caller])
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(left, image_updates)
+                image_all(left, candidate, (target, "relative runner asset", context))
+                count += 1
+        for text in (
+                "const source = Bun.file('../../../scripts/tunnel-decoder-proof/approval-matrix.py');\n",
+                "const launch = 'python ../../../scripts/tunnel-decoder-proof/policy-mutations.py';\n",
+                r"import runner from '@remi/daemon/../../../scripts/tunnel-decoder-proof/\u006dat rix.py';".replace("at rix", "atrix") + "\n"):
+            caller = ("packages/daemon/src/image-reader.ts", text, "100644")
+            for context in ("both", "target-base-only"):
+                left = soak_tree(image_base, [caller])
+                candidate = soak_tree(image_base, image_updates) if context == "target-base-only" else soak_tree(left, image_updates)
+                image_all(left, candidate, (text, "runner reader/launch", context))
+                count += 1
+        unrelated = ("packages/daemon/src/image-reader.ts", "import './unrelated/matrix.py';\n", "100644")
+        left = soak_tree(image_base, [unrelated])
+        result = classify(left, soak_tree(left, image_updates))
+        assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+        count += 1
+        for producer, text in IMAGE_CONTENT.items():
+            without = [update for update in image_updates if update[0] != producer]
+            for state in ("body", "missing", "deleted", "mode", "base-state"):
+                left, changes, removals = image_base, list(without), ()
+                if state == "body":
+                    changes.append((producer, text + "\n// unreviewed body\n", "100644"))
+                elif state == "deleted":
+                    removals = (producer,)
+                elif state == "mode":
+                    changes.append((producer, text, "100755"))
+                elif state == "base-state":
+                    left = soak_tree(image_base, [(producer, text + "\n// wrong original\n", "100644")])
+                    changes = image_updates
+                image_all(left, soak_tree(left, changes, removals), (producer, state))
+                count += 1
+        parser = IMAGE_CONTENT[IMAGE_DAEMON]
+        for text in (parser.replace(" as number", "", 1), parser.replace(" as number", " as any", 1)):
+            image_all(image_base, soak_tree(image_base, [*(u for u in image_updates if u[0] != IMAGE_DAEMON), (IMAGE_DAEMON, text, "100644")]), "unreviewed cast")
+            count += 1
+        image_all(image_base, soak_tree(image_base, [*(u for u in image_updates if u[0] != IMAGE_PROOF + "matrix.py"),
+                  (IMAGE_PROOF + "matrix.py", IMAGE_CONTENT[IMAGE_PROOF + "matrix.py"].replace('"compile_from_snapshot": True', '"compile_from_snapshot": False'), "100644")]), "runner field")
+        count += 1
+        image_all(image_head, soak_tree(image_head, [], (), source=image_base), "reversed D1")
+        count += 1
+        # Fixed dependencies, dispatchers and runner inputs cannot drift at either endpoint.
+        for path, pin in image_policy["original"].items():
+            if path in image_policy["head"]:
+                continue
+            data = subprocess.check_output(["git", "show", f"{image_base}:{path}"])
+            for context in ("base", "head"):
+                changed = (path, data + b"\nowned unreviewed dependency\n", pin[0])
+                left = soak_tree(image_base, [changed]) if context == "base" else image_base
+                candidate = soak_tree(left, [*image_updates, *([changed] if context == "head" else [])])
+                image_all(left, candidate, (path, context))
+                count += 1
+        package_bytes = subprocess.check_output(["git", "show", f"{image_base}:package.json"]).decode()
+        cli_bytes = subprocess.check_output(["git", "show", f"{image_base}:packages/daemon/src/cli.ts"]).decode()
+        current_version = json.loads(package_bytes)["version"]
+        next_version = current_version + "0"
+        version_updates = [
+            ("package.json", package_bytes.replace(f'"version": "{current_version}"', f'"version": "{next_version}"', 1), "100644"),
+            ("packages/daemon/src/cli.ts", cli_bytes.replace(f"return '{current_version}'; // REMI_COMPILED_VERSION", f"return '{next_version}'; // REMI_COMPILED_VERSION"), "100644"),
+        ]
+        version_base = soak_tree(image_base, version_updates)
+        result = classify(version_base, soak_tree(version_base, image_updates))
+        assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+        count += 1
+        for path, changed in (("package.json", package_bytes.replace('"private": true', '"private": false', 1)),
+                              ("packages/daemon/src/cli.ts", cli_bytes + "\n// changed runtime body\n")):
+            for context in ("base", "head"):
+                update = (path, changed, "100644")
+                left = soak_tree(image_base, [update]) if context == "base" else image_base
+                candidate = soak_tree(left, [*image_updates, *([update] if context == "head" else [])])
+                image_all(left, candidate, (path, context))
+                count += 1
+        mismatch = soak_tree(image_base, version_updates[:1])
+        image_all(mismatch, soak_tree(mismatch, image_updates), "unsynchronized metadata")
+        count += 1
+        for other in ("descriptor", "journal", "native-helper"):
+            if other == "native-helper":
+                changes = [(path, text, module["COLD_RELOCATIONS"][other]["head"][path][0]) for path, text in NATIVE_CONTENT.items()]
+                removals = (NATIVE_REMOVED_C,)
+            else:
+                changes, removals = cold_updates(other), ()
+                path, text, mode = changes[0]
+                changes[0] = (path, text + "\n// simultaneous distinct producer change\n", mode)
+            image_all(image_base, soak_tree(image_base, [*image_updates, *changes], removals), ("D1 composition", other))
+            count += 1
+        for fixture in sorted(module["COLD_IMAGE_BINARY"]):
+            data = subprocess.check_output(["git", "show", f"{image_base}:{fixture}"])
+            left = soak_tree(image_base, [(fixture, data, "100755")])
+            image_all(left, soak_tree(left, image_updates), (fixture, "binary mode"))
+            count += 1
+        # Actual private object stores cover D1-specific unreadable parser/runner/binary/test inputs.
+        object_bytes = {pin[1]: subprocess.check_output(["git", "cat-file", "blob", pin[1]])
+                        for pin in image_policy["original"].values()}
+        for path, text in IMAGE_CONTENT.items():
+            object_bytes[image_policy["head"][path][1]] = text.encode()
+        metadata_pins = {}
+        for path in ("package.json", "packages/daemon/src/cli.ts"):
+            blob = subprocess.check_output(["git", "rev-parse", f"{image_base}:{path}"]).decode().strip()
+            metadata_pins[path] = ("100644", blob)
+            object_bytes[blob] = subprocess.check_output(["git", "cat-file", "blob", blob])
+        original_pins = {**image_policy["original"], **metadata_pins}
+        final_pins = {**original_pins, **image_policy["head"]}
+        missing_cases = (("complete", None), ("original", IMAGE_PROOF + "admission.ts"),
+                         ("original", IMAGE_PROOF + "matrix.py"),
+                         ("original", "scripts/tunnel-storage-proof/matrix.py"),
+                         ("original", IMAGE_PROOF + "fixture.png"), ("original", IMAGE_PROOF + "fixture.jpg"),
+                         ("head", IMAGE_DAEMON), ("head", "packages/daemon/tests/tunnel/image-admission-adoption.test.ts"))
+        for endpoint, missing_path in missing_cases:
+            omitted = image_policy[endpoint][missing_path][1] if endpoint != "complete" else None
+            corpus_dir = Path.cwd()
+            with tempfile.TemporaryDirectory(prefix="image-missing-pin-") as private:
+                try:
+                    os.chdir(private)
+                    git("init", "-q")
+                    git("config", "user.name", "Owned image object control")
+                    git("config", "user.email", "test@example.com")
+                    for blob, data in object_bytes.items():
+                        if blob != omitted:
+                            actual = subprocess.check_output(["git", "hash-object", "-w", "--stdin"], input=data).decode().strip()
+                            assert actual == blob
+                    # Reuse the exact public sample already read by the unchanged preceding native controls.
+                    assert git("hash-object", "-w", "--stdin", input=sample_bytes.decode()) == sample_pin[1]
+                    refs = []
+                    for pins in (original_pins, final_pins):
+                        git("read-tree", "--empty")
+                        git("update-index", "--add", "--cacheinfo", f"{sample_pin[0]},{sample_pin[1]},.env.example")
+                        for path, pin in pins.items():
+                            git("update-index", "--add", "--cacheinfo", f"{pin[0]},{pin[1]},{path}")
+                        tree = git("write-tree", "--missing-ok")
+                        refs.append(git("commit-tree", tree, *(["-p", refs[0]] if refs else []), "-m", "owned image unavailable input"))
+                    if endpoint == "complete":
+                        result = classify(refs[0], refs[1])
+                        assert selected(result) == WRAPPER_GATES and not result["relay_soak"], result
+                    else:
+                        image_all(refs[0], refs[1], ("missing input", endpoint, missing_path))
                     count += 1
                 finally:
                     os.chdir(corpus_dir)

@@ -280,6 +280,62 @@ COLD_RELOCATIONS["native-helper"] = {'original': {'scripts/tunnel-storage-proof/
                  'remi_recovery_cloexec',
                  'remi_recovery_unlink']}
 
+# One exact D1 header admission adoption, with fixed caller/dependency/runner provenance.
+COLD_RELOCATIONS["image-admission"] = {'original': {'scripts/tunnel-decoder-proof/admission.ts': ['100644',
+                                                            '28212d027cdd9977568808aac7add66cc46ecfbd'],
+              'scripts/tunnel-decoder-proof/matrix.py': ['100644',
+                                                         'a0917f2dc2056dea4588eacbfaeec28fad09ee4e'],
+              'scripts/tunnel-decoder-proof/decode.ts': ['100644',
+                                                         '8cb073735dcbf664ec33ddc36ff79aae5d157ea4'],
+              'scripts/tunnel-decoder-proof/process.ts': ['100644',
+                                                          '17228b7b3f5baa869408d517d8d922a610a650f1'],
+              'scripts/tunnel-decoder-proof/worker.ts': ['100644',
+                                                         '88ad8abb4eec306a4bb041fb45d0f3a6d5d1de25'],
+              'scripts/tunnel-decoder-proof/probe.ts': ['100644', 'c4785cf9ad96a479ebeb973554d9a1e662a29b3b'],
+              'scripts/tunnel-decoder-proof/palette-probe.ts': ['100644',
+                                                                'f91327378f75a49d33b477b4cfccc29395518482'],
+              'scripts/tunnel-decoder-proof/process-probe.ts': ['100644',
+                                                                'c2aaafb7043cca567f69639688c19c2281ce930e'],
+              'scripts/tunnel-decoder-proof/approval-probe.ts': ['100644',
+                                                                 'a9e7ec481c468ece598fd4e3d10c1390101df939'],
+              'scripts/tunnel-decoder-proof/approval-entry.ts': ['100644',
+                                                                 '44838a4a998ab3eacc61f2d91de120811bc5c6cd'],
+              'scripts/tunnel-decoder-proof/approval-assets.ts': ['100644',
+                                                                  '1c452c32c43b8c1e557d7f109c606c5cb9c8100c'],
+              'scripts/tunnel-decoder-proof/approval-client.ts': ['100644',
+                                                                  'ad6668eb05eee059ab3d9c9b9f1ba331cf9e3f43'],
+              'scripts/tunnel-decoder-proof/approval-matrix.py': ['100644',
+                                                                  'bdf4a799fb2ca40bd72a499d6dfd0bf6af18c488'],
+              'scripts/tunnel-decoder-proof/policy-mutations.py': ['100755',
+                                                                   'f68e0f6b27439764f936fa0f027f4dad755b3859'],
+              'scripts/tunnel-decoder-proof/inputs.json': ['100644',
+                                                           'f82d772753a90f34e5a798917d88f9889c1f98d0'],
+              'scripts/tunnel-decoder-proof/package.json': ['100644',
+                                                            '2bc1f4285da0a604eaa6482f88c3533aebcd3ec3'],
+              'scripts/tunnel-decoder-proof/bun.lock': ['100644', '8c71ddc9da7af35abe29123883aadca38fbbda88'],
+              'scripts/tunnel-decoder-proof/pngjs.d.ts': ['100644',
+                                                          'f6aacee09c0dcee943fbfd8ecb8414cc293f08b6'],
+              'scripts/tunnel-decoder-proof/THIRD-PARTY-LICENSES.txt': ['100644',
+                                                                        '327518768c5623a62095dcb05ddf8f6fb75c6d82'],
+              'scripts/tunnel-decoder-proof/fixture.png': ['100644',
+                                                           '83a5ef463464d7e49609e7245cc0265ce0094c52'],
+              'scripts/tunnel-decoder-proof/fixture.jpg': ['100644',
+                                                           '4e7bfe33c2206d1b7b915975bacf7244f7ac4e58'],
+              'scripts/tunnel-storage-proof/matrix.py': ['100644',
+                                                         'c339ae6f3b442f3215d5c1d96bcd5dc79924fdaa'],
+              'scripts/tunnel-storage-proof/storage-approval-mutations.py': ['100755',
+                                                                             'f9e338cbed68841b7aa6c4105bd38a50543f09da'],
+              'tsconfig.json': ['100644', '603cbfaa47e2596dc936907599abb2cf04f0e575'],
+              'bunfig.toml': ['100644', '3cdd70fa50576ab11b0ca1d8faeac951c3786196'],
+              'bun.lock': ['100644', '49c79ac37de53d49aee967dbdc565634cf9ce541']},
+ 'head': {'packages/daemon/src/tunnel/image-admission.ts': ['100644',
+                                                            '8abf0289a844fa6cf4350eda66b41bc993334164'],
+          'scripts/tunnel-decoder-proof/admission.ts': ['100644', '9b8d315456b515dd0e51ec441e908462ec3659eb'],
+          'scripts/tunnel-decoder-proof/matrix.py': ['100644', 'c65994103d1bf600ccb54a1e5bec84c618598de3'],
+          'packages/daemon/tests/tunnel/image-admission-adoption.test.ts': ['100644',
+                                                                            'bc8c20b40b53804175ea7c058968dd55f299dc70']},
+ 'identifiers': ['admitImage', 'MAX_INPUT_BYTES']}
+
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -628,10 +684,94 @@ def cold_native_asset_reference(path, text):
     return False
 
 
+COLD_IMAGE_BINARY = {
+    "scripts/tunnel-decoder-proof/fixture.png",
+    "scripts/tunnel-decoder-proof/fixture.jpg",
+}
+COLD_IMAGE_PRODUCERS = {
+    "scripts/tunnel-decoder-proof/admission.ts",
+    "scripts/tunnel-decoder-proof/matrix.py",
+    "packages/daemon/src/tunnel/image-admission.ts",
+    "packages/daemon/tests/tunnel/image-admission-adoption.test.ts",
+}
+COLD_IMAGE_RUNNERS = {
+    "scripts/tunnel-decoder-proof/matrix.py",
+    "scripts/tunnel-decoder-proof/approval-matrix.py",
+    "scripts/tunnel-decoder-proof/policy-mutations.py",
+}
+COLD_IMAGE_CALLERS = {
+    "scripts/tunnel-decoder-proof/decode.ts",
+    "scripts/tunnel-decoder-proof/process.ts",
+    "scripts/tunnel-decoder-proof/worker.ts",
+    "scripts/tunnel-decoder-proof/probe.ts",
+    "scripts/tunnel-decoder-proof/palette-probe.ts",
+    "scripts/tunnel-decoder-proof/process-probe.ts",
+    "scripts/tunnel-decoder-proof/approval-probe.ts",
+    "scripts/tunnel-decoder-proof/approval-entry.ts",
+    "packages/daemon/tests/tunnel/image-admission-adoption.test.ts",
+}
+
+
+# D1's exact Python asset paths retain .py rather than the TS resolver's suffix semantics.
+COLD_IMAGE_RUNNER_PATH = re.compile(
+    r"(?<![\w$./-])((?:\.\.?/|@remi/daemon/)[\w@./-]+\.py)(?![\w$./-])"
+)
+
+
+def cold_image_runner_reference(path, text):
+    specifiers = [match.group(1) for match in COLD_MODULE_REFERENCE.finditer(text)]
+    specifiers.extend(match.group(1) for match in COLD_IMAGE_RUNNER_PATH.finditer(text))
+    for specifier in specifiers:
+        if "\\" in specifier and specifier.startswith((".", "@remi/daemon/")):
+            return True
+        if specifier.replace("\\", "/").rsplit("/", 1)[-1] not in {Path(target).name for target in COLD_IMAGE_RUNNERS}:
+            continue
+        if "\\" in specifier or "\0" in specifier:
+            return True
+        if specifier.startswith("."):
+            parts = list(Path(path).parent.parts)
+            for part in specifier.split("/"):
+                if part == "..":
+                    if not parts:
+                        return True
+                    parts.pop()
+                elif part not in ("", "."):
+                    parts.append(part)
+            resolved = "/".join(parts)
+        elif specifier.startswith("@remi/daemon/"):
+            suffix = specifier.removeprefix("@remi/daemon/")
+            if any(part in (".", "..") for part in suffix.split("/")):
+                return True
+            resolved = "packages/daemon/src/" + suffix
+        else:
+            # Unknown bare imports of a declared runner filename stay conservative.
+            return True
+        if resolved in COLD_IMAGE_RUNNERS:
+            return True
+    return False
+
+
+def cold_image_reference(path, text, targets, identifiers):
+    if cold_reference(path, text, targets, identifiers) or cold_image_runner_reference(path, text):
+        return True
+    if "\\" not in text:
+        return False
+    decoded = re.sub(r"\\(?:u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]+)\}|x([0-9a-fA-F]{2}))",
+                     lambda escape: chr(int(next(part for part in escape.groups() if part is not None), 16)), text)
+    if cold_reference(path, decoded, targets, identifiers) or cold_image_runner_reference(path, decoded):
+        return True
+    # Unresolved identity spellings of exact candidate references stay conservative.
+    unescaped = re.sub(r"\\(.)", r"\1", decoded)
+    return cold_reference(path, unescaped, targets, identifiers) or cold_image_runner_reference(path, unescaped)
+
+
 def cold_relocation_paths(base, head, merge_base, paths):
     changed = set(paths)
     selected = [policy for policy in COLD_RELOCATIONS.values() if changed & set(policy["head"])]
     if not selected:
+        return set()
+    image_admission = COLD_RELOCATIONS["image-admission"] in selected
+    if image_admission and len(selected) != 1:
         return set()
     native_helper = COLD_RELOCATIONS["native-helper"] in selected
     if native_helper and len(selected) != 1:
@@ -669,6 +809,8 @@ def cold_relocation_paths(base, head, merge_base, paths):
             trees[ref] = tree
             if tree.get(".env.example") != COLD_PUBLIC_SAMPLE:
                 return set()
+        if image_admission and any(not soak_versions_reviewed(trees[ref]) for ref in dict.fromkeys((base, head, merge_base))):
+            return set()
         for ref in (base, merge_base):
             if any(trees[ref].get(path) != tuple(pin) for path, pin in original.items()):
                 return set()
@@ -685,6 +827,8 @@ def cold_relocation_paths(base, head, merge_base, paths):
                 return set()
         names = {Path(p).name for p in final if p.endswith(".ts")}
         targets = {p for p in original | final if p.endswith(".ts") and Path(p).name in names}
+        if image_admission:
+            targets.update(COLD_IMAGE_PRODUCERS | COLD_IMAGE_RUNNERS)
         for ref in dict.fromkeys((base, head, merge_base)):
             scan = {}
             for path, (_, blob) in trees[ref].items():
@@ -707,11 +851,19 @@ def cold_relocation_paths(base, head, merge_base, paths):
                 content = stream.read(int(header[2]))
                 if len(content) != int(header[2]) or stream.read(1) != b"\n":
                     return set()
+                if image_admission and path in COLD_IMAGE_BINARY:
+                    object_digest = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+                    if object_digest != blob:
+                        return set()
+                    continue
                 text = content.decode()
                 if "\0" in text:
                     return set()
                 if path not in expected_head and path not in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} and (
-                        cold_reference(path, text, targets, identifiers) or
+                        (cold_image_reference(path, text, targets, identifiers) if image_admission else
+                         cold_reference(path, text, targets, identifiers)) or
+                        (image_admission and path.startswith("packages/daemon/src/") and
+                         cold_image_reference(path, text, COLD_IMAGE_CALLERS, ())) or
                         (native_helper and (cold_native_asset_reference(path, text) or
                             (path.startswith("packages/daemon/src/") and
                              cold_reference(path, text, COLD_NATIVE_CALLERS, ()))))):
