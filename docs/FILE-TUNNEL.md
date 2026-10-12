@@ -1,8 +1,8 @@
 # Image and file tunnel: threat model and freeze plan
 
-Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), started 2026-10-08; concrete staging ADR prepared 2026-10-11.
+Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), started 2026-10-08; direct staging contract accepted 2026-10-11 in ADR 0041.
 This document specifies work to review before implementation; it adds no messages, capabilities, endpoints or native attachment controls.
-It is not an accepted protocol freeze or an implemented feature.
+The direct staging vocabulary is accepted; protocol/runtime integration and the other tunnel operations remain pending.
 The owner included the tunnel's frames in the protocol freeze (#1233, comment on #1170); native attachment and preview UI remains X5 (#1245).
 The first runnable unit is direct image staging; harness insertion has its own later gates.
 This separate follow-up does not establish or block relay backend release acceptance.
@@ -135,7 +135,9 @@ Client launch may contact the requested site, including a private-network host, 
 
 ## Proposed transfer bounds
 
-These are reviewable initial limits, not settings or protocol constants already implemented.
+ADR 0041 accepts these bounds for direct image staging; the dormant shared codec validates its wire-shape limits.
+Production resource enforcement remains part of lifecycle adoption.
+File-fetch bounds remain proposed.
 
 | Resource | Proposed limit |
 |---|---|
@@ -171,9 +173,9 @@ The following is candidate vocabulary for the protocol ADR, not permission to in
 
 ## Candidate direct staging contract
 
-All names and fields below are proposals for review, not additions to the protocol registry.
-The concrete owner/native review packet is [proposed ADR 0041](../.context/decisions/0041-direct-image-staging.md), collecting these existing fields and bounds with shape/state validation and retained retry deadlines.
-Its proposed `image_staging` capability remains unregistered; the ADR requires owner acceptance and production handler/caller conformance before availability.
+The names and fields below are the owner-accepted contract in [ADR 0041](../.context/decisions/0041-direct-image-staging.md), with shape/state validation and retained retry deadlines.
+They remain absent from the protocol registry; `image_staging` stays unregistered until production handler/caller conformance establishes availability.
+The directly imported [`image-staging.ts`](../packages/shared/src/image-staging.ts) codec and [conformance vectors](../packages/shared/tests/fixtures/image-staging/README.md) prepare those field checks independently of a transfer lifecycle.
 Initial staging targets an attached live Claude session with a known, non-null harness binding.
 It writes private storage only and never types a reference, presses Enter or starts a turn.
 
@@ -462,7 +464,7 @@ retained separately, and only the executed controls count as acceptance.
 |---|---|---|
 | T0a: storage packaging proof | Reuse restricted storage conventions; proposed `packages/daemon/src/tunnel/storage.ts` and owned filesystem controls under `packages/daemon/tests/tunnel/`. Choose a helper only after comparing compiled distribution support. | Execute all three supported targets on both Bun gates; complete the race, non-regular-file and credential-overlap corpus. Record unsupported targets explicitly. No advertised capability. |
 | T0b: decoder packaging proof | Compare explicitly declared PNG/JPEG decoder candidates and license/runtime assets; proposed `tunnel/image-validation.ts` and decoder corpus. Do not import Miniflare's development dependency as an implicit runtime dependency. | Standalone compiled execution on all targets, full decode with admission before excessive allocation, finite CPU/memory/deadline/concurrency limits and cancellation. A real held approval stays responsive. No chosen dependency before evidence. |
-| T0c: accept the staging contract | Review proposed [ADR 0041](../.context/decisions/0041-direct-image-staging.md), then reuse ADR 0035, protocol registry and fixture rules for strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | T0a/T0b settle production adoption feasibility. Owner reviews the concrete fields, bounds, outcomes and cleanup policy; an independent review finds no unresolved critical decision. Fixtures alone do not advertise support. |
+| T0c: staging codec and conformance | Implement accepted [ADR 0041](../.context/decisions/0041-direct-image-staging.md) with strict validators and golden positive/refusal fixtures under `packages/shared/`; coordinate Swift conformance in the existing native track. | Owner accepted fields, bounds, outcomes and cleanup policy on 2026-10-11. T0a/T0b production adoption feasibility and protocol/runtime integration still precede availability. Fixtures alone do not advertise support. |
 | T1a storage: reservations and recovery | Reuse `storage/interprocess-file-lock.ts`; proposed `tunnel/reservations.ts`, private artifact ledger and startup recovery. | Reserve bytes and artifact slots across actual processes before creation; retain failed-cleanup reservations. Crash recovery touches only captured private roots. This internal preparation exposes no upload API. |
 | T1a lifecycle: authenticated direct staging | Reuse server-derived identity, `withAuthorizationEpoch`, hub/child session routing and frozen validators; proposed `cli/handlers/image-upload-events.ts` and `tunnel/transfers.ts`. | Exact bytes/digest/decode; revoke/regrant, detach, rebind, lost-ack, cancellation, saturation and cleanup controls against real hub/child. Keep the capability unadvertised until its production client caller lands. |
 | T1a caller: one direct client upload | Reuse `packages/web/src/components/chat/InputArea.tsx`, connection dispatch and `hubSupport`; add explicit file selection, progress, staged result and cancellation. | One shipping caller completes an image against the source hub; rendered select/cancel/refusal/reconnect states pass. Advertise staging only with the accepted handler and caller. Completion never inserts a reference. |
