@@ -264,3 +264,73 @@ Action outputs/env and YAML contracts require explicit true/false for both flags
 missing, blank, malformed or soak=true/relay=false values fail scope before runtime
 work. Actual full-tree controls use published ancestor objects and copied approved
 fixture bytes, without depending on unpublished fixture commits or files.
+
+## Exact descriptor and journal relocations (#1170)
+
+`COLD_RELOCATIONS` separately pins the descriptor transition A and journal
+transition B. A owns the two dormant daemon descriptor/type modules, two exact
+proof adapters and identity test. B owns the two dormant daemon journal modules,
+two exact proof adapters, two mutation target updates and identity test. The
+ordered combined A-to-B diff is also checked against the same pins. This is a
+one-time transition rule, not an exemption for later edits or a directory.
+
+Every required producer must make its exact A/M transition as a regular file
+with the reviewed whole blob and mode. Both target base and merge-base retain
+the pinned original producers and known consumers; the head retains their exact
+reviewed successors and unchanged dependency blobs. A B-only transition requires
+A's reviewed descriptor producers and test already at both bases. The combined
+transition checks the pre-A originals and final A/B successors. Missing or changed
+bodies, exports, imports, consumers, mutation targets, modes, additions at an
+unexpected base, deletions, renames and type changes restore all gates.
+
+Strict mode checks cover complete tracked repository trees. Whole-text scans
+read every regular text input at target base and head, with the existing
+Markdown/known-binary exclusions; executable provisioning remains scanned. Boundary-delimited public API names,
+exact qualified paths, and literal relative or known `@remi/daemon/*` imports are
+checked. Unambiguous JS Unicode/hex escapes are decoded before resolution; unresolved
+relative/daemon-alias escapes remain conservative. Relative references resolve
+against their containing file: the actual
+Worker `./admission.ts` resolves to Worker admission, not the dormant tunnel
+module. Unknown bare module references and daemon aliases with dot segments matching
+a candidate name remain conservative. Import comment trivia is recognized. Generic lowercase properties and longer identifiers do not claim
+these APIs. Unknown consumers, unavailable objects, malformed UTF8/NULs, secret
+file names and symlinks/submodules restore all gates before exclusion.
+
+A complete qualified B transition alone passes the existing accounting overlap
+preflight; the old accounting qualification and its producer pins remain
+unchanged for every other input. Pure exact relocations and ordinary Markdown
+companions select every ordinary gate while `relay` and therefore `relay_soak`
+remain false. Any additional runtime/helper/registry/index/config input, including
+executable provisioning or R7 documentation, restores relay. No previously
+selected relay work is cleared and no workflow or measurement body is changed.
+
+The real full-tree corpus reconstructs reviewed candidates from published
+original objects plus copied exact transforms/adapters/tests and asserts their
+whole Git blob IDs. Its A, B and ordered A-to-B controls work before either
+adoption commit lands. Literal scans do not prove the absence of computed
+references; future runtime callers and packaging still require their own review.
+
+The published root `.env.example` is a public sample, qualified only by its
+exact reviewed regular mode/blob. It is read-validated and reference-scanned;
+changed samples and other `.env*` names are refused before content reads. Known
+producer/consumer blobs are also validated for availability, type, length, UTF8
+and NULs before their references are excluded. The existing proof digest mutation
+reader is pinned as an immutable consumer; its body and target remain unchanged.
+
+The same exact fixture rule now also qualifies the reviewed M-only
+`packages/daemon/tests/connection-auth.test.ts` transition. It waits for the
+existing real authentication success/failure callbacks in its two-client test;
+its keys, assertions, authentication policy and original deadline stay fixed.
+Any one, pair or all three reviewed fixture transitions select ordinary gates
+and the full short relay suite while omitting only the unchanged long soak.
+The Connection, Authenticator and IdentityStore production blobs are additionally
+pinned at both endpoints. Three existing comment-only auth-fixture references
+have exact regular whole-blob and single complete-line provenance; changed,
+missing or unreadable commentary or extra references restore the soak. Old
+fixture reference matches remain conservative, with no general comment stripping.
+
+When the auth fixture is changed, its token is also scanned through tracked
+regular root execution/config text at both endpoints, including the exact
+public `.env.example` sample. Other secret names, unreadable root inputs and root
+callers restore the soak. The original two-fixture-only scan surfaces and token
+matching remain unchanged.
