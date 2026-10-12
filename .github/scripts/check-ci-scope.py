@@ -27,6 +27,126 @@ HOOK_SERVER_TEST = module["HOOK_SERVER_TEST"]
 STAGING_SOURCE, STAGING_INPUTS = module["STAGING_SOURCE"], module["STAGING_INPUTS"]
 STAGING_EXPORTS = module["STAGING_EXPORTS"]
 STAGING_TEXT = "".join(f"export const {name} = 'owned';\n" for name in sorted(STAGING_EXPORTS))
+# Actual immutable pre-relocation Git blobs remain available after adapters replace originals.
+ACCOUNTING_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE).decode()
+    for path, blob in module["ACCOUNTING_ORIGINALS"].items()
+}
+ACCOUNTING_PROOF = "scripts/tunnel-storage-proof/"
+ACCOUNTING_DAEMON = "packages/daemon/src/tunnel/"
+ACCOUNTING_HEAD_CONTENT = {}
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "reservations.ts"]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "reservations.ts"] = old.replace(
+    "// #1170 standalone budget candidate.", "// #1170 internal reservation accounting.", 1
+).replace("../../packages/daemon/src/storage/", "../storage/").replace(
+    "from './recovery';", "from './recovery-error';", 1
+)
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "journal-schema.ts"]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "journal-schema.ts"] = old.replace(
+    "// #1443 standalone journal accounting;", "// #1443/#1170 internal journal accounting;", 1
+)
+old = ACCOUNTING_ORIGINAL_CONTENT[ACCOUNTING_PROOF + "recovery.ts"]
+error = old[old.index("export class RecoveryError"):old.index("function refuse()")]
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_DAEMON + "recovery-error.ts"] = error
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_PROOF + "recovery.ts"] = old.replace(error, "", 1).replace(
+    "import * as fs from 'node:fs';\n", "import * as fs from 'node:fs';\n" +
+    "import { RecoveryError } from '../../packages/daemon/src/tunnel/recovery-error';\n", 1
+).replace("export type RecoveryOps", "export { RecoveryError };\n\nexport type RecoveryOps", 1)
+ACCOUNTING_HEAD_CONTENT[ACCOUNTING_PROOF + "settlement-mutations.py"] = ACCOUNTING_ORIGINAL_CONTENT[
+    ACCOUNTING_PROOF + "settlement-mutations.py"
+].replace(ACCOUNTING_PROOF + "reservations.ts", ACCOUNTING_DAEMON + "reservations.ts").replace(
+    ACCOUNTING_PROOF + "journal-schema.ts", ACCOUNTING_DAEMON + "journal-schema.ts"
+)
+ACCOUNTING_HEAD_CONTENT["scripts/tunnel-storage-proof/reservations.ts"] = """// #1170 proof adapter for the sole internal accounting implementation.
+export {
+  CLEANUP_BLOCKING_DEBT,
+  ReservationError,
+  Reservations,
+} from '../../packages/daemon/src/tunnel/reservations';
+"""
+ACCOUNTING_HEAD_CONTENT["scripts/tunnel-storage-proof/journal-schema.ts"] = """// #1443/#1170 proof adapter; identifiers carry no transfer authority.
+export {
+  type JournalBinding,
+  type JournalLease,
+  MARKER_ALLOWANCE,
+  type MarkerKind,
+  type MarkerWitness,
+  sameLease,
+  sameWitnesses,
+  validBinding,
+  validWitnesses,
+} from '../../packages/daemon/src/tunnel/journal-schema';
+"""
+ACCOUNTING_HEAD_CONTENT["packages/daemon/tests/tunnel/reservations-adoption.test.ts"] = """import { expect, test } from 'bun:test';
+import { randomBytes, randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import * as proofSchema from '../../../../scripts/tunnel-storage-proof/journal-schema';
+import { RecoveryError as ProofRecoveryError } from '../../../../scripts/tunnel-storage-proof/recovery';
+import * as proofReservations from '../../../../scripts/tunnel-storage-proof/reservations';
+import * as schema from '../../src/tunnel/journal-schema';
+import { RecoveryError } from '../../src/tunnel/recovery-error';
+import {
+  CLEANUP_BLOCKING_DEBT,
+  ReservationError,
+  Reservations,
+} from '../../src/tunnel/reservations';
+
+test('proof adapters share daemon constructors and actual durable reservation accounting', () => {
+  expect(proofReservations.Reservations).toBe(Reservations);
+  expect(proofReservations.ReservationError).toBe(ReservationError);
+  expect(proofReservations.CLEANUP_BLOCKING_DEBT).toBe(CLEANUP_BLOCKING_DEBT);
+  expect(ProofRecoveryError).toBe(RecoveryError);
+  expect(new ProofRecoveryError('busy')).toBeInstanceOf(RecoveryError);
+  expect(new RecoveryError('unavailable')).toBeInstanceOf(ProofRecoveryError);
+  expect(new ProofRecoveryError('busy').message).toBe('recovery busy');
+  expect(proofSchema.MARKER_ALLOWANCE).toBe(schema.MARKER_ALLOWANCE);
+  for (const name of ['sameLease', 'sameWitnesses', 'validBinding', 'validWitnesses'] as const)
+    expect(proofSchema[name]).toBe(schema[name]);
+
+  const root = fs.mkdtempSync(path.join(tmpdir(), 'remi-reservations-adoption-'));
+  try {
+    const home = path.join(root, 'home');
+    const scratch = path.join(root, 'scratch');
+    const metadata = path.join(root, 'metadata');
+    fs.mkdirSync(scratch, { mode: 0o700 });
+    fs.mkdirSync(metadata, { mode: 0o700 });
+    const identity = (directory: string) => {
+      const stat = fs.statSync(directory, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    };
+    const owner = {
+      device: randomBytes(32).toString('hex'),
+      session: randomUUID(),
+      hub: randomBytes(16).toString('hex'),
+    };
+    const store = Reservations.create(home);
+    const lease = store.reserveJournal(owner, 1, identity(scratch), identity(metadata));
+    const { id, ...binding } = lease;
+    expect(schema.validBinding(binding, 'active')).toBe(true);
+    expect(proofSchema.sameLease(binding, lease)).toBe(true);
+    expect(id).toMatch(/^[a-f0-9]{32}$/);
+    store.reserve(owner, 1);
+    expect(() => store.reserve(owner, 1)).toThrow(ReservationError);
+    try {
+      store.reserve(owner, 1);
+    } catch (error) {
+      expect(error).toBeInstanceOf(proofReservations.ReservationError);
+      expect((error as ReservationError).code).toBe('busy');
+    }
+    const reopened = new proofReservations.Reservations(home);
+    expect(reopened.inspect().map((record) => record.charge)).toEqual([16384, 4096]);
+    expect(fs.statSync(path.join(home, 'reservations.json')).mode & 0o777).toBe(0o600);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+"""
+for accounting_path, accounting_text in ACCOUNTING_HEAD_CONTENT.items():
+    accounting_blob = subprocess.check_output(["git", "hash-object", "--stdin"],
+                                              input=accounting_text.encode(), stderr=subprocess.PIPE).decode().strip()
+    assert accounting_blob == module["ACCOUNTING_HEAD"][accounting_path], accounting_path
 HOOK_COMMENT_SOURCE = {path: Path(path).read_text() for path in module["HOOK_TEST_COMMENTS"]}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
@@ -264,6 +384,145 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         Path("packages/native/icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
         assert selected(classify(staging_base, commit())) == WRAPPER_GATES
+        count += 1
+        # The accounting transition uses actual immutable repository bodies, not substitute producers.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for path, text in ACCOUNTING_ORIGINAL_CONTENT.items():
+            write(path, text)
+        accounting_base = commit()
+        def relocate_accounting():
+            for path, text in ACCOUNTING_HEAD_CONTENT.items():
+                if path != module["ACCOUNTING_TEST"]:
+                    write(path, text)
+        relocate_accounting()
+        accounting_head = commit()
+        assert selected(classify(accounting_base, accounting_head)) == WRAPPER_GATES
+        count += 1
+        write(module["ACCOUNTING_TEST"], ACCOUNTING_HEAD_CONTENT[module["ACCOUNTING_TEST"]])
+        assert selected(classify(accounting_base, commit())) == WRAPPER_GATES
+        count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            for context in ("old-removed", "new", "target-base-only"):
+                git("reset", "--hard", accounting_base); git("clean", "-fdq")
+                consumer = f"{directory}/consumer.ts"
+                content = "export { Reservations as Alias } from './tunnel/reservations';\n"
+                if directory in (".github/workflows", ".github/actions"):
+                    consumer = f"{directory}/consumer.yml"
+                    content = "steps:\n  - run: bun packages/daemon/src/tunnel/reservations.ts\n"
+                write(consumer, content)
+                consumer_base = commit()
+                if context == "old-removed":
+                    Path(consumer).unlink()
+                elif context == "target-base-only":
+                    git("reset", "--hard", accounting_base)
+                relocate_accounting()
+                left = accounting_base if context == "new" else consumer_base
+                assert selected(classify(left, commit())) == gates, (directory, context)
+                count += 1
+        for token in sorted(module["ACCOUNTING_IDENTIFIERS"]) + [
+                "./reservations", "./journal-schema", "./recovery-error",
+                "scripts/tunnel-storage-proof/reservations.ts",
+                "packages/daemon/src/tunnel/journal-schema.ts"]:
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write("packages/native/consumer.swift", f'let consumer = "{token}"\n')
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, token
+            count += 1
+        for path in module["ACCOUNTING_HEAD"]:
+            if path == module["ACCOUNTING_TEST"]:
+                continue
+            for operation in ("changed-body", "delete", "rename", "symlink"):
+                git("reset", "--hard", accounting_base); git("clean", "-fdq")
+                relocate_accounting()
+                source = Path(path)
+                if operation == "changed-body":
+                    source.write_text(source.read_text() + "// unexpected body/export\n")
+                elif operation == "rename":
+                    source.rename("docs/unexpected-accounting.md")
+                else:
+                    source.unlink()
+                    if operation == "symlink":
+                        source.symlink_to("unknown-target")
+                assert selected(classify(accounting_base, commit())) == gates, (path, operation)
+                count += 1
+        for path, value in (("packages/daemon/src/tunnel/reservations.ts", "export const UnexpectedAPI = 1;\n"),
+                            ("packages/daemon/src/tunnel/recovery-error.ts", "export class RecoveryError {}\n"),
+                            ("scripts/tunnel-storage-proof/reservations.ts", "export * from '../../packages/daemon/src/tunnel/reservations';\n"),
+                            ("scripts/tunnel-storage-proof/recovery.ts", "export class RecoveryError extends Error {}\n")):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(path, value)
+            assert selected(classify(accounting_base, commit())) == gates, path
+            count += 1
+        for path in ("packages/shared/src/index.ts", "packages/daemon/src/cli.ts", "bun.lock",
+                     "packages/signaling/wrangler.toml", "scripts/unknown-runtime.py"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(path, "changed runtime dependency\n")
+            assert selected(classify(accounting_base, commit())) == gates, path
+            count += 1
+        for path, value in (("packages/shared/src/invalid.ts", b"\xff"),
+                            ("scripts/invalid.py", b"\0"), ("packages/shared/credentials", b"never read")):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(value)
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, path
+            count += 1
+        for path in module["ACCOUNTING_ORIGINALS"]:
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            write(path, Path(path).read_text() + "// unreviewed original or consumer\n")
+            consumer_base = commit()
+            relocate_accounting()
+            assert selected(classify(consumer_base, commit())) == gates, path
+            count += 1
+        git("reset", "--hard", accounting_base); git("clean", "-fdq")
+        write("packages/signaling/src/connection-room.ts", "const clientReservations = new Map();\n")
+        boundary_base = commit()
+        relocate_accounting()
+        assert selected(classify(boundary_base, commit())) == WRAPPER_GATES
+        count += 1
+        assert selected(classify(accounting_head, accounting_head)) == gates
+        assert not module["accounting_relocation_is_dormant"](accounting_base, "f" * 40,
+                                                            accounting_base, list(module["ACCOUNTING_HEAD"]))
+        count += 2
+        for value in ("export {};\n", "\0", "export { Reservations as Alias } from './other';\n"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            relocate_accounting()
+            write(module["ACCOUNTING_TEST"], value)
+            assert selected(classify(accounting_base, commit())) == gates
+            count += 1
+        for mode in ("preexisting-test", "changed-known-head", "post-relocation-modification"):
+            git("reset", "--hard", accounting_base); git("clean", "-fdq")
+            if mode == "preexisting-test":
+                write(module["ACCOUNTING_TEST"], ACCOUNTING_HEAD_CONTENT[module["ACCOUNTING_TEST"]])
+                consumer_base = commit()
+                relocate_accounting()
+            elif mode == "changed-known-head":
+                consumer_base = accounting_base
+                relocate_accounting()
+                write("scripts/tunnel-storage-proof/recovery-probe.ts", "unreviewed known consumer\n")
+            else:
+                consumer_base = accounting_head
+                git("reset", "--hard", consumer_base)
+                source = Path("packages/daemon/src/tunnel/reservations.ts")
+                source.write_text(source.read_text() + "// future edit\n")
+            assert selected(classify(consumer_base, commit())) == gates, mode
+            count += 1
+        git("reset", "--hard", accounting_head); git("clean", "-fdq")
+        script_tree = git("rev-parse", f"{accounting_head}:scripts")
+        script_entries = subprocess.check_output(["git", "ls-tree", script_tree]).decode()
+        missing_tree = git("mktree", "--missing", input=script_entries + "100644 blob " + "f" * 40 + "\tunreadable.ts\n")
+        root_entries = subprocess.check_output(["git", "ls-tree", f"{accounting_head}^{{tree}}"]
+                                              ).decode().replace(script_tree, missing_tree)
+        broken_tree = git("mktree", input=root_entries)
+        broken_head = git("commit-tree", broken_tree, "-p", accounting_head, "-m", "unreadable scan blob")
+        assert not module["accounting_relocation_is_dormant"](accounting_base, broken_head,
+                                                            accounting_base, list(module["ACCOUNTING_HEAD"]))
+        assert selected(classify(accounting_base, broken_head)) == gates
         count += 1
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
