@@ -20,4 +20,14 @@ public struct MachineConfigurationStore: Sendable {
         guard let data = try? JSONEncoder().encode(endpoints) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
+
+    public func loadDisplayNames() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: displayNamesKey) as? [String: String] ?? [:]
+    }
+
+    public func saveDisplayNames(_ names: [String: String]) {
+        UserDefaults.standard.set(names, forKey: displayNamesKey)
+    }
+
+    private var displayNamesKey: String { "\(key).display-names" }
 }

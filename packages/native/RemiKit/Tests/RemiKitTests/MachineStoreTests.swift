@@ -127,6 +127,25 @@ struct MachineStoreTests {
         #expect(store.machines.isEmpty)
     }
 
+    @Test @MainActor func configuredDisplayNamesLoadAndCanBeRenamed() {
+        let endpoint = MachineEndpoint(host: "100.64.0.2", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client",
+            displayNames: [endpoint.id: "Build Mac"]
+        )
+
+        #expect(store.machines.first?.displayName == "Build Mac")
+
+        store.renameMachine(endpoint, to: "  Studio  ")
+        #expect(store.machines.first?.displayName == "Studio")
+
+        store.renameMachine(endpoint, to: "   ")
+        #expect(store.machines.first?.displayName == "Studio")
+    }
+
     @Test @MainActor func sendingToUnavailableSessionFailsWithoutDiscardingCallerState() async {
         let store = MachineStore(
             endpoints: [],
@@ -233,6 +252,18 @@ struct MachineStoreTests {
         persistence.save(endpoints)
         #expect(persistence.load() == endpoints)
         UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test func machineDisplayNamesPersistSeparatelyFromEndpoints() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let names = ["100.64.0.8:18765": "Studio"]
+
+        persistence.saveDisplayNames(names)
+
+        #expect(persistence.loadDisplayNames() == names)
+        #expect(persistence.load().isEmpty)
+        UserDefaults.standard.removeObject(forKey: "\(key).display-names")
     }
 
     @Test @MainActor func startupKeepsMissingConfigurationEmptyForFirstRun() {
