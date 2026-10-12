@@ -809,6 +809,225 @@ def selected(result):
     return {key for key in gates if result[key]}
 
 
+def validation_controls():
+    # #1476 uses real checkouts/events and the actual shipping CLI mode, never fabricated diffs.
+    global count
+    import copy
+    import shutil
+    import zlib
+
+    previous = Path.cwd()
+    source_parent = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=original).decode().strip()
+    source_paths = sorted(path for path in subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=original).decode().split("\0")
+        if path and module["validation_input"](path))
+    source_bytes = {path: (original / path).read_bytes() for path in source_paths}
+    with tempfile.TemporaryDirectory(prefix="remi-validation-") as temporary:
+        container = Path(temporary)
+        repo = container / "repo"
+        repo.mkdir()
+        try:
+            os.chdir(repo)
+            git("init", "-q")
+            git("config", "user.name", "Owned validator scope control")
+            git("config", "user.email", "test@example.com")
+            git("fetch", "--quiet", "--no-tags", str(original), source_parent)
+
+            def tree(parent, updates=(), removals=()):
+                git("read-tree", parent)
+                for path, body, mode in updates:
+                    body = body.encode() if isinstance(body, str) else body
+                    oid = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                                  input=body, stderr=subprocess.PIPE).decode().strip()
+                    git("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
+                for path in removals:
+                    git("update-index", "--force-remove", "--", path)
+                return git("commit-tree", git("write-tree"), "-p", parent, "-m", "owned validator input transition")
+
+            baseline = tree(source_parent, [(path, body, "100644") for path, body in source_bytes.items()])
+            feature = tree(baseline, [("docs/owned-validation-feature.md", "ordinary feature prose\n", "100644")])
+
+            def decision(left, right, required, label, checkout=None, event=None, environment=None,
+                         args=(), dirty=None, script=None, prepared=False):
+                global count
+                checkout = checkout or right
+                if not prepared:
+                    git("checkout", "--quiet", "--force", "--detach", checkout)
+                payload = event if event is not None else {
+                    "pull_request": {"base": {"sha": left}, "head": {"sha": right}, "merge_commit_sha": checkout}
+                }
+                event_file = container / "event.json"
+                event_file.write_text(json.dumps(payload))
+                output = container / "output"
+                summary = container / "summary"
+                output.write_text("")
+                summary.write_text("")
+                env = os.environ.copy()
+                for key in list(env):
+                    if key.startswith(("GITHUB_", "GIT_")):
+                        env.pop(key)
+                env.update(GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event_file),
+                           GITHUB_WORKSPACE=str(Path.cwd()), GITHUB_SHA=checkout,
+                           GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
+                for key, value in (environment or {}).items():
+                    if value is None:
+                        env.pop(key, None)
+                    else:
+                        env[key] = value
+                if dirty:
+                    dirty()
+                result = subprocess.run(["python3", str(script or Path.cwd() / ".github/scripts/ci-scope.py"),
+                                         "--validation-needed", *args], env=env, capture_output=True, text=True, check=False)
+                assert result.returncode == 0, (label, result.stderr)
+                answer = json.loads(result.stdout)
+                assert set(answer) == {"validation_required", "reason"} and (
+                    answer["validation_required"] is required), (label, answer)
+                assert output.read_text() == f"validation_required={str(required).lower()}\n", label
+                assert summary.read_text().startswith("### CI validator scope\n") and "| Gate |" not in summary.read_text()
+                count += 1
+
+            decision(baseline, feature, False, "ordinary head checkout")
+            decision(baseline, feature, False, "explicit matching refs",
+                     args=("--base", baseline, "--head", feature))
+            runtime = tree(baseline, [("packages/daemon/src/owned-validation-runtime.ts", "export {};\n", "100644")])
+            decision(baseline, runtime, False, "runtime feature still classified separately")
+            unrelated_base = tree(baseline, [("docs/owned-base-note.md", "base prose\n", "100644")])
+            merged_tree = git("merge-tree", "--write-tree", unrelated_base, feature).splitlines()[0]
+            merged = git("commit-tree", merged_tree, "-p", unrelated_base, "-p", feature, "-m", "owned actual PR merge")
+            decision(unrelated_base, feature, False, "actual two-parent checkout", checkout=merged)
+            decision(baseline, baseline, True, "empty diff")
+            for path in source_paths:
+                changed = tree(baseline, [(path, source_bytes[path] + b"\n# owned validator input\n", "100644")])
+                decision(baseline, changed, True, ("changed validator", path))
+                left = tree(baseline, [(path, source_bytes[path] + b"\n# owned validator input\n", "100644")])
+                decision(left, feature, True, ("base-only validator drift", path))
+            for extension in ("yml", "yaml"):
+                added = tree(baseline, [(f".github/workflows/owned-validation.{extension}", "name: owned\n", "100644")])
+                decision(baseline, added, True, ("new workflow extension", extension))
+            for path in (".github/workflows/ci.yml", "packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts"):
+                deleted = tree(baseline, removals=(path,))
+                decision(baseline, deleted, True, ("validator deletion", path))
+                renamed = tree(baseline, [(path + ".moved", source_bytes[path], "100644")], (path,))
+                decision(baseline, renamed, True, ("validator old rename path", path))
+                mode = tree(baseline, [(path, source_bytes[path], "100755")])
+                decision(baseline, mode, True, ("validator mode", path))
+            typed = tree(baseline, [("packages/daemon/src/owned-validation-link.ts", "owned-target", "120000")])
+            decision(baseline, typed, True, "unknown symlink mode")
+            mode_base = tree(baseline, [("packages/daemon/src/owned-validation-mode.ts", "export {};\n", "100644")])
+            mode_head = tree(mode_base, [("packages/daemon/src/owned-validation-mode.ts", "export {};\n", "100755")])
+            decision(mode_base, mode_head, True, "non-validator mode change")
+            for name in ("push", "workflow_dispatch", "pull_request_target", "unknown", None):
+                decision(baseline, feature, True, ("unknown event", name), environment={"GITHUB_EVENT_NAME": name})
+            for event in ({}, {"pull_request": None}, {"pull_request": {"base": {"sha": baseline}, "head": {"sha": None}}},
+                          {"pull_request": {"base": {"sha": "f" * 40}, "head": {"sha": feature}}},
+                          {"pull_request": {"base": {"sha": baseline}, "head": {"sha": "HEAD"}}}):
+                decision(baseline, feature, True, ("invalid event/ref", event), event=event)
+            decision(baseline, feature, True, "event path absent", environment={"GITHUB_EVENT_PATH": None})
+            decision(baseline, feature, True, "event unreadable", environment={"GITHUB_EVENT_PATH": str(container / "absent")})
+            for environment in ({"GITHUB_SHA": None}, {"GITHUB_SHA": baseline}, {"GITHUB_WORKSPACE": None},
+                                {"GITHUB_WORKSPACE": str(container)}, {"GIT_DIR": str(repo / ".git")}):
+                decision(baseline, feature, True, ("unknown checkout context", environment), environment=environment)
+            decision(baseline, feature, True, "CLI refs disagree", args=("--base", feature, "--head", baseline))
+            decision(unrelated_base, feature, True, "merge witness mismatch", checkout=merged,
+                     event={"pull_request": {"base": {"sha": unrelated_base}, "head": {"sha": feature},
+                                             "merge_commit_sha": feature}})
+            reversed_merge = git("commit-tree", merged_tree, "-p", feature, "-p", unrelated_base, "-m", "wrong parent order")
+            decision(unrelated_base, feature, True, "unexpected merge parents", checkout=reversed_merge)
+
+            def overwrite(path, data):
+                target = Path(path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+
+            for body, label in ((b"{", "malformed JSON"), (b"\xff", "malformed event UTF8"),
+                                (b'{"pull_request":null,"pull_request":{}}', "duplicate event key")):
+                decision(baseline, feature, True, label,
+                         dirty=lambda body=body: overwrite(container / "event.json", body))
+            decision(baseline, feature, True, "dirty validator bytes",
+                     dirty=lambda: overwrite(".github/ci-scope.md", b"dirty validator input\n"))
+            decision(baseline, feature, True, "untracked ignored workflow",
+                     dirty=lambda: (overwrite(".git/info/exclude", b"owned-extra.yaml\n"),
+                                    overwrite(".github/workflows/owned-extra.yaml", b"name: owned\n")))
+            git("clean", "-fdx", "-q")
+            decision(baseline, feature, True, "untracked ignored CI script",
+                     dirty=lambda: (overwrite(".git/info/exclude", b"owned-reader.py\n"),
+                                    overwrite(".github/scripts/owned-reader.py", b"# owned reader\n")))
+            git("clean", "-fdx", "-q")
+            decision(baseline, feature, True, "shallow input history",
+                     dirty=lambda: overwrite(".git/shallow", (baseline + "\n").encode()))
+            Path(".git/shallow").unlink()
+            decision(baseline, feature, True, "partial clone context",
+                     dirty=lambda: git("config", "extensions.partialClone", "owned"))
+            git("config", "--unset", "extensions.partialClone")
+            for content, label in ((b"\xff", "UTF8"), (b"owned\0input", "NUL")):
+                malformed = tree(baseline, [(".github/ci-scope.md", content, "100644")])
+                malformed_feature = tree(malformed, [("docs/owned-malformed-feature.md", "feature\n", "100644")])
+                decision(malformed, malformed_feature, True, ("unchanged malformed validator", label))
+
+            # Preserve complete public history in private loose stores before withholding/corrupting objects.
+            git("checkout", "--quiet", "--force", "--detach", feature)
+            pack = subprocess.check_output(["git", "pack-objects", "--stdout", "--revs"],
+                                           input=(feature + "\n").encode(), stderr=subprocess.PIPE)
+            pristine = container / "pristine"
+            pristine.mkdir()
+            os.chdir(pristine)
+            git("init", "-q")
+            subprocess.run(["git", "unpack-objects"], input=pack, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git("checkout", "--quiet", "--detach", feature)
+            os.chdir(repo)
+            original_blob = module["ACCOUNTING_ORIGINALS"]["scripts/tunnel-storage-proof/reservations.ts"]
+            missing = [module["VALIDATION_PUBLIC_ROOTS"][0], original_blob,
+                       git("rev-parse", f"{module['VALIDATION_PUBLIC_ROOTS'][0]}^{{tree}}"),
+                       git("rev-parse", f"{feature}:.github/scripts/check-scope-output.py")]
+            for oid in missing:
+                private = container / ("missing-" + oid[:8])
+                shutil.copytree(pristine, private)
+                (private / ".git/objects" / oid[:2] / oid[2:]).unlink()
+                os.chdir(private)
+                decision(baseline, feature, True, ("unavailable declared object", oid), prepared=True)
+                os.chdir(repo)
+            oid = original_blob
+            private = container / "corrupt"
+            shutil.copytree(pristine, private)
+            corrupt_object = private / ".git/objects" / oid[:2] / oid[2:]
+            corrupt_object.chmod(0o600)
+            corrupt_object.write_bytes(zlib.compress(b"blob 5\0owned"))
+            os.chdir(private)
+            decision(baseline, feature, True, "corrupt public object identity", prepared=True)
+            os.chdir(repo)
+
+            # Alter both a contract copy and action: literal-false and always-on guards must still refuse.
+            saved_contract = WORKFLOW_TOOLS["CONTRACTS"]["scope_action"]
+            action = yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"])
+            mutations = []
+            for condition in ("steps.validation.outputs.validation_required == 'true'", "false", "", "success()"):
+                altered = copy.deepcopy(action)
+                altered["runs"]["steps"][3]["if"] = condition
+                mutations.append(altered)
+            for index in (0, 1, 2, 5, 6):
+                altered = copy.deepcopy(action)
+                altered["runs"]["steps"][index]["if"] = "steps.validation.outputs.validation_required != 'false'"
+                mutations.append(altered)
+            for index in (2, 3, 4, 5, 6):
+                altered = copy.deepcopy(action)
+                altered["runs"]["steps"][index]["continue-on-error"] = "true"
+                mutations.append(altered)
+            try:
+                for altered in mutations:
+                    WORKFLOW_TOOLS["CONTRACTS"]["scope_action"] = altered
+                    try:
+                        WORKFLOW_TOOLS["validate_action"](altered)
+                    except AssertionError:
+                        count += 1
+                    else:
+                        raise AssertionError("unsafe validator action accepted")
+            finally:
+                WORKFLOW_TOOLS["CONTRACTS"]["scope_action"] = saved_contract
+        finally:
+            os.chdir(previous)
+
+
 original = Path.cwd()
 # An inherited GIT_DIR/GIT_WORK_TREE must never redirect owned controls to a real repo.
 inherited_git = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
@@ -3013,6 +3232,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         transition_assert(DECODE_PUBLIC_BASE, soak_tree(DECODE_PUBLIC_BASE, [*decoder_updates,
                           *[(path, body, "100644") for path, body in WORKER_CONTENT.items()]]), "review fixed complete D2+D3", True)
         # END root indirect decoder entry regressions.
+        validation_controls()
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:

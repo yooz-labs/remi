@@ -482,3 +482,41 @@ new daemon source/test paths absent at base and merge-base. The internal worker
 functions and controller remain dormant; no production entry is selected. Partial
 adoption, active production references, changed worker bodies or a mixed CLI
 feature restore the soak. D2-only cases and all previous policies are preserved.
+
+## Validation runs when its inputs change (#1476)
+
+The composite action always installs the pinned tools, classifies the actual PR
+diff and validates every mandatory gate output. A separate
+`ci-scope.py --validation-needed` decision conditions only the full classifier
+corpus and workflow YAML/execution-contract commands. Both conditions compare
+`validation_required != 'false'`; absent or invalid outputs cannot disable them.
+The action's existing failure routing and all regular feature tests, commands,
+coverage thresholds and relay deadlines remain unchanged.
+
+One conservative input union covers the classifier, corpus, output validator,
+workflow validator/contracts, this policy document, every CI script and scope
+action file, both workflow YAML extensions and both current hook fixture files
+read by `HOOK_TEST_COMMENTS`. Changed inputs, deletions, renamed old paths and mode
+changes require full validation. The complete existing 2,098 controls remain in
+the corpus; validation decision controls are appended.
+
+A skip needs a readable ordinary pull-request event with exact commit IDs,
+complete non-shallow refs/diff/merge-base and known checkout context. The current
+HEAD must equal `GITHUB_SHA` in the declared workspace. It must be the exact head
+or the event's merge commit with exact base/head parents. Input inventories,
+modes and blobs must agree at base, head, merge-base and checkout, and current
+input bytes must match those objects. Dirty or untracked validator files and
+unknown Git/environment/context inputs retain full validation.
+
+Availability checks bind five published reconstruction roots and 222 published
+original blob objects, including strict type/size/body/hash reads. They require
+the roots' history/tree closure to remain available and never require the 31
+unpublished candidate head objects reconstructed by the corpus. Missing,
+malformed, corrupt, UTF-8/NUL or unavailable validation inputs select full
+validation. No cached verdict or cross-workflow artifact trust is used.
+
+On #1475 the unchanged 1,608-control predecessor corpus took 252.407 seconds in
+CI and 324.713 seconds in R7. These are historical command-to-result costs,
+separate from whole-job elapsed time. This change does not claim that an ordinary
+hosted feature PR has skipped validation until such a run is measured; actual
+classification and mandatory output checking remain required on that run.

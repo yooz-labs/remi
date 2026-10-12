@@ -619,6 +619,243 @@ CI_TOOLS = {
 }
 
 
+# #1476 public reconstruction inputs only; candidate head objects are reconstructed by the corpus.
+VALIDATION_PUBLIC_ROOTS = (
+    "a0f0c8502a518aa41ef48145eef3b0cd87a1e593",
+    "b9c2e49a0a5e02186737c041551f5548147b9938",
+    "c04f69541be39ea5ed1aac58abe396ce04e8afbc",
+    "c1c71ef456d075bd11c6bc01d4648fe6ee24169d",
+    "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7",
+)
+VALIDATION_PUBLIC_BLOBS = (
+    "08c583da4b17c7844a5db98a978bc64ad69e6d37",
+    "0f96f4ddde50359095700538e930d030ae6a5de3",
+    "0fd828d6765a85743f82090aa9042cfd2fc2bc7d",
+    "118751c5c072a51bfcd921cf68696e1d425209c0",
+    "1604be004ceebbbb705e3dcad59e68e7237fdac2",
+    "16066615c18269c54de56e2cc7c3155ad3434234",
+    "16836dc4edccef52c23df5b635c6b3c727bae4f5",
+    "17228b7b3f5baa869408d517d8d922a610a650f1",
+    "173a9bd86c1893d160d849d68492e36c4a4a9003",
+    "17e53aa7653b3035c947ba58428413c8bfa75ef5",
+    "17fc9707c872684d39a66c2cc5e984a090d32097",
+    "186da5f237c6783602c832633d8e9fa21006f872",
+    "1c452c32c43b8c1e557d7f109c606c5cb9c8100c",
+    "1d7362041dcc5c05fcd27057afe4c745b14fdbdf",
+    "1d88c31c7be8deed30e56a6a3e3af00a652fab64",
+    "1e037163ac4d403824062229fec43ef42e9e8838",
+    "1f30465f9cf1f3de36c6c80e5b147ae7446a0dae",
+    "1f4e10710f067d78f13a250f75de1e7aacf233ea",
+    "1f5afab7bf9aa6bb80a2d11aed8548023f88f568",
+    "20bfc74dc79e2485908da8872f0a542a3a36bc6c",
+    "266b9db3cdfc1de295c2a7190277da6c11a9e5ff",
+    "2694d71eee5ac9c9f91fd439c05e4e86f67e4e24",
+    "27c4b716e903d5dfb8de3754edb50ad2ee9125dc",
+    "28212d027cdd9977568808aac7add66cc46ecfbd",
+    "2a0bf202aff551d159e7aeb1587aa6cd1a08cd03",
+    "2a8dd22c4468e89cfdff84c4611a453b1356301c",
+    "2ada4133a85b1a0f32137538dc013531b6dacdd2",
+    "2bc1f4285da0a604eaa6482f88c3533aebcd3ec3",
+    "2d18e2071d53aa351bfdd83b62ec81b722868eae",
+    "2d662ff7de2779abf9e0903ba98c1f5dedbd4200",
+    "2e0a4a18d146277c610bd92982a2dbc566128d02",
+    "2eae8b2ddf984b731ae59f48d82238c6df4f0b23",
+    "2f070d8de7da9247e8dc153f211dad76732b5d33",
+    "2f4e404747aac4d1409bb2882cd23731ae5f38ce",
+    "2f9fc8a41331a74e86216c58257847397492f68f",
+    "327518768c5623a62095dcb05ddf8f6fb75c6d82",
+    "32c62e286a3327eb9c7b0e18634efe0e1fce35bb",
+    "33c4659e3955d6b8fdae060d29cbcb4170bb8c9a",
+    "3c2ecac64b41573708fc92239f09895c5444e3cc",
+    "3cdd70fa50576ab11b0ca1d8faeac951c3786196",
+    "3f5c9164ab334223c383381786338b9f80b4186d",
+    "41650234e78992aa2ab70ba5bce6176d8906c0dc",
+    "41fbabaef6a051bde704610c36bf144ac8a7ca21",
+    "44838a4a998ab3eacc61f2d91de120811bc5c6cd",
+    "459c67f8c0cf1dfea6761f3bc5f78b3cce910a12",
+    "460e2ebaa82492b7fb2071e142474d6f4396191e",
+    "4741d4e8a0e7bcfebb9df0248b98bf6966be1104",
+    "49c79ac37de53d49aee967dbdc565634cf9ce541",
+    "4a151fb6ad61b98ab95be48ad0eb58dbefa65914",
+    "4baf5ddc324c0b25b4cf13a27c0d1c4a9f43b00c",
+    "4cc18f1200a5f15276cdc0a14377c0985e9d5d7d",
+    "4e7bfe33c2206d1b7b915975bacf7244f7ac4e58",
+    "4fd56f7c3f2b7f4a30bd9e647cbc931c4e0c36bd",
+    "51047d43c27b9046ca04086fa321c1b1c1454cc7",
+    "5183f291018ec6e71d63708c35edcaddc926eb09",
+    "529f1be7caa6d925b19494a1fac0f8e21d82b588",
+    "53b28599c90c3ed31433293b7d600939c9db9bbe",
+    "542b9239df9dce57eaa8f427b11c4dfe01f1d8bc",
+    "5505b2f8ab4556e86d36b32e13c28f85009db7d7",
+    "55f78c4ec04be6207b1dafd0346d8c9afdf056fb",
+    "57cb869399e9da0173e8cd8ae11a8b9f8348229a",
+    "583585d1ad406ada6f4504e48d21736a65c6bf60",
+    "58eb6eb4e197887c88599bbde71c179c95fe0637",
+    "5a3edd565eef97f75df6dc7cc784f68570536e25",
+    "5bb330b56694c7642a802e477b132b780acef569",
+    "5c101f45514ae284e1a08ab6bf5e138281cf6e52",
+    "5d312efc19e656c935b325a8d2711776a9390fdd",
+    "603cbfaa47e2596dc936907599abb2cf04f0e575",
+    "60be75159a0ad59a0ad7aaace8070d2adc4de42a",
+    "60cd4ab2efff2bec763075bbdf9d6dd11270afa8",
+    "62563dd6a34518982397ca0cfb0c8f99a387b412",
+    "62b55ad1aa00224a49e5a4c7c435598040cf6338",
+    "63ca4b6ef4dafd8a3a7327b556ee745500bbdbd0",
+    "64d9980ec5312b5c6e5e528f216d23b51c8dc144",
+    "6598b66870c98761b7b9738aa6fdf0b082abd15b",
+    "66288af72b9522b04d7fd846e97789b4307b2e7b",
+    "66ae30df7a5a9300cbda30cd2f59826b4ff870eb",
+    "6731514b12fdad0762e29b2d2a3e15414e58c58b",
+    "6855b1b94ede69f9ee85cd6219c813e8f9d0729d",
+    "69dc77c474d36faea0760ad84c835abd171d0543",
+    "6ac97a3c8cdf5494f0e13f9cd3cd40560e6d6c29",
+    "6b5fed29e5575fb4da1efd1c05e539dfa45c23bf",
+    "6c4a98a3a0442a500a8f0bd85a269343c80df628",
+    "6e76f6a81174d94fc72febb0a372cf6ad528f016",
+    "6ecf80bc50ac7509a7a83d472095905351e1d7c5",
+    "6ee851b9a581b9542db483f4a8939cf0a6bdf302",
+    "7051b1ad41dd4b152084ed152a7367323bb40e17",
+    "71b2cb846cca049e8f0a87ccb86d50d07fb89847",
+    "749fedcb836744a55a409f59757ecb191f80ec02",
+    "7568a1b1da3e696a169b2197d0aaf3c46d8bd75f",
+    "78cad8cea0b4a05426008679192651a4cd02a797",
+    "7dc52af2c8146d8bac3ab0f127818456f1248954",
+    "7de116d157e3fda50159a1d24e82c59ba6c32686",
+    "7f37292c530cbaebdf19b2540303d70ac000dafa",
+    "7f60896799c6193ead7d5851da36bc718e60d676",
+    "803c290594d7d7db47428bdb0182fe6695355066",
+    "814cedf9443ba0d58c742e8edf2fc6a3532f65a7",
+    "8189dd3c4837465936e6d2402dc3bc4c4511c204",
+    "83a5ef463464d7e49609e7245cc0265ce0094c52",
+    "8409518303eb8e1be39d7bd0352e7d06c95beeaf",
+    "843726b2347cfc5b99718e914e08f8dd5fffc7f3",
+    "853098bd80b8d4d46eed4afd8bc89e9236b22db9",
+    "8619bb6b4c833708590061046338183a636aa652",
+    "87c8261dc84054a9e496fa6ccef25899b5d18457",
+    "883bdbb5429b8b3fd4fe76f22fcc8ab803b612f5",
+    "88ad8abb4eec306a4bb041fb45d0f3a6d5d1de25",
+    "88e1780e2dc124c45f3063e8213b1c496050b2cb",
+    "8abf0289a844fa6cf4350eda66b41bc993334164",
+    "8c71ddc9da7af35abe29123883aadca38fbbda88",
+    "8cb073735dcbf664ec33ddc36ff79aae5d157ea4",
+    "8dc617a1964b84e6920fefb63af3531f58ffc62c",
+    "8fa803aa17936bcaafe7e0c7ac174f7880f3a406",
+    "917d6178be63d0b7428c8228366a359b429342a1",
+    "924974df4447b0daca0bb7b1d3cdfc9f689c9bf4",
+    "95d51d1c639c1ecb25fd615f361c5a3cd6b2d69a",
+    "95efbb070e2cae88b306fa9ea1aa50207e95b7e9",
+    "98c403c1044fcd846847a8d0a4b91da26d0d8274",
+    "99afb022d3f4f716f03bf102fae0d811933f5880",
+    "99e97f2339898bf15e6d341d480f332cd00256bb",
+    "9a3f5ae0fe512d948b1f54062087805f0ffaa565",
+    "9b6ba62331eae2b52d31a5e5ebb6793acc14fb72",
+    "9b8d315456b515dd0e51ec441e908462ec3659eb",
+    "9c524aa07dc2fac1bedc13f53da8555e5f784875",
+    "9c5c5c9cab4696003a76a0abb59e603032591028",
+    "9cb31a9ae267df274757ba1ebb7f4f31a7cea926",
+    "9d5c9434c92bc84e980ae4f201c2e68b0e0ecc55",
+    "9f44a6e8eaf73d74f0d5f118392204b260382511",
+    "a0917f2dc2056dea4588eacbfaeec28fad09ee4e",
+    "a0bee1003e89109c853e30aa7a8cd6afc2443111",
+    "a1857aecd0319f59bb238a3cd0f94fc978ce86a0",
+    "a226aee6fa50885b3c3a392d3c67e65d4a619f30",
+    "a245d6c57204405ae871b59f8022ec96d646b0d4",
+    "a5ac415a44fd9cdbb28dface5ad174539866bf64",
+    "a5e60022d06229cf41381aee45e89a8726dfc461",
+    "a68854f97a72610171ce86ce4b016398cd6d8e2b",
+    "a755492d2b9113e69b35afd310b85001d726ce93",
+    "a9e7ec481c468ece598fd4e3d10c1390101df939",
+    "a9fc71866c3d172598554f98cd5ad9a8c8e1e868",
+    "aa1d36699f2ca229f213f714956164b171a1c846",
+    "ad6668eb05eee059ab3d9c9b9f1ba331cf9e3f43",
+    "af315b407659cdf6a8063ba5d29a4f3a84dcb7c6",
+    "af66d5b95f0cc8b5b02ba752a341c1267d6fcb67",
+    "b09becbea00e4cb43ef86c4b755299bc72ce06cc",
+    "b0eecb7ace831ced3d80e5f783f9673bba0a05ae",
+    "b31e80880f1f73e4198c2629ddcd54c5316992f7",
+    "b3ab5d2ba6c317ef6572b3c87cb15f26fda966ea",
+    "b3f165554abf5a3a6ff8a7cdb8a05a561dc68c2c",
+    "b59f67e5b27e482cf525e03a5ba396764b69f073",
+    "b6aea9e3b22518239f56d2996e6ecae8b05e7869",
+    "b7140f1463541708b73d63ee524bc8c0a17fec1b",
+    "b813c10a27d90c6d09ba564e9030cea5a6c6e00a",
+    "b9400ba9e33ce35462c4b4de33aa3de4bda94af1",
+    "bbabfa4bbcdd60eee532839750b945615dba09e4",
+    "bc8c20b40b53804175ea7c058968dd55f299dc70",
+    "bdf4a799fb2ca40bd72a499d6dfd0bf6af18c488",
+    "be546df77024a1e7e3a32023ac53e5175627f526",
+    "bf3d041e60f2c2cfaeb9d6687f8b286369513502",
+    "c0747830bac50fed23d96c057df3dc68f98078ea",
+    "c1c699ec4c88c43a51f877ef3aadc0c5837d8a0d",
+    "c2aaafb7043cca567f69639688c19c2281ce930e",
+    "c339ae6f3b442f3215d5c1d96bcd5dc79924fdaa",
+    "c3b51a1265174180067d21b01009507e122a88ce",
+    "c3f70c9877f24ceb13308b27c88a1de6ca1e7cd6",
+    "c4785cf9ad96a479ebeb973554d9a1e662a29b3b",
+    "c502557a0c2cd4967904f54196c57fa6ee0bd4c7",
+    "c51b0c0f2f45370c6cb3660ba4dbf0ba9cd35f38",
+    "c65994103d1bf600ccb54a1e5bec84c618598de3",
+    "c7cbf893b5cc3365952da29bed6403b32cda0d52",
+    "c9a8af94b6b7d7a31e85688276e6566a41eb4f14",
+    "cf58383ce6af7b3d57ec13bfaa7e9aa732c8ac13",
+    "d010c680d16338a90358255ec001bc84759236b1",
+    "d3f468de721a52ea782b338bfafd883dcb980643",
+    "d47d41995742cbc20f993005b4f002c3f6a0898f",
+    "d50ceb1bdb8219dd809b2860f4cee437bdbe201f",
+    "d6f18d7073c96cf07472743c560b69bbc02034ad",
+    "d741c51c7e13133648368862daedf7e4dd66fd0b",
+    "d77788e1fad103720001f88f1ae55550c3502236",
+    "d811bdecf69236b37a7abe840fe7507a147c1e24",
+    "d925c04c0687904a1f6d71518205bd589a89fc0b",
+    "d9b76976161bf42fb415237f90ab48f9fceb63e2",
+    "d9d9adf58b99873f04eeaff3ff8a5c3026250305",
+    "da13ef5fe90c5e452eb29dc039eca1b2afbe1eb7",
+    "db6b791a5ce1ab391322ef7d2c937f0104c8e425",
+    "dc3ec378b667afd420fd1cc51d9dde9f6bef9ba4",
+    "def04c097129b754a394bdae233695da0a0941a8",
+    "df152a92fd95d8dcfd5176e79c3110aa7b500628",
+    "e0e598b09ea569730495b91e42a485e0541fafd2",
+    "e189888fc0f39dd8684d735784c295803e35b807",
+    "e29ab96daefc1f1cb414c55a797c2cd23ef3f50e",
+    "e34ed12f9839a08c611dad5e0b8ea13a25c05c71",
+    "e6837d1ec9f1cc0fc02b92bcc5ba4aaff3e1ad46",
+    "e6aa32f1cb2d157fd4e3bdb88440b3b9b72ac76e",
+    "e6d92fae92406e646ff01711256fae368dc69cd4",
+    "e84752489e3f376db573c9b265d455bdea214061",
+    "e852d2b1db5032e514db2d6a4eb334a320af8671",
+    "e89ea479b43b49c367656a10630db45074487d36",
+    "e98f687aab397f6ba8b9a1f00d481193f0bc0cde",
+    "ea1ca3127869e3d82cd85967a2f953bea6d31a25",
+    "eaefa6f57c3e1bc0c2dbf3a8a48fc1a1887200e9",
+    "eb9c608c510e9694a0f96c89ce388ac259a36730",
+    "eca0b3d2cc2cb17c5f26b21c8bbc412983948764",
+    "ef81253c90f6c9359e1b8fbff0a47a8e5b6bef9f",
+    "ef9ce428e53cec6da98567a4812214ac55d47e95",
+    "f1e6b81d801d1982009fba8a0a7da8e4436c37d9",
+    "f223f460eb8aa214414c89c41b44d2168aca7084",
+    "f310d3d29628572a27ce3ecba4088a11de6e699b",
+    "f31ff4dc0459566176114a476e9ecc63acdbf421",
+    "f41ae56da627d187229905c8c551ddc59c5297e8",
+    "f68e0f6b27439764f936fa0f027f4dad755b3859",
+    "f6aacee09c0dcee943fbfd8ecb8414cc293f08b6",
+    "f7b9c97ee7d984caf1c23d639d5c8b1f88bf29a4",
+    "f8235e28aa8b70bc14453e0554a1713a37b69e61",
+    "f82d772753a90f34e5a798917d88f9889c1f98d0",
+    "f898c79be3ea9b76aa772b34c066f8a0e0e08374",
+    "f8a68b408fa1760fd6442369315e440e0d915635",
+    "f91327378f75a49d33b477b4cfccc29395518482",
+    "f929cbf0505ef072a353cb2971a6f3368c5daf0f",
+    "f9e338cbed68841b7aa6c4105bd38a50543f09da",
+    "fa2c8365c701d774baa501329ec06d9f960e146a",
+    "fa70712d1cfa04ff8eb28a942c8eb88b3a093713",
+    "fcb2fd3dcb9fe0c85c14489fc1f487d4e75fa2b5",
+    "fe62561faaa68470dd37082c23ede476fc393c81",
+)
+VALIDATION_REQUIRED_FILES = CI_TOOLS | set(HOOK_TEST_COMMENTS) | {
+    ".github/workflows/ci.yml", ".github/workflows/relay-r7.yml", ".github/workflows/macos-app.yml",
+}
+
+
 def git(*args):
     return subprocess.check_output(["git", *args], stderr=subprocess.PIPE)
 
@@ -1588,12 +1825,178 @@ def classify(base, head):
         return all_gates("Diff or package metadata unavailable; running all gates")
 
 
+def validation_input(path):
+    return (path in VALIDATION_REQUIRED_FILES or path.startswith((".github/scripts/", ".github/actions/ci-scope/")) or
+            (path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))))
+
+
+def validation_inventory(ref):
+    raw = git("ls-tree", "-r", "-z", ref)
+    if not raw or not raw.endswith(b"\0"):
+        raise ValueError("unreadable validator inventory")
+    inventory = {}
+    seen = set()
+    for entry in raw[:-1].split(b"\0"):
+        header, separator, encoded = entry.partition(b"\t")
+        fields = header.decode().split()
+        path = encoded.decode()
+        if (not separator or len(fields) != 3 or fields[1] not in {"blob", "commit"} or
+                not re.fullmatch(r"[0-9a-f]{40}", fields[2]) or path in seen or
+                any(part in {"", ".", ".."} for part in path.split("/")) or
+                any(ord(char) < 32 or ord(char) == 127 for char in path)):
+            raise ValueError("unknown tree entry")
+        seen.add(path)
+        if validation_input(path):
+            if fields[0] not in {"100644", "100755"} or fields[1] != "blob":
+                raise ValueError("unknown validator mode/type")
+            inventory[path] = (fields[0], fields[2])
+    if not VALIDATION_REQUIRED_FILES <= inventory.keys():
+        raise ValueError("missing validator input")
+    return inventory
+
+
+def validation_objects(objects):
+    # Read the declared objects, not just their names; missing/corrupt bodies cannot justify a skip.
+    data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                   input="".join(f"{oid}\n" for oid in objects).encode(),
+                                   stderr=subprocess.PIPE)
+    stream = io.BytesIO(data)
+    contents = {}
+    for oid, kind in objects.items():
+        header = stream.readline().decode().split()
+        if (len(header) != 3 or header[:2] != [oid, kind] or not header[2].isdigit() or
+                int(header[2]) > 8 * 1024 * 1024):
+            raise ValueError("unreadable declared object")
+        content = stream.read(int(header[2]))
+        if (len(content) != int(header[2]) or stream.read(1) != b"\n" or
+                hashlib.sha1(f"{kind} {len(content)}\0".encode() + content).hexdigest() != oid):
+            raise ValueError("invalid declared object body")
+        contents[oid] = content
+    if stream.read():
+        raise ValueError("unexpected declared object bytes")
+    return contents
+
+
+def validation_needed(base=None, head=None):
+    full = {"validation_required": True, "reason": "Validator inputs/context unavailable; running full validation"}
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return {**full, "reason": "Non-PR event retains full validation"}
+    try:
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate event key")
+                value[key] = item
+            return value
+
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(), object_pairs_hook=unique)
+        pr = event["pull_request"]
+        left, right = pr["base"]["sha"], pr["head"]["sha"]
+        if (not isinstance(left, str) or not isinstance(right, str) or
+                not re.fullmatch(r"[0-9a-f]{40}", left) or not re.fullmatch(r"[0-9a-f]{40}", right) or
+                (base is not None and base != left) or (head is not None and head != right)):
+            return full
+        base, head = left, right
+        if any(key.startswith("GIT_") for key in os.environ):
+            return full  # Environment overrides could redirect Git away from the checked-out action.
+        partial = subprocess.run(["git", "config", "--local", "--get-regexp",
+                                  r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+                                 capture_output=True, check=False)
+        if partial.returncode != 1:
+            return full  # Availability checks must not lazily fetch missing promised objects.
+        workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+        checkout = os.environ["GITHUB_SHA"]
+        if (Path.cwd().resolve() != workspace or
+                Path(__file__).resolve() != workspace / ".github/scripts/ci-scope.py" or
+                Path(git("rev-parse", "--show-toplevel").decode().strip()).resolve() != workspace or
+                not re.fullmatch(r"[0-9a-f]{40}", checkout) or
+                git("rev-parse", "--is-shallow-repository").strip() != b"false" or
+                git("rev-parse", "HEAD").decode().strip() != checkout):
+            return full
+        for ref in (base, head, checkout):
+            if git("rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip() != ref:
+                return full
+        if checkout != head and (pr.get("merge_commit_sha") != checkout or
+                git("rev-list", "--parents", "-n", "1", checkout).decode().split() != [checkout, base, head]):
+            return full
+        merge_base = git("merge-base", base, head).decode().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
+            return full
+        raw = git("diff", "--no-ext-diff", "--no-renames", "--raw", "--no-abbrev", "-z",
+                  merge_base, head, "--")
+        if not raw or not raw.endswith(b"\0"):
+            return full
+        entries = raw[:-1].split(b"\0")
+        if len(entries) % 2:
+            return full
+        changed = set()
+        for index in range(0, len(entries), 2):
+            header, path = entries[index].decode(), entries[index + 1].decode()
+            match = re.fullmatch(r":(000000|100644|100755) (000000|100644|100755) "
+                                 r"([0-9a-f]{40}) ([0-9a-f]{40}) ([AMD])", header)
+            if (not match or path in changed or any(part in {"", ".", ".."} for part in path.split("/")) or
+                    any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                return full
+            old_mode, new_mode, old, new, status = match.groups()
+            zero = "0" * 40
+            if ((status == "A" and (old_mode != "000000" or old != zero or new_mode == "000000" or new == zero)) or
+                    (status == "D" and (new_mode != "000000" or new != zero or old_mode == "000000" or old == zero)) or
+                    (status == "M" and (old_mode != new_mode or old_mode == "000000" or old == zero or new == zero))):
+                return full
+            changed.add(path)
+        if any(validation_input(path) for path in changed):
+            return {**full, "reason": "Validator policy/tests/execution inputs changed; running full validation"}
+        inventories = [validation_inventory(ref) for ref in dict.fromkeys((base, head, merge_base, checkout))]
+        inventory = inventories[0]
+        if any(value != inventory for value in inventories[1:]):
+            return full
+        # A merge checkout or local edits must not silently execute a different validator/action.
+        dirty = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+        for item in dirty.split(b"\0"):
+            if item and (len(item) < 4 or validation_input(item[3:].decode())):
+                return full
+        for options in (("--others", "--exclude-standard"), ("--others", "--ignored", "--exclude-standard")):
+            untracked = git("ls-files", *options, "-z")
+            if any(validation_input(path.decode()) for path in untracked.split(b"\0") if path):
+                return full
+        for extension in ("*.yml", "*.yaml"):
+            for path in (workspace / ".github/workflows").glob(extension):
+                if path.relative_to(workspace).as_posix() not in inventory:
+                    return full
+        # The corpus needs these published roots, their history/tree closure and exact original blobs.
+        closure = git("rev-list", "--objects", "--no-object-names", "--missing=print", *VALIDATION_PUBLIC_ROOTS)
+        if not closure or any(not re.fullmatch(rb"[0-9a-f]{40}", oid) for oid in closure.splitlines()):
+            return full
+        objects = dict.fromkeys(VALIDATION_PUBLIC_BLOBS, "blob")
+        objects.update(dict.fromkeys(VALIDATION_PUBLIC_ROOTS, "commit"))
+        objects.update({blob: "blob" for _, blob in inventory.values()})
+        contents = validation_objects(objects)
+        for path, (mode, blob) in inventory.items():
+            source = workspace / path
+            if source.is_symlink() or source.resolve(strict=True) != source:
+                return full
+            stat = source.stat()
+            if not source.is_file() or ("100755" if stat.st_mode & 0o111 else "100644") != mode:
+                return full
+            content = source.read_bytes()
+            if content != contents[blob] or "\0" in content.decode():
+                return full
+        return {"validation_required": False,
+                "reason": "Readable PR and checkout; validator inputs and public reconstruction objects unchanged"}
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError, KeyError, TypeError):
+        return full
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base")
     parser.add_argument("--head")
+    parser.add_argument("--validation-needed", action="store_true")
     args = parser.parse_args()
-    if args.base is not None or args.head is not None:
+    if args.validation_needed:
+        result = validation_needed(args.base, args.head)
+    elif args.base is not None or args.head is not None:
         result = classify(args.base, args.head)
     elif os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
         result = all_gates("Main push or manual run retains full gates")
@@ -1612,6 +2015,9 @@ def main():
                     stream.write(f"{key}={str(value).lower()}\n")
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(summary, "a") as stream:
+            if args.validation_needed:
+                stream.write(f"### CI validator scope\n\n{result['reason']}\n\n")
+                return
             stream.write(f"### CI scope\n\n{result['reason']}\n\n")
             stream.write("| Gate | Selected |\n| --- | --- |\n")
             for key in (*GATES, "relay_soak"):
