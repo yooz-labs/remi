@@ -146,7 +146,7 @@ SOAK_AUTH_COMMENTS = {
     ),
 }
 
-# Two exact cold relocations; target paths distinguish tunnel admission from Worker admission.
+# Exact cold relocations; target paths distinguish tunnel admission from Worker admission.
 COLD_RELOCATIONS = {'descriptor': {'original': {'scripts/tunnel-storage-proof/admission.ts': ['100644',
                                                                            'b3f165554abf5a3a6ff8a7cdb8a05a561dc68c2c'],
                              'scripts/tunnel-storage-proof/private-copy.ts': ['100644',
@@ -242,6 +242,43 @@ COLD_RELOCATIONS = {'descriptor': {'original': {'scripts/tunnel-storage-proof/ad
                              'beginJournal',
                              'settleJournal']}}
 
+
+# One exact native-helper relocation, including its sole reviewed source deletion.
+COLD_RELOCATIONS["native-helper"] = {'original': {'scripts/tunnel-storage-proof/recovery-native.ts': ['100644',
+                                                                  '749fedcb836744a55a409f59757ecb191f80ec02'],
+              'scripts/tunnel-storage-proof/recovery-native.c': ['100644',
+                                                                 'b09becbea00e4cb43ef86c4b755299bc72ce06cc'],
+              'scripts/tunnel-storage-proof/assets.d.ts': ['100644',
+                                                           'b6aea9e3b22518239f56d2996e6ecae8b05e7869'],
+              'scripts/tunnel-storage-proof/recovery-probe.ts': ['100644',
+                                                                 'f310d3d29628572a27ce3ecba4088a11de6e699b'],
+              'scripts/tunnel-storage-proof/settlement-probe.ts': ['100644',
+                                                                   'eca0b3d2cc2cb17c5f26b21c8bbc412983948764'],
+              'packages/daemon/tests/tunnel/descriptors-adoption.test.ts': ['100644',
+                                                                            '173a9bd86c1893d160d849d68492e36c4a4a9003'],
+              'packages/daemon/tests/tunnel/journal-adoption.test.ts': ['100644',
+                                                                        '2d18e2071d53aa351bfdd83b62ec81b722868eae'],
+              'scripts/tunnel-storage-proof/recovery-entry.ts': ['100644',
+                                                                 'd010c680d16338a90358255ec001bc84759236b1'],
+              'scripts/tunnel-storage-proof/settlement-entry.ts': ['100644',
+                                                                   '529f1be7caa6d925b19494a1fac0f8e21d82b588']},
+ 'head': {'packages/daemon/src/tunnel/recovery-native.ts': ['100644',
+                                                            'e29ab96daefc1f1cb414c55a797c2cd23ef3f50e'],
+          'packages/daemon/src/tunnel/recovery-native.c': ['100644',
+                                                           'b09becbea00e4cb43ef86c4b755299bc72ce06cc'],
+          'packages/daemon/src/tunnel/native-assets.d.ts': ['100644',
+                                                            '33c4659e3955d6b8fdae060d29cbcb4170bb8c9a'],
+          'scripts/tunnel-storage-proof/recovery-native.ts': ['100644',
+                                                              '78cad8cea0b4a05426008679192651a4cd02a797'],
+          'scripts/tunnel-storage-proof/recovery-native.c': None,
+          'scripts/tunnel-storage-proof/assets.d.ts': ['100644', '924974df4447b0daca0bb7b1d3cdfc9f689c9bf4'],
+          'packages/daemon/tests/tunnel/native-helper-adoption.test.ts': ['100644',
+                                                                          '2eae8b2ddf984b731ae59f48d82238c6df4f0b23']},
+ 'identifiers': ['recoveryNative',
+                 'remi_recovery_open',
+                 'remi_recovery_lock',
+                 'remi_recovery_cloexec',
+                 'remi_recovery_unlink']}
 
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
@@ -519,10 +556,85 @@ def cold_reference(path, text, targets, identifiers):
     return False
 
 
+# Only the native-helper policy owns these exact C asset paths; A/B target semantics stay fixed.
+COLD_NATIVE_ASSETS = {
+    "scripts/tunnel-storage-proof/recovery-native.c",
+    "packages/daemon/src/tunnel/recovery-native.c",
+}
+
+
+# Verified factory-calling proof modules/wrappers/tests, checked only from daemon production source.
+COLD_NATIVE_CALLERS = {
+    "scripts/tunnel-storage-proof/recovery-probe.ts",
+    "scripts/tunnel-storage-proof/settlement-probe.ts",
+    "scripts/tunnel-storage-proof/recovery-entry.ts",
+    "scripts/tunnel-storage-proof/settlement-entry.ts",
+    "packages/daemon/tests/tunnel/descriptors-adoption.test.ts",
+    "packages/daemon/tests/tunnel/journal-adoption.test.ts",
+    "packages/daemon/tests/tunnel/native-helper-adoption.test.ts",
+}
+
+
+def cold_native_asset_reference(path, text):
+    # Any literal target contains this exact filename or an escape requiring inspection.
+    if "recovery-native.c" not in text and "\\" not in text:
+        return False
+    def decoded(value):
+        return re.sub(r"\\(?:u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]+)\}|x([0-9a-fA-F]{2}))",
+                      lambda escape: chr(int(next(part for part in escape.groups() if part is not None), 16)), value)
+    # Qualified launch/config strings, including unambiguous escaped spellings.
+    normalized = decoded(text)
+    for target in COLD_NATIVE_ASSETS:
+        if target in normalized and re.search(
+                r"(?<![\w$./-])(?:\./)?" + re.escape(target) + r"(?![\w$./-])", normalized):
+            return True
+    for match in COLD_MODULE_REFERENCE.finditer(text):
+        specifier = decoded(match.group(1))
+        if "\\" in specifier and specifier.startswith((".", "@remi/daemon/")):
+            return True
+        if "\\" in specifier:
+            unescaped = re.sub(r"\\(.)", r"\1", specifier)
+            if unescaped.rsplit("/", 1)[-1] == "recovery-native.c":
+                return True
+        if specifier.rsplit("/", 1)[-1] != "recovery-native.c":
+            continue
+        if specifier.startswith("."):
+            parts = list(Path(path).parent.parts)
+            for part in specifier.split("/"):
+                if part == "..":
+                    if not parts:
+                        return True
+                    parts.pop()
+                elif part not in ("", "."):
+                    parts.append(part)
+            resolved = "/".join(parts)
+        elif specifier.startswith("@remi/daemon/"):
+            suffix = specifier.removeprefix("@remi/daemon/")
+            if any(part in (".", "..") for part in suffix.split("/")):
+                return True
+            resolved = "packages/daemon/src/" + suffix
+        else:
+            # Unknown bare imports of this candidate asset remain conservative.
+            return True
+        if resolved in COLD_NATIVE_ASSETS:
+            return True
+    # Unknown escapes in qualified C launch/config literals remain conservative.
+    for match in re.finditer(r"['\"]([^'\"\n]+)['\"]", normalized):
+        value = match.group(1)
+        if "\\" in value:
+            unescaped = re.sub(r"\\(.)", r"\1", value)
+            if any(target in unescaped for target in COLD_NATIVE_ASSETS):
+                return True
+    return False
+
+
 def cold_relocation_paths(base, head, merge_base, paths):
     changed = set(paths)
     selected = [policy for policy in COLD_RELOCATIONS.values() if changed & set(policy["head"])]
     if not selected:
+        return set()
+    native_helper = COLD_RELOCATIONS["native-helper"] in selected
+    if native_helper and len(selected) != 1:
         return set()
     original, final, identifiers = {}, {}, set()
     for policy in selected:
@@ -561,10 +673,11 @@ def cold_relocation_paths(base, head, merge_base, paths):
             if any(trees[ref].get(path) != tuple(pin) for path, pin in original.items()):
                 return set()
         expected_head = {**original, **final}
-        if any(trees[head].get(path) != tuple(pin) for path, pin in expected_head.items()):
+        if any(trees[head].get(path) != (tuple(pin) if pin is not None else None)
+               for path, pin in expected_head.items()):
             return set()
         for path in required:
-            kind = "M" if path in original else "A"
+            kind = "D" if final[path] is None else "M" if path in original else "A"
             if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
                 return set()
             if git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
@@ -597,7 +710,11 @@ def cold_relocation_paths(base, head, merge_base, paths):
                 text = content.decode()
                 if "\0" in text:
                     return set()
-                if path not in expected_head and path not in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} and cold_reference(path, text, targets, identifiers):
+                if path not in expected_head and path not in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} and (
+                        cold_reference(path, text, targets, identifiers) or
+                        (native_helper and (cold_native_asset_reference(path, text) or
+                            (path.startswith("packages/daemon/src/") and
+                             cold_reference(path, text, COLD_NATIVE_CALLERS, ()))))):
                     return set()
             if stream.read():
                 return set()
