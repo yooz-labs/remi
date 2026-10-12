@@ -90,8 +90,10 @@ ACCOUNTING_IDENTIFIERS = {
 }
 ACCOUNTING_REFERENCES = re.compile(
     r"(?<![\w$])(?:" + "|".join(sorted(ACCOUNTING_IDENTIFIERS)) + r")(?![\w$])|"
-    r"(?<![\w$])(?:[\w@./-]*/)?(?:reservations|journal-schema|recovery-error)"
-    r"(?:\.[cm]?[jt]s)?(?![\w$./-])"
+    r"(?<![\w$])[\w@./-]*/(?:reservations|journal-schema|recovery-error)"
+    r"(?:\.[cm]?[jt]s)?(?![\w$./-])|"
+    r"\b(?:from\s*|import\s*(?:\(\s*)?|require\s*\(\s*)"
+    r"['\"](?:reservations|journal-schema|recovery-error)(?:\.[cm]?[jt]s)?['\"]"
 )
 
 
