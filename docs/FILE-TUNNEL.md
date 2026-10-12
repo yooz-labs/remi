@@ -511,8 +511,9 @@ No daemon source imports the proof directory.
 This move preserves all accounting guards and limits, trusted private metadata,
 nonblocking locking, retained cleanup debt and bounded settled receipts.
 It stores no transfer authority and initializes no owner state at startup.
-The package index has no new export or runtime caller; native descriptor-helper
-selection, journal/lifecycle adoption and upload availability remain upcoming.
+The package index has no new export or runtime caller.
+Descriptor, journal and explicit native-helper ownership are recorded below;
+active transfer lifecycle and upload availability remain upcoming.
 
 Both Bun gates passed a pre-edit actual-ledger characterization and the
 88-group compiled Mac baseline.
@@ -537,8 +538,8 @@ Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
 A focused test uses the real native operations to verify constructor identity,
 actual captured directory descriptors and closure. Shared and boundary tests pass
 on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
-is recorded below. Helper packaging, transfer handlers, client upload and
-capability advertisement remain upcoming.
+and journal-helper packaging are recorded below. Transfer handlers, client
+upload and capability advertisement remain upcoming.
 
 ## Internal journal lifecycle adoption
 
@@ -553,5 +554,65 @@ and their 44 misleading setup/success controls were rejected. Both Bun versions
 passed shared and focused boundary tests; the new filesystem test writes and
 closes the actual private journal, verifies owned cleanup and retires its lease.
 These results cover internal adoption, not a physical allocation ceiling or
-power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
-handlers, a client caller and capability advertisement remain upcoming.
+power-loss guarantee. Helper adoption is recorded below; decoder adoption,
+authenticated upload handlers, a client caller and capability advertisement
+remain upcoming.
+
+## Internal native journal helper adoption
+
+The daemon owns the existing `recoveryNative` factory, its byte-identical C
+asset and the sole C filename declaration. The proof module re-exports that same
+function; the old proof C source is removed. Both the factory and proof asset
+declaration reference the daemon-owned type declaration, so the original root
+TypeScript graph resolves the bundled asset without a focused-only files override.
+
+The factory preserves descriptor-relative open/create, exact native errno,
+close-on-exec, nonblocking flock and unlink. Its link operation remains explicitly
+unsupported. The selected helper supplies the journal operations; the private-copy
+path retains its existing helper. The caller closes dependent descriptors before
+exactly one factory close.
+No package index export, startup initialization or active transfer caller is added.
+
+All six supported platform/Bun compiled cells passed the unchanged 88-group
+settlement profile, with matching frozen inputs and clean owned temporary state.
+Both original root TypeScript checks pass. Both Bun versions passed 41 focused
+tests and 500 assertions; the new real-filesystem test checks function identity,
+owned image bytes, exact errno, raw successful CLOEXEC results, nonblocking lock
+contention/release and ordered closure. Earlier guard receipts remain qualified
+historical evidence; unchanged guards received no new mutation campaign.
+
+This accepts the explicit internal helper packaging.
+An active daemon lifecycle, physical allocation ceiling and power-loss behavior
+are not established by these finite observations. Image header admission is
+recorded below. Full decoding, owned worker integration, authenticated staging
+and a production client caller still precede upload availability and capability
+advertisement.
+
+## Internal image header admission adoption
+
+The existing image header parser now lives in daemon
+`tunnel/image-admission.ts`; descriptor admission keeps its distinct module.
+The proof path explicitly re-exports the same constant, function and type.
+Input, dimension, palette, segment and scan guards retain their existing behavior.
+Thirteen type assertions on byte reads already bounded by those guards satisfy
+the original root TypeScript settings. Their emitted JavaScript is byte-identical
+to the original parser; no runtime guard or configuration is changed.
+
+The default decoder proof now captures the moved daemon source through the same
+repository-tree and compiled-entry facilities used by the held-answer profile.
+The final default 19-group and held 22-group profiles each passed all six
+supported platform/Bun cells. All 24 build/run exits are zero; original controls,
+fixture pixels, the 42-member candidate dependency tree and cleanup results are
+preserved. The header phase passed both root type checks and both focused
+42-test/495-assertion populations with no new static diagnostics or warnings.
+After integration with the journal helper, both unchanged root checks and the
+combined 43-test/520-assertion populations also pass. The four header source
+paths retain their reviewed hashes; these integration checks do not replace the
+source-qualified six-cell decoder receipts.
+
+These observations cover internal header admission and its existing standalone
+proof callers. Full pixel decoding, production decoder dependencies, the owned
+worker entry and active staging lifecycle remain subsequent work.
+No package index export, startup call, upload handler, production client or
+attachment capability is added. Header admission alone does not validate pixels
+or establish a universal process memory/CPU ceiling. Keep #1170 open.

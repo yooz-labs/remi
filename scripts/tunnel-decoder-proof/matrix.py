@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parents[1]
 spec = importlib.util.spec_from_file_location(
     "storage_matrix", ROOT.parent / "tunnel-storage-proof" / "matrix.py"
 )
@@ -35,28 +36,28 @@ CHECKS = {
     "PNG legal palette full-decode pixel agreement",
 }
 inputs = json.loads((ROOT / "inputs.json").read_text())
+snapshot_scripts = "scripts/tunnel-decoder-proof"
 
 
-def proof_for(source=ROOT):
+def proof_for(source=REPO):
     return {
         "source": source,
         "files": (
-            "probe.ts",
-            "admission.ts",
-            "palette-probe.ts",
-            "decode.ts",
-            "process.ts",
-            "process-probe.ts",
-            "worker.ts",
-            "pngjs.d.ts",
-            "fixture.png",
-            "fixture.jpg",
-            "inputs.json",
+            "tsconfig.json",
             "package.json",
             "bun.lock",
-            "matrix.py",
-            "THIRD-PARTY-LICENSES.txt",
+            "bunfig.toml",
+            "scripts/tunnel-storage-proof/matrix.py",
+            "scripts/tunnel-storage-proof/storage-approval-mutations.py",
         ),
+        "source_trees": (
+            "packages/daemon/src",
+            "packages/shared/src",
+            snapshot_scripts,
+        ),
+        "source_tree_excludes": (snapshot_scripts + "/node_modules",),
+        "entry": snapshot_scripts + "/probe.ts",
+        "compile_from_snapshot": True,
         "checks": CHECKS,
         "dependencies": {"pngjs": "7.0.0", "jpeg-js": "0.4.4"},
         "expected": {
