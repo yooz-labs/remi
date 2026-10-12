@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { formatCommandHelp, formatHelp } from '../../src/cli/help.ts';
 
+test('help describes configured CLI default and explicit Claude/Codex overrides', () => {
+  expect(formatHelp('0.0.0')).toContain('remi claude');
+  expect(formatHelp('0.0.0')).toContain('[harness] default');
+  expect(formatCommandHelp('claude')).toContain('overriding [harness] default');
+  expect(formatCommandHelp('new')).toContain('Override [harness] default');
+});
+
 describe('formatHelp', () => {
   const originalEnv = process.env['NO_COLOR'];
 
@@ -42,7 +49,7 @@ describe('formatHelp', () => {
 
   test('includes footer hint', () => {
     const output = formatHelp('0.0.0');
-    expect(output).toContain('passed through to Claude Code');
+    expect(output).toContain('passed through to the selected harness');
   });
 
   test('contains no ANSI escapes when NO_COLOR is set', () => {
