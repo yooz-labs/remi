@@ -56,6 +56,45 @@ STAGING_SURFACES = ("packages", "tests", "scripts", ".github", STAGING_EXECUTABL
 STAGING_BINARY = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".pdf", ".woff", ".woff2"}
 
 
+# One reviewed accounting relocation only, not future dormant daemon edits (#1170).
+ACCOUNTING_ORIGINALS = {
+    "scripts/tunnel-storage-proof/journal-schema.ts": "53b28599c90c3ed31433293b7d600939c9db9bbe",
+    "scripts/tunnel-storage-proof/journal-settlement.ts": "2d662ff7de2779abf9e0903ba98c1f5dedbd4200",
+    "scripts/tunnel-storage-proof/recovery-probe.ts": "f310d3d29628572a27ce3ecba4088a11de6e699b",
+    "scripts/tunnel-storage-proof/recovery.ts": "a68854f97a72610171ce86ce4b016398cd6d8e2b",
+    "scripts/tunnel-storage-proof/reservation-probe.ts": "6b5fed29e5575fb4da1efd1c05e539dfa45c23bf",
+    "scripts/tunnel-storage-proof/reservations.ts": "d47d41995742cbc20f993005b4f002c3f6a0898f",
+    "scripts/tunnel-storage-proof/reserved-copy-probe.ts": "7f37292c530cbaebdf19b2540303d70ac000dafa",
+    "scripts/tunnel-storage-proof/reserved-copy.ts": "7dc52af2c8146d8bac3ab0f127818456f1248954",
+    "scripts/tunnel-storage-proof/settlement-fixture.ts": "0fd828d6765a85743f82090aa9042cfd2fc2bc7d",
+    "scripts/tunnel-storage-proof/settlement-mutations.py": "66288af72b9522b04d7fd846e97789b4307b2e7b",
+    "scripts/tunnel-storage-proof/settlement-probe.ts": "eca0b3d2cc2cb17c5f26b21c8bbc412983948764",
+    "scripts/tunnel-storage-proof/storage-approval-child.ts": "5c101f45514ae284e1a08ab6bf5e138281cf6e52",
+    "scripts/tunnel-storage-proof/storage-approval-probe.ts": "803c290594d7d7db47428bdb0182fe6695355066",
+}
+ACCOUNTING_HEAD = {
+    "packages/daemon/src/tunnel/reservations.ts": "4cc18f1200a5f15276cdc0a14377c0985e9d5d7d",
+    "packages/daemon/src/tunnel/journal-schema.ts": "bbabfa4bbcdd60eee532839750b945615dba09e4",
+    "packages/daemon/src/tunnel/recovery-error.ts": "6855b1b94ede69f9ee85cd6219c813e8f9d0729d",
+    "scripts/tunnel-storage-proof/reservations.ts": "57cb869399e9da0173e8cd8ae11a8b9f8348229a",
+    "scripts/tunnel-storage-proof/journal-schema.ts": "58eb6eb4e197887c88599bbde71c179c95fe0637",
+    "scripts/tunnel-storage-proof/recovery.ts": "266b9db3cdfc1de295c2a7190277da6c11a9e5ff",
+    "scripts/tunnel-storage-proof/settlement-mutations.py": "a245d6c57204405ae871b59f8022ec96d646b0d4",
+    "packages/daemon/tests/tunnel/reservations-adoption.test.ts": "d811bdecf69236b37a7abe840fe7507a147c1e24",
+}
+ACCOUNTING_TEST = "packages/daemon/tests/tunnel/reservations-adoption.test.ts"
+ACCOUNTING_IDENTIFIERS = {
+    "CLEANUP_BLOCKING_DEBT", "ReservationError", "Reservations", "MarkerKind", "MarkerWitness",
+    "JournalBinding", "JournalLease", "MARKER_ALLOWANCE", "validWitnesses", "validBinding",
+    "sameLease", "sameWitnesses", "RecoveryError",
+}
+ACCOUNTING_REFERENCES = re.compile(
+    r"(?<![\w$])(?:" + "|".join(sorted(ACCOUNTING_IDENTIFIERS)) + r")(?![\w$])|"
+    r"(?<![\w$])(?:[\w@./-]*/)?(?:reservations|journal-schema|recovery-error)"
+    r"(?:\.[cm]?[jt]s)?(?![\w$./-])"
+)
+
+
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -195,6 +234,83 @@ def staging_is_dormant(base, head, merge_base, paths):
         return False
 
 
+def accounting_relocation_is_dormant(base, head, merge_base, paths):
+    try:
+        trees = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref, "--", *STAGING_SURFACES)
+            if not raw or not raw.endswith(b"\0"):
+                return False
+            tree = {}
+            for entry in raw[:-1].split(b"\0"):
+                header, separator, name = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return False
+                path = name.decode()
+                if any(part in ("", ".", "..") for part in path.split("/")) or any(
+                        ord(char) < 32 or ord(char) == 127 for char in path):
+                    return False
+                tree[path] = header.split()[-1].decode()
+            trees[ref] = tree
+        for ref in (base, merge_base):
+            if any(trees[ref].get(path) != blob for path, blob in ACCOUNTING_ORIGINALS.items()):
+                return False
+        required = set(ACCOUNTING_HEAD) - {ACCOUNTING_TEST}
+        if not required <= set(paths):
+            return False
+        if any(ACCOUNTING_TEST in trees[ref] for ref in (base, merge_base)):
+            return False
+        for path, blob in ACCOUNTING_HEAD.items():
+            if path == ACCOUNTING_TEST and path not in paths:
+                if path in trees[head]:
+                    return False
+                continue
+            if trees[head].get(path) != blob:
+                return False
+            kind = "M" if path in ACCOUNTING_ORIGINALS else "A"
+            if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
+                return False
+            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                         merge_base, head, "--", path)
+            if status != f"{kind}\0{path}\0".encode():
+                return False
+        # Immutable proof consumers cannot acquire extra execution while remaining excluded.
+        for path, blob in ACCOUNTING_ORIGINALS.items():
+            if path not in ACCOUNTING_HEAD and trees[head].get(path) != blob:
+                return False
+        for ref in (base, head):
+            scan = {}
+            for path, blob in trees[ref].items():
+                name = Path(path).name
+                if (name.startswith(".env") or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
+                        or name in {"credentials", "secrets.json"}):
+                    return False
+                if path in ACCOUNTING_ORIGINALS or path in ACCOUNTING_HEAD or path in {
+                        ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"}:
+                    continue
+                if path == STAGING_EXECUTABLE_DOC or Path(path).suffix.lower() not in {".md", *STAGING_BINARY}:
+                    scan[path] = blob
+            data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                           input="".join(f"{blob}\n" for blob in scan.values()).encode(),
+                                           stderr=subprocess.PIPE)
+            stream = io.BytesIO(data)
+            for blob in scan.values():
+                header = stream.readline().decode().split()
+                if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
+                    return False
+                content = stream.read(int(header[2]))
+                if len(content) != int(header[2]) or stream.read(1) != b"\n":
+                    return False
+                text = content.decode()
+                if "\0" in text or ACCOUNTING_REFERENCES.search(text):
+                    return False
+            if stream.read():
+                return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
 def package_transport_unchanged(base, head):
     # Compare parsed objects, never matching diff text. Unknown/new fields trigger R7.
     def transport_input(ref):
@@ -221,6 +337,8 @@ def classify(base, head):
         gates = dict.fromkeys(GATES, False)
         if set(paths) & STAGING_INPUTS and not staging_is_dormant(base, head, merge_base, paths):
             return all_gates("Staging consumer, producer state or scan failure; running all gates")
+        if set(paths) & set(ACCOUNTING_HEAD) and not accounting_relocation_is_dormant(base, head, merge_base, paths):
+            return all_gates("Accounting relocation, consumer or scan failure; running all gates")
         for path in paths:
             # Bun discovers tests even in documentation, metadata and standalone proof dirs.
             if path.startswith(("docs/", "npm/", *PROOFS)) and re.search(
@@ -230,7 +348,7 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
-            elif path in STAGING_INPUTS:
+            elif path in STAGING_INPUTS or path in ACCOUNTING_HEAD:
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(
