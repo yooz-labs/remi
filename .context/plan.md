@@ -142,8 +142,9 @@ The moved implementation passed those same 88 groups on all six supported
 Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
 A focused test uses the real native operations to verify constructor identity,
 actual captured directory descriptors and closure. Shared and boundary tests pass
-on both Buns. These results cover the internal move; journal/helper adoption,
-transfer handlers, client upload and capability advertisement remain upcoming.
+on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
+is recorded below. Helper packaging, transfer handlers, client upload and
+capability advertisement remain upcoming.
 
 ## Internal journal lifecycle adoption
 
