@@ -27,31 +27,31 @@ runner = cast(MutationRunner, load("storage_mutations", "storage-approval-mutati
 runner.approval = load("recovery_matrix", "recovery-matrix.py")
 MUTATIONS = {
     "ownership": {
-        "file": "scripts/tunnel-storage-proof/recovery.ts",
+        "file": "packages/daemon/src/tunnel/recovery.ts",
         "old": "  return stat.isFile() && stat.nlink === 1n && stat.uid === UID && (stat.mode & 0o7777n) === 0o600n;",
         "new": "  return stat.isFile();",
         "witness": "exact intent hardlink marker refusal",
     },
     "current-root": {
-        "file": "scripts/tunnel-storage-proof/recovery.ts",
+        "file": "packages/daemon/src/tunnel/recovery.ts",
         "old": "    if (this.closed || !this.scratch.isCurrent() || !this.metadata.isCurrent()) refuse();",
         "new": "    if (this.closed) refuse();",
         "witness": "exact scratch current root refusal",
     },
     "schema": {
-        "file": "scripts/tunnel-storage-proof/recovery.ts",
+        "file": "packages/daemon/src/tunnel/recovery.ts",
         "old": "    Object.keys(value).join() !== 'version,id,root,artifact' ||",
         "new": "    false ||",
         "witness": "exact intent schema marker refusal",
     },
     "cleanup-outcome": {
-        "file": "scripts/tunnel-storage-proof/recovery.ts",
+        "file": "packages/daemon/src/tunnel/recovery.ts",
         "old": "      const fd = this.artifact();\n      if (fd >= 0) {",
         "new": "      if (terminal) return 'cleaned';\n      const fd = this.artifact();\n      if (fd >= 0) {",
         "witness": "exact cleaned marker conflicting artifact refusal",
     },
     "canonical-bytes": {
-        "file": "scripts/tunnel-storage-proof/recovery.ts",
+        "file": "packages/daemon/src/tunnel/recovery.ts",
         "old": "  return JSON.stringify(value) === raw;",
         "new": "  return true;",
         "witness": "exact intent duplicate-key marker refusal",
