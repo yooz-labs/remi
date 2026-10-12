@@ -24,6 +24,16 @@ export class DecoderProcessError extends Error {
   }
 }
 
+/** #1417: explicit interpreter policy for disposable decoder children only. */
+function decoderWorkerEnvironment() {
+  return {
+    PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+    LANG: 'en_US.UTF-8',
+    TMPDIR: process.env['TMPDIR'] ?? '/tmp',
+    BUN_JSC_useJIT: '0',
+  };
+}
+
 export class DecoderProcess {
   private busy = false;
   lastChildPID: number | undefined;
@@ -73,11 +83,7 @@ export class DecoderProcess {
         stdout: 'pipe',
         stderr: 'ignore',
         // No application credentials or configuration are inherited by the worker.
-        env: {
-          PATH: process.env['PATH'] ?? '/usr/bin:/bin',
-          LANG: 'en_US.UTF-8',
-          TMPDIR: process.env['TMPDIR'] ?? '/tmp',
-        },
+        env: decoderWorkerEnvironment(),
       });
       child = started;
       this.lastChildPID = child.pid;
@@ -207,11 +213,7 @@ export class DecoderProcess {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'ignore',
-        env: {
-          PATH: process.env['PATH'] ?? '/usr/bin:/bin',
-          LANG: 'en_US.UTF-8',
-          TMPDIR: process.env['TMPDIR'] ?? '/tmp',
-        },
+        env: decoderWorkerEnvironment(),
       });
       child = started;
       this.lastChildPID = child.pid;

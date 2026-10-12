@@ -26,6 +26,19 @@ export async function dispatchProcessWorker(): Promise<void> {
   const mode = process.argv[index + 1];
   const marker = process.argv[index + 2];
   if (!marker) throw new Error('owned child marker missing');
+  if (mode === 'policy') {
+    if (
+      process.env['BUN_JSC_useJIT'] !== '0' ||
+      Object.keys(process.env).some(
+        (key) => key.startsWith('BUN_JSC_') && key !== 'BUN_JSC_useJIT',
+      ) ||
+      process.env['REMI_DECODER_POLICY_SENTINEL'] !== undefined
+    )
+      process.exit(23); // Unique actual policy refusal, before reading or decoding bytes.
+    if (process.argv.includes('--repeat-decode')) await decodeRepeatedWorker(process.argv.at(-1));
+    else await decodeWorker(process.argv.at(-1));
+    process.exit(process.exitCode ?? 0);
+  }
   if (process.env['REMI_PUSH_SECRET'] || process.env['REMI_PASSPHRASE']) process.exit(9);
   if (existsSync(marker)) {
     await decodeWorker(process.argv.at(-1));
@@ -133,6 +146,99 @@ export async function processProof(png: Buffer, jpg: Buffer) {
     };
   };
   try {
+    // First controller-owned group: a missing shared policy targets its exact child exit23.
+    const policyKeys = ['BUN_JSC_useJIT', 'BUN_JSC_useBaselineJIT', 'REMI_DECODER_POLICY_SENTINEL'];
+    const before = policyKeys.map((key) => process.env[key]);
+    const parent = ['1', '1', 'owned-policy-sentinel'];
+    const policy = control('policy').manager;
+    function policyExit(current: DecoderProcess, phase: 'one-shot' | 'repeated') {
+      const exit = current.lastChildExit;
+      let missingAfterExit = false;
+      if (exit) {
+        try {
+          process.kill(exit.pid, 0);
+        } catch (error) {
+          missingAfterExit = (error as NodeJS.ErrnoException).code === 'ESRCH';
+        }
+      }
+      const record = {
+        phase,
+        ...exit,
+        awaitedExit: exit !== undefined,
+        reaped: missingAfterExit && exit !== undefined,
+        missingAfterExit,
+      };
+      console.error(JSON.stringify({ workerPolicyChildExit: record }));
+      observe(current, `interpreter policy ${phase}`);
+      assert(
+        exit && Number.isSafeInteger(exit.pid) && exit.pid > 0 && missingAfterExit,
+        'controlled policy child was actually awaited and reaped',
+      );
+      assert(exit.elapsedMs <= 5000, 'controlled policy child stays within existing lifetime');
+      return exit;
+    }
+    try {
+      policyKeys.forEach((key, index) => {
+        process.env[key] = parent[index];
+      });
+      let pixels: unknown;
+      let failed = false;
+      try {
+        pixels = await policy.decode(png, 'image/png');
+      } catch {
+        failed = true;
+      }
+      const exit = policyExit(policy, 'one-shot');
+      assert(
+        exit.signalCode === null && (exit.exitCode === 0 || exit.exitCode === 23),
+        'controlled policy child unexpected exit is not the policy witness',
+      );
+      assert(
+        !failed && exit.exitCode === 0,
+        'worker policy witness: isolated interpreter decodes original PNG',
+      );
+      assert.deepEqual(pixels, expected(0), 'interpreter one-shot original PNG pixels');
+      assert.deepEqual(
+        policyKeys.map((key) => process.env[key]),
+        parent,
+        'worker policy preserves parent environment',
+      );
+      const cancel = new AbortController();
+      let ready: unknown;
+      await refusal(
+        policy.decodeRepeated(jpg, 'image/jpeg', {
+          signal: cancel.signal,
+          onReady(result) {
+            ready = result;
+            cancel.abort();
+          },
+        }),
+        'cancelled',
+        'policy repeated actual decode then cancellation',
+        policy,
+      );
+      const repeated = policyExit(policy, 'repeated');
+      assert.equal(repeated.signalCode, 'SIGKILL', 'policy repeated child actually cancelled');
+      assert.deepEqual(
+        ready,
+        { ...expected(1), decodes: 2 },
+        'interpreter repeated original JPEG pixels',
+      );
+      assert.deepEqual(
+        policyKeys.map((key) => process.env[key]),
+        parent,
+        'repeated policy preserves parent environment',
+      );
+      checks.push(
+        'controller owned interpreter policy original pixels and parent environment isolation',
+      );
+    } finally {
+      policyKeys.forEach((key, index) => {
+        const value = before[index];
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      });
+    }
     for (const [index, [bytes, kind]] of (
       [
         [png, 'image/png'],

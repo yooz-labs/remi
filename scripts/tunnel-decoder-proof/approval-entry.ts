@@ -47,7 +47,7 @@ if (process.argv.includes('--approval-client')) {
       approvalScenarios: approval.scenarios,
       ptyMutationControl: approval.ptyMutationControl,
       scope:
-        '21 owned decoder and held-answer groups; Linux memory is a 512 MiB fixture only; portable resource enforcement and production adoption remain pending',
+        '22 owned decoder and held-answer groups; Linux memory is a 512 MiB fixture only; portable resource enforcement and production adoption remain pending',
     }),
   );
 }
