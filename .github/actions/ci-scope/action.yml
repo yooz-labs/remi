@@ -50,13 +50,19 @@ runs:
         curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz"
         echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | (cd "$RUNNER_TEMP/remi-ci-tools" && sha256sum -c -)
         tar -xzf "$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz" -C "$RUNNER_TEMP/remi-ci-tools" actionlint
+    - name: Determine validator scope
+      id: validation
+      shell: bash
+      run: python3 .github/scripts/ci-scope.py --validation-needed
     - name: Verify classifier controls
+      if: steps.validation.outputs.validation_required != 'false'
       shell: bash
       env:
         PYTHONPATH: ${{ runner.temp }}/remi-ci-python
         ACTIONLINT: ${{ runner.temp }}/remi-ci-tools/actionlint
       run: python3 .github/scripts/check-ci-scope.py
     - name: Validate workflow YAML and execution contracts
+      if: steps.validation.outputs.validation_required != 'false'
       shell: bash
       env:
         PYTHONPATH: ${{ runner.temp }}/remi-ci-python
