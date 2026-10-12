@@ -137,8 +137,8 @@ export function directoryRefusal(directory: unknown): string | null {
  * on PATH, its `args` must pass that harness's remote allowlist, and nothing may stand in the way
  * of a launch (the older-daemon gate, for Codex). On success, the arguments to append to the
  * child's command line: `--harness <id>` and then `-- <args>`, last, so no remote argument can be
- * read as a remi flag (`--no-auth`). A request that names no harness spawns Claude exactly as it
- * always did, with nothing appended unless it brought `args`. `noticeFor` builds what a success
+ * read as a remi flag (`--no-auth`). An omitted wire harness explicitly selects Claude so
+ * the child CLI configuration cannot change the legacy/native request meaning. `noticeFor` builds what a success
  * does not say for a harness that may stop at a prompt nobody can answer headless, once the spawn
  * has said which session and port it started. A refusal's `error` is for the client; its `detail`,
  * when there is one, is the host-local reason only the log gets.
@@ -150,7 +150,9 @@ export function checkHarnessRequest(
   | { ok: true; spawnArgs: string[]; noticeFor?: (session: StartedSession) => string }
   | { ok: false; error: string; detail?: string } {
   const { harness, args } = extra ?? {};
-  if (harness === undefined && args === undefined) return { ok: true, spawnArgs: [] };
+  if (harness === undefined && args === undefined) {
+    return { ok: true, spawnArgs: ['--harness', 'claude'] };
+  }
 
   if (harness !== undefined && !isHarnessId(harness)) {
     return { ok: false, error: 'Unknown harness; the request was not started.' };
@@ -180,10 +182,7 @@ export function checkHarnessRequest(
   if (refusal !== null) return { ok: false, error: refusal.client, detail: refusal.detail };
   return {
     ok: true,
-    spawnArgs: [
-      ...(harness !== undefined ? ['--harness', id] : []),
-      ...(checked.args.length > 0 ? ['--', ...checked.args] : []),
-    ],
+    spawnArgs: ['--harness', id, ...(checked.args.length > 0 ? ['--', ...checked.args] : [])],
     ...(spec.headlessNotice !== undefined && { noticeFor: spec.headlessNotice }),
   };
 }
