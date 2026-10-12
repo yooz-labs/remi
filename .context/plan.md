@@ -18,7 +18,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
   - the relay off by default and fail-closed (#1193);
   - one `turn_failed` alert per failure until the agent works again (#1153, #1226).
 - **Relay backend landed in develop:** [#1331](https://github.com/yooz-labs/remi/pull/1331), merge `b1168126`, includes the existing R1-R5 and daemon R6 contracts, the authority-contention correction, v1 retirement and heartbeat replies. Relay remains off by default. Both full Bun suites and the actual [61-minute Linux relay gate](https://github.com/yooz-labs/remi/actions/runs/37905906897) passed at backend `2858e4bd`, whose tree equals the merge. Signed-device and deployed-Worker acceptance remain open; #1195/#1202 are not closed by the source landing.
-- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the threat model and candidate staging contract. It is a proposal, with no accepted freeze or runtime attachment capability. Platform-storage, bounded-decoder and harness-lifetime work precede native attachment UI.
+- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the threat model and candidate staging contract; proposed [ADR 0041](decisions/0041-direct-image-staging.md) collects the concrete upload fields, bounds, outcomes and cleanup/retry rules for owner and native review. There is no accepted freeze or runtime attachment capability. Production storage/decoder adoption precedes staging UI; harness insertion has its own later lifetime gate.
 - **Apps today:**
   - a sandboxed macOS menu-bar app that hosts the web UI;
   - the Capacitor iPhone app with a Notification Service Extension;
