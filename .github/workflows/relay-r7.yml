@@ -21,6 +21,7 @@ jobs:
       contents: read
     outputs:
       relay: ${{ steps.scope.outputs.relay }}
+      relay_soak: ${{ steps.scope.outputs.relay_soak }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,7 +66,7 @@ jobs:
             tests/integration/relay-r6-ingress.test.ts \
             tests/integration/relay-r7*.test.ts 2>&1 | tee r7-receipts/controls.log
       - name: Same attached session for 61 actual minutes
-        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false'
         shell: bash
         env:
           REMI_RELAY_R7_SOAK: '1'
@@ -80,3 +81,6 @@ jobs:
       - name: Report scoped skip
         if: needs.scope.result == 'success' && needs.scope.outputs.relay == 'false'
         run: echo "Relay gate skipped; no relay inputs changed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Report scoped soak skip
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'
+        run: echo "61-minute soak scoped out for reviewed fixture changes; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"

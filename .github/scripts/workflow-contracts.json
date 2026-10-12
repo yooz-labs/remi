@@ -44,11 +44,15 @@
       },
       "relay": {
         "value": "${{ steps.scope.outputs.relay }}",
-        "description": "Actual 61-minute relay gate"
+        "description": "Short relay wire and authority controls"
       },
       "macos": {
         "value": "${{ steps.scope.outputs.macos }}",
         "description": "macOS shell build and tests"
+      },
+      "relay_soak": {
+        "value": "${{ steps.scope.outputs.relay_soak }}",
+        "description": "Actual 61-minute relay gate"
       }
     },
     "runs": {
@@ -106,7 +110,8 @@
             "CI_SCOPE_NOTICES": "${{ steps.scope.outputs.notices }}",
             "CI_SCOPE_TEST": "${{ steps.scope.outputs.test }}",
             "CI_SCOPE_RELAY": "${{ steps.scope.outputs.relay }}",
-            "CI_SCOPE_MACOS": "${{ steps.scope.outputs.macos }}"
+            "CI_SCOPE_MACOS": "${{ steps.scope.outputs.macos }}",
+            "CI_SCOPE_RELAY_SOAK": "${{ steps.scope.outputs.relay_soak }}"
           },
           "run": "python3 .github/scripts/check-scope-output.py"
         }
