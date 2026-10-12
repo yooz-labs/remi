@@ -555,3 +555,28 @@ closes the actual private journal, verifies owned cleanup and retires its lease.
 These results cover internal adoption, not a physical allocation ceiling or
 power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
 handlers, a client caller and capability advertisement remain upcoming.
+
+## Internal image header admission adoption
+
+The existing image header parser now lives in daemon
+`tunnel/image-admission.ts`; descriptor admission keeps its distinct module.
+The proof path explicitly re-exports the same constant, function and type.
+Input, dimension, palette, segment and scan guards retain their existing behavior.
+Thirteen type assertions on byte reads already bounded by those guards satisfy
+the original root TypeScript settings. Their emitted JavaScript is byte-identical
+to the original parser; no runtime guard or configuration is changed.
+
+The default decoder proof now captures the moved daemon source through the same
+repository-tree and compiled-entry facilities used by the held-answer profile.
+The final default 19-group and held 22-group profiles each passed all six
+supported platform/Bun cells. All 24 build/run exits are zero; original controls,
+fixture pixels, the 42-member candidate dependency tree and cleanup results are
+preserved. Both root type checks and both focused 42-test/495-assertion populations
+pass with no new static diagnostics or warnings.
+
+These observations cover internal header admission and its existing standalone
+proof callers. Full pixel decoding, production decoder dependencies, the owned
+worker entry and active staging lifecycle remain subsequent work.
+No package index export, startup call, upload handler, production client or
+attachment capability is added. Header admission alone does not validate pixels
+or establish a universal process memory/CPU ceiling. Keep #1170 open.
