@@ -129,3 +129,18 @@ unrelated relay soak only while reviewed producer/consumer provenance remains ex
 Next adopt the descriptor-backed journal/helper and disposable decoder into the
 production lifecycle, then the authenticated direct upload handler and one client.
 No attachment capability or runtime transfer caller is available from this move.
+
+## Internal descriptor admission adoption
+
+The daemon owns the existing descriptor admission implementation and exact
+`PrivateOps` type; the proof paths explicitly re-export the same classes and type.
+The shared ancestor checks, file admission rules and private-copy behavior are
+unchanged. There is no package index export or active daemon caller.
+
+The original 88-group Mac baseline passed on both Bun versions before the move.
+The moved implementation passed those same 88 groups on all six supported
+Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
+A focused test uses the real native operations to verify constructor identity,
+actual captured directory descriptors and closure. Shared and boundary tests pass
+on both Buns. These results cover the internal move; journal/helper adoption,
+transfer handlers, client upload and capability advertisement remain upcoming.

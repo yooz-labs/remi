@@ -1,14 +1,10 @@
 // #1170 feasibility candidate only; the optional reserved-copy adapter is not a daemon caller.
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
+import type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
 import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';
 
-export type PrivateOps = {
-  openAt: OpenAt;
-  create: (directory: number, name: string, flags: number, mode: number) => number;
-  link: (directory: number, from: string, to: string) => number;
-  unlink: (directory: number, name: string) => number;
-};
+export type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
 export type CopyCheckpoint =
   | { stage: 'created'; directory: number; partial: string; final: string; fd: number }
   | { stage: 'read'; bytes: number }
