@@ -1,6 +1,7 @@
 """Classify the complete PR diff; every unclassified input runs all gates (#1359)."""
 
 import argparse
+import io
 import json
 import os
 import re
@@ -32,6 +33,29 @@ HOOK_TEST_COMMENTS = {
         " * at it exactly like `hook-server.test.ts` does, and exits; the parent test",
     ),
 }
+# Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
+STAGING_SOURCE = "packages/shared/src/image-staging.ts"
+STAGING_INPUTS = {
+    STAGING_SOURCE, "packages/shared/tests/image-staging.test.ts",
+    *(f"packages/shared/tests/fixtures/image-staging/{name}" for name in
+      ("generate.ts", "vectors.json", "fixture.png", "fixture.jpg", "README.md")),
+    *(f"scripts/tunnel-decoder-proof/{name}" for name in
+      ("staging-codec-probe.ts", "staging-codec-matrix.py", "staging-codec-mutations.py")),
+}
+STAGING_EXPORTS = {
+    "IMAGE_STAGING_CAPABILITY", "IMAGE_STAGING_LIMITS", "IMAGE_STAGING_REFUSAL_CODES",
+    "ImageStagingRefusalCode", "ImageStagingMediaType", "ImageStagingOperation",
+    "ImageStagingBinding", "ImageUploadBegin", "ImageUploadAccepted", "ImageUploadChunk",
+    "ImageUploadChunkAck", "ImageUploadComplete", "ImageUploadResult", "ImageUploadCancel",
+    "ImageUploadCancelResult", "ImageUploadRefused", "ImageStagingMessage",
+    "decodeImageStagingFrame", "encodeImageStagingFrame",
+}
+STAGING_TOKENS = STAGING_EXPORTS | {"image-staging", "image_upload_", "image_staging"}
+STAGING_EXECUTABLE_DOC = "docs/PROVISIONING.md"
+STAGING_SURFACES = ("packages", "tests", "scripts", ".github", STAGING_EXECUTABLE_DOC)
+STAGING_BINARY = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".pdf", ".woff", ".woff2"}
+
+
 LINT_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc")
 RELEASE_SCRIPTS = {
     "scripts/install.sh", "scripts/publish-npm.sh", "scripts/update-homebrew.sh",
@@ -97,6 +121,80 @@ def hook_test_references_reviewed(base, head):
         return False
 
 
+def staging_is_dormant(base, head, merge_base, paths):
+    try:
+        trees = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref, "--", *STAGING_SURFACES)
+            if not raw or not raw.endswith(b"\0"):
+                return False
+            tree = {}
+            for entry in raw[:-1].split(b"\0"):
+                header, separator, name = entry.partition(b"\t")
+                if not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header):
+                    return False
+                path = name.decode()
+                if any(part in ("", ".", "..") for part in path.split("/")) or any(
+                        ord(char) < 32 or ord(char) == 127 for char in path):
+                    return False
+                tree[path] = header.split()[-1].decode()
+            trees[ref] = tree
+        for path in set(paths) & STAGING_INPUTS:
+            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                         merge_base, head, "--", path)
+            kind = "M" if path in trees[merge_base] and path in trees[base] else "A"
+            if (path not in trees[head] or (kind == "A" and
+                    (path in trees[merge_base] or path in trees[base])) or
+                    status != f"{kind}\0{path}\0".encode()):
+                return False
+        if STAGING_SOURCE not in trees[head]:
+            return False
+        for ref in (base, head):
+            tree = trees[ref]
+            source = tree.get(STAGING_SOURCE)
+            if source:
+                text = git("cat-file", "blob", source).decode()
+                if "\0" in text:
+                    return False
+                declarations = re.findall(r"^[ \t]*export\s+(?:const|type|interface|function)\s+(\w+)",
+                                          text, re.MULTILINE)
+                if set(declarations) != STAGING_EXPORTS or len(declarations) != len(STAGING_EXPORTS):
+                    return False
+                if len(re.findall(r"^[ \t]*export\b", text, re.MULTILINE)) != len(declarations):
+                    return False
+            scan = {}
+            for path, blob in tree.items():
+                name = Path(path).name
+                if (name.startswith(".env") or Path(path).suffix.lower() in {".pem", ".key", ".p12"}
+                        or name in {"credentials", "secrets.json"}):
+                    return False
+                if path in STAGING_INPUTS or path in {
+                        ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"}:
+                    continue
+                if path == STAGING_EXECUTABLE_DOC or Path(path).suffix.lower() not in {".md", *STAGING_BINARY}:
+                    scan[path] = blob
+            # Batch reads validate complete text, even a malformed file with no token match.
+            data = subprocess.check_output(["git", "cat-file", "--batch"],
+                                           input="".join(f"{blob}\n" for blob in scan.values()).encode(),
+                                           stderr=subprocess.PIPE)
+            stream = io.BytesIO(data)
+            for blob in scan.values():
+                header = stream.readline().decode().split()
+                if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
+                    return False
+                content = stream.read(int(header[2]))
+                if len(content) != int(header[2]) or stream.read(1) != b"\n":
+                    return False
+                text = content.decode()
+                if "\0" in text or any(token in text for token in STAGING_TOKENS):
+                    return False
+            if stream.read():
+                return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
 def package_transport_unchanged(base, head):
     # Compare parsed objects, never matching diff text. Unknown/new fields trigger R7.
     def transport_input(ref):
@@ -121,6 +219,8 @@ def classify(base, head):
         if not paths:
             return all_gates("Empty diff; scope cannot justify skipping")
         gates = dict.fromkeys(GATES, False)
+        if set(paths) & STAGING_INPUTS and not staging_is_dormant(base, head, merge_base, paths):
+            return all_gates("Staging consumer, producer state or scan failure; running all gates")
         for path in paths:
             # Bun discovers tests even in documentation, metadata and standalone proof dirs.
             if path.startswith(("docs/", "npm/", *PROOFS)) and re.search(
@@ -130,6 +230,8 @@ def classify(base, head):
                 gates.update(lint=True, root=True, notices=True, test=True)
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
+            elif path in STAGING_INPUTS:
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(
                     ["git", "grep", "-F", "-q", "-e", "ci-coverage-threshold", base, head, "--",

@@ -24,6 +24,9 @@ WRAPPER_INPUTS = module["WRAPPER_SUSPEND_INPUTS"]
 WRAPPER_GATES = gates - {"relay"}
 COVERAGE_READER = module["CI_COVERAGE_READER"]
 HOOK_SERVER_TEST = module["HOOK_SERVER_TEST"]
+STAGING_SOURCE, STAGING_INPUTS = module["STAGING_SOURCE"], module["STAGING_INPUTS"]
+STAGING_EXPORTS = module["STAGING_EXPORTS"]
+STAGING_TEXT = "".join(f"export const {name} = 'owned';\n" for name in sorted(STAGING_EXPORTS))
 HOOK_COMMENT_SOURCE = {path: Path(path).read_text() for path in module["HOOK_TEST_COMMENTS"]}
 WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").glob("*.yml")}
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
@@ -31,10 +34,10 @@ WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
 WORKFLOW_TOOLS["validate_action"](yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"]))
 
 
-def git(*args):
+def git(*args, input=None):
     return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null",
                                    "-c", "commit.gpgsign=false", *args],
-                                  stderr=subprocess.PIPE).decode().strip()
+                                  stderr=subprocess.PIPE, input=input.encode() if input is not None else None).decode().strip()
 
 
 def write(path, value):
@@ -150,6 +153,118 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             result = classify(base, commit())
             assert selected(result) == expected, (path, expected, result)
             count += 1
+        # Dormant staging producers exercise actual A/M Git states with every normal gate.
+        git("reset", "--hard", base); git("clean", "-fdq")
+        for producer in sorted(STAGING_INPUTS):
+            write(producer, STAGING_TEXT if producer == STAGING_SOURCE else "owned standalone producer\n")
+        staging_base = commit()
+        assert selected(classify(base, staging_base)) == WRAPPER_GATES
+        count += 1
+        for producer in sorted(STAGING_INPUTS):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            write(producer, Path(producer).read_text() + "// changed\n")
+            assert selected(classify(staging_base, commit())) == WRAPPER_GATES, producer
+            count += 1
+        for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
+                          "packages/macos", "packages/native", "tests", "scripts",
+                          ".github/workflows", ".github/actions", ".github/scripts"):
+            for context in ("old-removed", "new", "target-base-only"):
+                git("reset", "--hard", staging_base); git("clean", "-fdq")
+                consumer = f"{directory}/consumer.ts"
+                content = "import '../shared/src/image-staging.ts';\n"
+                if directory in (".github/workflows", ".github/actions"):
+                    consumer = f"{directory}/consumer.yml"
+                    content = f"steps:\n  - run: bun {STAGING_SOURCE}\n"
+                write(consumer, content)
+                consumer_base = commit()
+                if context == "old-removed":
+                    Path(consumer).unlink()
+                elif context == "target-base-only":
+                    git("reset", "--hard", staging_base)
+                write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+                left = staging_base if context == "new" else consumer_base
+                assert selected(classify(left, commit())) == gates, (directory, context)
+                count += 1
+        for token in sorted(module["STAGING_TOKENS"]):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            # Public identifiers detect aliases and literal discriminants without an import.
+            write("packages/native/consumer.swift", f"let consumer = \"{token}\"\n")
+            consumer_base = commit()
+            write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+            assert selected(classify(consumer_base, commit())) == gates, token
+            count += 1
+        for context in ("old-removed", "new"):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            write("docs/PROVISIONING.md", "```sh\nbun image-staging.ts\n```\n")
+            consumer_base = commit()
+            if context == "old-removed":
+                write("docs/PROVISIONING.md", "removed executable consumer\n")
+            write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+            assert selected(classify(staging_base if context == "new" else consumer_base, commit())) == gates
+            count += 1
+        for runtime in ("packages/shared/src/index.ts", "packages/shared/src/protocol.ts",
+                        "packages/shared/src/relay-v2/encoding.ts", "packages/signaling/wrangler.toml",
+                        "scripts/unknown-runtime.py", "packages/shared/src/image-staging-neighbor.ts"):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            write(runtime, "changed runtime input\n")
+            write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+            assert selected(classify(staging_base, commit())) == gates, runtime
+            count += 1
+        for producer in sorted(STAGING_INPUTS):
+            for operation in ("delete", "rename", "symlink"):
+                git("reset", "--hard", staging_base); git("clean", "-fdq")
+                source = Path(producer)
+                if operation == "rename":
+                    Path("docs").mkdir(exist_ok=True)
+                    source.rename("docs/renamed-staging.md")
+                else:
+                    source.unlink()
+                    if operation == "symlink":
+                        source.symlink_to("unknown-target")
+                assert selected(classify(staging_base, commit())) == gates, (producer, operation)
+                count += 1
+        for path, value in (("packages/shared/src/invalid.ts", b"\xff"),
+                            ("packages/shared/src/unterminated.ts", b"\x00"),
+                            ("packages/shared/credentials", b"never read")):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(value)
+            consumer_base = commit()
+            write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+            assert selected(classify(consumer_base, commit())) == gates, path
+            count += 1
+        for value in ("export {};\n", STAGING_TEXT + "export const UnknownStagingAPI = 1;\n",
+                      STAGING_TEXT + "\0", STAGING_TEXT + "export { decodeImageStagingFrame as alias };\n",
+                      STAGING_TEXT + "  export const HiddenStagingAPI = 1;\n"):
+            git("reset", "--hard", staging_base); git("clean", "-fdq")
+            write(STAGING_SOURCE, value)
+            assert selected(classify(staging_base, commit())) == gates
+            count += 1
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write(STAGING_SOURCE, STAGING_TEXT)
+        divergent_head = commit()
+        assert selected(classify(staging_base, divergent_head)) == gates
+        count += 1
+        git("reset", "--hard", staging_base); git("clean", "-fdq")
+        write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+        scan_head = commit()
+        # An actual missing object makes the batch reader refuse, with no mocked subprocess.
+        missing_tree = git("mktree", "--missing", input="100644 blob " + "f" * 40 + "\tunreadable.ts\n")
+        root_tree = git("rev-parse", f"{scan_head}^{{tree}}")
+        entries = subprocess.check_output(["git", "ls-tree", root_tree]).decode()
+        entries = entries.replace(git("rev-parse", f"{scan_head}:scripts"), missing_tree)
+        broken_tree = git("mktree", input=entries)
+        broken_head = git("commit-tree", broken_tree, "-p", scan_head, "-m", "missing scan object")
+        assert not module["staging_is_dormant"](staging_base, broken_head, staging_base, [STAGING_SOURCE])
+        assert selected(classify(staging_base, broken_head)) == gates
+        count += 1
+        assert not module["staging_is_dormant"](staging_base, "f" * 40, staging_base, [STAGING_SOURCE])
+        count += 1
+        git("reset", "--hard", staging_base); git("clean", "-fdq")
+        write("packages/native/Guide.md", "image-staging ImageStagingMessage proposed prose\n")
+        Path("packages/native/icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        write(STAGING_SOURCE, STAGING_TEXT + "// changed\n")
+        assert selected(classify(staging_base, commit())) == WRAPPER_GATES
+        count += 1
         # Exact HookServer test modifications permit only the reviewed immutable comments.
         for directory in ("packages/daemon", "packages/shared", "packages/signaling", "packages/web",
                           "packages/macos", "packages/native", "tests", "scripts",
