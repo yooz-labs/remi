@@ -61,7 +61,7 @@ The existing native caller needs no new Swift model or wire field for this persi
 ## Next work while native acceptance proceeds
 
 1. Complete the backend machine descriptor in #1234, with the existing relay room ID and shared bounded pairing name, hello/list fields, entry machine IDs, fixtures and ADR 0039. Native persisted aliases, rename controls and profile transfer follow these contracts in the Xcode track. #1330 and #1342 have landed; remaining signed/native acceptance stays with #1242/#1201.
-2. The file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) landed at `35254d7e`. Packaging [#1350](https://github.com/yooz-labs/remi/pull/1350), admission [#1362](https://github.com/yooz-labs/remi/pull/1362) and private-copy proof [#1381](https://github.com/yooz-labs/remi/pull/1381) landed; six supported target/version executions passed 27 storage/admission/copy controls. Decoder admission #1383 and child lifetime #1397 landed. The held-answer proof [#1411](https://github.com/yooz-labs/remi/pull/1411) keeps a real hook's No responsive under repeated owned decoding; its synchronous parent-block control crosses the one-second limit. Palette admission [#1416](https://github.com/yooz-labs/remi/pull/1416) passed the combined six-pair 21-group matrix. These are standalone controls, not production adoption. Portable CPU/memory enforcement and the native macOS worker startup failure [#1417](https://github.com/yooz-labs/remi/issues/1417) remain open. Trusted reservation accounting [#1415](https://github.com/yooz-labs/remi/pull/1415) and its private-copy composition [#1419](https://github.com/yooz-labs/remi/pull/1419) landed, including failed-cleanup allocation retention and unknown-allocation blocking debt. The standalone [storage-load held-answer proof](../scripts/tunnel-storage-proof/README.md#held-answer-storage-load-proof) passed all six supported compiled cells with the unchanged 43 storage groups plus four real held-answer controls. The standalone immutable ownership journal [#1440](https://github.com/yooz-labs/remi/issues/1440) passed all six supported compiled cells with 61 groups (43 predecessors plus 18 recovery groups), an independent 43-group compatibility matrix and five semantic mutations on both Bun gates. Original canonical-byte guards passed duplicate/noncanonical/empty/truncated marker controls on both compiled Mac gates before a shared-predicate extraction. The 61-group recovery profile retains its reservation charge after journal cleanup. Standalone quota reconciliation and bounded journal retirement #1443 passed all six supported compiled cells with 88 groups (61 predecessors plus 27 settlement groups), independent six-cell 61/43-group compatibility profiles, and six semantic mutations on both Bun gates (12 exact compiled failures). It retires witnessed journal markers before quota release and retains at most 128 pending/completed ledger rows without evicting pending debt. Managed writes precharge and retain measured or blocking debt under the same nonblocking transaction before further admission. Real partial-write and close failures preserve intent ownership until process death; 130 completed cycles leave bounded receipts and empty owned namespaces. Independent review completed. These are standalone observations; no production authority is implemented. Production lifecycle adoption, helper selection and decoder availability/resource enforcement still precede staging. No accepted production helper or attachment capability; keep #1170 open.
+2. The file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) landed at `35254d7e`. Packaging [#1350](https://github.com/yooz-labs/remi/pull/1350), admission [#1362](https://github.com/yooz-labs/remi/pull/1362) and private-copy proof [#1381](https://github.com/yooz-labs/remi/pull/1381) landed; six supported target/version executions passed 27 storage/admission/copy controls. Decoder admission #1383 and child lifetime #1397 landed. The held-answer proof [#1411](https://github.com/yooz-labs/remi/pull/1411) keeps a real hook's No responsive under repeated owned decoding; its synchronous parent-block control crosses the one-second limit. Palette admission [#1416](https://github.com/yooz-labs/remi/pull/1416) passed the combined six-pair 21-group matrix. These are standalone controls, not production adoption. Portable CPU/memory enforcement and the native macOS worker startup failure [#1417](https://github.com/yooz-labs/remi/issues/1417) remain open. Trusted reservation accounting [#1415](https://github.com/yooz-labs/remi/pull/1415) and its private-copy composition [#1419](https://github.com/yooz-labs/remi/pull/1419) landed, including failed-cleanup allocation retention and unknown-allocation blocking debt. The standalone [storage-load held-answer proof](../scripts/tunnel-storage-proof/README.md#held-answer-storage-load-proof) passed all six supported compiled cells with the unchanged 43 storage groups plus four real held-answer controls. The standalone immutable ownership journal [#1440](https://github.com/yooz-labs/remi/issues/1440) passed all six supported compiled cells with 61 groups (43 predecessors plus 18 recovery groups), an independent 43-group compatibility matrix and five semantic mutations on both Bun gates. Original canonical-byte guards passed duplicate/noncanonical/empty/truncated marker controls on both compiled Mac gates before a shared-predicate extraction. The 61-group recovery profile retains its reservation charge after journal cleanup. Standalone quota reconciliation and bounded journal retirement #1443 passed all six supported compiled cells with 88 groups (61 predecessors plus 27 settlement groups), independent six-cell 61/43-group compatibility profiles, and six semantic mutations on both Bun gates (12 exact compiled failures). It retires witnessed journal markers before quota release and retains at most 128 pending/completed ledger rows without evicting pending debt. Managed writes precharge and retain measured or blocking debt under the same nonblocking transaction before further admission. Real partial-write and close failures preserve intent ownership until process death; 130 completed cycles leave bounded receipts and empty owned namespaces. Independent review completed. These are standalone observations; no production authority is implemented. Production lifecycle and decoder availability/resource enforcement still precede staging. Internal journal-helper adoption is recorded below; no attachment capability is available. Keep #1170 open.
    **Decoder worker policy (#1417):** the standalone candidate now supplies `BUN_JSC_useJIT=0` through its existing private environment whitelist on both one-shot and repeated workers. The default 19-group and held 22-group profiles retain all original 18/21 checks and passed all six supported platform/Bun cells each; removing the setting produced the exact compiled assertion and actual child exit 23 on both Mac Bun gates. Original pixels, cancellation, five-second lifetime, two-second reap and 1000 ms held-answer thresholds passed unchanged. Parent runtime settings are preserved. Independent review and root verification matched the compiled inputs, binaries and logs. This is finite standalone acceptance, not a general Bun startup fix or production helper selection. The extra OS resource-limit investigation is deferred by owner direction; continue the practical file-transfer plan.
 3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): reuse the standalone storage/decoder proofs and accepted staging codec/fixtures, settle production helper/budget adoption, integrate reservations and authenticated direct staging, then add one production client caller. Coordinate Swift wire conformance against the shared vectors in the existing native track. Claude insertion, links, outbound files and relay/native depth each have separate gates. The sharp candidate failed compiled loading; the existing pngjs/jpeg-js candidate has standalone malformed-input, cancellation and held-answer evidence, with production decoder/budget selection still pending. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
 
@@ -126,8 +126,9 @@ exact Mac guard controls passed, alongside both-Bun actual filesystem and bounda
 The one-time CI relocation rule in #1462 preserves ordinary gates and skips the
 unrelated relay soak only while reviewed producer/consumer provenance remains exact.
 
-Next adopt the descriptor-backed journal/helper and disposable decoder into the
-production lifecycle, then the authenticated direct upload handler and one client.
+Descriptor, journal and explicit helper ownership are recorded below.
+Next adopt the disposable decoder and active production lifecycle, then the
+authenticated direct upload handler and one client.
 No attachment capability or runtime transfer caller is available from this move.
 
 ## Internal descriptor admission adoption
@@ -143,8 +144,8 @@ Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
 A focused test uses the real native operations to verify constructor identity,
 actual captured directory descriptors and closure. Shared and boundary tests pass
 on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
-is recorded below. Helper packaging, transfer handlers, client upload and
-capability advertisement remain upcoming.
+and journal-helper packaging are recorded below. Transfer handlers, client
+upload and capability advertisement remain upcoming.
 
 ## Internal journal lifecycle adoption
 
@@ -159,8 +160,31 @@ and their 44 misleading setup/success controls were rejected. Both Bun versions
 passed shared and focused boundary tests; the new filesystem test writes and
 closes the actual private journal, verifies owned cleanup and retires its lease.
 These results cover internal adoption, not a physical allocation ceiling or
-power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
-handlers, a client caller and capability advertisement remain upcoming.
+power-loss guarantee. Helper adoption is recorded below; decoder adoption,
+authenticated upload handlers, a client caller and capability advertisement
+remain upcoming.
+
+## Internal native journal helper adoption
+
+The existing explicit journal factory and exact C bytes now live under
+`packages/daemon/src/tunnel`; its proof module re-exports the same function.
+The daemon owns the C asset declaration, referenced by the factory and proof
+assets. This preserves the original root TypeScript graph without an extra
+focused declaration input. Native operations, errno, flags and exactly-one
+closure semantics are unchanged; link remains unsupported for the separate copy
+path. No index export, startup initialization or active upload caller is added.
+
+All six supported compiled cells pass the unchanged 88 groups with frozen source
+and clean owned temporary state. Both root type checks and both 41-test/500-assertion
+focused populations pass. The new test verifies actual descriptor operations,
+successful CLOEXEC results and lock contention/release before ordered closure.
+Prior guard receipts remain source-qualified historical observations.
+
+Image header admission is recorded below. Next reuse the existing full decoder
+and owned worker policy, then integrate authenticated direct staging and one
+production client.
+These internal packaging results do not establish a physical allocation ceiling,
+power-loss guarantee, active lifecycle or upload availability. Keep #1170 open.
 
 ## Internal image header admission adoption
 
@@ -175,8 +199,11 @@ The existing default runner now captures the actual moved daemon implementation
 through its shared tree/entry/snapshot support. Final default 19-group and held
 22-group profiles each pass all six supported platform/Bun cells, preserving
 original controls, full-decoded fixture pixels, pinned 42-member proof dependencies
-and clean owned temporary state. Both root type checks and focused
-42-test/495-assertion populations pass with no new diagnostics or warnings.
+and clean owned temporary state. The header phase passed both root type checks
+and focused 42-test/495-assertion populations with no new diagnostics or warnings.
+After journal-helper integration, both unchanged root checks and the combined
+43-test/520-assertion populations also pass; the four header source paths retain
+their reviewed hashes.
 
 This selects internal header-parser ownership. Full decoding and production
 dependencies, owned worker/entry/lifecycle, authenticated upload and one client
