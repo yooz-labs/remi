@@ -523,3 +523,35 @@ identity, actual private ledger persistence and device-cap refusal.
 Full shared and focused license/harness boundary populations pass on both Buns.
 These observations establish the mechanical internal move, not a production
 transfer, physical allocation ceiling or power-loss guarantee.
+
+## Internal descriptor admission adoption
+
+The daemon owns the existing descriptor admission implementation and exact
+`PrivateOps` type; the proof paths explicitly re-export the same classes and type.
+The shared ancestor checks, file admission rules and private-copy behavior are
+unchanged. There is no package index export or active daemon caller.
+
+The original 88-group Mac baseline passed on both Bun versions before the move.
+The moved implementation passed those same 88 groups on all six supported
+Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
+A focused test uses the real native operations to verify constructor identity,
+actual captured directory descriptors and closure. Shared and boundary tests pass
+on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
+is recorded below. Helper packaging, transfer handlers, client upload and
+capability advertisement remain upcoming.
+
+## Internal journal lifecycle adoption
+
+The daemon owns the existing descriptor-backed recovery and settlement bodies.
+The proof paths explicitly re-export the same implementation and error constructor;
+mutation controls now target the moved source while preserving every guard and witness.
+No package index export, startup initialization or active transfer caller is added.
+
+The unchanged 88-group compiled profile passed all six supported Mac/Linux and
+Bun combinations after the move. Twenty-two exact Mac guard controls passed,
+and their 44 misleading setup/success controls were rejected. Both Bun versions
+passed shared and focused boundary tests; the new filesystem test writes and
+closes the actual private journal, verifies owned cleanup and retires its lease.
+These results cover internal adoption, not a physical allocation ceiling or
+power-loss guarantee. Helper packaging, decoder adoption, authenticated upload
+handlers, a client caller and capability advertisement remain upcoming.
