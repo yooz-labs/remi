@@ -1319,7 +1319,13 @@ private struct MacAuthorizationState: View {
                     Divider()
                     HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
                         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                            Text("1. Compare the fingerprint")
+                            Group {
+                                if authorizeCommand == nil {
+                                    Text("Compare the fingerprint")
+                                } else {
+                                    Text("1. Compare the fingerprint")
+                                }
+                            }
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             Text(fingerprint)
