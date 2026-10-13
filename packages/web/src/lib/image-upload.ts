@@ -920,10 +920,7 @@ export class ImageUploadController {
   }
 }
 
-function sameCapturedContext(
-  left: CapturedContext | null,
-  right: CapturedContext,
-): boolean {
+function sameCapturedContext(left: CapturedContext | null, right: CapturedContext): boolean {
   return (
     left !== null &&
     left.connection === right.connection &&

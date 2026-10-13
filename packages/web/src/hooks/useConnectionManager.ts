@@ -25,6 +25,7 @@ import type {
   SecurePushUnregisterResponseMessage,
 } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
+import { ImageUploadController, type ImageUploadContext } from '@/lib/image-upload';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
 import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
@@ -60,6 +61,7 @@ import {
   createUserInput,
 } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
+import type { HarnessId } from '@remi/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 function makeConnectionId(raw: string): ConnectionId {
@@ -85,6 +87,12 @@ interface ManagedConnection {
   status: ConnectionStatus;
   error: Error | null;
   sessionId: UUID | null;
+  harness?: HarnessId;
+  harnessSessionId?: string | null;
+  capabilities?: readonly string[];
+  imageUploadController?: ImageUploadController;
+  imageUploadState: ConnectionState['imageUploadState'];
+  imageUploadSessionId?: UUID | null;
   /**
    * Whether this connection holds the session's exclusive write lock
    * ('attached') or is read-only, queued behind another connection
@@ -220,6 +228,9 @@ export interface UseConnectionManagerReturn {
   getOwnFingerprint: () => string | null;
   getConnectionMode: (connectionId: ConnectionId) => 'direct' | 'relay' | null;
   getSessionId: (connectionId: ConnectionId) => string | null;
+  uploadImage: (connectionId: ConnectionId, sessionId: UUID, file: File) => Promise<void>;
+  cancelImageUpload: (connectionId: ConnectionId, sessionId: UUID) => Promise<void>;
+  dismissImageUpload: (connectionId: ConnectionId, sessionId: UUID) => void;
   /** Whether any connection needs a passphrase */
   needsPassphrase: boolean;
   /** The connectionId that needs a passphrase (if any) */
@@ -264,6 +275,12 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     error: mc.error?.message ?? null,
     sessionId: mc.sessionId,
     attachState: mc.attachState ?? null,
+    capabilities: mc.capabilities,
+    harness: mc.harness,
+    harnessSessionId: mc.harnessSessionId,
+    imageUploadState: mc.imageUploadState,
+    imageUploadSessionId: mc.imageUploadSessionId,
+    imageUploadEnabled: mc.imageUploadController?.canUpload ?? false,
     approval: mc.approval.snapshot,
     relayPin: mc.relayPin,
     relayConfirmation: mc.relayConfirmation,
@@ -317,6 +334,7 @@ export function useConnectionManager(
     if (unlockedIdentity) {
       if (identityRef.current?.publicKeyRaw !== unlockedIdentity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
+          mc.imageUploadController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
@@ -332,6 +350,7 @@ export function useConnectionManager(
     const changed = () => {
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
+        mc.imageUploadController?.disconnect();
         mc.approval.reset();
         mc.authAttempt = null;
         if (usesNativeIdentity() || mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -613,12 +632,46 @@ export function useConnectionManager(
           if (mc.mode === 'relay') {
             if (message.sessionId && message.attachState) mc.sessionAttachments?.set(message.sessionId, message.attachState);
           } else {
+            const nextHarness = message.harness ?? 'claude';
+            const nextHarnessSessionId =
+              message.harnessSessionId !== undefined
+                ? message.harnessSessionId
+                : nextHarness === 'claude'
+                  ? message.claudeSessionId ?? null
+                  : null;
+            const nextCapabilities = message.capabilities ?? [];
+            const capabilitiesChanged =
+              (mc.capabilities?.length ?? 0) !== nextCapabilities.length ||
+              (mc.capabilities ?? []).some((capability, index) => capability !== nextCapabilities[index]);
+            if (
+              mc.sessionId !== message.sessionId ||
+              mc.attachState !== message.attachState ||
+              mc.harness !== nextHarness ||
+              mc.harnessSessionId !== nextHarnessSessionId ||
+              capabilitiesChanged
+            ) {
+              mc.imageUploadController?.disconnect();
+            }
             mc.sessionId = message.sessionId;
             mc.attachState = message.attachState;
+            mc.harness = nextHarness;
+            mc.harnessSessionId = nextHarnessSessionId;
+            mc.capabilities = nextCapabilities;
           }
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
           }
+          syncState();
+        }
+
+        if (
+          message.type === 'session_rotated' &&
+          mc.mode === 'direct' &&
+          mc.sessionId === message.sessionId
+        ) {
+          mc.imageUploadController?.disconnect();
+          mc.harness = 'claude';
+          mc.harnessSessionId = message.newClaudeSessionId;
           syncState();
         }
 
@@ -699,6 +752,7 @@ export function useConnectionManager(
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
+        existing.imageUploadController?.dispose();
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
         // Free its stagger slot: this connection may be recreated repeatedly
@@ -733,6 +787,8 @@ export function useConnectionManager(
         status: 'disconnected',
         error: null,
         sessionId: null,
+        imageUploadState: { phase: 'idle' },
+        imageUploadSessionId: null,
         helloSent: false,
         pendingChallenge: null,
         approval: existing?.url === url ? existing.approval : new ConnectionApproval(),
@@ -766,8 +822,22 @@ export function useConnectionManager(
             mc.error = null;
           }
 
-          if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
+          if (
+            newStatus === 'disconnected' ||
+            newStatus === 'reconnecting' ||
+            newStatus === 'connecting' ||
+            newStatus === 'authenticating' ||
+            newStatus === 'error'
+          ) {
+            mc.imageUploadController?.disconnect();
             mc.sessionId = null;
+            mc.attachState = undefined;
+            mc.harness = undefined;
+            mc.harnessSessionId = undefined;
+            mc.capabilities = undefined;
+          }
+
+          if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
             mc.helloSent = false;
             mc.pendingChallenge = null;
             mc.authAttempt = null;
@@ -777,6 +847,10 @@ export function useConnectionManager(
           syncState();
         },
         onMessage: messageHandler,
+        onImageStagingMessage: (message) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
+          mc.imageUploadController?.receive(message);
+        },
         onError: (err) => {
           if (connectionsMapRef.current.get(connectionId) !== mc) return;
           console.error(`[ConnectionManager] Error on ${connectionId}:`, err);
@@ -789,6 +863,43 @@ export function useConnectionManager(
       });
 
       mc.client = client;
+      mc.imageUploadController = new ImageUploadController(
+        {
+          send: (request) =>
+            connectionsMapRef.current.get(connectionId) === mc && mc.mode === 'direct'
+              ? client.sendImageStaging(request)
+              : false,
+          context: () => {
+            if (
+              connectionsMapRef.current.get(connectionId) !== mc ||
+              mc.mode !== 'direct' ||
+              mc.status !== 'connected' ||
+              mc.attachState !== 'attached' ||
+              !mc.sessionId ||
+              mc.harness !== 'claude' ||
+              !mc.harnessSessionId ||
+              !mc.capabilities?.includes('image_staging')
+            ) {
+              return null;
+            }
+            const generation = client.imageUploadGeneration;
+            if (!generation) return null;
+            return {
+              transport: 'direct',
+              connection: mc,
+              generation,
+              sessionId: mc.sessionId,
+              binding: { harness: 'claude', harnessSessionId: mc.harnessSessionId },
+              capabilities: mc.capabilities,
+            } satisfies ImageUploadContext;
+          },
+        },
+        (state) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
+          mc.imageUploadState = state;
+          syncState();
+        },
+      );
       connectionsMapRef.current.set(connectionId, mc);
       client.connect();
       syncState();
@@ -840,10 +951,11 @@ export function useConnectionManager(
     const connectionId = makeConnectionId(`relay:${pin.machinePublicKey}`);
     const existing = connectionsMapRef.current.get(connectionId);
     if (existing && !isConnectionReplaceable(existing.status)) { await first?.close(); return connectionId; }
+    existing?.imageUploadController?.dispose();
     existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
     const mc: ManagedConnection = {
       client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
-      status: 'connecting', error: null, sessionId: null, helloSent: false, pendingChallenge: null,
+      status: 'connecting', error: null, sessionId: null, imageUploadState: { phase: 'idle' }, imageUploadSessionId: null, helloSent: false, pendingChallenge: null,
       approval: new ConnectionApproval(), authAttempt: null, needsPassphrase: false,
       serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
     };
@@ -975,6 +1087,7 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
+      mc.imageUploadController?.dispose();
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -989,6 +1102,7 @@ export function useConnectionManager(
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
+      mc.imageUploadController?.dispose();
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1159,6 +1273,7 @@ export function useConnectionManager(
       // otherwise sees the replacement as already current (#873).
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
+          mc.imageUploadController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
           if (mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -1202,6 +1317,62 @@ export function useConnectionManager(
   const getSessionId = useCallback(
     (connectionId: ConnectionId): string | null => {
       return getMc(connectionId)?.sessionId ?? null;
+    },
+    [getMc],
+  );
+
+  const uploadImage = useCallback(
+    async (connectionId: ConnectionId, sessionId: UUID, file: File): Promise<void> => {
+      const mc = getMc(connectionId);
+      if (
+        !mc ||
+        mc.mode !== 'direct' ||
+        mc.sessionId !== sessionId ||
+        connectionsMapRef.current.get(connectionId) !== mc
+      ) {
+        return;
+      }
+      mc.imageUploadSessionId = sessionId;
+      syncState();
+      await mc.imageUploadController?.upload(file);
+    },
+    [getMc, syncState],
+  );
+
+  const cancelImageUpload = useCallback(
+    async (connectionId: ConnectionId, sessionId: UUID): Promise<void> => {
+      const mc = getMc(connectionId);
+      const client = mc?.mode === 'direct' ? (mc.client as WebSocketClient) : null;
+      if (
+        !mc ||
+        !client ||
+        mc.sessionId !== sessionId ||
+        mc.status !== 'connected' ||
+        mc.attachState !== 'attached' ||
+        mc.harness !== 'claude' ||
+        !mc.harnessSessionId ||
+        !mc.capabilities?.includes('image_staging') ||
+        !client.imageUploadGeneration ||
+        connectionsMapRef.current.get(connectionId) !== mc
+      ) {
+        return;
+      }
+      await mc.imageUploadController?.cancel();
+    },
+    [getMc],
+  );
+
+  const dismissImageUpload = useCallback(
+    (connectionId: ConnectionId, sessionId: UUID): void => {
+      const mc = getMc(connectionId);
+      if (
+        !mc ||
+        mc.imageUploadSessionId !== sessionId ||
+        connectionsMapRef.current.get(connectionId) !== mc
+      ) {
+        return;
+      }
+      mc.imageUploadController?.dismiss();
     },
     [getMc],
   );
@@ -1268,6 +1439,7 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
+        mc.imageUploadController?.dispose();
         mc.relayCancel?.();
         mc.relayRequests?.closed();
         mc.client.disconnect();
@@ -1303,6 +1475,9 @@ export function useConnectionManager(
     requestSessionHistory,
     provideIdentity,
     getSessionId,
+    uploadImage,
+    cancelImageUpload,
+    dismissImageUpload,
     getOwnFingerprint: () => identityRef.current?.fingerprint ?? null,
     getConnectionMode: connectionId => connectionsMapRef.current.get(connectionId)?.mode ?? null,
     needsPassphrase,
