@@ -2,7 +2,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { UUID } from '@remi/shared';
 import {
   type ImageStagingBinding,
   type ImageStagingCorrelation,
@@ -12,10 +11,11 @@ import {
   type ImageUploadCancel,
   type ImageUploadChunk,
   type ImageUploadComplete,
+  type UUID,
   decodeImageStagingFrame,
   encodeImageStagingFrame,
-} from '../../../shared/src/image-staging';
-import { fromB64u } from '../../../shared/src/relay/bytes';
+  relayV2,
+} from '@remi/shared';
 import { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
 import type { Connection } from '../server/connection';
@@ -537,7 +537,7 @@ export class ImageStagingService {
       if (request.type === 'image_upload_chunk') {
         if (current.state === 'staged') return fault('conflict');
         if (current.state !== 'receiving') return fault('unavailable');
-        const bytes = Buffer.from(fromB64u(request.data));
+        const bytes = Buffer.from(relayV2.fromB64u(request.data));
         if (
           request.seq !== current.sequence ||
           bytes.length !== Math.min(32768, current.begin.byteLength - current.received)
