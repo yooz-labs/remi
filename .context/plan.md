@@ -453,3 +453,22 @@ Real PTY tests cover exact literal input, queue ordering, queued validity change
 This does not advertise insertion or add a production caller.
 Artifact acquisition/one-effect retirement, an accepted expiration contract, shared/native wire conformance and explicit client action remain the next slice.
 The current 24-hour/session-exit policy does not promise an indefinitely valid unsent reference; settle that product behavior explicitly before freezing insertion.
+
+## Image insertion: owned reference preparation
+
+The internal `JournalRead.referencePath()` candidate reuses its held staged file and current descriptor/name/root/accounting checks.
+It supplies no path before successful retention or after close, creates no copy and changes no quota or deadline.
+The later coordinator must still check device/grant/session/binding/prompt and expiration at the queued effect; this internal accessor supplies none of that authority.
+No protocol field, capability or production insertion caller is registered by this slice.
+
+Both Bun source populations pass 25 tests/593 assertions, including staged PNG/JPEG access and actual replacement, mutation, symlink, hardlink, unlink and configured-root refusal on macOS.
+Six supported compiled executions pass the 105-group storage/journal profile; added reference controls cover staged-only access, exact named bytes and closed access.
+Specific accessor mutation controls remain source macOS observations, while the compiled profile exercises the reused ownership validators' existing fault controls.
+All six executions retain identical current source/dependency inputs and report no cleanup errors.
+
+The first compiled attempt found a stale predecessor control before the new reference groups: 130 same-device cycles expected 128 home rows but correctly retained 32 device receipts plus one pending row.
+The unchanged 95702c73 base reproduced the same `33 != 128` failure.
+The corrected control independently checks 130 same-device cycles and 130 distinct-device cycles, proving both 32/device and 128/home history bounds, retained pending charge and both eviction/retry outcomes.
+Production reservation limits and algorithms remain unchanged; original failures and corrected receipts are retained on S1.
+Independent review completed without actionable findings; publication/hosted checks precede landing.
+The insertion contract remains proposed pending owner review, and exact installed-Claude `.artifact` spelling plus production caller/native acceptance remain later gates.
