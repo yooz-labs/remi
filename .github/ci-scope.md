@@ -27,6 +27,7 @@ always select their existing full gates.
 | R7 commands/actions/env/pin/runner/timeout/test-list changes | Workflow validation | Run |
 | Exact complete CLI default transition (#1473) | All existing gates and short relay controls | Skip only attached-session soak |
 | Exact complete dormant full-decoder transition (#1170) | All existing gates and short relay controls | Skip only attached-session soak |
+| Exact complete image-worker entry transition (#1170) | All existing gates and short relay controls | Skip only attached-session soak |
 | Dependencies, toolchain/global config, unknown input or unavailable comparison | All existing gates | Run |
 
 Root package exemptions compare parsed JSON objects. Only `version` and named
@@ -483,6 +484,32 @@ functions and controller remain dormant; no production entry is selected. Partia
 adoption, active production references, changed worker bodies or a mixed CLI
 feature restore the soak. D2-only cases and all previous policies are preserved.
 
+The image-worker entry has a separate exact transition rooted at public source
+commit `b65935ca91b88e879c7912caa2995365faf684a9`, with public base
+`ecf97af4349a7bbad24a4328c301097f59ed944e`. It requires all 12 reviewed source
+paths plus exactly `.context/plan.md` and `docs/FILE-TUNNEL.md`. The root package
+must contain only the seven reviewed `cli.ts` to `entry.ts` script changes, with
+the existing synchronized version normalization; the daemon package must retain
+only its reviewed `bin`, `start` and `dev` changes. Complete blobs and modes are
+pinned for the release workflow, Dockerfile, notices, daemon manager and image
+process. All other non-doc tree objects and modes remain identical across base,
+merge-base and head.
+
+This entry uses a separately named public baseline for core/support inputs.
+Compared with the earlier frozen transition maps, the public base updates the
+`bun.lock` and `packages/daemon/package.json` pins, and the already-published
+decoder proof `process.ts` and `worker.ts` pins. Existing decoder adoption tests
+are also pinned as unchanged proof callers. The prior CLI-default and decoder
+maps remain unchanged. Full-tree scanning rejects additional entry/factory
+callers and keeps the existing cold-image caller checks active; only the two
+byte-pinned, already-existing decoder adoption tests are treated as baseline
+callers. The source root and every admitted object must be readable from public
+history. New source/support drift, a changed caller, package field, mode, extra
+doc or mixed runtime/relay input restores the soak. This exact transition keeps
+all ordinary gates and short relay controls selected and omits only the hour
+soak. Its 26 appended real-Git controls raise the ordered corpus from 2,265 to
+2,291 scenarios.
+
 ## Validation runs when its inputs change (#1476)
 
 The composite action always installs the pinned tools, classifies the actual PR
@@ -497,7 +524,7 @@ One conservative input union covers the classifier, corpus, output validator,
 workflow validator/contracts, this policy document, every CI script and scope
 action file, both workflow YAML extensions and both current hook fixture files
 read by `HOOK_TEST_COMMENTS`. Changed inputs, deletions, renamed old paths and mode
-changes require full validation. The complete existing 2,098 controls remain in
+changes require full validation. The complete existing 2,265 controls remain in
 the corpus; validation decision controls are appended.
 
 A skip needs a readable ordinary pull-request event with exact commit IDs,
@@ -559,4 +586,5 @@ bytes with four guarded replacements. They reuse the existing original/final
 CLI recipes and full-tree runner. The complete four-path candidate uses the
 reviewed executing CI bytes; its original policy objects became public when
 #1481 landed. Reconstruction never requires an unpublished fixture or candidate
-CI object, and the preceding 2,194 scenario bodies and order are preserved.
+CI object, and all previously established scenario bodies and order are
+preserved.
