@@ -64,11 +64,10 @@ function validOwner(value: Owner): boolean {
 }
 
 function overLimits(records: Record[], owner: Owner, extra: number): boolean {
-  const unfinished = records.filter((item) => item.state !== 'settled');
   const active = records.filter((item) => item.state === 'active');
   return (
     records.length + extra > 128 ||
-    unfinished.filter((item) => item.device === owner.device).length + extra > 32 ||
+    records.filter((item) => item.device === owner.device).length + extra > 32 ||
     active.filter((item) => item.device === owner.device).length + extra > 2 ||
     active.filter((item) => item.session === owner.session).length + extra > 4 ||
     active.filter((item) => item.hub === owner.hub).length + extra > 8
@@ -272,8 +271,17 @@ export class Reservations {
         if (oldest < 0) break;
         records.splice(oldest, 1);
       }
+      // Retained settled rows are cancellation retry slots too. Pressure may retire only receipts.
+      while (records.filter((item) => item.device === owner.device).length >= 32) {
+        const oldest = records.findIndex(
+          (item) => item.state === 'settled' && item.device === owner.device,
+        );
+        if (oldest < 0) break;
+        records.splice(oldest, 1);
+      }
       if (
         overLimits(records, owner, 1) ||
+        records.filter((item) => item.device === owner.device).length >= 32 ||
         records.reduce((sum, item) => sum + item.charge, charge) > HOME_LIMIT
       )
         throw new ReservationError('busy');
@@ -317,6 +325,21 @@ export class Reservations {
       record.charge = charge;
       record.state = state;
       // Accounting debt is durable even above the budget; new reserve calls then refuse.
+    });
+  }
+
+  /** A bounded cancellation receipt grants correlation only while its exact shared row remains. */
+  withRetainedJournalReceipt<T>(lease: JournalLease, operation: () => T): T {
+    return this.locked(() => {
+      const record = this.read().find((item) => item.id === lease.id);
+      if (
+        !record ||
+        record.state !== 'settled' ||
+        !record.journal ||
+        !sameLease(record.journal, lease)
+      )
+        throw new ReservationError('unavailable');
+      return operation();
     });
   }
 

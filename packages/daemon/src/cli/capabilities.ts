@@ -1,5 +1,7 @@
 /**
- * The capabilities this daemon lists on every `hello_ack` (#1237, ADR 0035).
+ * The base capabilities this daemon lists on every `hello_ack` (#1237, ADR 0035).
+ * `image_staging` is selected per actual signed direct attachment by the service
+ * in cli.ts; machine-wide descriptors and session-less hubs retain this base.
  *
  * A capability names an additive feature a client cannot see in the messages
  * themselves, such as a request field an older daemon would ignore. Each name

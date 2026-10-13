@@ -7,6 +7,27 @@
 import type { ConnectionStatus } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
+import { isImageStagingCandidate } from '../../../shared/src/image-staging-ingress.ts';
+import type {
+  ImageStagingMessage,
+  ImageStagingRequest,
+} from '../../../shared/src/image-staging.ts';
+import {
+  decodeImageStagingFrame,
+  encodeImageStagingFrame,
+} from '../../../shared/src/image-staging.ts';
+
+export type ImageStagingResponse = Extract<
+  ImageStagingMessage,
+  {
+    type:
+      | 'image_upload_accepted'
+      | 'image_upload_chunk_ack'
+      | 'image_upload_result'
+      | 'image_upload_cancel_result'
+      | 'image_upload_refused';
+  }
+>;
 
 /** WebSocket client configuration */
 export interface WebSocketClientConfig {
@@ -48,6 +69,8 @@ export interface WebSocketClientEvents {
   onStatusChange?: (status: ConnectionStatus) => void;
   /** Called when a message is received */
   onMessage?: (message: ProtocolMessage) => void;
+  /** Called only for strictly decoded daemon-to-client image staging messages. */
+  onImageStagingMessage?: (message: ImageStagingResponse) => void;
   /** Called on error */
   onError?: (error: Error) => void;
   /**
@@ -89,6 +112,15 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
  * idleTimeout backstop (120s, websocket-server.ts).
  */
 const MAX_MISSED_HEARTBEATS = 3;
+
+function isImageStagingRequest(message: ImageStagingMessage): boolean {
+  return (
+    message.type === 'image_upload_begin' ||
+    message.type === 'image_upload_chunk' ||
+    message.type === 'image_upload_complete' ||
+    message.type === 'image_upload_cancel'
+  );
+}
 
 /**
  * Multiplier on `heartbeatInterval` used by `isHealthy` to decide whether a
@@ -148,6 +180,8 @@ export class WebSocketClient {
   private readonly events: WebSocketClientEvents;
 
   private ws: WebSocket | null = null;
+  /** Opaque identity for this concrete WebSocket instance; never exposes the socket. */
+  private imageStagingGeneration: object | null = null;
   private status: ConnectionStatus = 'disconnected';
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -193,13 +227,21 @@ export class WebSocketClient {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  /** A per-WebSocket identity available only after authentication reaches connected. */
+  get imageUploadGeneration(): object | null {
+    if (this.status !== 'connected' || this.ws?.readyState !== WebSocket.OPEN) return null;
+    return this.imageStagingGeneration;
+  }
+
   /** Whether this connection is open and has seen inbound traffic recently
    *  enough that a caller doing proactive housekeeping (e.g. an app-resume
    *  force-reconnect sweep, #664) can trust it without tearing it down. */
   get isHealthy(): boolean {
     if (!this.isTransportOpen) return false;
     if (this.config.heartbeatInterval <= 0) return true;
-    return Date.now() - this.lastDataReceived < this.config.heartbeatInterval * HEALTHY_WINDOW_MULTIPLIER;
+    return (
+      Date.now() - this.lastDataReceived < this.config.heartbeatInterval * HEALTHY_WINDOW_MULTIPLIER
+    );
   }
 
   /** Connect to the daemon */
@@ -213,7 +255,9 @@ export class WebSocketClient {
     this.clearTimers();
 
     try {
-      this.ws = new WebSocket(this.currentUrl);
+      const ws = new WebSocket(this.currentUrl);
+      this.ws = ws;
+      this.imageStagingGeneration = Object.freeze({});
 
       // Set connection timeout
       this.connectionTimer = setTimeout(() => {
@@ -223,10 +267,10 @@ export class WebSocketClient {
         }
       }, this.config.connectionTimeout);
 
-      this.ws.onopen = this.handleOpen.bind(this);
-      this.ws.onclose = this.handleClose.bind(this);
-      this.ws.onerror = this.handleWsError.bind(this);
-      this.ws.onmessage = this.handleMessage.bind(this);
+      ws.onopen = () => this.handleOpen(ws);
+      ws.onclose = () => this.handleClose(ws);
+      ws.onerror = () => this.handleWsError(ws);
+      ws.onmessage = (event) => this.handleMessage(event, ws);
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error(String(error)));
     }
@@ -245,6 +289,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
     this.setStatus('reconnecting');
     // Small delay for the new network interface to stabilize
     setTimeout(() => this.connect(), 500);
@@ -266,6 +311,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
     this.connect();
   }
 
@@ -278,6 +324,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
 
     this.setStatus('disconnected');
   }
@@ -297,8 +344,23 @@ export class WebSocketClient {
     }
   }
 
+  /** Send a direct image staging request through its strict additive codec. */
+  sendImageStaging(request: ImageStagingRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+
+    try {
+      ws.send(encodeImageStagingFrame(request));
+      return true;
+    } catch {
+      this.handleError(new Error('Unable to send image upload request'));
+      return false;
+    }
+  }
+
   /** Handle WebSocket open */
-  private handleOpen(): void {
+  private handleOpen(source: WebSocket): void {
+    if (this.ws !== source) return;
     this.clearConnectionTimer();
     this.lastDataReceived = Date.now();
     this.missedHeartbeats = 0;
@@ -327,8 +389,10 @@ export class WebSocketClient {
   }
 
   /** Handle WebSocket close */
-  private handleClose(): void {
+  private handleClose(source: WebSocket): void {
+    if (this.ws !== source) return;
     this.ws = null;
+    this.imageStagingGeneration = null;
     this.clearConnectionTimer();
     this.stopHeartbeat();
 
@@ -354,19 +418,43 @@ export class WebSocketClient {
   }
 
   /** Handle WebSocket error */
-  private handleWsError(): void {
+  private handleWsError(source: WebSocket): void {
+    if (this.ws !== source) return;
     // The close event will follow, so we don't need to do much here
     this.handleError(new Error('WebSocket error'));
   }
 
   /** Handle incoming message */
-  private handleMessage(event: MessageEvent): void {
+  private handleMessage(event: MessageEvent, source: WebSocket): void {
+    if (this.ws !== source) return;
     this.lastDataReceived = Date.now();
     this.missedHeartbeats = 0;
 
     try {
-      const data = typeof event.data === 'string' ? event.data : '';
-      const message = deserialize(data);
+      const raw =
+        typeof event.data === 'string'
+          ? event.data
+          : event.data instanceof ArrayBuffer
+            ? new Uint8Array(event.data)
+            : null;
+      if (raw !== null && isImageStagingCandidate(raw)) {
+        const message = decodeImageStagingFrame(raw);
+        if (!message || isImageStagingRequest(message)) {
+          this.handleError(new Error('Invalid image staging response'));
+          source.close(1002, 'Invalid image staging response');
+          return;
+        }
+
+        try {
+          this.events.onImageStagingMessage?.(message as ImageStagingResponse);
+        } catch {
+          this.handleError(new Error('Image staging response handler failed'));
+        }
+        return;
+      }
+
+      // Keep the established legacy decoder and behavior for every non-staging frame.
+      const message = deserialize(typeof event.data === 'string' ? event.data : '');
 
       if (message) {
         // Reply to the server's keep-alive ping (#662 review): the daemon's

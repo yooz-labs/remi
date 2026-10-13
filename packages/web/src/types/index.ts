@@ -4,6 +4,7 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { ImageUploadState } from '@/components/chat/ImageUpload';
 import type { HarnessId } from '@remi/shared';
 import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { AgentStatus, MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
@@ -73,6 +74,17 @@ export interface ConnectionState {
    * read-only/waiting state in the UI.
    */
   readonly attachState: 'attached' | 'queued' | null;
+  /** Capabilities on this connection's latest hello_ack; absent until then. */
+  readonly capabilities?: readonly string[];
+  /** Harness binding on this connection's latest hello_ack. */
+  readonly harness?: HarnessId;
+  readonly harnessSessionId?: string | null;
+  /** Direct image staging UI state owned by this concrete connection. */
+  readonly imageUploadState: ImageUploadState;
+  /** Session whose upload status should be displayed, retained across reconnects. */
+  readonly imageUploadSessionId?: UUID | null;
+  /** True only while its exact direct socket/session context can start an upload. */
+  readonly imageUploadEnabled: boolean;
 }
 
 /** Message sender type */

@@ -4,7 +4,7 @@ ADR 0041 preparation: nine exact shapes, all eleven refusal codes, raw malformed
 frames, inclusive bounds and exact owned PNG/JPEG chunk reconstruction.
 These fixtures demonstrate wire shape validation only. They are not transfer
 receipts, image decoder acceptance, authorization, cleanup or Swift conformance.
-No capability or production caller is enabled by this codec.
+Capability availability is selected by the authenticated direct coordinator and its production caller, independently of these structural vectors.
 
 The independent input copies are the owned Remi icon and a JPEG encoding of its
 pixels (jpeg-js 0.4.4, quality 85), retained from the earlier candidate corpus.

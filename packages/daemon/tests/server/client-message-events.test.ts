@@ -25,6 +25,7 @@ import {
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
   // Explicit R6 signed-proof event, added to the original 13 (#1201).
+  'onImageUpload',
   'onNativeAnswer',
   'onUserInput',
   'onAnswer',
@@ -43,9 +44,9 @@ const GOLDEN_KEYS = [
 ];
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 15 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(15);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(15);
+  test('has exactly 16 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(16);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(16);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

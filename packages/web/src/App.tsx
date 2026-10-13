@@ -1854,6 +1854,19 @@ function App() {
       case 'auth_result':
         break;
 
+      // Direct staging is strictly decoded by WebSocketClient and owned by the
+      // connection manager's ImageUploadController; it never becomes a chat bubble.
+      case 'image_upload_begin':
+      case 'image_upload_chunk':
+      case 'image_upload_complete':
+      case 'image_upload_cancel':
+      case 'image_upload_accepted':
+      case 'image_upload_chunk_ack':
+      case 'image_upload_result':
+      case 'image_upload_cancel_result':
+      case 'image_upload_refused':
+        break;
+
       // R5 secure subscription responses are settled by RelayRequests in the
       // connection manager for SecurePushSubscriptions; nothing more to do here (#1200).
       case 'secure_push_register_request':
@@ -1990,6 +2003,9 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    uploadImage,
+    cancelImageUpload,
+    dismissImageUpload,
     getConnectionMode,
     getOwnFingerprint,
   } = useConnectionManager({
@@ -2498,6 +2514,29 @@ function App() {
         return rawActiveSession;
       })()
     : undefined;
+  const activeConnection = activeSession
+    ? connections.find((connection) => connection.connectionId === activeSession.connectionId)
+    : undefined;
+  const activeImageUploadState =
+    activeSession && activeConnection?.imageUploadSessionId === activeSession.id
+      ? activeConnection.imageUploadState
+      : { phase: 'idle' as const };
+  const selectedImageConnectionId = activeSession?.connectionId ?? null;
+  const selectedImageSessionId = activeSession?.id ?? null;
+  const previousImageAttachmentRef = useRef<{ connectionId: ConnectionId; sessionId: UUID } | null>(null);
+  useEffect(() => {
+    const previous = previousImageAttachmentRef.current;
+    const next = selectedImageConnectionId && selectedImageSessionId
+      ? { connectionId: selectedImageConnectionId, sessionId: selectedImageSessionId }
+      : null;
+    if (
+      previous &&
+      (previous.connectionId !== next?.connectionId || previous.sessionId !== next?.sessionId)
+    ) {
+      void cancelImageUpload(previous.connectionId, previous.sessionId).catch(() => {});
+    }
+    previousImageAttachmentRef.current = next;
+  }, [selectedImageConnectionId, selectedImageSessionId, cancelImageUpload]);
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
   // All pending prompts for the active session (main + any subagents), oldest
   // first; rendered as a stack of cards (#437).
@@ -3362,6 +3401,20 @@ function App() {
       onDetach={handleDetach}
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
+      imageUpload={{
+        enabled:
+          activeConnection?.mode === 'direct' &&
+          activeConnection.sessionId === activeSession.id &&
+          activeConnection.imageUploadEnabled,
+        state: activeImageUploadState,
+        onSelect: (file) => {
+          void uploadImage(activeSession.connectionId, activeSession.id, file).catch(() => {});
+        },
+        onCancel: () => {
+          void cancelImageUpload(activeSession.connectionId, activeSession.id).catch(() => {});
+        },
+        onDismiss: () => dismissImageUpload(activeSession.connectionId, activeSession.id),
+      }}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">

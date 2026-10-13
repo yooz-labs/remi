@@ -1,7 +1,8 @@
 /**
  * Black-box pin of what a Claude daemon puts on the wire (#1179, Phase 5 of the
  * Codex epic #1175): `hello_ack`, `session_list_response` and `question` are
- * the old messages plus the added identity fields, and nothing else changed.
+ * the original messages plus the added identity fields. Direct staging (#1170)
+ * also supplies the actual current binding when this client reattaches.
  *
  * It spawns the REAL `cli.ts --daemon` in an isolated `$HOME`, with an
  * executable fake `claude` first on a PATH of fakes plus `/usr/bin:/bin` only
@@ -277,13 +278,14 @@ describe('a Claude daemon on the wire (#1179)', () => {
     const entry = JSON.parse(fs.readFileSync(path.join(liveDir, file), 'utf-8')) as object;
     expect('harness' in entry).toBe(false);
   }, 40000);
-  test('the ack of a resume of its own session names the harnesses too, and no binding', async () => {
+  test('the ack of its own session reattachment carries the actual current binding', async () => {
     const d = await daemon();
     const { ws, received } = await connectAndHello(d.port);
     try {
-      const sessionId = (
-        received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
-      ).sessionId as string;
+      const original = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
+      if (!original?.sessionId || !original.claudeSessionId)
+        throw new Error('The real daemon did not provide its current binding');
+      const sessionId = original.sessionId;
       const acksBefore = received.filter((m) => m.type === 'hello_ack').length;
       ws.send(serialize(createResumeSessionRequest(sessionId)));
       await pollUntil(
@@ -293,9 +295,12 @@ describe('a Claude daemon on the wire (#1179)', () => {
       );
       const ack = received.filter((m): m is HelloAckMessage => m.type === 'hello_ack').at(-1);
       expect(ack?.harnesses).toEqual(['claude']);
-      // A resume ack has never named a binding; naming an identity there would be a guess.
-      expect(ack).not.toHaveProperty('claudeSessionId');
-      expect(ack).not.toHaveProperty('harness');
+      // Reattachment uses the same actual owned-session binding as the initial ack (#1170).
+      expect(ack?.sessionId).toBe(sessionId);
+      expect(ack?.attachState).toBe('attached');
+      expect(ack?.claudeSessionId).toBe(original.claudeSessionId);
+      expect(ack?.harness).toBe('claude');
+      expect(ack?.harnessSessionId).toBe(original.harnessSessionId);
     } finally {
       ws.close();
     }

@@ -39,6 +39,7 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
    * one. The text names what a person would miss, in "cannot <text>".
    */
   workspaces: 'start a session in a new git worktree',
+  image_staging: 'upload an image to the attached Claude session',
 };
 
 /** Whether a machine supports what a client needs, from its `hello_ack`. */

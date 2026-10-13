@@ -1,4 +1,4 @@
-/** Dormant ADR 0041 wire codec; no authority, transfer, image decode or storage effects. */
+/** ADR 0041 wire codec; no authority, transfer, image decode or storage effects. */
 import { fromB64u, fromUtf8, utf8 } from './relay/bytes.ts';
 import { parseStrictJson } from './relay/strict-json.ts';
 
@@ -96,6 +96,22 @@ export type ImageStagingMessage =
   | ImageUploadCancel
   | ImageUploadCancelResult
   | ImageUploadRefused;
+export type ImageStagingRequest =
+  | ImageUploadBegin
+  | ImageUploadChunk
+  | ImageUploadComplete
+  | ImageUploadCancel;
+/** Internal lookup hints only; a refusal still needs current server-owned authority. */
+export interface ImageStagingCorrelation {
+  operation: ImageStagingOperation;
+  requestId: string;
+  sessionId: string;
+  transferId: string | null;
+}
+export type ImageStagingIngressResult =
+  | { kind: 'request'; request: ImageStagingRequest }
+  | { kind: 'malformed'; correlation: ImageStagingCorrelation }
+  | { kind: 'uncorrelatable' };
 
 type Guard = (value: unknown) => boolean;
 const scalar = (value: string): boolean => fromUtf8(utf8(value)) === value;
@@ -124,7 +140,7 @@ const exact = (value: unknown, fields: Record<string, Guard>): value is Record<s
   const object = value as Record<string, unknown>;
   if (Object.keys(object).length !== Object.keys(fields).length) return false;
   return Object.entries(fields).every(
-    ([key, guard]) => Object.hasOwn(object, key) && guard(object[key]),
+    ([key, guard]) => Object.prototype.hasOwnProperty.call(object, key) && guard(object[key]),
   );
 };
 const binding: Guard = (v) =>
@@ -190,7 +206,7 @@ function validated(value: unknown): ImageStagingMessage | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const object = value as Record<string, unknown>;
   const type = object['type'];
-  if (typeof type !== 'string' || !Object.hasOwn(shapes, type)) return null;
+  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(shapes, type)) return null;
   if (
     !exact(object, {
       type: (v) => v === type,
@@ -204,14 +220,17 @@ function validated(value: unknown): ImageStagingMessage | null {
   if (type === 'image_upload_result' && object['artifactId'] === object['transferId']) return null;
   return object as unknown as ImageStagingMessage;
 }
+function imageStagingValue(input: string | Uint8Array): unknown {
+  if (typeof input !== 'string' && !(input instanceof Uint8Array)) return null;
+  if (input.length > IMAGE_STAGING_LIMITS.frameBytes) return null;
+  const text = typeof input === 'string' ? input : fromUtf8(input);
+  if (!scalar(text) || utf8(text).length > IMAGE_STAGING_LIMITS.frameBytes) return null;
+  return parseStrictJson(text, IMAGE_STAGING_LIMITS.frameBytes);
+}
 /** Bounds raw input before JSON parsing. Shape validity grants no transfer authority. */
 export function decodeImageStagingFrame(input: string | Uint8Array): ImageStagingMessage | null {
   try {
-    if (typeof input !== 'string' && !(input instanceof Uint8Array)) return null;
-    if (input.length > IMAGE_STAGING_LIMITS.frameBytes) return null;
-    const text = typeof input === 'string' ? input : fromUtf8(input);
-    if (!scalar(text) || utf8(text).length > IMAGE_STAGING_LIMITS.frameBytes) return null;
-    return validated(parseStrictJson(text, IMAGE_STAGING_LIMITS.frameBytes));
+    return validated(imageStagingValue(input));
   } catch {
     return null;
   }
@@ -225,5 +244,63 @@ export function encodeImageStagingFrame(message: ImageStagingMessage): string {
     return text;
   } catch {
     throw new Error('Invalid image staging frame');
+  }
+}
+
+function requestOperation(value: unknown): value is ImageStagingOperation {
+  return (
+    value === 'image_upload_begin' ||
+    value === 'image_upload_chunk' ||
+    value === 'image_upload_complete' ||
+    value === 'image_upload_cancel'
+  );
+}
+// The strict parser bounds depth/nodes; also reject escaped lone surrogates in invalid fields/keys.
+function scalarJson(value: unknown): boolean {
+  if (typeof value === 'string') return scalar(value);
+  if (Array.isArray(value)) return value.every(scalarJson);
+  if (value && typeof value === 'object')
+    return Object.entries(value).every(([key, item]) => scalar(key) && scalarJson(item));
+  return true;
+}
+function correlationTransfer(value: unknown): string | null {
+  try {
+    return transfer(value) ? (value as string) : null;
+  } catch {
+    return null; // A malformed transfer field is never an ownership lookup hint.
+  }
+}
+/** Dedicated request ingress only; syntax/envelope ambiguity never falls back to legacy parsing. */
+export function decodeImageStagingIngress(input: string | Uint8Array): ImageStagingIngressResult {
+  try {
+    const value = imageStagingValue(input);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !scalarJson(value))
+      return { kind: 'uncorrelatable' };
+    const object = value as Record<string, unknown>;
+    const operation = object['type'];
+    if (
+      !['type', 'id', 'timestamp', 'sessionId'].every((key) => Object.hasOwn(object, key)) ||
+      !requestOperation(operation) ||
+      !uuid4(object['id']) ||
+      !uuid(object['sessionId']) ||
+      !date(object['timestamp'])
+    )
+      return { kind: 'uncorrelatable' };
+    const correlation: ImageStagingCorrelation = {
+      operation,
+      requestId: object['id'] as string,
+      sessionId: object['sessionId'] as string,
+      transferId:
+        operation === 'image_upload_begin' ? null : correlationTransfer(object['transferId']),
+    };
+    try {
+      const request = validated(value);
+      if (request) return { kind: 'request', request: request as ImageStagingRequest };
+      return { kind: 'malformed', correlation };
+    } catch {
+      return { kind: 'malformed', correlation }; // Shape guards can throw on malformed encodings.
+    }
+  } catch {
+    return { kind: 'uncorrelatable' };
   }
 }

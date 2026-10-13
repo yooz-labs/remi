@@ -51,6 +51,7 @@ import { AmbiguousSessionIdentityError, isClaudeRecord } from '../../session/ind
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { DAEMON_CAPABILITIES } from '../capabilities.ts';
+import type { CurrentOwnedSession } from '../current-session.ts';
 import { log, logError } from '../logger.ts';
 import { resolveDirectory } from '../path-resolver.ts';
 import type { StartChildSession } from './create-session-events.ts';
@@ -141,6 +142,8 @@ export interface ResumeSessionHandlerDeps {
    * test gives another list to see it reach each ack.
    */
   capabilities?: readonly string[];
+  capabilitiesForConnection?: (id: UUID) => readonly string[];
+  currentOwnedSession?: () => CurrentOwnedSession | null;
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -391,7 +394,12 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       if (existingSession) {
         const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
         if (result.success) {
-          const machine = deps.machine?.();
+          const selectedCapabilities =
+            deps.capabilitiesForConnection?.(connectionId) ?? capabilities;
+          const descriptor = deps.machine?.();
+          const machine = descriptor
+            ? { ...descriptor, capabilities: selectedCapabilities }
+            : undefined;
           send(connectionId, createResumeSessionResponse(true, requestId, targetSessionId as UUID));
           send(
             connectionId,
@@ -402,7 +410,14 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
                 nextBulletId: result.nextBulletId,
               },
               harnesses: machine?.harnesses ?? harnesses(),
-              capabilities,
+              capabilities: selectedCapabilities,
+              attachState: result.attachState,
+              binding: (() => {
+                const current = deps.currentOwnedSession?.();
+                return current?.sessionId === targetSessionId
+                  ? { identity: current.identity, transcriptPath: current.transcriptPath }
+                  : undefined;
+              })(),
               machine,
             }),
           );
@@ -478,14 +493,26 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         const result = sessionRegistry.attachConnection(newSessionId, connectionId);
 
         if (result.success) {
-          const machine = deps.machine?.();
+          const selectedCapabilities =
+            deps.capabilitiesForConnection?.(connectionId) ?? capabilities;
+          const descriptor = deps.machine?.();
+          const machine = descriptor
+            ? { ...descriptor, capabilities: selectedCapabilities }
+            : undefined;
           send(connectionId, createResumeSessionResponse(true, requestId, newSessionId));
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
               harnesses: machine?.harnesses ?? harnesses(),
-              capabilities,
+              capabilities: selectedCapabilities,
+              attachState: result.attachState,
+              binding: (() => {
+                const current = deps.currentOwnedSession?.();
+                return current?.sessionId === newSessionId
+                  ? { identity: current.identity, transcriptPath: current.transcriptPath }
+                  : undefined;
+              })(),
               machine,
             }),
           );

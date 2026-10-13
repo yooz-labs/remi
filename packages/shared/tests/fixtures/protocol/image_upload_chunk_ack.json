@@ -1,0 +1,10 @@
+{
+  "id": "00112233-4455-4677-8899-aabbccddeeff",
+  "timestamp": "2026-10-11T12:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "type": "image_upload_chunk_ack",
+  "requestId": "11112233-4455-4677-8899-aabbccddeeff",
+  "transferId": "AQEBAQEBAQEBAQEBAQEBAQ",
+  "seq": 0,
+  "receivedBytes": 4774
+}

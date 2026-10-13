@@ -38,4 +38,7 @@ extend-exclude = [
   # Image-staging vectors (#1170): encoded PNG/JPEG bytes, not prose.
   # Preserve exact fixture bytes; the generator and README remain checked.
   "packages/shared/tests/fixtures/image-staging/vectors.json",
+  # The direct protocol chunk golden contains those same encoded PNG bytes.
+  # Its exact envelope and data are checked by the strict codec/dispatch tests.
+  "packages/shared/tests/fixtures/protocol/image_upload_chunk.json",
 ]

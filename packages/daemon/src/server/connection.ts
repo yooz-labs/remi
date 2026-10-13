@@ -24,8 +24,10 @@ import {
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeImageStagingIngress,
   deserialize,
   generateId,
+  isImageStagingCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -145,6 +147,7 @@ export class Connection {
    *  lifetime of the connection when no authenticator is configured (auth
    *  disabled, or this peer was loopback-exempted). */
   private authenticatedFingerprint: string | null = null;
+  private authenticatedPublicKey: string | null = null;
 
   private readonly ws: ConnectionTransport;
   // `Omit` before re-adding `authenticator` so the property isn't inherited
@@ -244,6 +247,11 @@ export class Connection {
     return this.authenticatedFingerprint;
   }
 
+  /** Internal direct upload identity; absent for capability-only and virtual relay connections. */
+  get connectionClientPublicKey(): string | null {
+    return this.authenticatedPublicKey;
+  }
+
   /** TCP peer address captured at upgrade time (server.requestIP), for
    *  local-vs-remote client classification (#650). Null when the transport
    *  did not provide one. */
@@ -261,6 +269,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isImageStagingCandidate(data)) {
+      this.handleImageStagingFrame(data);
+      return;
+    }
     const message = deserialize(data);
     if (!message) {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
@@ -315,6 +327,11 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        // Dedicated raw ingress above owns these, before ordinary deduplication.
+        image_upload_begin: () => this.close('Invalid image staging route'),
+        image_upload_chunk: () => this.close('Invalid image staging route'),
+        image_upload_complete: () => this.close('Invalid image staging route'),
+        image_upload_cancel: () => this.close('Invalid image staging route'),
         hello: (m) => this.handleHello(m),
         relay_devices_request: () =>
           this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
@@ -393,6 +410,56 @@ export class Connection {
     }
   }
 
+  /** Staging bounds and duplicate-member checks run before JSON conversion or ID tracking. */
+  handleImageStagingFrame(data: string | Uint8Array): void {
+    const ingress = decodeImageStagingIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid image staging frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const correlation =
+      ingress.kind === 'request'
+        ? {
+            requestId: ingress.request.id,
+            sessionId: ingress.request.sessionId,
+            operation: ingress.request.type,
+          }
+        : ingress.correlation;
+    const unavailable = () =>
+      this.send({
+        type: 'image_upload_refused',
+        id: generateId(),
+        timestamp: now(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        operation: correlation.operation,
+        code: 'unavailable',
+      });
+    try {
+      if (!this.events.onImageUpload) {
+        unavailable();
+        return;
+      }
+      const pending = this.events.onImageUpload(ingress);
+      if (pending)
+        void pending.catch(() => {
+          // Fixed text: neither diagnostics nor client bytes enter a protocol reply.
+          try {
+            unavailable();
+          } catch {
+            this.close('Image staging unavailable');
+          }
+        });
+    } catch {
+      try {
+        unavailable();
+      } catch {
+        this.close('Image staging unavailable');
+      }
+    }
+  }
+
   /** Shared by the authenticating-state branch and the post-connect handler
    *  map: both may see a real `auth_response` (see the map entry's comment
    *  on why the latter is reachable only defensively). */
@@ -452,12 +519,13 @@ export class Connection {
       return;
     }
 
-    const { result, verifiedFingerprint } = await this.config.authenticator.verifyResponse(
-      this.id,
-      message,
-      // A pairing claim held for the person's decision stops waiting once this socket is gone.
-      { isOpen: () => this.state !== 'disconnected' && this.ws.readyState === WebSocket.OPEN },
-    );
+    const { result, verifiedFingerprint, verifiedPublicKey } =
+      await this.config.authenticator.verifyResponse(
+        this.id,
+        message,
+        // A pairing claim held for the person's decision stops waiting once this socket is gone.
+        { isOpen: () => this.state !== 'disconnected' && this.ws.readyState === WebSocket.OPEN },
+      );
     this.send(result);
 
     if (result.success) {
@@ -467,6 +535,7 @@ export class Connection {
       // guarantees `verifiedFingerprint` is set whenever `result.success`.
       this.state = 'connecting';
       this.authenticatedFingerprint = verifiedFingerprint ?? null;
+      this.authenticatedPublicKey = verifiedPublicKey ?? null;
       this.events.onAuthSuccess?.(this.authenticatedFingerprint ?? '');
     } else {
       this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);

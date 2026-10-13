@@ -1,0 +1,9 @@
+{
+  "id": "00112233-4455-4677-8899-aabbccddeeff",
+  "timestamp": "2026-10-11T12:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "type": "image_upload_refused",
+  "requestId": "11112233-4455-4677-8899-aabbccddeeff",
+  "operation": "image_upload_begin",
+  "code": "malformed"
+}

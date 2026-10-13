@@ -54,6 +54,8 @@ import {
 export interface VerifyResponseOutcome {
   readonly result: AuthResultMessage;
   readonly verifiedFingerprint?: string;
+  /** Canonical key whose signature and current grant were admitted; never present on refusal. */
+  readonly verifiedPublicKey?: string;
 }
 
 /** What `verifyResponse` may be told about the connection it answers. */
@@ -200,11 +202,15 @@ export class Authenticator {
       return { result: createAuthResult(false, undefined, 'UNKNOWN_KEY') };
     }
 
-    return this.admit(challenge, derivedFingerprint);
+    return this.admit(challenge, derivedFingerprint, response.clientPublicKey);
   }
 
   /** An authorized key: touch it and sign the same challenge for mutual authentication. */
-  private async admit(challenge: string, fingerprint: string): Promise<VerifyResponseOutcome> {
+  private async admit(
+    challenge: string,
+    fingerprint: string,
+    publicKey: string,
+  ): Promise<VerifyResponseOutcome> {
     // Update lastUsedAt (non-critical; don't let failures break auth)
     this.store.touchAuthorizedKey(fingerprint);
 
@@ -215,6 +221,7 @@ export class Authenticator {
       return {
         result: createAuthResult(true, serverSignature),
         verifiedFingerprint: fingerprint,
+        verifiedPublicKey: publicKey,
       };
     } catch (err) {
       const detail = errorToString(err);
@@ -267,7 +274,7 @@ export class Authenticator {
       if (!isOpen()) return fail('PAIRING_PENDING');
       try {
         if (this.store.isAuthorized(response.clientPublicKey, fingerprint)) {
-          return this.admit(challenge, fingerprint);
+          return this.admit(challenge, fingerprint, response.clientPublicKey);
         }
         const state = this.store.peekPairing(nonce)?.state;
         if (state === 'rejected') return fail('PAIRING_REJECTED');

@@ -14,9 +14,11 @@ import { clsx } from 'clsx';
 import { Lock } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { ChatHeader } from './ChatHeader';
+import { ImageUpload } from './ImageUpload';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
 import { type AuqSelection, QuestionCard } from './QuestionCard';
+import type { ImageUploadState } from './ImageUpload';
 
 /** View mode for the chat interface */
 export type ViewMode = 'compact' | 'chat';
@@ -65,6 +67,13 @@ interface ChatViewProps {
   /** Stop (kill) the active session (#637). */
   readonly onEndSession?: () => void;
   readonly showTimestamps?: boolean;
+  readonly imageUpload?: {
+    readonly enabled: boolean;
+    readonly state: ImageUploadState;
+    readonly onSelect: (file: File) => void;
+    readonly onCancel: () => void;
+    readonly onDismiss: () => void;
+  };
   readonly className?: string;
 }
 
@@ -94,6 +103,7 @@ export function ChatView({
   onDetach,
   onEndSession,
   showTimestamps = true,
+  imageUpload,
   className,
 }: ChatViewProps) {
   // The redesigned chat always uses the rich "chat" rendering (markdown, tool
@@ -201,23 +211,26 @@ export function ChatView({
       {/* Subagent views are read-only monitoring (their id is an agentId, not a
           real daemon session), so there is no input to route (#499 phase 3). */}
       {!session.isSubagent && (
-        <InputArea
-          onSend={onSend}
-          onAnswer={(answer) => {
-            if (primaryQuestion) onAnswer(primaryQuestion, answer);
-          }}
-          onCancel={onCancel}
-          question={null}
-          isAgentBusy={isAgentBusy}
-          disabled={!isConnected || isQueued}
-          replyContext={replyContext ?? null}
-          onClearReply={onClearReply}
-          // Session-scoped draft persistence so a half-typed message survives
-          // app suspension on iOS (#226) and switching to a different session
-          // doesn't leak the draft across.
-          draftKey={`remi-draft-${session.id}`}
-          placeholder={!isConnected ? 'Not connected' : isQueued ? 'Read-only' : 'Type a message...'}
-        />
+        <>
+          {imageUpload && <ImageUpload {...imageUpload} />}
+          <InputArea
+            onSend={onSend}
+            onAnswer={(answer) => {
+              if (primaryQuestion) onAnswer(primaryQuestion, answer);
+            }}
+            onCancel={onCancel}
+            question={null}
+            isAgentBusy={isAgentBusy}
+            disabled={!isConnected || isQueued}
+            replyContext={replyContext ?? null}
+            onClearReply={onClearReply}
+            // Session-scoped draft persistence so a half-typed message survives
+            // app suspension on iOS (#226) and switching to a different session
+            // doesn't leak the draft across.
+            draftKey={`remi-draft-${session.id}`}
+            placeholder={!isConnected ? 'Not connected' : isQueued ? 'Read-only' : 'Type a message...'}
+          />
+        </>
       )}
     </div>
   );

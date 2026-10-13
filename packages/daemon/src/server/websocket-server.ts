@@ -5,6 +5,7 @@
  * Handles connection lifecycle, message routing, and broadcasting.
  */
 
+import { isImageStagingCandidate } from '@remi/shared';
 import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
@@ -661,6 +662,10 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
+      if (typeof message !== 'string' && isImageStagingCandidate(message)) {
+        connection.handleImageStagingFrame(message);
+        return;
+      }
       let data: string;
       try {
         // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).

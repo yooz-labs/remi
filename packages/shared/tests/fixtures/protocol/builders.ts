@@ -18,6 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import { identityFromClaudeId } from '../../../src/harness.ts';
+import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
 import {
   createAck,
   createAgentOutput,
@@ -262,7 +263,30 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * key without adding a builder here is a compile error (mirrors the
  * `MessageHandlers` totality property from #896).
  */
+/** Copy the independently frozen ADR 0041 vectors, then exercise the strict shipping decoder. */
+function imageVector<K extends Extract<keyof ProtocolMessageMap, `image_upload_${string}`>>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../image-staging/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeImageStagingFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict image fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  image_upload_begin: () => imageVector('image_upload_begin'),
+  image_upload_accepted: () => imageVector('image_upload_accepted'),
+  image_upload_chunk: () => imageVector('image_upload_chunk'),
+  image_upload_chunk_ack: () => imageVector('image_upload_chunk_ack'),
+  image_upload_complete: () => imageVector('image_upload_complete'),
+  image_upload_result: () => imageVector('image_upload_result'),
+  image_upload_cancel: () => imageVector('image_upload_cancel'),
+  image_upload_cancel_result: () => imageVector('image_upload_cancel_result'),
+  image_upload_refused: () => imageVector('image_upload_refused'),
+
   // Signed native answers have no unsigned create* factory. Parse the
   // independently signed codec vector through the shipping strict decoder.
   native_answer: () => {
