@@ -7,6 +7,10 @@ if (child >= 0) {
     process.argv[child + 1] ?? '',
     process.argv[child + 2] ?? '',
   );
+} else if (process.argv.includes('--journal-staging-probe')) {
+  console.log(
+    JSON.stringify(await (await import('./journal-staging-cases')).journalStagingProbe()),
+  );
 } else if (
   process.argv.includes('--recovery-child') ||
   process.argv.includes('--reservation-storage') ||
@@ -25,6 +29,7 @@ if (child >= 0) {
       copyMeasurements: composition.measurements,
       recovery,
       settlement,
+      journalStagingJpegInputSha256: settlement.journalStagingJpegInputSha256,
       parentMemoryAtReceipt: process.memoryUsage(),
       scope: settlement.scope,
     }),

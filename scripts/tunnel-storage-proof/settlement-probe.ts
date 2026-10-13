@@ -11,6 +11,7 @@ import {
 import { writeRestrictedJson } from '../../packages/daemon/src/storage/restricted-json';
 import type { JournalLease } from './journal-schema';
 import { SETTLEMENT_STAGES, beginJournal, settleJournal } from './journal-settlement';
+import { journalStagingChild, journalStagingProbe } from './journal-staging-cases';
 import { RecoveryIntent } from './recovery';
 import { recoveryNative } from './recovery-native';
 import { CLEANUP_BLOCKING_DEBT, ReservationError, Reservations } from './reservations';
@@ -24,6 +25,7 @@ function checkpoint(stage: string) {
   throw new Error('settlement owned checkpoint expired');
 }
 export async function settlementChild(home: string, mode: string) {
+  if (mode.startsWith('staging-')) return journalStagingChild(home, mode);
   const native = await recoveryNative();
   const roots = capture(home, native.ops);
   try {
@@ -913,11 +915,13 @@ export async function settlementProbe() {
     fs.rmSync(temporary, { recursive: true });
     native.close();
   }
+  const staging = await journalStagingProbe();
   return {
-    checks,
-    children,
+    checks: [...checks, ...staging.checks],
+    children: [...children, ...staging.children],
     measurements,
     faults,
+    journalStagingJpegInputSha256: staging.jpegInputSha256,
     lockQualification:
       'Explicit fixture acquiredAt/mtime aging only after actual owned PID/host and ESRCH, then actual shipping waiting-owner maintenance reclaims stale lock; ordinary settlement remains nonblocking; no wall-clock stale interval measurement',
     scope:

@@ -419,6 +419,91 @@ export class Reservations {
     });
   }
 
+  captureJournalRead(
+    lease: JournalLease,
+    capture: (
+      bytes: number,
+      ownership: readonly Readonly<MarkerWitness>[],
+    ) => { ownership: MarkerWitness[]; allocated: number },
+  ): number {
+    return this.measureJournalRead(lease, capture, false);
+  }
+
+  retainJournal(
+    lease: JournalLease,
+    measure: (
+      bytes: number,
+      ownership: readonly Readonly<MarkerWitness>[],
+    ) => { ownership: MarkerWitness[]; allocated: number },
+  ): 'staged' {
+    this.measureJournalRead(lease, measure, true);
+    return 'staged';
+  }
+
+  private measureJournalRead(
+    lease: JournalLease,
+    measure: (
+      bytes: number,
+      ownership: readonly Readonly<MarkerWitness>[],
+    ) => { ownership: MarkerWitness[]; allocated: number },
+    staged: boolean,
+  ): number {
+    return this.locked(() => {
+      const records = this.read();
+      const record = records.find((item) => item.id === lease.id);
+      if (
+        !record?.journal?.ownership ||
+        !sameLease(record.journal, lease) ||
+        !['active', 'staged'].includes(record.state) ||
+        record.journal.retirement
+      )
+        throw new ReservationError('unavailable');
+      const commit = (charge: number) => {
+        if (
+          !Number.isSafeInteger(charge) ||
+          !Number.isSafeInteger(
+            records.reduce((sum, item) => sum + (item === record ? charge : item.charge), 0),
+          )
+        )
+          throw new ReservationError('unavailable');
+        record.charge = charge;
+        this.write(records);
+      };
+      let measured: { ownership: MarkerWitness[]; allocated: number };
+      try {
+        measured = measure(
+          record.bytes,
+          record.journal.ownership.map((marker) => ({ ...marker })),
+        );
+        if (
+          !validWitnesses(measured.ownership, ['intent', 'owned']) ||
+          !sameWitnesses(record.journal.ownership, measured.ownership) ||
+          !Number.isSafeInteger(measured.allocated) ||
+          measured.allocated < 0
+        )
+          throw new ReservationError('unavailable');
+      } catch (error) {
+        // A failed nonblocking acquisition has no effect or uncertain measurement.
+        if (error instanceof RecoveryError && error.code === 'busy') throw error;
+        commit(Math.max(record.charge, CLEANUP_BLOCKING_DEBT));
+        throw new ReservationError('unavailable');
+      }
+      const charge = Math.max(
+        record.charge,
+        measured.allocated +
+          measured.ownership.reduce((sum, marker) => sum + Math.max(4096, marker.allocated), 4096),
+      );
+      if (!Number.isSafeInteger(charge)) {
+        commit(Math.max(record.charge, CLEANUP_BLOCKING_DEBT));
+        throw new ReservationError('unavailable');
+      }
+      record.journal.ownership = measured.ownership;
+      if (staged) record.state = 'staged';
+      commit(charge); // Conversion retains the same row, declaration, witnesses and monotone debt.
+      return record.bytes;
+    });
+  }
+
   reconcileJournal(
     lease: JournalLease,
     prepare: (

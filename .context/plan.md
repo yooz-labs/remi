@@ -322,6 +322,41 @@ authority, private worker-directory lifetime and staged cleanup. One production
 client remains required before `image_staging` advertisement. No upload handler
 or capability is added here. Keep #1170 open.
 
+## Internal staged journal read ownership
+
+A successfully closed managed journal now opens one internal `JournalRead` view.
+It reacquires and holds the journal's intent lock and an owned read descriptor,
+exposes only bounded reads of at most 32 KiB, and requires the exact declared file
+length. Cleanup may win between writer close and read open; that open then refuses.
+Current roots, private ownership, marker witnesses, inode, size and modification
+metadata are checked around reads and staged retention. Missing artifacts refuse;
+cleanup's zero-allocation observation never supplies a readable file. Failed closes
+latch failure without retrying a potentially reused descriptor; the tested artifact
+descriptor failures retain the intent until process death.
+
+`captureJournalRead` and `retainJournal` use the existing nonblocking ledger lock.
+Staged conversion retains the same lease, declaration, ownership, bytes, artifact
+slot and monotone accounting debt; it frees only active-transfer counts. Repeating
+retention on the same current held staged reader allocates nothing more. Generic
+retain/refund methods still reject journal rows, and original witnessed settlement
+remains the only refund path. The v1 ledger schema and native helper are unchanged.
+
+Both original root type checks pass. Both focused populations pass 59 tests and
+750 assertions across 13 files, including 17 shared real-filesystem groups and
+two actual failed-close/recycled-descriptor children whose deaths are awaited.
+The existing compiled settlement profile preserves its original 88 ordered
+groups and appends those 17. All six supported platform/Bun cells pass 105 groups,
+with all 12 build/run exits zero, exact PNG/JPEG inputs, child reaping and clean
+owned temporary state. Existing 256 MiB/64-process Linux fixtures and deadlines
+are unchanged; these are finite observations. Python diagnostics preserve one
+existing Ruff result and zero Pyright diagnostics, with none added.
+
+Transfer IDs, authorization grant/session/binding, digest/decode, retry deadlines
+and published completion belong to the subsequent authenticated coordinator.
+This storage API does not recreate live readers after restart, register messages
+or advertise uploads. One production client still precedes `image_staging`
+availability. Keep #1170 open.
+
 ## Configurable CLI harness (#1473)
 
 The owner requested a local CLI default on 2026-10-12.

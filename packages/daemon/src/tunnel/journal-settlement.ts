@@ -35,7 +35,112 @@ export type JournalWriter = {
   readonly lease: JournalLease;
   write(bytes: Uint8Array | string, afterChunkForProof?: (ownedFd: number) => void): void;
   close(beforeCloseForProof?: (ownedFd: number) => void): void;
+  openRead(): JournalRead;
 };
+
+/** Internal owned read view; completion correlation and transfer authority belong to the caller. */
+export type JournalRead = {
+  readonly lease: JournalLease;
+  readonly byteLength: number;
+  read(position: number, length: number): Buffer;
+  retainStaged(): 'staged';
+  close(): void;
+};
+
+function openJournalRead(
+  store: Reservations,
+  lease: JournalLease,
+  scratch: DirectoryRoot,
+  metadata: DirectoryRoot,
+  ops: RecoveryOps,
+): JournalRead {
+  let intent: RecoveryIntent | undefined;
+  let fd = -1;
+  let original: fs.BigIntStats | undefined;
+  try {
+    const byteLength = store.captureJournalRead(lease, (bytes, ownership) => {
+      roots(lease, scratch, metadata);
+      intent = RecoveryIntent.open(scratch, metadata, lease.id, ops);
+      const measured = intent.snapshot(['intent', 'owned']);
+      if (!sameWitnesses(measured, ownership)) throw new RecoveryError('unavailable');
+      fd = intent.openArtifactRead();
+      original = fs.fstatSync(fd, { bigint: true });
+      if (original.size !== BigInt(bytes)) throw new RecoveryError('unavailable');
+      return { ownership: measured, allocated: intent.artifactAllocated(fd) };
+    });
+    if (!intent || !original) throw new RecoveryError('unavailable');
+    const held = intent;
+    const stat = original;
+    let closed = false;
+    let closeFailed = false;
+    const current = () => {
+      if (closed) throw new RecoveryError('unavailable');
+      roots(lease, scratch, metadata);
+      held.validateArtifactRead(fd, stat);
+    };
+    const measure = (bytes: number) => {
+      if (bytes !== byteLength) throw new RecoveryError('unavailable');
+      current();
+      const measurement = {
+        ownership: held.snapshot(['intent', 'owned']),
+        allocated: held.artifactAllocated(fd),
+      };
+      current();
+      return measurement;
+    };
+    const account = () => store.captureJournalRead(lease, measure);
+    return {
+      lease,
+      byteLength,
+      read(position, length) {
+        if (
+          closed ||
+          !Number.isSafeInteger(position) ||
+          position < 0 ||
+          !Number.isSafeInteger(length) ||
+          length < 1 ||
+          length > 32 * 1024 ||
+          position + length > byteLength
+        )
+          throw new RecoveryError('unavailable');
+        account();
+        const buffer = Buffer.alloc(length);
+        let offset = 0;
+        while (offset < length) {
+          account();
+          const count = fs.readSync(fd, buffer, offset, length - offset, position + offset);
+          if (!count) throw new RecoveryError('unavailable');
+          offset += count;
+          account();
+        }
+        return buffer;
+      },
+      retainStaged() {
+        if (closed) throw new RecoveryError('unavailable');
+        return store.retainJournal(lease, measure);
+      },
+      close() {
+        if (closeFailed) throw new RecoveryError('unavailable');
+        if (closed) return;
+        closed = true;
+        try {
+          const current = fs.fstatSync(fd, { bigint: true });
+          if (current.dev !== stat.dev || current.ino !== stat.ino)
+            throw new RecoveryError('unavailable');
+          fs.closeSync(fd);
+          held.close();
+        } catch {
+          closeFailed = true; // Never retry a possibly recycled FD; retain the intent until death.
+          throw new RecoveryError('unavailable');
+        }
+      },
+    };
+  } catch (error) {
+    if (fd >= 0) fs.closeSync(fd);
+    intent?.close();
+    throw error;
+  }
+}
 
 export function beginJournal(
   store: Reservations,
@@ -120,6 +225,10 @@ export function beginJournal(
           failed = true;
           throw new RecoveryError('unavailable'); // Keep the intent flock until process exit.
         }
+      },
+      openRead() {
+        if (!closed || failed) throw new RecoveryError('unavailable');
+        return openJournalRead(store, lease, scratch, metadata, ops);
       },
     }; // Ledger ownership binding precedes the managed writable handle return.
   } catch (error) {

@@ -258,6 +258,53 @@ export class RecoveryIntent {
   private artifact(): number {
     return this.ops.openAt(this.scratch.fd, this.name('artifact'), READ);
   }
+  openArtifactRead(): number {
+    let fd = -1;
+    try {
+      this.current();
+      fd = this.artifact();
+      if (fd < 0) refuse(); // Cleanup's exact ENOENT measurement is never a readable artifact.
+      this.validateArtifactRead(fd, fs.fstatSync(fd, { bigint: true }));
+      return fd;
+    } catch (error) {
+      if (fd >= 0) fs.closeSync(fd);
+      if (error instanceof RecoveryError) throw error;
+      throw new RecoveryError('unavailable');
+    }
+  }
+  validateArtifactRead(fd: number, original: fs.BigIntStats): void {
+    try {
+      this.current();
+      const owned =
+        this.held.find((item) => item.name === this.name('owned')) ?? this.load('owned');
+      if (!owned?.value.artifact) refuse();
+      const artifact = owned.value.artifact;
+      // Validate the retained FD before any open could reuse a lost numeric descriptor.
+      const stat = fs.fstatSync(fd, { bigint: true });
+      const unchanged = (value: fs.BigIntStats) =>
+        matches(value, artifact) &&
+        value.dev === original.dev &&
+        value.ino === original.ino &&
+        value.size === original.size &&
+        value.mtimeNs === original.mtimeNs &&
+        value.ctimeNs === original.ctimeNs;
+      if (!unchanged(stat)) refuse();
+      const named = this.artifact();
+      if (named < 0) refuse();
+      try {
+        if (!unchanged(fs.fstatSync(named, { bigint: true }))) refuse();
+      } finally {
+        fs.closeSync(named);
+      }
+      const cleaned = this.ops.openAt(this.metadata.fd, this.name('cleaned'), READ);
+      if (cleaned >= 0) fs.closeSync(cleaned);
+      if (cleaned !== -2) refuse();
+      this.current();
+    } catch (error) {
+      if (error instanceof RecoveryError) throw error;
+      throw new RecoveryError('unavailable');
+    }
+  }
   snapshot(kinds: readonly MarkerKind[]): MarkerWitness[] {
     this.current();
     return kinds.map((kind) => {
