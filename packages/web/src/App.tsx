@@ -40,6 +40,7 @@ import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/nati
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
 import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
+import { markInputReceipt, markPartialInput, partialInputMessageId, refusedInputMessageId } from '@/lib/input-refusal';
 import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import {
@@ -1550,6 +1551,40 @@ function App() {
             break;
           }
         }
+        // #1488: the text may have landed before a queued submission was stopped.
+        // Remove automatic retries and keep this result even if its receipt ACK is late.
+        const partialMessageId = partialInputMessageId(message);
+        if (partialMessageId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, partialMessageId);
+          setMessages((prev) => {
+            const matched = prev.some((m) => m.id === partialMessageId && m.sender === 'user' && m.connectionId === connectionId);
+            if (matched) return prev.map((m) => m.id === partialMessageId && m.connectionId === connectionId ? markPartialInput(m) : m);
+            // Rotation can remove the optimistic row before this refusal arrives.
+            // Keep an independent notice in the error's session instead of hiding it.
+            const refusedSession = asNonEmptyString(message.details?.['sessionId']) as UUID | undefined;
+            if (!refusedSession) return prev;
+            return [...prev, {
+              id: message.id,
+              sessionId: refusedSession,
+              connectionId,
+              sender: 'system' as const,
+              content: errorText,
+              timestamp: message.timestamp,
+              state: 'delivered' as const,
+              isEditing: false,
+              inputMayBePartial: true,
+            }];
+          });
+          break;
+        }
+        const refusedMessageId = refusedInputMessageId(message);
+        if (refusedMessageId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, refusedMessageId);
+          setMessages((prev) => prev.map((m) =>
+            m.id === refusedMessageId && m.sender === 'user' && m.connectionId === connectionId
+              ? { ...m, state: 'failed' as const } : m,
+          ));
+        }
         // NOT_ACTIVE_CONNECTION (#662/#663): this connection is read-only --
         // another client holds the session's exclusive write lock -- and the
         // input that triggered this error was never delivered to the PTY
@@ -1765,7 +1800,7 @@ function App() {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === message.ack.messageId && m.sender === 'user'
-                ? { ...m, state: 'delivered' as const }
+                ? markInputReceipt(m)
                 : m,
             ),
           );
@@ -2708,6 +2743,7 @@ function App() {
       const newMessage: UIMessage = {
         id: messageId,
         sessionId: activeSessionId,
+        connectionId: connId,
         sender: 'user',
         content: wireContent,
         timestamp: new Date().toISOString(),
@@ -2774,6 +2810,7 @@ function App() {
   // resumes watching it.
   const handleRetryMessage = useCallback(
     (message: UIMessage) => {
+      if (message.inputMayBePartial) return;
       const sid = message.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();

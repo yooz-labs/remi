@@ -107,6 +107,8 @@ export interface UIMessage {
   readonly content: string;
   readonly timestamp: Timestamp;
   readonly state: UIMessageState;
+  /** Text may be in the terminal but Enter was withheld; never retry blindly (#1488). */
+  readonly inputMayBePartial?: boolean;
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
