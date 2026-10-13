@@ -72,9 +72,19 @@ describe('CI test step keeps its output for the threshold check', () => {
   test('the suite runs once: its output goes to the file the check reads, and a failure still fails the step', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
     const step = workflowStep('Test with coverage');
+    const command =
+      'bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov';
     expect(step).toContain('set -o pipefail');
     expect(step).toContain('2>&1 | tee test-output.txt');
-    expect(workflow.split('bun test --coverage')).toHaveLength(2);
+    expect(step).toContain(command);
+    expect(workflow.split(command)).toHaveLength(2);
+    const runner = readFileSync(
+      join(repoRoot, 'scripts/ci/run-bun-test-with-diagnostics.ts'),
+      'utf8',
+    );
+    expect(
+      runner.split("runChild([process.execPath, 'test', ...process.argv.slice(2)])"),
+    ).toHaveLength(2);
   });
 });
 
