@@ -503,10 +503,14 @@ the corpus; validation decision controls are appended.
 A skip needs a readable ordinary pull-request event with exact commit IDs,
 complete non-shallow refs/diff/merge-base and known checkout context. The current
 HEAD must equal `GITHUB_SHA` in the declared workspace. It must be the exact head
-or the event's merge commit with exact base/head parents. Input inventories,
-modes and blobs must agree at base, head, merge-base and checkout, and current
-input bytes must match those objects. Dirty or untracked validator files and
-unknown Git/environment/context inputs retain full validation.
+or a two-parent merge checkout whose second parent is the event head and whose
+first parent is the event base or a proven descendant of it. The REST
+`merge_commit_sha` field is not an admission witness because it can lag the event
+base; the checkout's actual parent graph is checked instead. Input inventories,
+modes and blobs must agree at base, head, merge-base, checkout and the merge
+checkout's first parent, and current input bytes must match those objects. Dirty
+or untracked validator files and unknown Git/environment/context inputs retain
+full validation.
 
 Availability checks bind five published reconstruction roots and 225 published
 original blob objects (the prior 222 plus the three #1476 policy inputs used by
