@@ -1,6 +1,6 @@
 /**
  * Tests for Connection auth state machine.
- * Uses real crypto operations (no mocks).
+ * Uses real crypto operations and a captured transport for state-machine checks.
  *
  * Tests the state transitions:
  *   With auth:    authenticating -> connecting -> connected -> disconnected
