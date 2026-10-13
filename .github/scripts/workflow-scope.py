@@ -19,6 +19,24 @@ SOAK_SKIP = {
     "run": 'echo "61-minute soak scoped out for reviewed fixture changes; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
 }
 
+COVERAGE_TEST_RUN = (
+    "set -o pipefail\n"
+    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
+    "--coverage-reporter=lcov 2>&1 | tee test-output.txt\n"
+)
+WRAPPED_TEST_COMMAND = (
+    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
+    "--coverage-reporter=lcov"
+)
+WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
+TEST_MEASUREMENT_PROVENANCE = {
+    "previous_command": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "wrapped_command": WRAPPED_TEST_COMMAND,
+    "coverage_pipeline": "2>&1 | tee test-output.txt",
+    "wrapper_argv": WRAPPED_TEST_ARGV,
+    "reason": "PR #1492 wraps the unchanged Bun test invocation with bounded quiet-period diagnostics.",
+}
+
 
 def validate_action(action):
     # The independent corpus invokes this too; deleting the validator step cannot evade it.
@@ -213,7 +231,13 @@ def validate():
         run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
                    if step.get("name") == name)
         assert hashlib.sha256(run.encode()).hexdigest() == expected, key
-    assert any("bun test --coverage --coverage-reporter=text --coverage-reporter=lcov" in run for run in test_runs)
+    coverage_step = next(step["run"] for step in ci["jobs"]["test"]["steps"]
+                         if step.get("name") == "Test with coverage")
+    assert coverage_step == COVERAGE_TEST_RUN
+    assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
+    runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
+    assert runner.count(f"runChild({WRAPPED_TEST_ARGV})") == 1
+    assert "if (import.meta.main)" in runner
     assert any('"$COVERAGE < 60"' in run and 'exit 1' in run for run in test_runs)
     for command in ("bun run typecheck", "bun run typecheck:web", "bun run typecheck:web-tests",
                     "bun run typecheck:signaling", "node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json",
