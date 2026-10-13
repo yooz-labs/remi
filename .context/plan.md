@@ -437,3 +437,19 @@ identity provision; a different identity disables upload. The isolated real-brow
 regression passes eight assertions on each Bun, and restoring the old effect fails
 its post-effect enabled assertion. Native/Swift and physical-device acceptance,
 relay transport and harness insertion remain separate. Hosted checks precede landing.
+
+## Image insertion: installed CLI and queue prerequisite
+
+Direct staging #1487 and queued-input guards #1489 are now merged on develop.
+The next #1170 slice reuses the guarded queue and held JournalRead; no second upload store is planned.
+The [installed-CLI observation](../docs/claude-image-insertion-characterization.md) records four owner-authorized turns on Claude Code 2.1.296.
+Quoted absolute PNG paths with spaces, JPEG and extensionless PNG bytes became actual image attachments only after a separate Enter.
+A normal exit/resume worked after removal of the submitted originals.
+Removing a new draft reference's original before submission produced no new image attachment.
+The response to that negative control was unusable; only the missing embedding is accepted as evidence.
+
+The dormant `PTYSession.insertText` method uses the existing write queue, checks its required guard at the effect, rejects controls and adds no Enter.
+Real PTY tests cover exact literal input, queue ordering, queued validity changes, guard failure and exited terminals.
+This does not advertise insertion or add a production caller.
+Artifact acquisition/one-effect retirement, an accepted expiration contract, shared/native wire conformance and explicit client action remain the next slice.
+The current 24-hour/session-exit policy does not promise an indefinitely valid unsent reference; settle that product behavior explicitly before freezing insertion.

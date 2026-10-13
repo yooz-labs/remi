@@ -1,0 +1,101 @@
+# ADR 0042: Explicit Claude image-reference insertion
+
+**Status:** proposed; owner review required before contract freeze or availability
+**Date:** 2026-10-13
+**Owner:** Yahya
+
+## Context
+
+[ADR 0041](0041-direct-image-staging.md) is the accepted staging operation.
+Direct staging and its web caller landed in #1487; queued input guards landed in #1489.
+Staging retains a bounded owned JournalRead and gives the client an opaque artifact ID.
+It never types into the harness.
+
+The [installed Claude check](../../docs/claude-image-insertion-characterization.md) measured quoted paths with spaces, JPEG and extensionless PNG input on Claude Code 2.1.296.
+Image content entered the conversation on submission, not on the no-Enter reference write.
+Submitted image encodings persisted through a normal exit/resume without the originals.
+The resumed color answer is consistent with both the retained images and earlier text; compaction and isolated image-only recall remain unmeasured.
+Deleting a new draft reference's original before Enter produced no image attachment.
+
+## Proposed decision
+
+### 1. Add one staged image to the current draft
+
+The client offers an explicit **Add to draft** action after successful staging.
+It is gated by a separate `image_insertion` capability, not by `image_staging` alone.
+The host supplies one literal ` @"/absolute/generated/artifact" ` reference through the existing serialized PTY queue.
+There is no Enter, automatic turn, clipboard change or implicit Codex operation.
+The result means a reference was written, not that Claude read the image.
+
+Use only the authenticated attached direct Claude connection that completed the upload in the first version.
+Reconnect/detach does not revive insertion authority, even while retained storage remains charged.
+Relay and Codex support keep their separate gates.
+No new message or capability is registered or advertised by this proposed ADR.
+
+### 2. Exact two-message contract
+
+Use ADR 0041's strict frame/envelope validation and bounds: valid Unicode, no duplicate or unknown members, bounded raw frame, canonical UUID/timestamp/opaque ID/binding spellings.
+Protocol version 1 is unchanged.
+
+| Direction/type | Exact fields beyond `type`, `id`, `timestamp` |
+|---|---|
+| Client `image_insert_request` | `sessionId`, `binding`, `artifactId` |
+| Host `image_insert_result` | `requestId`, `sessionId`, `outcome`, `code` |
+
+`outcome` is exactly `inserted`, `refused` or `uncertain`.
+Valid outcome/code pairs are:
+
+| Outcome | Codes |
+|---|---|
+| `inserted` | `none` |
+| `refused` | `malformed`, `unavailable`, `busy`, `conflict`, `expired`, `binding_changed`, `prompt_up` |
+| `uncertain` | `delivery_unknown` |
+
+There are no optional fields, host paths or diagnostics in these messages.
+Correlate response type, request ID and session ID to the original request; its artifact ID is held in the client request context.
+Uncorrelatable malformed input closes the transfer connection, as staging does.
+Unknown/foreign artifacts, revoked or unreadable grants and lost attachment use `unavailable` without revealing ownership.
+Specific lifecycle codes require the currently authorized owning connection/grant.
+Ordinary transport ack remains separate from the insertion result.
+
+### 3. One possible write per artifact
+
+Reuse the staged reader, reservation and original owner capture.
+Check the original signed socket, grant incarnation, attached live session/runtime, exact binding and staged expiry before acquisition and at the actual queued effect.
+Check `promptUp` there using the same harness decision channel as chat; this retains that signal's documented dialog-detection limits.
+Validate the held artifact and current named path immediately before the reference effect.
+The client supplies no filename or filesystem path.
+
+For this first route, quoted spaces are supported; reject host reference paths containing literal quotes, backslashes or control characters before any possible write.
+Those spellings remain unmeasured on the installed CLI.
+Do not silently rewrite a configured path or make another image copy to avoid the restriction.
+
+Record retirement immediately before the first possible terminal write.
+A successful sink return produces `inserted`; an error after that boundary produces `uncertain`.
+Neither a fresh request ID nor a lost result permits a second write of that artifact.
+Keep one bounded recorded outcome while its artifact remains usable; identical request retries return that outcome, never another effect.
+Request reuse with different fields is `conflict`.
+A refusal before any possible write permits a later explicit attempt if the original authority/deadline still holds.
+Restart does not restore transfer or insertion authority, so it cannot replay a retired effect.
+
+### 4. Expiration is visible product behavior
+
+Keep the original at-most-24-hour/session-exit staging deadline and quotas.
+Insertion and retries never extend them.
+An added reference must be submitted before that deadline and before this Remi session ends.
+The client displays **Added to draft. Send before [expiry].** and changes that local status to expired when the deadline or session ends.
+An expired unsent reference can no longer attach its image; the person must upload again and remove the expired reference from the terminal draft.
+Remi does not edit a person's existing terminal draft automatically.
+
+This is a deliberate bounded draft lifetime, not a promise that an unsent image survives indefinitely.
+Submitted images use the measured embedded-transcript lifecycle; do not claim later file reads or compaction never need the original.
+Cleanup still proves deletion before releasing the original reservation and retains failed-cleanup debt.
+No retention extension or second storage namespace is introduced.
+
+## Availability gates
+
+Owner acceptance of the two-message contract, `image_insertion` name, first-version connection restriction and expiring unsent draft is required.
+Then implement managed artifact acquisition and one-effect retirement, strict shared vectors, dispatch/direction handling and one production explicit client action.
+Real signed socket/grant/session/binding/held-hook controls must prove zero bytes on refusal, one reference and zero CR/LF on success, and no replay after uncertainty.
+Run source/compiled controls on the three supported hosts and both Bun versions; native runs the shared conformance corpus independently.
+Do not advertise the capability until the actual handler and client caller pass those gates.
