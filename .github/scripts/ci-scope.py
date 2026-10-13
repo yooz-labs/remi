@@ -1982,9 +1982,18 @@ def validation_needed(base=None, head=None):
         for ref in (base, head, checkout):
             if git("rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip() != ref:
                 return full
-        if checkout != head and (pr.get("merge_commit_sha") != checkout or
-                git("rev-list", "--parents", "-n", "1", checkout).decode().split() != [checkout, base, head]):
-            return full
+        checkout_parent = None
+        if checkout != head:
+            parents = git("rev-list", "--parents", "-n", "1", checkout).decode().split()
+            if len(parents) != 3 or parents[0] != checkout or parents[2] != head:
+                return full
+            checkout_parent = parents[1]
+            if git("rev-parse", "--verify", f"{checkout_parent}^{{commit}}").decode().strip() != checkout_parent:
+                return full
+            # The test merge can use a newer first parent than the event's base.
+            # Accept it only when it descends from that exact event base; the tree
+            # inventory below still has to match at both commits.
+            git("merge-base", "--is-ancestor", base, checkout_parent)
         merge_base = git("merge-base", base, head).decode().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
             return full
@@ -2012,7 +2021,10 @@ def validation_needed(base=None, head=None):
             changed.add(path)
         if any(validation_input(path) for path in changed):
             return {**full, "reason": "Validator policy/tests/execution inputs changed; running full validation"}
-        inventories = [validation_inventory(ref) for ref in dict.fromkeys((base, head, merge_base, checkout))]
+        inventory_refs = [base, head, merge_base, checkout]
+        if checkout_parent is not None:
+            inventory_refs.append(checkout_parent)
+        inventories = [validation_inventory(ref) for ref in dict.fromkeys(inventory_refs)]
         inventory = inventories[0]
         if any(value != inventory for value in inventories[1:]):
             return full

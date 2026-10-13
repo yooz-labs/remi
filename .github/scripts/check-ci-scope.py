@@ -1017,6 +1017,32 @@ def validation_controls():
             merged_tree = git("merge-tree", "--write-tree", unrelated_base, feature).splitlines()[0]
             merged = git("commit-tree", merged_tree, "-p", unrelated_base, "-p", feature, "-m", "owned actual PR merge")
             decision(unrelated_base, feature, False, "actual two-parent checkout", checkout=merged)
+            decision(unrelated_base, feature, False, "valid parents with stale merge metadata", checkout=merged,
+                     event={"pull_request": {"base": {"sha": unrelated_base}, "head": {"sha": feature},
+                                             "merge_commit_sha": feature}})
+            decision(unrelated_base, feature, False, "valid parents without merge metadata", checkout=merged,
+                     event={"pull_request": {"base": {"sha": unrelated_base}, "head": {"sha": feature}}})
+            package = json.loads((original / "package.json").read_bytes())
+            package["version"] = "0.7.17-dev.2"
+            advanced_base = tree(baseline, [("package.json", json.dumps(package, indent=2) + "\n", "100644")])
+            advanced_tree = git("merge-tree", "--write-tree", advanced_base, feature).splitlines()[0]
+            advanced_merge = git("commit-tree", advanced_tree, "-p", advanced_base, "-p", feature,
+                                 "-m", "owned version-only base advance")
+            decision(baseline, feature, False, "version-only advanced first parent", checkout=advanced_merge,
+                     event={"pull_request": {"base": {"sha": baseline}, "head": {"sha": feature},
+                                             "merge_commit_sha": "0" * 40}})
+            changed_ci = ".github/workflows/ci.yml"
+            changed_ci_base = tree(baseline, [(changed_ci, source_bytes[changed_ci] + b"\n# base CI drift\n", "100644")])
+            changed_ci_tree = git("merge-tree", "--write-tree", changed_ci_base, feature).splitlines()[0]
+            changed_ci_merge = git("commit-tree", changed_ci_tree, "-p", changed_ci_base, "-p", feature,
+                                   "-m", "owned CI-changing base advance")
+            decision(baseline, feature, True, "advanced first parent changed validator inventory",
+                     checkout=changed_ci_merge)
+            sibling_base = tree(source_parent, [("docs/owned-sibling-base.md", "sibling base\n", "100644")])
+            sibling_tree = git("merge-tree", "--write-tree", sibling_base, feature).splitlines()[0]
+            sibling_merge = git("commit-tree", sibling_tree, "-p", sibling_base, "-p", feature,
+                                "-m", "owned unrelated first parent")
+            decision(baseline, feature, True, "unrelated first parent", checkout=sibling_merge)
             decision(baseline, baseline, True, "empty diff")
             for path in source_paths:
                 changed = tree(baseline, [(path, source_bytes[path] + b"\n# owned validator input\n", "100644")])
@@ -1050,11 +1076,11 @@ def validation_controls():
                                 {"GITHUB_WORKSPACE": str(container)}, {"GIT_DIR": str(repo / ".git")}):
                 decision(baseline, feature, True, ("unknown checkout context", environment), environment=environment)
             decision(baseline, feature, True, "CLI refs disagree", args=("--base", feature, "--head", baseline))
-            decision(unrelated_base, feature, True, "merge witness mismatch", checkout=merged,
-                     event={"pull_request": {"base": {"sha": unrelated_base}, "head": {"sha": feature},
-                                             "merge_commit_sha": feature}})
             reversed_merge = git("commit-tree", merged_tree, "-p", feature, "-p", unrelated_base, "-m", "wrong parent order")
             decision(unrelated_base, feature, True, "unexpected merge parents", checkout=reversed_merge)
+            extra_parent_merge = git("commit-tree", merged_tree, "-p", unrelated_base, "-p", feature,
+                                     "-p", baseline, "-m", "unexpected extra parent")
+            decision(unrelated_base, feature, True, "unexpected extra merge parent", checkout=extra_parent_merge)
 
             def overwrite(path, data):
                 target = Path(path)
