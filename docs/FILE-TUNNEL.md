@@ -584,9 +584,9 @@ historical evidence; unchanged guards received no new mutation campaign.
 This accepts the explicit internal helper packaging.
 An active daemon lifecycle, physical allocation ceiling and power-loss behavior
 are not established by these finite observations. Image header admission is
-recorded below. Full decoding, owned worker integration, authenticated staging
-and a production client caller still precede upload availability and capability
-advertisement.
+recorded below, followed by internal full-decoder ownership. Owned worker
+integration, authenticated staging and a production client caller still precede
+upload availability and capability advertisement.
 
 ## Internal image header admission adoption
 
@@ -611,8 +611,86 @@ paths retain their reviewed hashes; these integration checks do not replace the
 source-qualified six-cell decoder receipts.
 
 These observations cover internal header admission and its existing standalone
-proof callers. Full pixel decoding, production decoder dependencies, the owned
-worker entry and active staging lifecycle remain subsequent work.
+proof callers. Internal full decoding and direct decoder dependencies are
+recorded below. The owned worker entry and active staging lifecycle remain
+subsequent work.
 No package index export, startup call, upload handler, production client or
 attachment capability is added. Header admission alone does not validate pixels
 or establish a universal process memory/CPU ceiling. Keep #1170 open.
+
+## Internal full image decoder adoption
+
+`tunnel/image-decode.ts` owns the existing synchronous decoder function body.
+Only its status comment and admission import target change; the proof path
+re-exports the same function. Header admission remains outside the decoder's
+try block. PNG CRC validation, strict JPEG options, dimension/pixel-length checks
+and normalized decode failure retain their existing behavior.
+The exact 602-byte PNG/CRC declaration now belongs to the daemon; the proof
+references it and retains its separate image asset declarations.
+
+The daemon directly selects pngjs 7.0.0 and jpeg-js 0.4.4.
+Their installed 42-member dependency tree is byte-identical to the measured
+candidate. Bun-generated lock changes add only those exact pins and relocate
+the unchanged PNG 5.0.0 entry for qrcode. All other package and workspace metadata
+is unchanged. Actual bundle/license checks find PNG 7/JPEG 0.4.4 in the decoder
+module and only PNG 5 in the existing 17-package CLI graph.
+The proof notices now describe the selected internal dependencies; license text
+is preserved. No package index export or startup decoder call is added.
+
+Both original root TypeScript configurations pass without extra declaration or
+files inputs. Both focused populations pass 53 tests and 618 assertions, including
+real owned image input/pixel hashes, shared function identity, header refusal and
+PNG CRC failure. Python diagnostics remain unchanged; scoped formatting,
+spelling and diff checks pass. Missing offline metadata/tarballs were resolved
+in an owned S1 install with a frozen lock; earlier setup failures are retained.
+
+Both existing profile runners capture the daemon manifest, moved source and root
+lock. The final default 19-group and held 22-group profiles each passed all six
+supported platform/Bun cells: all 24 build/run exits are zero. Original ordered
+controls, fixture pixels, all 42 dependency members and clean owned temporary
+state are preserved. Actual held No latency under repeated decoding was
+0.72-61.16 ms below the unchanged 1,000-ms limit; every deliberate parent-block
+control exceeded it. Original child lifetime, output and reap controls remain.
+These finite observations do not establish universal process memory/CPU ceilings.
+
+This accepts internal decoder dependency/body ownership. Synchronous decoding
+is not an active transfer path: controller/worker ownership is recorded below,
+and a trusted pre-CLI entry still precedes lifecycle integration.
+Authenticated staging, current transfer authority and one production client still
+precede capability advertisement. No upload caller or `image_staging` capability
+is added. Keep #1170 open.
+
+## Internal image controller and worker adoption
+
+`tunnel/image-process.ts` and `tunnel/image-worker.ts` now own the existing
+controller and worker bodies. Only ownership comments and admission/decoder
+import targets change. The proof modules explicitly re-export the same runtime
+and type symbols. No production child entry, startup caller, message registration
+or upload capability is added.
+
+The controller retains owned input, its single busy slot, 4,096-byte output cap,
+at-most-5,000-ms deadline, SIGKILL cancellation and awaited child exit before
+slot release. Its child environment still admits PATH, LANG and TMPDIR plus the
+fixed interpreter policy; the parent environment remains unchanged. Worker input
+bounds, normalized refusal, scalar pixel result and repeated proof mode retain
+their measured behavior.
+
+Both original root TypeScript checks pass. Both focused populations pass 54 tests
+and 662 assertions. The new actual-child test checks shared symbol identity,
+PNG/JPEG input and pixel hashes, input ownership, CRC refusal, busy rejection,
+repeated cancellation, reaping, slot reuse and parent policy isolation.
+Scoped formatting, spelling and diff checks pass with no new warnings.
+The decoder graph selects its existing two packages; the CLI keeps its unchanged
+17-package graph and licenses.
+
+Both existing default 19-group and held 22-group profiles pass all six supported
+platform/Bun cells; all 24 build/run exits are zero. Original ordered controls,
+fixture pixels, the 42-member decoder dependency tree and clean owned temporary
+state are preserved. Actual held No latency under repeated decoding was
+0.55-15.29 ms against the unchanged 1,000-ms limit; all six deliberate parent-block
+controls exceeded it. These finite observations do not establish a universal
+process memory/CPU ceiling or an active upload path.
+
+Next select the trusted pre-CLI worker entry and its actual build/source callers,
+then implement the authenticated staging lifecycle and one production client.
+Keep #1170 open; capability availability follows that completed path.
