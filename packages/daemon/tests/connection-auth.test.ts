@@ -100,6 +100,7 @@ describe('Connection auth state machine', () => {
       const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
 
       expect(conn.connectionState).toBe('authenticating');
+      expect(conn.connectionClientPublicKey).toBeNull();
       expect(ws.sentMessages.length).toBe(1);
       expect(ws.sentMessages[0]?.type).toBe('auth_challenge');
     });
@@ -133,6 +134,7 @@ describe('Connection auth state machine', () => {
 
       expect(conn.connectionState).toBe('connecting');
       expect(authSuccess).toBe(true);
+      expect(conn.connectionClientPublicKey).toBe(clientPublicKeyBase64);
 
       // Should have sent auth_result(success)
       const result = ws.lastOfType('auth_result') as ProtocolMessage & { success: boolean };

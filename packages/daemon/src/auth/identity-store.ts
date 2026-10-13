@@ -311,14 +311,15 @@ export class IdentityStore {
   ): T {
     return this.transaction(() => this.decideAuthorizationEpoch(publicKey, operation, migrate));
   }
-  /** Current generation read under one ownership attempt; no grant-record migration (#1224). */
+  /** Current generation under one ownership attempt; migration is explicit and grants no new key. */
   withAuthorizationEpochNonblocking<T>(
     publicKey: string,
     operation: (current: string | null) => T,
+    migrate = false,
   ): T {
     this.ensureDir();
     return withInterprocessFileLockNonblocking(this.authorizedKeysPath, () =>
-      this.decideAuthorizationEpoch(publicKey, operation, false),
+      this.decideAuthorizationEpoch(publicKey, operation, migrate),
     );
   }
   private decideAuthorizationEpoch<T>(

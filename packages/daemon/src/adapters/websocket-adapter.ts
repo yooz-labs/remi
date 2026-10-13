@@ -9,6 +9,7 @@ import type { AgentStatus, Message, ProtocolMessage, UUID } from '@remi/shared';
 import { createAgentOutput, createSessionUpdate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import { pickClientMessageEvents } from '../server/client-message-events.ts';
+import type { Connection } from '../server/connection.ts';
 import {
   type ServerConfig,
   type ServerEvents,
@@ -212,6 +213,11 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
   hasConnection(connectionId: UUID): boolean {
     return this.server?.getConnection(connectionId) !== undefined;
+  }
+
+  /** Owned direct server lookup; adapter metadata and virtual relay peers cannot supply this object. */
+  getDirectConnection(connectionId: UUID): Connection | undefined {
+    return this.server?.getConnection(connectionId);
   }
 
   closeConnection(connectionId: UUID, reason: string): boolean {

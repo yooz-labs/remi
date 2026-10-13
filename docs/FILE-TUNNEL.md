@@ -776,3 +776,23 @@ and published completion belong to the subsequent authenticated coordinator.
 This storage API does not recreate live readers after restart, register messages
 or advertise uploads. One production client still precedes `image_staging`
 availability. Keep #1170 open.
+
+## Dormant direct staging coordinator
+
+`ImageStagingService` now composes the owned journal and decoder for begin,
+acknowledged chunks, completion and cancellation. It captures the actual signed
+direct connection, canonical public key, authorization epoch, attached session,
+PTY and exact Claude binding; each effect rechecks that captured authority.
+Storage quotas use the full public-key hash, independently of the display fingerprint.
+Admitted completions share one decoder queue and retain their original deadlines.
+Completed artifacts retain the managed read lock until expiry or session exit.
+Cancellation receipts remain bounded and cannot revive an evicted lease.
+
+Both root type checks and the focused 55-test, 563-assertion population pass on
+Bun 1.3.11 and 1.4.2. These Mac source checks construct real signed sockets,
+PTYs, files and decoder children, including foreign-client refusals, grant
+replacement, binding changes, shared-home recovery/capacity, cancellation during
+completion, the actual 30-second idle deadline and retirement at shutdown.
+Compiled coordinator acceptance and production hub/child dispatch remain pending.
+The service has no production initializer, protocol dispatch or upload caller yet;
+`image_staging` availability follows that complete integration. Keep #1170 open.
