@@ -178,7 +178,7 @@ export class PTYSession {
 
   /**
    * Per-session write serialization (#795). Every write-ish entry point
-   * (`write`, `submitInput`) chains its terminal writes onto this promise so
+   * (`write`, `insertText`, `submitInput`) chains its terminal writes onto this promise so
    * only one write sequence is ever in flight — one submit's full multi-step
    * sequence (text, delay, CR) always completes before the next one starts.
    *
@@ -227,6 +227,30 @@ export class PTYSession {
         throw new Error(`Cannot write to session in state: ${this.state}`);
       }
       this.termWrite(data);
+    });
+  }
+
+  /**
+   * Insert literal text without submitting a turn (#1170). The required guard
+   * runs at the serialized write, after earlier input has settled. A true result
+   * confirms the terminal write only; it does not establish harness consumption.
+   * The caller owns authorization, prompt checks and possible-write retirement.
+   */
+  insertText(text: string, guard: () => boolean): Promise<boolean> {
+    // Control bytes could submit or operate a dialog, rather than insert text.
+    if (!text || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) {
+      throw new Error('Insertion requires nonempty text without control characters');
+    }
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+    return this.enqueueWrite(() => {
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
+      if (!guard()) return false;
+      this.termWrite(text);
+      return true;
     });
   }
 

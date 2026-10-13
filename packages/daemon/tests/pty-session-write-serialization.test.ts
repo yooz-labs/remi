@@ -100,4 +100,119 @@ describe('PTYSession write serialization (#795)', () => {
     // The submit's text must not have an 'X' spliced into the middle of it.
     expect(output).toContain(`${text}\r`);
   });
+
+  test('guarded insertion writes literal reference text with no Enter', async () => {
+    let output = '';
+    session = new PTYSession(
+      { command: '/bin/cat', args: [] },
+      {
+        onData: (data) => {
+          output += data;
+        },
+      },
+    );
+    await session.start();
+    const reference = ' @"/private/space directory/owned-image" ';
+    let checks = 0;
+    expect(
+      await session.insertText(reference, () => {
+        checks++;
+        return true;
+      }),
+    ).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Canonical cat echoes the input, but cannot copy a line until a newline.
+    expect(output).toBe(reference);
+    expect(checks).toBe(1);
+    expect(output).not.toMatch(/[\r\n]/u);
+  });
+
+  test('insertion rechecks its guard after a real queued submit', async () => {
+    let output = '';
+    let valid = true;
+    session = new PTYSession(
+      { command: '/bin/cat', args: [] },
+      {
+        onData: (data) => {
+          output += data;
+        },
+      },
+    );
+    await session.start();
+    const first = session.submitInput('EARLIER', (phase) => {
+      if (phase === 'text') valid = false;
+      return true;
+    });
+    const inserted = session.insertText('MUST_NOT_INSERT', () => valid);
+    await first;
+    expect(await inserted).toBe(false);
+    await session.write('RAW_STILL_WORKS');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(output).toContain('EARLIER\r');
+    expect(output).not.toContain('MUST_NOT_INSERT');
+    expect(output).toContain('RAW_STILL_WORKS');
+  });
+
+  test('insertion never interrupts an earlier text-to-Enter sequence', async () => {
+    let output = '';
+    session = new PTYSession(
+      { command: '/bin/cat', args: [] },
+      {
+        onData: (data) => {
+          output += data;
+        },
+      },
+    );
+    await session.start();
+    const first = session.submitInput('SUBMITTED');
+    const insertion = session.insertText('INSERTED', () => true);
+    await first;
+    expect(await insertion).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(output).toContain('SUBMITTED\r');
+    expect(output).not.toContain('SUBMITTEDINSERTED');
+    // cat's copy of the earlier line can arrive after the insertion's echo.
+    expect(output.split('INSERTED')).toHaveLength(2);
+  });
+
+  test('a throwing insertion guard writes nothing and leaves the queue usable', async () => {
+    let output = '';
+    session = new PTYSession(
+      { command: '/bin/cat', args: [] },
+      {
+        onData: (data) => {
+          output += data;
+        },
+      },
+    );
+    await session.start();
+    await expect(
+      session.insertText('MUST_NOT_INSERT', () => {
+        throw new Error('Authority unavailable');
+      }),
+    ).rejects.toThrow('Authority unavailable');
+    await session.write('HEALTHY');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(output).toBe('HEALTHY');
+  });
+
+  test('insertion rejects controls and an exited terminal before writing', async () => {
+    let output = '';
+    session = new PTYSession(
+      { command: '/bin/cat', args: [] },
+      {
+        onData: (data) => {
+          output += data;
+        },
+      },
+    );
+    await session.start();
+    for (const value of ['', 'path\r', 'path\n', 'path\t', '\x1b[200~path', '\x7f', '\x85']) {
+      expect(() => session.insertText(value, () => true)).toThrow('Insertion requires');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(output).toBe('');
+    await session.close(2000);
+    expect(() => session.insertText('AFTER_EXIT', () => true)).toThrow('Cannot write');
+  });
 });
