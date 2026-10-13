@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.148'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.153'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.148'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.153'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -318,6 +318,7 @@ import { resolveDirectory } from './cli/path-resolver.ts';
 // ---------------------------------------------------------------------------
 import { looseArgs, parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
+import { isSessionLaunch, resolveLaunchHarness } from './cli/launch-harness.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
 
@@ -477,18 +478,16 @@ if (parsedArgs.pushSecret !== undefined) process.env['REMI_PUSH_SECRET'] = parse
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
-// Which harness this process hosts (#1177): `remi codex`, or the `--harness <id>` a hub
-// gives a child daemon. This build has adapters for Claude and Codex only.
-const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
+// #1473: explicit CLI choice wins over the configured session default.
+// Hub/management commands keep Claude; a hub explicitly selects each child's harness.
+const { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
 {
   // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
   // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
   // up in the LOCAL store (Session not found, or a silently fresh remote session when a local one
   // held the id), the silent-drop class of G2 (#1204 round 2, P5).
   const resumeWithHost =
-    cliHost !== undefined &&
-    cliResume !== undefined &&
-    (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex');
+    cliHost !== undefined && cliResume !== undefined && isSessionLaunch(parsedArgs);
   const refusal =
     resumeWithHost && harnessId === 'codex'
       ? 'remi: --resume is not sent to a remote host; for Codex put the resume after --: remi codex --host <host> -- resume <thread id>'
@@ -923,10 +922,7 @@ if (cliResume !== undefined) {
 // ---------------------------------------------------------------------------
 
 // remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
-if (
-  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
-  cliHost
-) {
+if (isSessionLaunch(parsedArgs) && cliHost) {
   // Only the words after `--` go to the remote session. A loose one used to be dropped without a
   // word, so the host started its own defaults (a fresh session where a resume was typed, its own
   // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
@@ -976,10 +972,9 @@ if (
       host: effectiveHost,
       port: resolvedPort,
       directory,
-      // Named only when the person named one (`remi codex`, `--harness`): a request that names none
-      // is the plain request an older daemon already understands. What follows `--` is the
-      // harness's arguments; the remote daemon checks them against its own allowlist.
-      harness: parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : undefined),
+      // Explicit choices and configured Codex are named. Implicit Claude retains the legacy
+      // omitted field. The remote daemon still validates the arguments after `--`.
+      harness: remoteHarness,
       args: parsedArgs.explicitArgs,
     });
     process.exit(result.exitCode);
@@ -990,11 +985,7 @@ if (
 }
 
 // remi new --recent (local): pick directory from recent, chdir, then fall through to wrapper
-if (
-  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
-  cliRecent &&
-  !cliHost
-) {
+if (isSessionLaunch(parsedArgs) && cliRecent && !cliHost) {
   // A refused Codex argument is refused before the interactive picker, not after it.
   if (harnessId === 'codex') {
     const args = validateCodexArgs(parsedArgs.passthroughArgs);
@@ -1023,11 +1014,7 @@ if (
 }
 
 // remi new --dir (local): chdir to specified directory, then fall through to wrapper
-if (
-  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
-  cliDir &&
-  !cliHost
-) {
+if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
   const dirResult = resolveDirectory(cliDir);
   if ('error' in dirResult) {
     console.error(dirResult.error);
