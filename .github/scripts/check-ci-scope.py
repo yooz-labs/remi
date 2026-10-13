@@ -736,7 +736,7 @@ DECODE_REVIEWED_EDITS = {
     ]
 }
 DECODE_ADOPTION_TEST = "import { expect, test } from 'bun:test';\nimport * as fs from 'node:fs';\nimport * as path from 'node:path';\nimport { decodeImage as proofDecodeImage } from '../../../../scripts/tunnel-decoder-proof/decode';\nimport inputs from '../../../../scripts/tunnel-decoder-proof/inputs.json';\nimport { admitImage } from '../../src/tunnel/image-admission';\nimport { decodeImage } from '../../src/tunnel/image-decode';\n\nconst fixture = (name: string) =>\n  fs.readFileSync(path.resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof', name));\nconst sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher('sha256').update(bytes).digest('hex');\n\ntest('proof decoder shares the daemon function and fully decodes the owned image pixels', () => {\n  expect(proofDecodeImage).toBe(decodeImage);\n  for (const [index, mediaType] of (['image/png', 'image/jpeg'] as const).entries()) {\n    const expected = inputs.images[index];\n    if (!expected) throw new Error('owned image fixture metadata missing');\n    const bytes = fixture(expected.filename);\n    expect(sha256(bytes)).toBe(expected.inputSha256);\n    const decoded = decodeImage(bytes, mediaType);\n    expect({ width: decoded.width, height: decoded.height }).toEqual({\n      width: expected.width,\n      height: expected.height,\n    });\n    expect(decoded.data.byteLength).toBe(expected.pixelBytes);\n    expect(sha256(decoded.data)).toBe(expected.pixelSha256);\n  }\n});\n\ntest('full decoding preserves header refusal and normalized PNG CRC refusal', () => {\n  const png = fixture('fixture.png');\n  const jpeg = fixture('fixture.jpg');\n  for (const mediaType of ['image/png', 'image/jpeg'] as const) {\n    expect(() => decodeImage(png.subarray(0, 0), mediaType)).toThrow('IMAGE_ADMISSION_REFUSED');\n  }\n  expect(() => decodeImage(png, 'image/jpeg')).toThrow('IMAGE_ADMISSION_REFUSED');\n  expect(() => decodeImage(jpeg, 'image/png')).toThrow('IMAGE_ADMISSION_REFUSED');\n  const corrupt = Buffer.from(png);\n  const crcByte = corrupt[29];\n  if (crcByte === undefined) throw new Error('owned PNG CRC byte missing');\n  corrupt[29] = crcByte ^ 1;\n  expect(admitImage(corrupt, 'image/png')).toEqual({ width: 1024, height: 1024 });\n  expect(() => decodeImage(corrupt, 'image/png')).toThrow('IMAGE_DECODE_REFUSED');\n});\n"
-TRANSITION_CONTENT = {"CLI-default": {}, "Dormant full-decoder": {}}
+TRANSITION_CONTENT = {"CLI-default": {}, "Dormant full-decoder": {}, "Image worker entry": {}}
 for name, edits, additions, policy in (
         ("CLI-default", LAUNCH_REVIEWED_EDITS, LAUNCH_REVIEWED_NEW, module["SOAK_LAUNCH_TRANSITION"]),
         ("Dormant full-decoder", DECODE_REVIEWED_EDITS, {}, module["SOAK_DECODE_TRANSITION"])):
@@ -747,6 +747,14 @@ for name, edits, additions, policy in (
             body = body[:start] + replacement + body[stop:]
         TRANSITION_CONTENT[name][path] = body
     TRANSITION_CONTENT[name].update(additions)
+for path, roles in module["SOAK_IMAGE_ENTRY_TRANSITION"].items():
+    TRANSITION_CONTENT["Image worker entry"][path] = subprocess.check_output(
+        ["git", "cat-file", "blob", roles["head"][1]], stderr=subprocess.PIPE).decode()
+IMAGE_ENTRY_DOC_CONTENT = {
+    path: subprocess.check_output(["git", "show", f"{module['SOAK_IMAGE_ENTRY_SOURCE_ROOT']}:{path}"],
+                                  stderr=subprocess.PIPE).decode()
+    for path in module["SOAK_IMAGE_ENTRY_DOCS"]
+}
 old_decode = subprocess.check_output(["git", "cat-file", "blob", module["SOAK_DECODE_TRANSITION"][
     "scripts/tunnel-decoder-proof/decode.ts"]["original"][1]], stderr=subprocess.PIPE).decode()
 TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/src/tunnel/image-decode.ts"] = old_decode.replace(
@@ -759,7 +767,9 @@ TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/src/tunnel/image-cod
     old_declaration.splitlines(keepends=True)[:23])
 TRANSITION_CONTENT["Dormant full-decoder"]["packages/daemon/tests/tunnel/image-decode-adoption.test.ts"] = DECODE_ADOPTION_TEST
 for name, contents in TRANSITION_CONTENT.items():
-    policy = module["SOAK_LAUNCH_TRANSITION"] if name == "CLI-default" else module["SOAK_DECODE_TRANSITION"]
+    policy = (module["SOAK_LAUNCH_TRANSITION"] if name == "CLI-default" else
+              module["SOAK_DECODE_TRANSITION"] if name == "Dormant full-decoder" else
+              module["SOAK_IMAGE_ENTRY_TRANSITION"])
     assert set(contents) == set(policy)
     for path, body in contents.items():
         blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=body.encode(),
@@ -954,6 +964,7 @@ def validation_controls():
             git("config", "user.name", "Owned validator scope control")
             git("config", "user.email", "test@example.com")
             git("fetch", "--quiet", "--no-tags", str(original), source_parent)
+            git("fetch", "--quiet", "--no-tags", str(original), module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"])
 
             def tree(parent, updates=(), removals=()):
                 git("read-tree", parent)
@@ -3093,17 +3104,27 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         import shutil
 
         transition_start = count
-        git("fetch", "--quiet", "--no-tags", str(original), LAUNCH_PUBLIC_BASE, DECODE_PUBLIC_BASE)
+        git("fetch", "--quiet", "--no-tags", str(original), LAUNCH_PUBLIC_BASE, DECODE_PUBLIC_BASE,
+            module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"])
         def transition_text(refpath):
             return subprocess.check_output(["git", "show", refpath], stderr=subprocess.PIPE).decode()
 
         def transition_updates(name, parent):
             contents = TRANSITION_CONTENT[name]
             version = json.loads(transition_text(f"{parent}:package.json"))["version"]
-            return [(path, re.sub(r"(?m)^( +return ')[^'\n]+('; // REMI_COMPILED_VERSION)$",
-                                 lambda match: match[1] + version + match[2], body)
-                     if path == "packages/daemon/src/cli.ts" else body, "100644")
-                    for path, body in contents.items()]
+            updates = []
+            for path, body in contents.items():
+                if path == "packages/daemon/src/cli.ts":
+                    body = re.sub(r"(?m)^( +return ')[^'\n]+('; // REMI_COMPILED_VERSION)$",
+                                  lambda match: match[1] + version + match[2], body)
+                elif name == "Image worker entry" and path == "package.json":
+                    body, replacements = re.subn(r'(?m)^(  "version": ")([^"\n]+)(",)$',
+                                                 lambda match: match[1] + version + match[3], body)
+                    assert replacements == 1, (name, path, replacements)
+                updates.append((path, body, "100644"))
+            if name == "Image worker entry":
+                updates.extend((path, body, "100644") for path, body in IMAGE_ENTRY_DOC_CONTENT.items())
+            return updates
 
         def transition_assert(left, right, label, skip):
             global count
@@ -3382,6 +3403,96 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         # END root indirect decoder entry regressions.
         validation_controls()
         auth_readiness_controls(soak_tree, transition_updates, owned_missing_transition_objects)
+        # BEGIN #1170 image-worker entry transition controls, appended after the
+        # original corpus so all 2265 established scenarios retain their order.
+        image_entry_start = count
+        entry_name = "Image worker entry"
+        entry_base = module["SOAK_IMAGE_ENTRY_BASE"]
+        entry_policy = module["SOAK_IMAGE_ENTRY_TRANSITION"]
+        entry_updates = transition_updates(entry_name, entry_base)
+        entry_candidate = soak_tree(entry_base, entry_updates)
+        transition_assert(entry_base, entry_candidate, (entry_name, "complete public transition"), True)
+
+        # Every source role is required independently; no partial source set skips.
+        for path in entry_policy:
+            transition_assert(entry_base, soak_tree(entry_base, [update for update in entry_updates
+                              if update[0] != path]), (entry_name, path, "partial"), False)
+
+        # Synchronized version movement is allowed while any other package drift is not.
+        current_version = json.loads(transition_text(f"{entry_base}:package.json"))["version"]
+        next_version = "0.7.17-dev.999"
+        package_base = transition_text(f"{entry_base}:package.json").replace(
+            f'"version": "{current_version}"', f'"version": "{next_version}"')
+        cli_base = transition_text(f"{entry_base}:packages/daemon/src/cli.ts").replace(
+            f"return '{current_version}'; // REMI_COMPILED_VERSION",
+            f"return '{next_version}'; // REMI_COMPILED_VERSION")
+        assert package_base != transition_text(f"{entry_base}:package.json")
+        assert cli_base != transition_text(f"{entry_base}:packages/daemon/src/cli.ts")
+        bumped_base = soak_tree(entry_base, [("package.json", package_base, "100644"),
+                                             ("packages/daemon/src/cli.ts", cli_base, "100644")])
+        bumped_updates = transition_updates(entry_name, bumped_base)
+        bumped_head_package = next(body for path, body, _ in bumped_updates if path == "package.json")
+        bumped_head_cli = cli_base
+        transition_assert(bumped_base, soak_tree(bumped_base, [*bumped_updates,
+                          ("packages/daemon/src/cli.ts", bumped_head_cli, "100644")]),
+                          (entry_name, "synchronized version companion"), True)
+
+        head_package = next(body for path, body, _ in entry_updates if path == "package.json")
+        root_drift_data = json.loads(head_package)
+        root_drift_data["scripts"]["remi"] += " --unreviewed"
+        transition_assert(entry_base, soak_tree(entry_base, [*(u for u in entry_updates if u[0] != "package.json"),
+                          ("package.json", json.dumps(root_drift_data, indent=2) + "\n", "100644")]),
+                          (entry_name, "root script drift"), False)
+        daemon_package = next(body for path, body, _ in entry_updates if path == "packages/daemon/package.json")
+        daemon_drift_data = json.loads(daemon_package)
+        daemon_drift_data["name"] = "@remi/daemon-unreviewed"
+        transition_assert(entry_base, soak_tree(entry_base, [*(u for u in entry_updates if u[0] != "packages/daemon/package.json"),
+                          ("packages/daemon/package.json", json.dumps(daemon_drift_data, indent=2) + "\n", "100644")]),
+                          (entry_name, "daemon package field drift"), False)
+
+        # Mixed source with runtime, dependency and relay-workflow changes remains full.
+        for path, body in (
+                ("packages/daemon/src/owned-entry-drift.ts", "export const changed = true;\n"),
+                ("bun.lock", transition_text(f"{entry_base}:bun.lock") + "\n# unrelated lock drift\n"),
+                (".github/workflows/relay-r7.yml", transition_text(f"{entry_base}:.github/workflows/relay-r7.yml") + "\n# unrelated workflow drift\n")):
+            transition_assert(entry_base, soak_tree(entry_base, [*entry_updates, (path, body, "100644")]),
+                              (entry_name, "mixed unrelated", path), False)
+
+        # Exact caller spellings are scanned in base and head trees; expected
+        # existing decoder callers are independently pinned in entry support.
+        caller_path = "packages/daemon/src/owned-image-entry-caller.ts"
+        caller_body = "import { imageWorkerCommand } from './tunnel/image-worker-command';\nvoid imageWorkerCommand;\n"
+        caller_update = (caller_path, caller_body, "100644")
+        base_with_caller = soak_tree(entry_base, [caller_update])
+        transition_assert(base_with_caller, soak_tree(base_with_caller, transition_updates(entry_name, base_with_caller)),
+                          (entry_name, "base caller"), False)
+        transition_assert(entry_base, soak_tree(entry_base, [*entry_updates, caller_update]),
+                          (entry_name, "head caller"), False)
+        factory_caller_path = "packages/daemon/src/owned-image-factory-caller.ts"
+        factory_caller_body = "import { createImageDecoder } from './tunnel/image-worker-command';\nvoid createImageDecoder;\n"
+        factory_caller_update = (factory_caller_path, factory_caller_body, "100644")
+        base_and_head_factory_caller = soak_tree(entry_base, [factory_caller_update])
+        transition_assert(base_and_head_factory_caller,
+                          soak_tree(base_and_head_factory_caller,
+                                    transition_updates(entry_name, base_and_head_factory_caller)),
+                          (entry_name, "base and head factory caller"), False)
+
+        entry_body = next(body for path, body, _ in entry_updates if path == "packages/daemon/src/entry.ts")
+        transition_assert(entry_base, soak_tree(entry_base, [*(u for u in entry_updates if u[0] != "packages/daemon/src/entry.ts"),
+                          ("packages/daemon/src/entry.ts", entry_body, "100755")]),
+                          (entry_name, "entry executable mode"), False)
+        transition_assert(entry_base, soak_tree(entry_base, [u for u in entry_updates
+                          if u[0] != "packages/daemon/src/entry.ts"]),
+                          (entry_name, "deleted entry"), False)
+        transition_assert(entry_base, soak_tree(entry_base,
+                          [*entry_updates, ("packages/daemon/src/entry.moved.ts", entry_body, "100644")],
+                          ("packages/daemon/src/entry.ts",)), (entry_name, "renamed entry"), False)
+        transition_assert(entry_base, soak_tree(entry_base,
+                          [*entry_updates, ("docs/extra-executable.md", "unapproved executable doc\n", "100755")]),
+                          (entry_name, "unapproved executable doc"), False)
+        assert count - image_entry_start == 26, count - image_entry_start
+        # END #1170 image-worker entry transition controls.
+        assert count == 2291, count
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
