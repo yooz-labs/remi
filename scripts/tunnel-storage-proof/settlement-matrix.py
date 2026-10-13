@@ -60,10 +60,10 @@ SETTLEMENT_CHECKS = {
     ),
     "actual nonblocking intent contention and immediate dead owner flock release",
     "actual parallel settlement retry and new admission conserve exact quota",
-    "130 actual complete cycles bound 128 rows preserve pending and refuse evicted retries",
+    "260 actual complete cycles bound device and home rows preserve pending and refuse evicted retries",
 }
 STAGING_CHECKS = {
-    "journal closed owned PNG JPEG reads are bounded and expose no raw capability",
+    "journal closed owned PNG JPEG reads are bounded and expose no raw descriptor",
     "journal staged conversion frees active slots preserves all debt and same artifact",
     "journal staged rows keep device home artifact and byte admission barriers",
     "journal staged byte debt remains under the original home admission accounting",

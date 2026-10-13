@@ -119,7 +119,7 @@ export async function journalStagingProbe() {
   };
   try {
     await run(
-      'journal closed owned PNG JPEG reads are bounded and expose no raw capability',
+      'journal closed owned PNG JPEG reads are bounded and expose no raw descriptor',
       (f) => {
         for (const bytes of [pngBytes, jpegBytes]) {
           const writer = start(f, native.ops, bytes);
@@ -130,13 +130,18 @@ export async function journalStagingProbe() {
               'close',
               'lease',
               'read',
+              'referencePath',
               'retainStaged',
             ]);
             assert.equal(reader.byteLength, bytes.length);
+            refused(() => reader.referencePath(), 'reference requires retained staging');
             const result: Buffer[] = [];
             for (let offset = 0; offset < bytes.length; offset += 32768)
               result.push(reader.read(offset, Math.min(32768, bytes.length - offset)));
             assert.deepEqual(Buffer.concat(result), bytes);
+            reader.retainStaged();
+            assert.equal(reader.referencePath(), f.file('artifact'));
+            assert.deepEqual(fs.readFileSync(reader.referencePath()), bytes);
             for (const [offset, length] of [
               [-1, 1],
               [0, 0],
@@ -150,6 +155,7 @@ export async function journalStagingProbe() {
             reader.close();
           }
           refused(() => reader.read(0, 1), 'closed read view refuses');
+          refused(() => reader.referencePath(), 'closed reference view refuses');
           assert.equal(f.settle(), 'settled');
         }
       },
