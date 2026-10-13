@@ -1,10 +1,11 @@
-// #1170 dormant direct coordinator. No protocol dispatch, startup caller or advertised capability.
+// #1170 authenticated direct image staging. Staged images are never inserted into the harness.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import {
   type ImageStagingBinding,
+  type ImageStagingCorrelation,
   type ImageStagingMessage,
   type ImageStagingRefusalCode,
   type ImageUploadBegin,
@@ -81,6 +82,7 @@ type Transfer = {
   expiresAt: string;
   totalUntil: number;
   idleUntil: number;
+  idleWallUntil: number;
   artifact: { id: string; expiresAt: string; until: number } | undefined;
   abort: AbortController;
   work: Promise<void> | undefined;
@@ -224,7 +226,7 @@ export class ImageStagingService {
     return connection;
   }
 
-  private capture(id: UUID, request: ImageUploadBegin): Authority {
+  private currentAuthority(id: UUID, sessionId: string): Authority {
     const connection = this.direct(id);
     const publicKey = connection.connectionClientPublicKey;
     const fingerprint = connection.connectionClientFingerprint;
@@ -234,14 +236,13 @@ export class ImageStagingService {
       (epoch) => {
         if (!epoch) return fault('unavailable');
         const session = this.host.sessionRegistry.getSessionForConnection(id);
-        const binding = this.host.bindingStore.getIdentity(request.sessionId as UUID);
+        const binding = this.host.bindingStore.getIdentity(sessionId as UUID);
         if (
           !session ||
-          session.sessionId !== request.sessionId ||
+          session.sessionId !== sessionId ||
           !session.pty.isRunning ||
           binding?.harness !== 'claude' ||
-          !binding.harnessSessionId ||
-          binding.harnessSessionId !== request.binding.harnessSessionId
+          !binding.harnessSessionId
         )
           return fault('unavailable');
         return {
@@ -257,6 +258,87 @@ export class ImageStagingService {
       },
       true,
     );
+  }
+
+  private capture(id: UUID, request: ImageUploadBegin): Authority {
+    const authority = this.currentAuthority(id, request.sessionId);
+    if (authority.binding.harnessSessionId !== request.binding.harnessSessionId)
+      return fault('unavailable');
+    return authority;
+  }
+
+  /** Per-connection readiness; capability-only, relay and unbound peers never qualify. */
+  isAvailable(id: UUID): boolean {
+    try {
+      if (this.closed) return false;
+      const session = this.host.sessionRegistry.getSessionForConnection(id);
+      if (!session) return false;
+      const authority = this.currentAuthority(id, session.sessionId);
+      return this.owner({ authority }, () => true);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Bounded correlation hints may locate authority, but never create transfer authority. */
+  refuseMalformed(id: UUID, correlation: ImageStagingCorrelation, deliver: Delivery): void {
+    let code: ImageStagingRefusalCode = 'unavailable';
+    const response = () =>
+      deliver({
+        type: 'image_upload_refused',
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        operation: correlation.operation,
+        code,
+      });
+    try {
+      if (this.closed) {
+        response();
+        return;
+      }
+      const known =
+        correlation.operation === 'image_upload_begin'
+          ? this.begins.get(correlation.requestId)
+          : correlation.transferId
+            ? this.transfers.get(correlation.transferId)
+            : undefined;
+      if (known) {
+        if (
+          known.retired ||
+          this.expired(known) ||
+          known.begin.sessionId !== correlation.sessionId ||
+          this.direct(id) !== known.authority.connection
+        ) {
+          response();
+          return;
+        }
+        this.owner(
+          known,
+          () => {
+            const binding = this.host.bindingStore.getIdentity(correlation.sessionId);
+            code = !binding?.harnessSessionId
+              ? 'unavailable'
+              : binding.harness !== 'claude' ||
+                  binding.harnessSessionId !== known.authority.binding.harnessSessionId
+                ? 'binding_changed'
+                : 'malformed';
+            response();
+          },
+          false,
+        );
+      } else if (correlation.operation === 'image_upload_begin') {
+        const authority = this.currentAuthority(id, correlation.sessionId);
+        this.owner({ authority }, () => {
+          code = 'malformed';
+          response();
+        });
+      } else response();
+    } catch {
+      code = 'unavailable';
+      response();
+    }
   }
 
   private owner<T>(record: Pick<Transfer, 'authority'>, operation: () => T, binding = true): T {
@@ -290,11 +372,18 @@ export class ImageStagingService {
     );
   }
 
+  private partialLifetimeEnded(record: Transfer): boolean {
+    return performance.now() >= record.totalUntil || Date.now() >= Date.parse(record.expiresAt);
+  }
   private expired(record: Transfer): boolean {
     const now = performance.now();
     return record.state === 'staged'
-      ? !record.artifact || now >= record.artifact.until
-      : now >= record.totalUntil || now >= record.idleUntil;
+      ? !record.artifact ||
+          now >= record.artifact.until ||
+          Date.now() >= Date.parse(record.artifact.expiresAt)
+      : this.partialLifetimeEnded(record) ||
+          now >= record.idleUntil ||
+          Date.now() >= record.idleWallUntil;
   }
   private act<T>(record: Transfer, operation: () => T): T {
     return this.owner(record, () => {
@@ -406,6 +495,7 @@ export class ImageStagingService {
           expiresAt: new Date(Date.now() + partialLifetime).toISOString(),
           totalUntil: now + partialLifetime,
           idleUntil: now + idleLifetime,
+          idleWallUntil: Date.now() + idleLifetime,
           artifact: undefined,
           abort: new AbortController(),
           work: undefined,
@@ -428,7 +518,7 @@ export class ImageStagingService {
       this.owner(current, () => {});
       if (request.id === current.begin.id) return fault('conflict');
       if (request.type === 'image_upload_cancel') {
-        if (performance.now() >= current.totalUntil && current.state !== 'staged')
+        if (this.partialLifetimeEnded(current) && current.state !== 'staged')
           return fault('unavailable');
         if (current.state === 'staged') return fault('conflict');
         if (current.state !== 'cancelled') await this.retire(current, 'cancelled');
@@ -458,6 +548,7 @@ export class ImageStagingService {
           current.received += bytes.length;
           current.sequence++;
           current.idleUntil = performance.now() + idleLifetime;
+          current.idleWallUntil = Date.now() + idleLifetime;
         });
         this.publish(
           current,
@@ -700,7 +791,7 @@ export class ImageStagingService {
           }
         }
       }
-      if (performance.now() >= record.totalUntil && record.state !== 'staged') {
+      if (this.partialLifetimeEnded(record) && record.state !== 'staged') {
         this.transfers.delete(record.transferId);
         this.begins.delete(record.begin.id);
       }

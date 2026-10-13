@@ -23,9 +23,12 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
     ]);
   });
 
-  test('the registry documents workspaces, the first capability (#1236): nothing older is in it', () => {
-    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual(['workspaces']);
+  test('the registry documents additive workspaces and attached-session image staging', () => {
+    expect(Object.keys(PROTOCOL_CAPABILITIES)).toEqual(['workspaces', 'image_staging']);
     expect(PROTOCOL_CAPABILITIES['workspaces']).toBe('start a session in a new git worktree');
+    expect(PROTOCOL_CAPABILITIES['image_staging']).toBe(
+      'upload an image to the attached Claude session',
+    );
   });
 });
 

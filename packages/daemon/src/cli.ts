@@ -123,6 +123,7 @@ import type {
   UnlockedIdentity,
 } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
+import { IMAGE_STAGING_CAPABILITY, boundedEscape, generateId, now } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
@@ -287,6 +288,7 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
+import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
 import { RecentRepositoryStore } from './workspace/recent-store.ts';
 
@@ -1137,6 +1139,11 @@ const securePushContexts = new SecurePushContexts({
 const securePushRuntimes = new Map<UUID, SecurePushRuntime>();
 let securePushService: SecurePushService | undefined;
 let nativeAnswerLedger: NativeAnswerLedger | undefined;
+let imageStagingService: ImageStagingService | undefined;
+const capabilitiesForConnection = (id: UUID): readonly string[] =>
+  imageStagingService?.isAvailable(id)
+    ? [...DAEMON_CAPABILITIES, IMAGE_STAGING_CAPABILITY]
+    : DAEMON_CAPABILITIES;
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);
   return runtime ? securePushService?.forRuntime(runtime) : undefined;
@@ -1260,6 +1267,7 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       retireSecurePushRuntime(sessionId);
+      void imageStagingService?.invalidateSession(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
       // third-party client now that the session has actually ended.
@@ -1330,7 +1338,10 @@ const sessionRegistry = new SessionRegistry(
     // some unrelated status change happened to flush. Emitted from the two
     // lines that mutate the set, so it covers every attach path by
     // construction; `refresh()` schedules only on a real change.
-    onAttachStateChanged: () => statusWriter.refresh(),
+    onAttachStateChanged: () => {
+      statusWriter.refresh();
+      void imageStagingService?.maintain();
+    },
     onQuestionsChanged: (sessionId, questions) => {
       // #1235: a card that is live again can be resolved again.
       questionResolver.noteLive(questions.map((q) => q.id));
@@ -2284,6 +2295,8 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
   machine: machineDescriptor,
+  currentOwnedSession,
+  capabilitiesForConnection,
   // `remi serve` is session-less and must never run Claude (#1124): a resume there starts a child
   // session daemon with `--resume` through the create-session path (#1129). Every other process
   // resumes in its own.
@@ -2324,6 +2337,7 @@ const hubClientTracker: HubClientTracker | null = serveMode
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   machine: machineDescriptor,
   hubMode: serveMode,
+  capabilitiesForConnection,
   sessionRegistry,
   currentOwnedSession,
   harnessId,
@@ -2342,7 +2356,10 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onPeerDisconnect: hubClientTracker
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
-  onConnectionClosed: forgetConnectionToken,
+  onConnectionClosed: (id) => {
+    forgetConnectionToken(id);
+    void imageStagingService?.invalidateConnection(id);
+  },
 });
 
 // The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
@@ -2353,6 +2370,37 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
 });
 
 const sharedEvents = {
+  onImageUpload: async (
+    connectionId: UUID,
+    ingress: Exclude<import('@remi/shared').ImageStagingIngressResult, { kind: 'uncorrelatable' }>,
+  ) => {
+    const deliver = (message: import('@remi/shared').ImageStagingMessage) => {
+      sendToConnection(connectionId, message);
+    };
+    if (imageStagingService) {
+      if (ingress.kind === 'request')
+        await imageStagingService.handle(connectionId, ingress.request, deliver);
+      else imageStagingService.refuseMalformed(connectionId, ingress.correlation, deliver);
+      return;
+    }
+    const correlation =
+      ingress.kind === 'request'
+        ? {
+            requestId: ingress.request.id,
+            sessionId: ingress.request.sessionId,
+            operation: ingress.request.type,
+          }
+        : ingress.correlation;
+    deliver({
+      type: 'image_upload_refused',
+      id: generateId(),
+      timestamp: now(),
+      requestId: correlation.requestId,
+      sessionId: correlation.sessionId,
+      operation: correlation.operation,
+      code: 'unavailable',
+    });
+  },
   ...recentRepositoriesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
@@ -2554,6 +2602,32 @@ const wsAdapter = new WebSocketAdapter(
 );
 registry.register(wsAdapter);
 
+// Only an authenticated Claude host owns the direct staging lifecycle (#1170).
+if (
+  !serveMode &&
+  authEnabled &&
+  harnessId === 'claude' &&
+  ((process.platform === 'darwin' && process.arch === 'arm64') ||
+    (process.platform === 'linux' && ['arm64', 'x64'].includes(process.arch)))
+) {
+  try {
+    imageStagingService = await ImageStagingService.open({
+      home: REMI_DIR,
+      identityStore: relayTrust,
+      sessionRegistry,
+      bindingStore,
+      directAdapter: () => {
+        const adapter = registry.getAdapter('websocket');
+        return adapter instanceof WebSocketAdapter ? adapter : undefined;
+      },
+    });
+  } catch (error) {
+    console.error(
+      `Image uploads are unavailable on this host: ${boundedEscape(errorToString(error), 500)}`,
+    );
+  }
+}
+
 if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   const telegramAdapter = new TelegramAdapter(
     {
@@ -2626,6 +2700,8 @@ let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
+  if (imageStagingService && !(await imageStagingService.close()))
+    logError('Image staging cleanup remains charged until process exit.');
   for (const sessionId of securePushRuntimes.keys()) retireSecurePushRuntime(sessionId);
 
   cancelOrphanTimeout();

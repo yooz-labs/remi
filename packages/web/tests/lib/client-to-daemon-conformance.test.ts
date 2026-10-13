@@ -93,6 +93,10 @@ const NO_EVENT_TYPES = new Set([
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
  *  name `connection.ts`'s (and the unified router's) handler map invokes. */
 const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
+  image_upload_begin: 'onImageUpload',
+  image_upload_chunk: 'onImageUpload',
+  image_upload_complete: 'onImageUpload',
+  image_upload_cancel: 'onImageUpload',
   user_input: 'onUserInput',
   answer: 'onAnswer',
   bullet_expand_request: 'onBulletExpandRequest',
@@ -138,6 +142,9 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
         record('onConnect')(id);
       },
       onDisconnect: record('onDisconnect'),
+      onImageUpload: async (...args) => {
+        record('onImageUpload')(...args);
+      },
       onUserInput: record('onUserInput'),
       onAnswer: record('onAnswer'),
       onBulletExpandRequest: record('onBulletExpandRequest'),
@@ -174,7 +181,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 24 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 28 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -182,7 +189,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(24);
+    expect(C2D_TYPES.length).toBe(28);
   });
 
   test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
@@ -223,6 +230,9 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       expect(call?.event).toBe(expectedEvent);
       // First positional arg on every AdapterEvents callback is connectionId.
       expect(call?.args[0]).toBe(connectionId);
+      if (expectedEvent === 'onImageUpload') {
+        expect(call?.args[1]).toEqual({ kind: 'request', request: fixture });
+      }
     });
   });
 

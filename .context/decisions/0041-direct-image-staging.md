@@ -1,6 +1,6 @@
 # ADR 0041: Direct image staging contract
 
-**Status:** accepted contract (#1170); implementation and capability availability pending
+**Status:** accepted contract (#1170); direct implementation and review fixes validated, landing pending
 **Date:** 2026-10-11
 **Owner:** Yahya
 
@@ -16,9 +16,9 @@ Those are standalone results; production helper/budget selection and transfer ha
 The owner deferred extra OS resource-limit investigation and asked to continue practical file-transfer work.
 
 The owner accepted these fields, bounds, outcomes, cleanup rules and the `image_staging` name on 2026-10-11.
-Contract acceptance fixes the vocabulary; protocol registration, advertised capability and runnable upload integration remain pending.
+Contract acceptance fixes the vocabulary. The direct integration candidate now registers the messages and supplies a production web caller; review fixes are validated and landing remains pending.
 
-The dormant [`image-staging.ts`](../../packages/shared/src/image-staging.ts) codec implements strict structural decoding and encoding.
+The strict [`image-staging.ts`](../../packages/shared/src/image-staging.ts) codec implements strict structural decoding and encoding.
 Its [fixture corpus](../../packages/shared/tests/fixtures/image-staging/README.md) contains 33 positive and 470 negative vectors with exact PNG/JPEG bytes.
 Both Bun gates preserve 408 existing protocol tests and pass 508 codec tests; all six supported compiled executions and twelve exact guard-removal controls passed.
 The corrected entire vector document loads in Foundation; a Swift wire codec still needs to execute the cases.

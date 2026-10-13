@@ -11,6 +11,20 @@
  */
 
 import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
+import { isImageStagingCandidate } from './image-staging-ingress.ts';
+import {
+  type ImageUploadAccepted,
+  type ImageUploadBegin,
+  type ImageUploadCancel,
+  type ImageUploadCancelResult,
+  type ImageUploadChunk,
+  type ImageUploadChunkAck,
+  type ImageUploadComplete,
+  type ImageUploadRefused,
+  type ImageUploadResult,
+  decodeImageStagingFrame,
+  encodeImageStagingFrame,
+} from './image-staging.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   AnswerResultMessage,
@@ -93,6 +107,16 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  image_upload_begin: ImageUploadBegin;
+  image_upload_accepted: ImageUploadAccepted;
+  image_upload_chunk: ImageUploadChunk;
+  image_upload_chunk_ack: ImageUploadChunkAck;
+  image_upload_complete: ImageUploadComplete;
+  image_upload_result: ImageUploadResult;
+  image_upload_cancel: ImageUploadCancel;
+  image_upload_cancel_result: ImageUploadCancelResult;
+  image_upload_refused: ImageUploadRefused;
+
   native_answer: NativeAnswerMessage;
   secure_push_register_request: SecurePushRegisterRequestMessage;
   secure_push_register_response: SecurePushRegisterResponseMessage;
@@ -214,6 +238,16 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  image_upload_begin: 'c2d',
+  image_upload_accepted: 'd2c',
+  image_upload_chunk: 'c2d',
+  image_upload_chunk_ack: 'd2c',
+  image_upload_complete: 'c2d',
+  image_upload_result: 'd2c',
+  image_upload_cancel: 'c2d',
+  image_upload_cancel_result: 'd2c',
+  image_upload_refused: 'd2c',
+
   native_answer: 'c2d',
   secure_push_register_request: 'c2d',
   secure_push_register_response: 'd2c',
@@ -1500,6 +1534,8 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type.startsWith('image_upload_'))
+    return encodeImageStagingFrame(message as import('./image-staging.ts').ImageStagingMessage);
   return JSON.stringify(message);
 }
 
@@ -1508,6 +1544,8 @@ export function serialize(message: ProtocolMessage): string {
  * Returns null if parsing fails or message is invalid.
  */
 export function deserialize(data: string): ProtocolMessage | null {
+  // Stage frames never pass through the permissive legacy parser (#1170).
+  if (isImageStagingCandidate(data)) return decodeImageStagingFrame(data);
   try {
     const parsed: unknown = JSON.parse(data);
     // Inspect the original spelling before choosing a protocol. JSON.parse's

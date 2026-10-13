@@ -17,6 +17,7 @@ import {
   sign,
   unlockIdentity,
 } from '@remi/shared';
+import { encodeImageStagingFrame } from '../../../shared/src/image-staging';
 import type { ImageUploadBegin, ImageUploadChunk } from '../../../shared/src/image-staging';
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter';
 import { MessageAPI } from '../../src/api/message-api';
@@ -32,7 +33,7 @@ import {
   ImageStagingService,
 } from '../../src/tunnel/image-staging-service';
 import { Reservations } from '../../src/tunnel/reservations';
-import { findTestPort } from '../integration/hub-test-utils';
+import { findTestPort, pollUntil } from '../integration/hub-test-utils';
 
 const fixtures = resolve(import.meta.dir, '../../../../scripts/tunnel-decoder-proof');
 const cleanup: Array<() => Promise<void>> = [];
@@ -84,6 +85,16 @@ async function fixture() {
       },
       onDisconnect(id) {
         registry.detachConnection(id);
+        void resources.service?.invalidateConnection(id);
+      },
+      async onImageUpload(id, ingress) {
+        const current = resources.service;
+        if (!current) throw new Error('Service not initialized');
+        const deliver = (message: ImageStagingResponse) => {
+          adapter.sendRaw(id, message);
+        };
+        if (ingress.kind === 'request') await current.handle(id, ingress.request, deliver);
+        else current.refuseMalformed(id, ingress.correlation, deliver);
       },
     },
   );
@@ -103,11 +114,13 @@ async function fixture() {
     const identity = await createIdentity();
     const unlocked = await unlockIdentity(identity);
     await store.addAuthorizedKey(identity.publicKey, 'test client');
+    const received: import('@remi/shared').ProtocolMessage[] = [];
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     sockets.push(socket);
     socket.onmessage = async (event) => {
       try {
         const message = deserialize(String(event.data));
+        if (message) received.push(message);
         if (message?.type === 'auth_challenge') {
           const challenge = message as AuthChallengeMessage;
           const signature = await sign(unlocked.privateKey, fromBase64(challenge.challenge));
@@ -131,7 +144,7 @@ async function fixture() {
     expect(adapter?.getDirectConnection(id)?.connectionClientFingerprint).toBe(
       identity.fingerprint,
     );
-    return { id, socket, identity };
+    return { id, socket, identity, received };
   }
   const owner = await client();
   const ledger = () => new Reservations(join(home, 'image-staging', 'ledger')).inspect();
@@ -502,4 +515,160 @@ test('two admitted completions share the owned decoder without losing either sta
     'image_upload_result',
   ]);
   expect(f.ledger().filter((row) => row.state === 'staged')).toHaveLength(2);
+});
+
+/** These checks reach the shipping raw server -> Connection -> adapter event -> service path. */
+async function wire(
+  f: Awaited<ReturnType<typeof fixture>>,
+  request: ImageStagingRequest,
+  client = f.owner,
+  raw: string | Uint8Array = encodeImageStagingFrame(request),
+) {
+  const before = client.received.length;
+  client.socket.send(raw);
+  await pollUntil(
+    () =>
+      client.received
+        .slice(before)
+        .some((message) => 'requestId' in message && message.requestId === request.id),
+    10000,
+    'strict staging wire outcome',
+  );
+  const response = client.received
+    .slice(before)
+    .find((message) => 'requestId' in message && message.requestId === request.id);
+  if (!response || !response.type.startsWith('image_upload_'))
+    throw new Error('Missing actual staging reply');
+  return response as ImageStagingResponse;
+}
+
+for (const filename of ['fixture.png', 'fixture.jpg']) {
+  test(`strict signed direct wire stages ${filename} and preserves begin replay`, async () => {
+    const f = await fixture();
+    expect(f.service.isAvailable(f.owner.id)).toBe(true);
+    const { request, bytes } = f.begin(filename);
+    const accepted = await wire(f, request);
+    if (accepted.type !== 'image_upload_accepted') throw new Error('Actual wire admission failed');
+    const repeated = await wire(
+      f,
+      request,
+      f.owner,
+      new TextEncoder().encode(encodeImageStagingFrame(request)),
+    );
+    expect(repeated.type).toBe('image_upload_accepted');
+    if (repeated.type === 'image_upload_accepted')
+      expect(repeated.transferId).toBe(accepted.transferId);
+    for (let at = 0, seq = 0; at < bytes.length; at += 32768, seq++) {
+      const chunk: ImageUploadChunk = {
+        type: 'image_upload_chunk',
+        id: generateId(),
+        timestamp: new Date().toISOString(),
+        sessionId: f.sessionId,
+        transferId: accepted.transferId,
+        seq,
+        data: bytes.subarray(at, at + 32768).toString('base64url'),
+      };
+      const ack = await wire(f, chunk);
+      expect(ack.type).toBe('image_upload_chunk_ack');
+      if (ack.type === 'image_upload_chunk_ack')
+        expect(ack.receivedBytes).toBe(Math.min(at + 32768, bytes.length));
+    }
+    const result = await wire(f, operation(f, accepted.transferId, 'image_upload_complete'));
+    expect(result.type).toBe('image_upload_result');
+    if (result.type === 'image_upload_result') {
+      expect(result.digest).toBe(request.digest);
+      expect(result.byteLength).toBe(bytes.length);
+      expect(result.mediaType).toBe(request.mediaType);
+    }
+    expect(f.ledger().filter((row) => row.state === 'staged')).toHaveLength(1);
+    expect(
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === request.id,
+      ),
+    ).toBe(false);
+  }, 20000);
+}
+
+test('strict wire malformed transfer hints distinguish actual owner only, without writes', async () => {
+  const f = await fixture();
+  const { request } = f.begin();
+  const accepted = await wire(f, request);
+  if (accepted.type !== 'image_upload_accepted') throw new Error('Actual wire admission failed');
+  const malformed = {
+    type: 'image_upload_chunk',
+    id: generateId(),
+    timestamp: new Date().toISOString(),
+    sessionId: f.sessionId,
+    transferId: accepted.transferId,
+    seq: -1,
+    data: 'AA',
+  };
+  const lookup = malformed as ImageUploadChunk;
+  const foreign = await f.client();
+  const hidden = await wire(f, lookup, foreign, JSON.stringify(malformed));
+  expect(hidden.type).toBe('image_upload_refused');
+  if (hidden.type === 'image_upload_refused') expect(hidden.code).toBe('unavailable');
+  const owner = await wire(f, lookup, f.owner, JSON.stringify(malformed));
+  expect(owner.type).toBe('image_upload_refused');
+  if (owner.type === 'image_upload_refused') expect(owner.code).toBe('malformed');
+  const cancelled = await wire(f, operation(f, accepted.transferId, 'image_upload_cancel'));
+  expect(cancelled.type).toBe('image_upload_cancel_result');
+  const retiredRequest = operation(f, accepted.transferId, 'image_upload_cancel');
+  const retiredMalformed = await wire(
+    f,
+    retiredRequest,
+    f.owner,
+    JSON.stringify({ ...retiredRequest, extra: true }),
+  );
+  expect(retiredMalformed.type).toBe('image_upload_refused');
+  if (retiredMalformed.type === 'image_upload_refused')
+    expect(retiredMalformed.code).toBe('unavailable');
+});
+
+test('escaped root type selects strict ingress and duplicate mixed root types close', async () => {
+  const f = await fixture();
+  const { request } = f.begin();
+  const escaped = encodeImageStagingFrame(request)
+    .replace('"type"', '"\\u0074ype"')
+    .replace('image_upload_begin', 'image_upload_\\u0062egin');
+  const accepted = await wire(f, request, f.owner, escaped);
+  expect(accepted.type).toBe('image_upload_accepted');
+  const mixed = `${encodeImageStagingFrame(request).slice(0, -1)},"type":"ping"}`;
+  f.owner.socket.send(mixed);
+  await pollUntil(
+    () => f.owner.socket.readyState === WebSocket.CLOSED,
+    5000,
+    'mixed root type close',
+  );
+});
+
+test('late type on oversized binary staging closes, while a large ordinary frame retains its ACK', async () => {
+  const f = await fixture();
+  const normalId = generateId();
+  f.owner.socket.send(
+    JSON.stringify({
+      type: 'user_input',
+      id: normalId,
+      timestamp: new Date().toISOString(),
+      sessionId: f.sessionId,
+      content: 'x'.repeat(100000),
+      nested: { type: 'image_upload_chunk' },
+    }),
+  );
+  await pollUntil(
+    () =>
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === normalId,
+      ),
+    5000,
+    'large legacy ACK',
+  );
+  const { request } = f.begin();
+  const oversized = `{"padding":"${'x'.repeat(66000)}",${encodeImageStagingFrame(request).slice(1)}`;
+  f.owner.socket.send(new TextEncoder().encode(oversized));
+  await pollUntil(
+    () => f.owner.socket.readyState === WebSocket.CLOSED,
+    5000,
+    'oversized staging close',
+  );
 });

@@ -116,7 +116,11 @@ async function authenticate(client: WebSocketClient): Promise<object> {
   return generation as object;
 }
 
-function testContext(client: WebSocketClient, generation: object): ImageUploadContext {
+function testContext(
+  client: WebSocketClient,
+  generation: object,
+  protocolVersion: unknown = 1,
+): ImageUploadContext {
   return {
     transport: 'direct',
     connection: client,
@@ -124,6 +128,7 @@ function testContext(client: WebSocketClient, generation: object): ImageUploadCo
     sessionId: SESSION_ID,
     binding: { harness: 'claude', harnessSessionId: 'claude-session-for-test' },
     capabilities: ['image_staging'],
+    protocolVersion,
   };
 }
 
@@ -213,7 +218,11 @@ describe('ImageUploadController over direct WebSocket', () => {
       });
       const generation = await authenticate(client);
       const states: ImageUploadState[] = [];
-      let context: ImageUploadContext | null = testContext(client, generation);
+      let context: ImageUploadContext | null = testContext(
+        client,
+        generation,
+        fixture.filename === 'fixture.png' ? undefined : 1,
+      );
       controller = new ImageUploadController(
         { send: (request) => client.sendImageStaging(request), context: () => context },
         (state) => states.push(state),
@@ -286,6 +295,36 @@ describe('ImageUploadController over direct WebSocket', () => {
 
     expect(requests).toEqual([]);
     expect(states.at(-1)).toEqual({ phase: 'idle' });
+  });
+
+  test('disconnect or disposal during native file reading sends no begin on the same context', async () => {
+    const bytes = new Uint8Array(await Bun.file(new URL('fixture.png', FIXTURES)).arrayBuffer());
+    for (const action of ['disconnect', 'dispose'] as const) {
+      const requests: ImageStagingRequest[] = [];
+      const server = livePeer((_ws, request) => requests.push(request));
+      let controller: ImageUploadController | null = null;
+      const client = await connectedClient(server, {
+        onImageStagingMessage: (message) => controller?.receive(message),
+      });
+      const generation = await authenticate(client);
+      const states: ImageUploadState[] = [];
+      const context = testContext(client, generation);
+      controller = new ImageUploadController(
+        { send: (request) => client.sendImageStaging(request), context: () => context },
+        (state) => states.push(state),
+      );
+      controllers.push(controller);
+
+      const upload = controller.upload(actualFile('fixture.png', bytes, 'image/png'));
+      const stateCountAtStop = states.length;
+      if (action === 'disconnect') controller.disconnect();
+      else controller.dispose();
+      await upload;
+
+      expect(requests).toEqual([]);
+      if (action === 'disconnect') expect(states.at(-1)?.phase).toBe('failed');
+      else expect(states).toHaveLength(stateCountAtStop);
+    }
   });
 
   test('cancel during begin wait sends cancel only after acceptance reveals the transfer ID', async () => {
@@ -883,6 +922,109 @@ describe('ImageUploadController over direct WebSocket', () => {
 
     expect(requests).toEqual([]);
     expect(states.at(-1)?.phase).toBe('failed');
+  });
+
+  test('unsupported protocol versions fail closed before sending', async () => {
+    const requests: ImageStagingRequest[] = [];
+    const server = livePeer((_ws, request) => requests.push(request));
+    let controller: ImageUploadController | null = null;
+    const client = await connectedClient(server, {
+      onImageStagingMessage: (message) => controller?.receive(message),
+    });
+    const generation = await authenticate(client);
+    const states: ImageUploadState[] = [];
+    let context = testContext(client, generation, 2);
+    controller = new ImageUploadController(
+      { send: (request) => client.sendImageStaging(request), context: () => context },
+      (state) => states.push(state),
+    );
+    controllers.push(controller);
+    const bytes = new Uint8Array(await Bun.file(new URL('fixture.png', FIXTURES)).arrayBuffer());
+    const file = actualFile('fixture.png', bytes, 'image/png');
+
+    for (const protocolVersion of [2, '1', 1.5]) {
+      context = testContext(client, generation, protocolVersion);
+      await controller.upload(file);
+      expect(states.at(-1)?.phase).toBe('failed');
+    }
+
+    expect(requests).toEqual([]);
+  });
+
+  test('a protocol version change while begin is pending stops before sending chunks', async () => {
+    const requests: ImageStagingRequest[] = [];
+    let context: ImageUploadContext | null = null;
+    const server = livePeer((ws, request) => {
+      requests.push(request);
+      if (request.type !== 'image_upload_begin') return;
+      if (context) context = { ...context, protocolVersion: '1' };
+      sendMessage(ws, {
+        type: 'image_upload_accepted',
+        ...responseBase(request),
+        transferId: TRANSFER_ID,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    });
+    let controller: ImageUploadController | null = null;
+    const client = await connectedClient(server, {
+      onImageStagingMessage: (message) => controller?.receive(message),
+    });
+    const generation = await authenticate(client);
+    const states: ImageUploadState[] = [];
+    context = testContext(client, generation, 1);
+    controller = new ImageUploadController(
+      { send: (request) => client.sendImageStaging(request), context: () => context },
+      (state) => states.push(state),
+    );
+    controllers.push(controller);
+    const bytes = new Uint8Array(await Bun.file(new URL('fixture.png', FIXTURES)).arrayBuffer());
+
+    await controller.upload(actualFile('fixture.png', bytes, 'image/png'));
+
+    expect(requests.map((request) => request.type)).toEqual(['image_upload_begin']);
+    expect(states.at(-1)?.phase).toBe('uncertain');
+  });
+
+  test('the shipping ID and staging codec work without crypto.randomUUID or Object.hasOwn', async () => {
+    const fixturePath = new URL('../../../shared/tests/fixtures/image-staging/fixture.png', import.meta.url).pathname;
+    const protocolPath = new URL('../../../shared/src/protocol.ts', import.meta.url).pathname;
+    const codecPath = new URL('../../../shared/src/image-staging.ts', import.meta.url).pathname;
+    const script = `
+      const crypto = globalThis.crypto;
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: { getRandomValues: crypto.getRandomValues.bind(crypto) },
+      });
+      Object.defineProperty(Object, 'hasOwn', { configurable: true, value: undefined });
+      const { generateId } = await import(${JSON.stringify(protocolPath)});
+      const { encodeImageStagingFrame, decodeImageStagingFrame } = await import(${JSON.stringify(codecPath)});
+      const bytes = new Uint8Array(await Bun.file(${JSON.stringify(fixturePath)}).arrayBuffer());
+      let binary = '';
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const data = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+      const frame = encodeImageStagingFrame({
+        type: 'image_upload_chunk',
+        id: generateId(),
+        timestamp: new Date().toISOString(),
+        sessionId: '${SESSION_ID}',
+        transferId: '${TRANSFER_ID}',
+        seq: 0,
+        data,
+      });
+      const decoded = decodeImageStagingFrame(frame);
+      if (!decoded || decoded.type !== 'image_upload_chunk' || decoded.data !== data) process.exit(1);
+    `;
+    const child = Bun.spawn([process.execPath, '-e', script], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: '', stderr: '' });
   });
 });
 

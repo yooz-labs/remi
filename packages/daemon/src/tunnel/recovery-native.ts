@@ -1,5 +1,5 @@
 /// <reference path="./native-assets.d.ts" />
-// #1170 internal explicit native journal helper; no startup or active transfer caller.
+// #1170 native journal helper, owned by the direct staging lifecycle.
 import { FFIType, cc, dlopen, ptr } from 'bun:ffi';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';

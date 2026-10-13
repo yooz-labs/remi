@@ -1,4 +1,4 @@
-/** Dormant ADR 0041 wire codec; no authority, transfer, image decode or storage effects. */
+/** ADR 0041 wire codec; no authority, transfer, image decode or storage effects. */
 import { fromB64u, fromUtf8, utf8 } from './relay/bytes.ts';
 import { parseStrictJson } from './relay/strict-json.ts';
 
@@ -140,7 +140,7 @@ const exact = (value: unknown, fields: Record<string, Guard>): value is Record<s
   const object = value as Record<string, unknown>;
   if (Object.keys(object).length !== Object.keys(fields).length) return false;
   return Object.entries(fields).every(
-    ([key, guard]) => Object.hasOwn(object, key) && guard(object[key]),
+    ([key, guard]) => Object.prototype.hasOwnProperty.call(object, key) && guard(object[key]),
   );
 };
 const binding: Guard = (v) =>
@@ -206,7 +206,7 @@ function validated(value: unknown): ImageStagingMessage | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const object = value as Record<string, unknown>;
   const type = object['type'];
-  if (typeof type !== 'string' || !Object.hasOwn(shapes, type)) return null;
+  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(shapes, type)) return null;
   if (
     !exact(object, {
       type: (v) => v === type,

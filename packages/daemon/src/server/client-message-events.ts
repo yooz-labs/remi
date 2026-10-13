@@ -40,6 +40,7 @@
 import type {
   AnswerExtras,
   CreateSessionRequestMessage,
+  ImageStagingIngressResult,
   NativeAnswerMessage,
   PushPreferences,
   UUID,
@@ -81,6 +82,8 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  /** Strictly decoded request or bounded lookup hints; authority stays on the host (#1170). */
+  onImageUpload: [ingress: Exclude<ImageStagingIngressResult, { kind: 'uncorrelatable' }>];
   /** Signed native proof; its child-owned ledger is separate from ordinary answer aliases (#1201). */
   onNativeAnswer: [message: NativeAnswerMessage];
   /** User input received. `messageId` is the wire message's own id (#681),
@@ -159,6 +162,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onImageUpload',
   'onNativeAnswer',
   'onUserInput',
   'onAnswer',
@@ -221,7 +225,7 @@ export type ClientMessageEvents = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput'
+      : K extends 'onUserInput' | 'onImageUpload'
         ? void | Promise<void>
         : void;
 };
@@ -243,7 +247,7 @@ export type ClientMessageEventsWithConnectionId = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput'
+      : K extends 'onUserInput' | 'onImageUpload'
         ? void | Promise<void>
         : void;
 };

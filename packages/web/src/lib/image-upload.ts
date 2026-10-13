@@ -1,4 +1,5 @@
 import type { ImageUploadState } from '@/components/chat/ImageUpload';
+import { generateId, hubSupport } from '@remi/shared';
 import {
   IMAGE_STAGING_CAPABILITY,
   IMAGE_STAGING_LIMITS,
@@ -19,6 +20,7 @@ export interface ImageUploadContext {
   readonly sessionId: string;
   readonly binding: { readonly harness: 'claude'; readonly harnessSessionId: string };
   readonly capabilities: readonly string[];
+  readonly protocolVersion: unknown;
 }
 
 export interface ImageUploadTransport {
@@ -47,6 +49,7 @@ interface CapturedContext {
   readonly generation: object;
   readonly sessionId: string;
   readonly harnessSessionId: string;
+  readonly protocolVersion: unknown;
 }
 
 interface ActiveUpload {
@@ -117,7 +120,7 @@ function isResponse(message: ImageStagingMessage): message is ImageStagingRespon
 }
 
 function newRequestId(): string {
-  return crypto.randomUUID().toLowerCase();
+  return generateId().toLowerCase();
 }
 
 function timestamp(): string {
@@ -141,9 +144,13 @@ function sameContext(current: ImageUploadContext | null, captured: CapturedConte
     current.connection === captured.connection &&
     current.generation === captured.generation &&
     current.sessionId === captured.sessionId &&
+    current.protocolVersion === captured.protocolVersion &&
     current.binding.harness === 'claude' &&
     current.binding.harnessSessionId === captured.harnessSessionId &&
-    current.capabilities.includes(IMAGE_STAGING_CAPABILITY)
+    hubSupport(
+      { protocolVersion: current.protocolVersion, capabilities: current.capabilities },
+      [IMAGE_STAGING_CAPABILITY],
+    ).supported
   );
 }
 
@@ -164,8 +171,10 @@ function captureContext(context: ImageUploadContext | null): CapturedContext | n
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(context.sessionId) ||
     context.binding.harness !== 'claude' ||
     context.binding.harnessSessionId.length === 0 ||
-    context.capabilities.length === 0 ||
-    !context.capabilities.includes(IMAGE_STAGING_CAPABILITY)
+    !hubSupport(
+      { protocolVersion: context.protocolVersion, capabilities: context.capabilities },
+      [IMAGE_STAGING_CAPABILITY],
+    ).supported
   ) {
     return null;
   }
@@ -185,6 +194,7 @@ function captureContext(context: ImageUploadContext | null): CapturedContext | n
     generation: context.generation,
     sessionId: context.sessionId,
     harnessSessionId: bindingText,
+    protocolVersion: context.protocolVersion,
   };
 }
 
@@ -843,6 +853,14 @@ export class ImageUploadController {
   }
 
   private ensureCurrent(active: ActiveUpload): void {
+    if (this.disposed || this.active !== active) {
+      throw new UploadError(
+        'context_lost',
+        active.sentAny
+          ? 'The connection changed during upload. Check the session before retrying.'
+          : 'The connection changed before upload began. Choose the image again.',
+      );
+    }
     if (this.isCurrent(active)) return;
     throw new UploadError(
       'context_lost',

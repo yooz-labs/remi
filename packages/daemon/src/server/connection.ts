@@ -24,8 +24,10 @@ import {
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeImageStagingIngress,
   deserialize,
   generateId,
+  isImageStagingCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -267,6 +269,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isImageStagingCandidate(data)) {
+      this.handleImageStagingFrame(data);
+      return;
+    }
     const message = deserialize(data);
     if (!message) {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
@@ -321,6 +327,11 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        // Dedicated raw ingress above owns these, before ordinary deduplication.
+        image_upload_begin: () => this.close('Invalid image staging route'),
+        image_upload_chunk: () => this.close('Invalid image staging route'),
+        image_upload_complete: () => this.close('Invalid image staging route'),
+        image_upload_cancel: () => this.close('Invalid image staging route'),
         hello: (m) => this.handleHello(m),
         relay_devices_request: () =>
           this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
@@ -395,6 +406,56 @@ export class Connection {
         this.sendError('INTERNAL_ERROR', `Handler for '${message.type}' failed: ${error.message}`);
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
+      }
+    }
+  }
+
+  /** Staging bounds and duplicate-member checks run before JSON conversion or ID tracking. */
+  handleImageStagingFrame(data: string | Uint8Array): void {
+    const ingress = decodeImageStagingIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid image staging frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const correlation =
+      ingress.kind === 'request'
+        ? {
+            requestId: ingress.request.id,
+            sessionId: ingress.request.sessionId,
+            operation: ingress.request.type,
+          }
+        : ingress.correlation;
+    const unavailable = () =>
+      this.send({
+        type: 'image_upload_refused',
+        id: generateId(),
+        timestamp: now(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        operation: correlation.operation,
+        code: 'unavailable',
+      });
+    try {
+      if (!this.events.onImageUpload) {
+        unavailable();
+        return;
+      }
+      const pending = this.events.onImageUpload(ingress);
+      if (pending)
+        void pending.catch(() => {
+          // Fixed text: neither diagnostics nor client bytes enter a protocol reply.
+          try {
+            unavailable();
+          } catch {
+            this.close('Image staging unavailable');
+          }
+        });
+    } catch {
+      try {
+        unavailable();
+      } catch {
+        this.close('Image staging unavailable');
       }
     }
   }

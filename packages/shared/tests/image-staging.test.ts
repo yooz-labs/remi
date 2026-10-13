@@ -8,11 +8,11 @@ import {
   encodeImageStagingFrame,
 } from '../src/image-staging.ts';
 import { PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from '../src/protocol-version.ts';
-import { MESSAGE_DIRECTION } from '../src/protocol.ts';
+import { MESSAGE_DIRECTION, deserialize } from '../src/protocol.ts';
 import { fromB64u } from '../src/relay/bytes.ts';
 import vectors from './fixtures/image-staging/vectors.json';
 
-describe('actual dormant image staging codec', () => {
+describe('actual image staging codec', () => {
   for (const vector of vectors.positive)
     test(vector.name, () => {
       expect(decodeImageStagingFrame(vector.raw)).toEqual(vector.expected as ImageStagingMessage);
@@ -84,11 +84,28 @@ describe('actual dormant image staging codec', () => {
       );
     }
   });
-  test('preparation does not advertise capability or add registry messages', () => {
+  test('additive staging registry preserves version 1 and names exactly nine message directions', () => {
     expect(PROTOCOL_VERSION).toBe(1);
-    expect(Object.hasOwn(PROTOCOL_CAPABILITIES, IMAGE_STAGING_CAPABILITY)).toBe(false);
-    expect(Object.keys(MESSAGE_DIRECTION).some((type) => type.startsWith('image_upload_'))).toBe(
-      false,
-    );
+    expect(Object.hasOwn(PROTOCOL_CAPABILITIES, IMAGE_STAGING_CAPABILITY)).toBe(true);
+    const expected = {
+      image_upload_begin: 'c2d',
+      image_upload_accepted: 'd2c',
+      image_upload_chunk: 'c2d',
+      image_upload_chunk_ack: 'd2c',
+      image_upload_complete: 'c2d',
+      image_upload_result: 'd2c',
+      image_upload_cancel: 'c2d',
+      image_upload_cancel_result: 'd2c',
+      image_upload_refused: 'd2c',
+    } as const;
+    expect(
+      Object.fromEntries(
+        Object.entries(MESSAGE_DIRECTION).filter(([name]) => name.startsWith('image_upload_')),
+      ),
+    ).toEqual(expected);
+  });
+  test('registered string frames retain every strict negative vector', () => {
+    for (const vector of vectors.negative)
+      if ('raw' in vector) expect(deserialize(vector.raw)).toBeNull();
   });
 });

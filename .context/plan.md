@@ -377,7 +377,7 @@ checks verify configuration, help, management and early routing refusals.
 These observations do not claim a new real Claude/Codex turn or device acceptance.
 Independent review precedes publication; fresh hosted CI precedes landing.
 
-## Dormant direct staging coordinator
+## Direct staging coordinator: dormant milestone
 
 `ImageStagingService` now composes the owned journal and decoder for begin,
 acknowledged chunks, completion and cancellation. It captures the actual signed
@@ -393,6 +393,47 @@ Bun 1.3.11 and 1.4.2. These Mac source checks construct real signed sockets,
 PTYs, files and decoder children, including foreign-client refusals, grant
 replacement, binding changes, shared-home recovery/capacity, cancellation during
 completion, the actual 30-second idle deadline and retirement at shutdown.
-Compiled coordinator acceptance and production hub/child dispatch remain pending.
-The service has no production initializer, protocol dispatch or upload caller yet;
-`image_staging` availability follows that complete integration. Keep #1170 open.
+That dormant milestone had no startup caller or advertised capability.
+The subsequent direct integration and its acceptance are recorded below.
+Keep #1170 open for the remaining native, relay and explicit insertion work.
+
+## Direct image staging integration
+
+The candidate now registers all nine ADR 0041 messages and routes staging frames
+through the strict bounded parser before ordinary JSON decoding or deduplication.
+Only an authenticated supported Claude host initializes the coordinator.
+Its actual signed direct attachment selects `image_staging`; session-less hubs,
+query connections, relay virtual connections and capability-only peers retain the
+base capabilities. Hello and direct reattachment carry the current binding and
+matching connection-scoped machine descriptor.
+
+The production web connection manager owns a stop-and-wait upload controller.
+The chat panel selects a PNG/JPEG, shows acknowledged progress, permits explicit
+cancellation and reports the staged result or uncertainty. An unconfirmed attempt
+cannot blindly restart on the same context. No upload inserts an image into the
+harness or returns a host path. Direct WebSocket encryption remains outside Remi;
+use an existing private transport as described in ADR 0009.
+
+Both Bun source populations pass 1,462 tests and 5,427 assertions across eleven
+files, including both shipping direct-dispatch endpoints. Root, web app and web
+test type checks pass on both Bun gates. A real source hub, child and shipping
+web transport/controller stage exact PNG/JPEG bytes; reattachment carries binding
+and capability. All six compiled server cells pass the corresponding 21-assertion
+control on Apple Silicon macOS, Linux ARM64 and Linux x64 under Bun 1.3.11 and
+1.4.2. The Linux test driver is Bun 1.3.11 for both compiled server versions;
+its fixture uses 256 MiB, 64 processes and an executable private tmpfs for the
+inert test CLI. These are finite observations, with no new OS resource campaign
+or model turn.
+
+Fresh rendered Chrome acceptance of the production App at 1,024 and 390 pixels
+passes PNG/JPEG staging, content refusal and cancellation without page errors or
+overflow. A real held PermissionRequest returns HTTP 200 with `behavior: deny`
+while image completion is in flight; the observed UI answer resolves 225 ms before
+the staged result. The full review and one fix review completed. Retired preparation
+stops permanently, optional browser APIs have compatible fallbacks, and upload
+eligibility honors protocol compatibility and current mutual authentication.
+A matching identity prop effect preserves a proof completed after synchronous
+identity provision; a different identity disables upload. The isolated real-browser
+regression passes eight assertions on each Bun, and restoring the old effect fails
+its post-effect enabled assertion. Native/Swift and physical-device acceptance,
+relay transport and harness insertion remain separate. Hosted checks precede landing.

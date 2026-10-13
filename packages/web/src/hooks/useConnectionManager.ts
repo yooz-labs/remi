@@ -16,7 +16,7 @@ import {
   unlockStoredIdentity,
 } from '@/lib/identity-client';
 import { ConnectionApproval } from '@/lib/connection-approval';
-import { DAEMON_BASE_PORT, errorToString, type relayV2 } from '@remi/shared';
+import { DAEMON_BASE_PORT, errorToString, hubSupport, type relayV2 } from '@remi/shared';
 import type {
   RelayDevicesResponseMessage,
   RelayDeviceRevokeResponseMessage,
@@ -90,6 +90,8 @@ interface ManagedConnection {
   harness?: HarnessId;
   harnessSessionId?: string | null;
   capabilities?: readonly string[];
+  protocolVersion?: unknown;
+  imageUploadAuthenticated: boolean;
   imageUploadController?: ImageUploadController;
   imageUploadState: ConnectionState['imageUploadState'];
   imageUploadSessionId?: UUID | null;
@@ -132,9 +134,17 @@ interface ManagedConnection {
 
 /** Stop a captured identity context and publish that close synchronously. */
 function invalidateIdentityConnection(mc: ManagedConnection, message = 'Identity changed. Reconnect with the current identity.') {
+  mc.imageUploadAuthenticated = false;
   mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
   mc.status = 'disconnected'; mc.helloSent = false; mc.pendingChallenge = null; mc.authAttempt = null;
   mc.sessionAttachments?.clear(); mc.error = new Error(message);
+}
+
+function supportsImageStaging(mc: ManagedConnection): boolean {
+  return hubSupport(
+    { protocolVersion: mc.protocolVersion, capabilities: mc.capabilities },
+    ['image_staging'],
+  ).supported;
 }
 
 /** Hook options */
@@ -330,10 +340,20 @@ export function useConnectionManager(
   }, []);
 
   useEffect(() => {
-    if (usesNativeIdentity() && !unlockedIdentity) identityRef.current = null;
+    if (usesNativeIdentity() && !unlockedIdentity) {
+      identityRef.current = null;
+      for (const mc of connectionsMapRef.current.values()) {
+        mc.imageUploadAuthenticated = false;
+        mc.imageUploadController?.disconnect();
+      }
+    }
     if (unlockedIdentity) {
       if (identityRef.current?.publicKeyRaw !== unlockedIdentity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
+          // provideIdentity installs this same identity synchronously before
+          // React commits the matching prop update. Keep a proof that completed
+          // in that window; only a real key transition invalidates it.
+          mc.imageUploadAuthenticated = false;
           mc.imageUploadController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
@@ -350,6 +370,7 @@ export function useConnectionManager(
     const changed = () => {
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
+        mc.imageUploadAuthenticated = false;
         mc.imageUploadController?.disconnect();
         mc.approval.reset();
         mc.authAttempt = null;
@@ -413,6 +434,7 @@ export function useConnectionManager(
       answerEncryptionKey?: string,
     ) => {
       if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
+      mc.imageUploadAuthenticated = false;
       const pending = {
         challenge,
         serverPublicKey: srvPublicKey,
@@ -444,6 +466,7 @@ export function useConnectionManager(
         mc.serverFingerprint = derivedFingerprint;
       } catch (err) {
         if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
+        mc.imageUploadAuthenticated = false;
         mc.approval.reset();
         mc.error = new Error(errorToString(err));
         mc.client.disconnect();
@@ -524,6 +547,7 @@ export function useConnectionManager(
         connectionsMapRef.current.get(mc.connectionId) === mc &&
         mc.pendingChallenge === pending && mc.approval.isCurrent(attempt);
       if (!isCurrent()) return;
+      mc.imageUploadAuthenticated = false;
       if (!success) {
         mc.approval.refuse(attempt, authError);
         mc.error = new Error(`Authentication failed: ${authError ?? 'unknown error'}`);
@@ -533,6 +557,7 @@ export function useConnectionManager(
       }
 
       if (!srvSignature || !pending) {
+        mc.imageUploadAuthenticated = false;
         mc.approval.reset();
         mc.error = new Error('Server did not provide mutual authentication signature');
         mc.client.disconnect();
@@ -546,6 +571,7 @@ export function useConnectionManager(
         const valid = await verify(serverPubKey, challengeData, srvSignature);
         if (!isCurrent()) return;
         if (!valid) {
+          mc.imageUploadAuthenticated = false;
           mc.approval.reset();
           mc.error = new Error('Server signature verification failed');
           mc.client.disconnect();
@@ -554,6 +580,7 @@ export function useConnectionManager(
         }
       } catch (err) {
         if (!isCurrent()) return;
+        mc.imageUploadAuthenticated = false;
         mc.approval.reset();
         mc.error = new Error(
           `Server verification error: ${errorToString(err)}`,
@@ -566,6 +593,7 @@ export function useConnectionManager(
       // TOFU: trust on first use
       if (!isCurrent() || !pending) return;
       mc.approval.verified(attempt);
+      mc.imageUploadAuthenticated = true;
       mc.error = null;
       trustHost(
         mc.url,
@@ -639,7 +667,11 @@ export function useConnectionManager(
                 : nextHarness === 'claude'
                   ? message.claudeSessionId ?? null
                   : null;
-            const nextCapabilities = message.capabilities ?? [];
+            const rawCapabilities: unknown = message.capabilities;
+            const nextCapabilities = Array.isArray(rawCapabilities)
+              ? rawCapabilities.filter((capability): capability is string => typeof capability === 'string')
+              : [];
+            const nextProtocolVersion: unknown = message.protocolVersion;
             const capabilitiesChanged =
               (mc.capabilities?.length ?? 0) !== nextCapabilities.length ||
               (mc.capabilities ?? []).some((capability, index) => capability !== nextCapabilities[index]);
@@ -648,7 +680,8 @@ export function useConnectionManager(
               mc.attachState !== message.attachState ||
               mc.harness !== nextHarness ||
               mc.harnessSessionId !== nextHarnessSessionId ||
-              capabilitiesChanged
+              capabilitiesChanged ||
+              !Object.is(mc.protocolVersion, nextProtocolVersion)
             ) {
               mc.imageUploadController?.disconnect();
             }
@@ -657,6 +690,7 @@ export function useConnectionManager(
             mc.harness = nextHarness;
             mc.harnessSessionId = nextHarnessSessionId;
             mc.capabilities = nextCapabilities;
+            mc.protocolVersion = nextProtocolVersion;
           }
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
@@ -719,7 +753,10 @@ export function useConnectionManager(
         }
 
         const newUrl = buildWsUrl(parseHostInput(host), resolved);
-        if (mc.url !== newUrl) mc.approval.reset();
+        if (mc.url !== newUrl) {
+          mc.imageUploadAuthenticated = false;
+          mc.approval.reset();
+        }
         mc.url = newUrl;
         console.debug(`[ConnectionManager] resolved ${host}:${resolved}; reconnecting`);
         // status flows back to 'connecting'/'authenticating' via onStatusChange.
@@ -787,6 +824,7 @@ export function useConnectionManager(
         status: 'disconnected',
         error: null,
         sessionId: null,
+        imageUploadAuthenticated: false,
         imageUploadState: { phase: 'idle' },
         imageUploadSessionId: null,
         helloSent: false,
@@ -829,12 +867,14 @@ export function useConnectionManager(
             newStatus === 'authenticating' ||
             newStatus === 'error'
           ) {
+            mc.imageUploadAuthenticated = false;
             mc.imageUploadController?.disconnect();
             mc.sessionId = null;
             mc.attachState = undefined;
             mc.harness = undefined;
             mc.harnessSessionId = undefined;
             mc.capabilities = undefined;
+            mc.protocolVersion = undefined;
           }
 
           if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
@@ -874,11 +914,12 @@ export function useConnectionManager(
               connectionsMapRef.current.get(connectionId) !== mc ||
               mc.mode !== 'direct' ||
               mc.status !== 'connected' ||
+              !mc.imageUploadAuthenticated ||
               mc.attachState !== 'attached' ||
               !mc.sessionId ||
               mc.harness !== 'claude' ||
               !mc.harnessSessionId ||
-              !mc.capabilities?.includes('image_staging')
+              !supportsImageStaging(mc)
             ) {
               return null;
             }
@@ -890,7 +931,8 @@ export function useConnectionManager(
               generation,
               sessionId: mc.sessionId,
               binding: { harness: 'claude', harnessSessionId: mc.harnessSessionId },
-              capabilities: mc.capabilities,
+              capabilities: mc.capabilities ?? [],
+              protocolVersion: mc.protocolVersion,
             } satisfies ImageUploadContext;
           },
         },
@@ -955,7 +997,7 @@ export function useConnectionManager(
     existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
     const mc: ManagedConnection = {
       client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
-      status: 'connecting', error: null, sessionId: null, imageUploadState: { phase: 'idle' }, imageUploadSessionId: null, helloSent: false, pendingChallenge: null,
+      status: 'connecting', error: null, sessionId: null, imageUploadAuthenticated: false, imageUploadState: { phase: 'idle' }, imageUploadSessionId: null, helloSent: false, pendingChallenge: null,
       approval: new ConnectionApproval(), authAttempt: null, needsPassphrase: false,
       serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
     };
@@ -1271,9 +1313,12 @@ export function useConnectionManager(
     (connectionId: ConnectionId, identity: ClientSigningIdentity) => {
       // Invalidate synchronously: the prop effect runs after this setter and
       // otherwise sees the replacement as already current (#873).
+      for (const mc of connectionsMapRef.current.values()) {
+        mc.imageUploadAuthenticated = false;
+        mc.imageUploadController?.disconnect();
+      }
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
-          mc.imageUploadController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
           if (mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -1348,10 +1393,11 @@ export function useConnectionManager(
         !client ||
         mc.sessionId !== sessionId ||
         mc.status !== 'connected' ||
+        !mc.imageUploadAuthenticated ||
         mc.attachState !== 'attached' ||
         mc.harness !== 'claude' ||
         !mc.harnessSessionId ||
-        !mc.capabilities?.includes('image_staging') ||
+        !supportsImageStaging(mc) ||
         !client.imageUploadGeneration ||
         connectionsMapRef.current.get(connectionId) !== mc
       ) {
