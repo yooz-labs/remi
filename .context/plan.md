@@ -471,4 +471,29 @@ The unchanged 95702c73 base reproduced the same `33 != 128` failure.
 The corrected control independently checks 130 same-device cycles and 130 distinct-device cycles, proving both 32/device and 128/home history bounds, retained pending charge and both eviction/retry outcomes.
 Production reservation limits and algorithms remain unchanged; original failures and corrected receipts are retained on S1.
 Independent review completed without actionable findings; publication/hosted checks precede landing.
-The insertion contract remains proposed pending owner review, and exact installed-Claude `.artifact` spelling plus production caller/native acceptance remain later gates.
+The insertion contract was subsequently accepted by the owner; the exact-path
+result and correction are recorded below. Production caller/native acceptance remain later gates.
+
+## Image insertion: accepted contract and filename correction
+
+The owner accepted ADR0042 on 2026-10-13, including the first-version original
+direct connection, one possible insertion, separate Send and visible original
+24-hour/session-end expiry. Exactly one additionally authorized Claude turn
+tested actual private `.artifact` references outside its project: neither became
+an embedded image. Insertion remains unavailable; no capability/caller is added.
+
+New image journals select `.png` / `.jpg` from their declared media type at
+creation; completion already verifies that type against bytes and full decoding.
+The exact extension is stored in the lease/reservation and immutable version2
+markers. Original `.artifact` journals retain version1 naming and recovery.
+Read, accounting, cleanup and retirement use that same persisted choice.
+No existing file is renamed, copied or linked, and no quota/deadline changes.
+Older binaries reject the extended ledger schema instead of guessing cleanup;
+these rows require the matching daemon for recovery and remain charged otherwise.
+
+The correction preserves all 105 predecessor compiled groups and adds 18
+actual-file/image-name groups, including both formats, wrong-format refusal,
+descriptor/name/root mutation and six killed-retirement restart boundaries per
+format. Current source and compiled results will be recorded before publication.
+The corrected exact-path model check, managed insertion retirement, shared
+vectors, handler/client integration and native conformance remain subsequent gates.

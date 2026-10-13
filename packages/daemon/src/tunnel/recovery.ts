@@ -2,7 +2,13 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { DirectoryRoot } from './admission';
-import { type MarkerKind, type MarkerWitness, validWitnesses } from './journal-schema';
+import {
+  type JournalBinding,
+  type MarkerKind,
+  type MarkerWitness,
+  journalArtifactName,
+  validWitnesses,
+} from './journal-schema';
 import type { PrivateOps } from './private-ops';
 import { RecoveryError } from './recovery-error';
 
@@ -16,7 +22,13 @@ export type RecoveryStage =
   | 'post-unlink'
   | 'post-cleaned';
 type Witness = { dev: string; ino: string; uid: string };
-type Marker = { version: 1; id: string; root: string; artifact: Witness | null };
+type Marker = {
+  version: 1 | 2;
+  id: string;
+  root: string;
+  artifactExtension?: JournalBinding['artifactExtension'];
+  artifact: Witness | null;
+};
 type Held = { fd: number; name: string; stat: fs.BigIntStats; value: Marker };
 const C = fs.constants;
 const READ = C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK;
@@ -48,13 +60,21 @@ export function allocatedBlocks(stat: fs.BigIntStats): number {
   if (bytes < 0n || bytes > BigInt(Number.MAX_SAFE_INTEGER)) refuse();
   return Number(bytes);
 }
-function parse(raw: string, id: string, root: string, owned: boolean): Marker {
+function parse(
+  raw: string,
+  id: string,
+  root: string,
+  owned: boolean,
+  extension?: JournalBinding['artifactExtension'],
+): Marker {
   const value = JSON.parse(raw) as Marker;
   // Schema guard: canonical bytes also reject duplicate keys and unrecognized fields.
   if (
     !value ||
-    Object.keys(value).join() !== 'version,id,root,artifact' ||
-    value.version !== 1 ||
+    Object.keys(value).join() !==
+      (extension ? 'version,id,root,artifactExtension,artifact' : 'version,id,root,artifact') ||
+    value.version !== (extension ? 2 : 1) ||
+    value.artifactExtension !== extension ||
     value.id !== id ||
     value.root !== root ||
     !canonical(raw, value)
@@ -85,9 +105,12 @@ export class RecoveryIntent {
     readonly id: string,
     private readonly ops: RecoveryOps,
     private readonly newlyCreated: boolean,
+    private readonly extension?: JournalBinding['artifactExtension'],
   ) {}
   private name(kind: 'intent' | 'owned' | 'cleaned' | 'artifact'): string {
-    return `${this.id}.${kind}`;
+    return kind === 'artifact'
+      ? journalArtifactName(this.id, this.extension)
+      : `${this.id}.${kind}`;
   }
   private current(): void {
     // Current-root guard: retained descriptors do not authorize a replaced configured root.
@@ -140,7 +163,13 @@ export class RecoveryIntent {
     if (fd === -2 && optional) return null; // Native wrapper preserves exact ENOENT.
     if (fd < 0) refuse();
     try {
-      const value = parse(this.read(fd), this.id, this.scratch.identity, kind !== 'intent');
+      const value = parse(
+        this.read(fd),
+        this.id,
+        this.scratch.identity,
+        kind !== 'intent',
+        this.extension,
+      );
       const item = { fd, name, stat: fs.fstatSync(fd, { bigint: true }), value };
       this.validate(item);
       this.held.push(item);
@@ -152,7 +181,13 @@ export class RecoveryIntent {
   }
   private persist(kind: 'intent' | 'owned' | 'cleaned', artifact: Witness | null): Held {
     this.current();
-    const value: Marker = { version: 1, id: this.id, root: this.scratch.identity, artifact };
+    const value: Marker = {
+      version: this.extension ? 2 : 1,
+      id: this.id,
+      root: this.scratch.identity,
+      ...(this.extension ? { artifactExtension: this.extension } : {}),
+      artifact,
+    };
     const bytes = Buffer.from(JSON.stringify(value));
     if (bytes.length > CAP) refuse();
     const name = this.name(kind);
@@ -198,10 +233,12 @@ export class RecoveryIntent {
     id: string,
     ops: RecoveryOps,
     create = false,
+    extension?: JournalBinding['artifactExtension'],
   ): RecoveryIntent {
     if (typeof id !== 'string' || !TOKEN.test(id) || scratch.identity === metadata.identity)
       refuse();
-    const result = new RecoveryIntent(scratch, metadata, id, ops, create);
+    journalArtifactName(id, extension);
+    const result = new RecoveryIntent(scratch, metadata, id, ops, create, extension);
     try {
       result.current();
       const intent = create ? result.persist('intent', null) : result.load('intent');
@@ -350,9 +387,11 @@ export class RecoveryIntent {
     witnesses: MarkerWitness[],
     checkpoint?: (stage: string) => void,
     account?: (measured: MarkerWitness[]) => void,
+    extension?: JournalBinding['artifactExtension'],
   ): void {
     if (!TOKEN.test(id) || !validWitnesses(witnesses, ['intent', 'owned', 'cleaned'])) refuse();
-    const result = new RecoveryIntent(scratch, metadata, id, ops, false);
+    journalArtifactName(id, extension);
+    const result = new RecoveryIntent(scratch, metadata, id, ops, false, extension);
     try {
       result.current();
       // Only persisted retirement invokes this path; an absent intent cannot be reopened.

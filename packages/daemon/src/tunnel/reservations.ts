@@ -249,12 +249,19 @@ export class Reservations {
     return this.admit(owner, bytes);
   }
 
-  reserveJournal(owner: Owner, bytes: number, scratch: string, metadata: string): JournalLease {
+  reserveJournal(
+    owner: Owner,
+    bytes: number,
+    scratch: string,
+    metadata: string,
+    artifactExtension?: JournalBinding['artifactExtension'],
+  ): JournalLease {
     const journal: JournalBinding = {
       nonce: randomBytes(16).toString('hex'),
       home: this.homeIdentity,
       scratch,
       metadata,
+      ...(artifactExtension !== undefined ? { artifactExtension } : {}),
     };
     if (!validBinding(journal, 'active')) throw new ReservationError('unavailable');
     return { id: this.admit(owner, bytes, journal), ...journal };
@@ -602,8 +609,14 @@ export class Reservations {
           throw new ReservationError('unavailable');
         this.write(records); // Retained marker allocation debt is durable before unlink attempts.
       });
-      const { nonce, home, scratch, metadata } = record.journal;
-      record.journal = { nonce, home, scratch, metadata };
+      const { nonce, home, scratch, metadata, artifactExtension } = record.journal;
+      record.journal = {
+        nonce,
+        home,
+        scratch,
+        metadata,
+        ...(artifactExtension !== undefined ? { artifactExtension } : {}),
+      };
       record.state = 'settled';
       record.charge = 0;
       records.splice(index, 1);
