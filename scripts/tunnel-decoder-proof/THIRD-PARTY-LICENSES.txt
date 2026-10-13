@@ -1,4 +1,5 @@
-Candidate-only decoder dependency notices; no daemon dependency is selected.
+Decoder dependency notices for the standalone proof and internal daemon decoder.
+The daemon selects these exact versions; active worker and upload integration are pending.
 
 pngjs 7.0.0 (MIT):
 pngjs original work Copyright (c) 2015 Luke Page & Original Contributors

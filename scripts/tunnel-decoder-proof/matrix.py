@@ -45,6 +45,7 @@ def proof_for(source=REPO):
         "files": (
             "tsconfig.json",
             "package.json",
+            "packages/daemon/package.json",
             "bun.lock",
             "bunfig.toml",
             "scripts/tunnel-storage-proof/matrix.py",
