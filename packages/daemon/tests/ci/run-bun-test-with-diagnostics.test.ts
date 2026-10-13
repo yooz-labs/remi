@@ -28,8 +28,6 @@ test('forwards child stdout and stderr bytes unchanged and returns success', asy
   const result = await runChild(bun(code), {
     stdout: out.stream,
     stderr: err.stream,
-    diagnosticAfterMs: 80,
-    diagnosticEveryMs: 80,
   });
 
   expect(result.exitCode).toBe(0);
@@ -43,8 +41,6 @@ test('preserves a nonzero child exit code', async () => {
   const result = await runChild(bun("process.stdout.write('finished'); process.exit(23);"), {
     stdout: out.stream,
     stderr: err.stream,
-    diagnosticAfterMs: 80,
-    diagnosticEveryMs: 80,
   });
 
   expect(result.exitCode).toBe(23);
@@ -62,15 +58,18 @@ test('reports bounded proc metadata while a child is quiet', async () => {
     diagnosticAfterMs: 40,
     diagnosticEveryMs: 40,
   });
-  const diagnostic = err
+  // Slow startup can produce earlier samples before the controlled header.
+  // Require a genuine quiet-period sample after that header was observed.
+  const record = err
     .text()
     .split('\n')
-    .find((line) => line.startsWith('[ci-test-diagnostic] '));
+    .filter((line) => line.startsWith('[ci-test-diagnostic] '))
+    .map((line) => JSON.parse(line.slice('[ci-test-diagnostic] '.length)))
+    .find((sample) => sample.lastTestFile === 'packages/daemon/tests/cli/quiet.test.ts');
 
   expect(result.exitCode).toBe(0);
-  expect(diagnostic).toBeDefined();
-  if (!diagnostic) throw new Error('quiet child emitted no diagnostic');
-  const record = JSON.parse(diagnostic.slice('[ci-test-diagnostic] '.length));
+  expect(record).toBeDefined();
+  if (!record) throw new Error('quiet child emitted no diagnostic after its controlled header');
   expect(record.childPid).toEqual(expect.any(Number));
   expect(record.lastTestFile).toBe('packages/daemon/tests/cli/quiet.test.ts');
   expect(record.quietMs).toBeGreaterThanOrEqual(40);
@@ -89,21 +88,27 @@ test('reports bounded proc metadata while a child is quiet', async () => {
   }
 });
 
-test('captures the real Bun test-file header emitted on stderr', async () => {
-  const out = sink();
-  const err = sink();
-  const testFile = 'packages/daemon/tests/session-name.test.ts';
-  const result = await runChild([process.execPath, 'test', testFile], {
-    stdout: out.stream,
-    stderr: err.stream,
-    diagnosticAfterMs: 80,
-    diagnosticEveryMs: 80,
-  });
+for (const actions of [false, true]) {
+  test(`captures the real Bun stderr test header (GitHub Actions=${actions})`, async () => {
+    expect(Bun.which('env')).toBeTruthy();
+    const out = sink();
+    const err = sink();
+    const testFile = 'packages/daemon/tests/session-name.test.ts';
+    const environment = actions ? ['GITHUB_ACTIONS=true'] : ['-u', 'GITHUB_ACTIONS'];
+    const result = await runChild(['env', ...environment, process.execPath, 'test', testFile], {
+      stdout: out.stream,
+      stderr: err.stream,
+      diagnosticAfterMs: 80,
+      diagnosticEveryMs: 80,
+    });
 
-  expect(result.exitCode).toBe(0);
-  expect(result.lastTestFile).toBe(testFile);
-  expect(err.text()).toContain(`${testFile}:`);
-});
+    expect(result.exitCode).toBe(0);
+    expect(result.lastTestFile).toBe(testFile);
+    expect(err.text()).toContain(`${testFile}:`);
+    if (actions) expect(err.text()).toContain(`::group::${testFile}:`);
+    else expect(err.text()).not.toContain('::group::');
+  });
+}
 
 test('reports CPU ticks for an actual busy child without changing its exit', async () => {
   const out = sink();

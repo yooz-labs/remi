@@ -44,7 +44,9 @@ class HeaderTracker {
   }
 
   #capture(line: string): void {
-    const plain = line.replace(/\x1b\[[0-9;]*m/g, '');
+    // Bun prefixes its actual test header with an Actions group marker in CI.
+    // Normalize only the parsing view; forwarded output bytes stay unchanged.
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/^::group::/, '');
     const match = TEST_HEADER.exec(plain);
     const path = match?.[1];
     if (path) this.state.last = path;
