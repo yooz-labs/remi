@@ -1,6 +1,7 @@
 """Classify the complete PR diff; every unclassified input runs all gates (#1359)."""
 
 import argparse
+from functools import lru_cache
 import hashlib
 import io
 import json
@@ -1128,6 +1129,16 @@ COLD_MODULE_REFERENCE = re.compile(
 )
 
 
+@lru_cache(maxsize=32)
+def _cold_lexical_stems(targets: frozenset[str]) -> frozenset[str]:
+    return frozenset(Path(target).stem for target in targets)
+
+
+@lru_cache(maxsize=32)
+def _cold_lexical_names(targets: frozenset[str]) -> frozenset[str]:
+    return frozenset(Path(target).name for target in targets)
+
+
 def cold_reference(path, text, targets, identifiers):
     # Literal necessary conditions avoid repeated whole-text regex scans; exact rules stay unchanged.
     if any(identifier in text for identifier in identifiers) and re.search(
@@ -1139,6 +1150,7 @@ def cold_reference(path, text, targets, identifiers):
                 r"(?<![\w$./-])(?:\./)?" + re.escape(target.removesuffix(".ts")) +
                      r"(?:\.[cm]?[jt]s)?(?![\w$./-])", text):
             return True
+    target_stems = None
     for match in COLD_MODULE_REFERENCE.finditer(text):
         specifier = re.sub(r"\\(?:u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]+)\}|x([0-9a-fA-F]{2}))",
                            lambda escape: chr(int(next(value for value in escape.groups() if value is not None), 16)),
@@ -1146,7 +1158,10 @@ def cold_reference(path, text, targets, identifiers):
         if "\\" in specifier and specifier.startswith((".", "@remi/daemon/")):
             return True
         leaf = re.sub(r"\.[cm]?[jt]s$", "", specifier.replace("\\", "/").rsplit("/", 1)[-1])
-        if leaf not in {Path(target).stem for target in targets}:
+        if target_stems is None:
+            target_key = targets if isinstance(targets, frozenset) else frozenset(targets)
+            target_stems = _cold_lexical_stems(target_key)
+        if leaf not in target_stems:
             continue
         if "\\" in specifier or "\0" in specifier:
             return True
@@ -1274,6 +1289,9 @@ COLD_IMAGE_CALLERS = {
     "scripts/tunnel-decoder-proof/approval-entry.ts",
     "packages/daemon/tests/tunnel/image-admission-adoption.test.ts",
 }
+COLD_IMAGE_RUNNER_TARGETS = frozenset(COLD_IMAGE_RUNNERS)
+COLD_IMAGE_CALLER_TARGETS = frozenset(COLD_IMAGE_CALLERS | COLD_IMAGE_RUNNERS)
+COLD_NATIVE_CALLER_TARGETS = frozenset(COLD_NATIVE_CALLERS)
 
 
 # D1's exact Python asset paths retain .py rather than the TS resolver's suffix semantics.
@@ -1285,10 +1303,13 @@ COLD_IMAGE_RUNNER_PATH = re.compile(
 def cold_image_runner_reference(path, text):
     specifiers = [match.group(1) for match in COLD_MODULE_REFERENCE.finditer(text)]
     specifiers.extend(match.group(1) for match in COLD_IMAGE_RUNNER_PATH.finditer(text))
+    if not specifiers:
+        return False
+    runner_names = _cold_lexical_names(COLD_IMAGE_RUNNER_TARGETS)
     for specifier in specifiers:
         if "\\" in specifier and specifier.startswith((".", "@remi/daemon/")):
             return True
-        if specifier.replace("\\", "/").rsplit("/", 1)[-1] not in {Path(target).name for target in COLD_IMAGE_RUNNERS}:
+        if specifier.replace("\\", "/").rsplit("/", 1)[-1] not in runner_names:
             continue
         if "\\" in specifier or "\0" in specifier:
             return True
@@ -1393,6 +1414,7 @@ def cold_relocation_paths(base, head, merge_base, paths):
         targets = {p for p in original | final if p.endswith(".ts") and Path(p).name in names}
         if image_admission:
             targets.update(COLD_IMAGE_PRODUCERS | COLD_IMAGE_RUNNERS)
+        targets = frozenset(targets)
         for ref in dict.fromkeys((base, head, merge_base)):
             scan = {}
             for path, (_, blob) in trees[ref].items():
@@ -1427,10 +1449,10 @@ def cold_relocation_paths(base, head, merge_base, paths):
                         (cold_image_reference(path, text, targets, identifiers) if image_admission else
                          cold_reference(path, text, targets, identifiers)) or
                         (image_admission and path.startswith("packages/daemon/src/") and
-                         cold_image_reference(path, text, COLD_IMAGE_CALLERS, ())) or
+                         cold_image_reference(path, text, COLD_IMAGE_CALLER_TARGETS, ())) or
                         (native_helper and (cold_native_asset_reference(path, text) or
                             (path.startswith("packages/daemon/src/") and
-                             cold_reference(path, text, COLD_NATIVE_CALLERS, ()))))):
+                             cold_reference(path, text, COLD_NATIVE_CALLER_TARGETS, ()))))):
                     return set()
             if stream.read():
                 return set()
@@ -1774,6 +1796,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                 identifiers += ("DecoderProcess", "DecoderProcessError", "MAX_RESULT_BYTES", "decodeInput",
                                 "decodeWorker", "decodeRepeatedWorker", "DecodedPixels", "DecoderChildExit", "RepeatedDecodeReady")
             known = required | set(SOAK_DECODE_SUPPORT)
+        targets = frozenset(targets)
         for tree in trees.values():
             for path, (_, blob) in tree.items():
                 if path in known or path in {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py"} or (
@@ -1788,7 +1811,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                         cold_reference(path, text, targets, identifiers)):
                     return None
                 if name in {"Dormant full-decoder", "Image worker entry"} and cold_image_reference(
-                        path, text, COLD_IMAGE_CALLERS | COLD_IMAGE_RUNNERS, ()):
+                        path, text, COLD_IMAGE_CALLER_TARGETS, ()):
                     return None
         return name + (" with complete owned worker" if worker else "")
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
