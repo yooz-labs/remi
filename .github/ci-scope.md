@@ -503,13 +503,18 @@ the corpus; validation decision controls are appended.
 A skip needs a readable ordinary pull-request event with exact commit IDs,
 complete non-shallow refs/diff/merge-base and known checkout context. The current
 HEAD must equal `GITHUB_SHA` in the declared workspace. It must be the exact head
-or the event's merge commit with exact base/head parents. Input inventories,
-modes and blobs must agree at base, head, merge-base and checkout, and current
-input bytes must match those objects. Dirty or untracked validator files and
-unknown Git/environment/context inputs retain full validation.
+or a two-parent merge checkout whose second parent is the event head and whose
+first parent is the event base or a proven descendant of it. The REST
+`merge_commit_sha` field is not an admission witness because it can lag the event
+base; the checkout's actual parent graph is checked instead. Input inventories,
+modes and blobs must agree at base, head, merge-base, checkout and the merge
+checkout's first parent, and current input bytes must match those objects. Dirty
+or untracked validator files and unknown Git/environment/context inputs retain
+full validation.
 
-Availability checks bind five published reconstruction roots and 222 published
-original blob objects, including strict type/size/body/hash reads. They require
+Availability checks bind five published reconstruction roots and 225 published
+original blob objects (the prior 222 plus the three #1476 policy inputs used by
+#1480), including strict type/size/body/hash reads. They require
 the roots' history/tree closure to remain available and never require the 31
 unpublished candidate head objects reconstructed by the corpus. Missing,
 malformed, corrupt, UTF-8/NUL or unavailable validation inputs select full
@@ -520,3 +525,38 @@ CI and 324.713 seconds in R7. These are historical command-to-result costs,
 separate from whole-job elapsed time. This change does not claim that an ordinary
 hosted feature PR has skipped validation until such a run is measured; actual
 classification and mandatory output checking remain required on that run.
+
+## First valid-auth fixture readiness (#1480)
+
+The hosted #1479 checkout failed the first valid-auth test after its fixed
+100 ms wait, while the following full-handshake and fingerprint tests passed.
+The correction waits for that Connection's existing `onAuthSuccess` or
+`onAuthFailed` callback. Its original state/result assertions and deadline stay
+fixed; production authentication is unchanged. Eight other 100 ms fixture waits
+remain outside this correction. One bounded local control with genuine crypto
+work did not reproduce the hosted failure; it is not a blanket flakiness fix.
+
+The original two-client fixture qualification (`843726b` to `e189888`) remains.
+A separate exact regular M-only transition (`e189888` to `298fdc4`) qualifies
+only this additional test slice, optionally with ordinary prose. The whole
+reviewed original or final #1473 CLI state must be the same at base, head and
+merge-base. Auth modules, relay bodies/helpers, comment references and the public
+sample keep their existing pins; the full tracked text scan must succeed.
+Partial, reversed, mixed, unreadable or otherwise unknown changes restore the
+soak. All ordinary gates and the complete short relay suite remain selected;
+only the unchanged attached-session hour soak can be omitted.
+
+This one four-path PR may also carry all three qualification files together:
+`ci-scope.py`, `check-ci-scope.py` and this document. Their original blobs must
+match the published #1476 inputs at base and merge-base; their complete regular
+M-only head bytes must match the frozen executing policy files. This binds the
+reviewed inputs and does not establish that changed CI is trustworthy by testing
+itself. CI-input changes still require full validator execution under #1476.
+Missing qualification files or other CI drift do not qualify.
+
+The appended real-Git controls reconstruct the fixture from published original
+bytes with four guarded replacements. They reuse the existing original/final
+CLI recipes and full-tree runner. The complete four-path candidate uses the
+reviewed executing CI bytes; its original policy objects became public when
+#1481 landed. Reconstruction never requires an unpublished fixture or candidate
+CI object, and the preceding 2,194 scenario bodies and order are preserved.

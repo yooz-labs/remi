@@ -104,6 +104,13 @@ SOAK_FIXTURES = {
     "packages/signaling/tests/e2e/push.e2e.test.ts": ("8619bb6b4c833708590061046338183a636aa652", "71b2cb846cca049e8f0a87ccb86d50d07fb89847"),
     "packages/daemon/tests/connection-auth.test.ts": ("843726b2347cfc5b99718e914e08f8dd5fffc7f3", "e189888fc0f39dd8684d735784c295803e35b807"),
 }
+# #1480: one additional success/error-readiness slice, not a general auth-test exemption.
+SOAK_AUTH_READINESS = ("e189888fc0f39dd8684d735784c295803e35b807", "298fdc4d698e2c236279c132d38b7328f1e29dc8")
+SOAK_AUTH_READINESS_CI_ORIGINALS = {
+    ".github/scripts/ci-scope.py": "18848e51dcf2be15b55c9e73c56bac89813defca",
+    ".github/scripts/check-ci-scope.py": "219a49ae6b885a926bcdd87948d53e75df576d10",
+    ".github/ci-scope.md": "fec66e6a5a6d51f52f732974ee3b18b066ee29ff",
+}
 SOAK_FIXTURE_TOKENS = ("relay-r3-drain", "push.e2e", "connection-auth")
 SOAK_TRACE = {
     "packages/daemon/src/server/connection.ts": "a0bee1003e89109c853e30aa7a8cd6afc2443111",
@@ -640,6 +647,7 @@ VALIDATION_PUBLIC_BLOBS = (
     "17e53aa7653b3035c947ba58428413c8bfa75ef5",
     "17fc9707c872684d39a66c2cc5e984a090d32097",
     "186da5f237c6783602c832633d8e9fa21006f872",
+    "18848e51dcf2be15b55c9e73c56bac89813defca",
     "1c452c32c43b8c1e557d7f109c606c5cb9c8100c",
     "1d7362041dcc5c05fcd27057afe4c745b14fdbdf",
     "1d88c31c7be8deed30e56a6a3e3af00a652fab64",
@@ -648,6 +656,7 @@ VALIDATION_PUBLIC_BLOBS = (
     "1f4e10710f067d78f13a250f75de1e7aacf233ea",
     "1f5afab7bf9aa6bb80a2d11aed8548023f88f568",
     "20bfc74dc79e2485908da8872f0a542a3a36bc6c",
+    "219a49ae6b885a926bcdd87948d53e75df576d10",
     "266b9db3cdfc1de295c2a7190277da6c11a9e5ff",
     "2694d71eee5ac9c9f91fd439c05e4e86f67e4e24",
     "27c4b716e903d5dfb8de3754edb50ad2ee9125dc",
@@ -850,6 +859,7 @@ VALIDATION_PUBLIC_BLOBS = (
     "fa70712d1cfa04ff8eb28a942c8eb88b3a093713",
     "fcb2fd3dcb9fe0c85c14489fc1f487d4e75fa2b5",
     "fe62561faaa68470dd37082c23ede476fc393c81",
+    "fec66e6a5a6d51f52f732974ee3b18b066ee29ff",
 )
 VALIDATION_REQUIRED_FILES = CI_TOOLS | set(HOOK_TEST_COMMENTS) | {
     ".github/workflows/ci.yml", ".github/workflows/relay-r7.yml", ".github/workflows/macos-app.yml",
@@ -1411,8 +1421,13 @@ def soak_versions_reviewed(tree, reviewed=None):
 
 def soak_fixture_only(base, head, merge_base, paths):
     changed = set(paths) & set(SOAK_FIXTURES)
-    auth_changed = "packages/daemon/tests/connection-auth.test.ts" in changed
-    if not changed or any(path not in changed and not ordinary_soak_doc(path) for path in paths):
+    auth_path = "packages/daemon/tests/connection-auth.test.ts"
+    auth_changed = auth_path in changed
+    ci_paths = set(paths) & set(SOAK_AUTH_READINESS_CI_ORIGINALS)
+    readiness_inputs = (changed == {auth_path} and (not ci_paths or ci_paths == set(SOAK_AUTH_READINESS_CI_ORIGINALS)) and
+                        all(path in changed or path in ci_paths or ordinary_soak_doc(path) for path in paths))
+    legacy_inputs = bool(changed) and all(path in changed or ordinary_soak_doc(path) for path in paths)
+    if not readiness_inputs and not legacy_inputs:
         return False
     try:
         trees = {}
@@ -1434,16 +1449,63 @@ def soak_fixture_only(base, head, merge_base, paths):
                     return False
                 tree[path] = (mode, blob)
             trees[ref] = tree
-        for ref in (base, head):
+        readiness = readiness_inputs and all(trees[ref].get(auth_path) == ("100644", SOAK_AUTH_READINESS[role])
+                                             for ref, role in ((base, 0), (merge_base, 0), (head, 1)))
+        if not readiness and not legacy_inputs:
+            return False
+        refs = tuple(dict.fromkeys((base, head, merge_base))) if readiness else (base, head)
+        fixture_pins = {**SOAK_FIXTURES, auth_path: SOAK_AUTH_READINESS} if readiness else SOAK_FIXTURES
+        if readiness:
+            # Bind the whole known CLI state, not just the argv selector or a few tokens.
+            states = []
+            for role, trace in (("original", SOAK_VERSION_TRACE), ("head", SOAK_LAUNCH_VERSION_TRACE)):
+                if all(all(path == "packages/daemon/src/cli.ts" or
+                           trees[ref].get(path) == (tuple(values[role]) if values[role] is not None else None)
+                           for path, values in SOAK_LAUNCH_TRANSITION.items()) and
+                       soak_versions_reviewed(trees[ref], trace) for ref in refs):
+                    states.append(role)
+            if len(states) != 1:
+                return False
+            # Actual original/final fixture bodies must be readable, not merely named in a tree.
+            contents = validation_objects(dict.fromkeys(SOAK_AUTH_READINESS, "blob"))
+            if any("\0" in body.decode() for body in contents.values()):
+                return False
+            if ci_paths:
+                # Changed CI is reviewed/frozen policy input, not evidence of its own trust.
+                # Full validator execution remains mandatory for these CI input changes (#1476).
+                source_root = Path(__file__).resolve().parents[2]
+                originals = validation_objects(dict.fromkeys(SOAK_AUTH_READINESS_CI_ORIGINALS.values(), "blob"))
+                if any("\0" in body.decode() for body in originals.values()):
+                    return False
+                for path, original in SOAK_AUTH_READINESS_CI_ORIGINALS.items():
+                    if any(trees[ref].get(path) != ("100644", original) for ref in (base, merge_base)):
+                        return False
+                    source = source_root / path
+                    if source.is_symlink() or source.resolve(strict=True) != source or not source.is_file() or (
+                            source.stat().st_mode & 0o777) != 0o644:
+                        return False
+                    content = source.read_bytes()
+                    if len(content) > 8 * 1024 * 1024 or "\0" in content.decode():
+                        return False
+                    final = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+                    if trees[head].get(path) != ("100644", final):
+                        return False
+                    status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                                 merge_base, head, "--", path)
+                    if status != f"M\0{path}\0".encode():
+                        return False
+                    if validation_objects({final: "blob"})[final] != content:
+                        return False
+        for ref in refs:
             if auth_changed and trees[ref].get(".env.example") != COLD_PUBLIC_SAMPLE:
                 return False
             if any(trees[ref].get(path) != ("100644", pin[0]) for path, pin in SOAK_AUTH_COMMENTS.items()):
                 return False
             if any(trees[ref].get(path) != ("100644", blob) for path, blob in SOAK_TRACE.items()):
                 return False
-            if not soak_versions_reviewed(trees[ref]):
+            if not readiness and not soak_versions_reviewed(trees[ref]):
                 return False
-        for path, (old, new) in SOAK_FIXTURES.items():
+        for path, (old, new) in fixture_pins.items():
             for ref in (base, head):
                 if trees[ref].get(path) not in {("100644", old), ("100644", new)}:
                     return False
@@ -1458,10 +1520,11 @@ def soak_fixture_only(base, head, merge_base, paths):
                     return False
         # Trace wiring, helpers/config and every non-doc object/mode stay identical at both ends.
         def remaining(tree):
-            return {p: value for p, value in tree.items() if p not in changed and not ordinary_soak_doc(p)}
-        if remaining(trees[base]) != remaining(trees[head]):
+            return {p: value for p, value in tree.items() if p not in changed and
+                    (not readiness or p not in ci_paths) and not ordinary_soak_doc(p)}
+        if any(remaining(trees[ref]) != remaining(trees[base]) for ref in refs):
             return False
-        for ref in (base, head):
+        for ref in refs:
             scan = {}
             for path, (_, blob) in trees[ref].items():
                 if not auth_changed and not path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig")):
@@ -1481,10 +1544,12 @@ def soak_fixture_only(base, head, merge_base, paths):
             stream = io.BytesIO(data)
             for path, blob in scan.items():
                 header = stream.readline().decode().split()
-                if len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit():
+                if (len(header) != 3 or header[:2] != [blob, "blob"] or not header[2].isdigit() or
+                        (readiness and int(header[2]) > 8 * 1024 * 1024)):
                     return False
                 content = stream.read(int(header[2]))
-                if len(content) != int(header[2]) or stream.read(1) != b"\n":
+                if (len(content) != int(header[2]) or stream.read(1) != b"\n" or
+                        (readiness and hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest() != blob)):
                     return False
                 text = content.decode()
                 in_original_surfaces = path.startswith((*STAGING_SURFACES, "bunfig.toml", "package.json", "tsconfig"))
@@ -1917,9 +1982,18 @@ def validation_needed(base=None, head=None):
         for ref in (base, head, checkout):
             if git("rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip() != ref:
                 return full
-        if checkout != head and (pr.get("merge_commit_sha") != checkout or
-                git("rev-list", "--parents", "-n", "1", checkout).decode().split() != [checkout, base, head]):
-            return full
+        checkout_parent = None
+        if checkout != head:
+            parents = git("rev-list", "--parents", "-n", "1", checkout).decode().split()
+            if len(parents) != 3 or parents[0] != checkout or parents[2] != head:
+                return full
+            checkout_parent = parents[1]
+            if git("rev-parse", "--verify", f"{checkout_parent}^{{commit}}").decode().strip() != checkout_parent:
+                return full
+            # The test merge can use a newer first parent than the event's base.
+            # Accept it only when it descends from that exact event base; the tree
+            # inventory below still has to match at both commits.
+            git("merge-base", "--is-ancestor", base, checkout_parent)
         merge_base = git("merge-base", base, head).decode().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
             return full
@@ -1947,7 +2021,10 @@ def validation_needed(base=None, head=None):
             changed.add(path)
         if any(validation_input(path) for path in changed):
             return {**full, "reason": "Validator policy/tests/execution inputs changed; running full validation"}
-        inventories = [validation_inventory(ref) for ref in dict.fromkeys((base, head, merge_base, checkout))]
+        inventory_refs = [base, head, merge_base, checkout]
+        if checkout_parent is not None:
+            inventory_refs.append(checkout_parent)
+        inventories = [validation_inventory(ref) for ref in dict.fromkeys(inventory_refs)]
         inventory = inventories[0]
         if any(value != inventory for value in inventories[1:]):
             return full
