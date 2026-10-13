@@ -135,7 +135,7 @@ SOAK_VERSION_TRACE = {'packages/daemon/src/cli.ts': '978dd5a92b65a75644c678d2866
 
 
 # Three exact immutable comment-only references to the auth fixture, not general comment stripping.
-# Two separately named, whole reviewed transitions skip only the attached-session soak.
+# Separately named, whole reviewed transitions skip only the attached-session soak.
 # Exact immutable original/final objects; no directory-wide CLI or dependency exemption.
 SOAK_LAUNCH_TRANSITION = {'packages/daemon/src/cli.ts': {'original': ['100644', '3f5c9164ab334223c383381786338b9f80b4186d'],
                                 'head': ['100644', '8b48ff687e9d7919edadf815e56191fd1b4bc5d9']},
@@ -393,6 +393,59 @@ SOAK_DECODE_WORKER_TRANSITION = {'packages/daemon/src/tunnel/image-process.ts': 
                                                                 'head': ['100644',
                                                                          '4b520ecb09a68b2af9dfceafea7822c355e64e60']}}
 
+# Exact #1170 source-entry publication: 12 source paths plus two named prose docs.
+# The commit is a public reconstruction root, not an unpublished local candidate.
+SOAK_IMAGE_ENTRY_SOURCE_ROOT = "b65935ca91b88e879c7912caa2995365faf684a9"
+SOAK_IMAGE_ENTRY_BASE = "ecf97af4349a7bbad24a4328c301097f59ed944e"
+# Public ecf97/b659 source pins for the entry transition. These four blobs
+# advanced in the published source reconciliation; prior transition maps stay
+# frozen for their own controls.
+SOAK_IMAGE_ENTRY_CORE = {
+    **SOAK_TRANSITION_CORE,
+    "bun.lock": ["100644", "050863afa48b7cbb21fe70f36ee15457523c820a"],
+    "packages/daemon/package.json": ["100644", "063226a265e95c4e2373597db71b8f887eb89a45"],
+}
+SOAK_IMAGE_ENTRY_SUPPORT = {
+    **SOAK_DECODE_SUPPORT,
+    "scripts/tunnel-decoder-proof/process.ts": ["100644", "cd885edf0d140d2eef2d2117288b69f1532cde8e"],
+    "scripts/tunnel-decoder-proof/worker.ts": ["100644", "b890efc6d27a6695e2896ff2628be85e9338912a"],
+    # Existing decoder test is an approved baseline caller, pinned byte-for-byte.
+    "packages/daemon/tests/tunnel/image-decode-adoption.test.ts": ["100644", "9a999f774491bb38def97d4b99089ef409823482"],
+    # Existing worker adoption test is likewise a pinned caller of proof helpers.
+    "packages/daemon/tests/tunnel/image-worker-adoption.test.ts": ["100644", "4b520ecb09a68b2af9dfceafea7822c355e64e60"],
+}
+SOAK_IMAGE_ENTRY_DOCS = {".context/plan.md", "docs/FILE-TUNNEL.md"}
+SOAK_IMAGE_ENTRY_CALLERS = ("--internal-image-worker", "imageWorkerCommand", "createImageDecoder")
+SOAK_IMAGE_ENTRY_VERSION_TRACE = {
+    "packages/daemon/src/cli.ts": "64dfa90caf54d92b98fee3ed39cf5f5f058758cb82acc539d8531415401d1fa2",
+    "package.json": "406d8dcec0c16794fbbf97d4d77b1030c856da213ec551a802f8d6dc31022168",
+}
+SOAK_IMAGE_ENTRY_TRANSITION = {
+    ".github/workflows/release.yml": {"original": ["100644", "d02019f51640b15c0f374891096d513b6d64e34a"],
+                                      "head": ["100644", "d2c3e2189418d6b36f9e3efb898f3e0f72d20816"]},
+    "package.json": {"original": ["100644", "38805e9810a53d2c941094bfe2e599812d015a49"],
+                     "head": ["100644", "dc807854e06666da706d4d6984c1dd11716ac21b"]},
+    "packages/daemon/package.json": {"original": ["100644", "063226a265e95c4e2373597db71b8f887eb89a45"],
+                                     "head": ["100644", "db898b9c969f69b6a60561fae7e44b2e10690f9d"]},
+    "packages/daemon/src/cli/daemon-manager.ts": {"original": ["100644", "adbc1bc8228685ad4a0b1e9aa754615264ebe0ae"],
+                                                  "head": ["100644", "02642b62146955e1ddcfdb7d84bea70b9f8ddf5e"]},
+    "packages/daemon/src/entry.ts": {"original": None, "head": ["100644", "9819108666d5c86a5543268ee5687c685be00905"]},
+    "packages/daemon/src/tunnel/image-process.ts": {"original": ["100644", "2044a8e538b748c7d64e1e3c3aa388033dca0b89"],
+                                                    "head": ["100644", "c68a187eaffa1f95b1954b4709b6852f217c6f65"]},
+    "packages/daemon/src/tunnel/image-worker-command.ts": {"original": None,
+                                                           "head": ["100644", "9b889c11a3a03c4dd8dd3f6d729ba00bdbc4a4dc"]},
+    "packages/daemon/tests/cli/daemon-manager-command.test.ts": {"original": None,
+                                                                 "head": ["100644", "62260c5fa1b3e97783f296e116b1f8a358a039b0"]},
+    "packages/daemon/tests/tunnel/image-entry.test.ts": {"original": None,
+                                                         "head": ["100644", "46e6746319b428e0e464c652dc688ad7c16cb41f"]},
+    "scripts/third-party-notices.ts": {"original": ["100644", "ccc990c2dd94a2dbd1f75b95bb78d1efdccb436f"],
+                                       "head": ["100644", "f051e09f223f6416adffc58a43547e06c0b3d9ea"]},
+    "tests/integration/Dockerfile": {"original": ["100644", "47a44e6aa3b10949d70a031aba6af9dabdc67c7c"],
+                                     "head": ["100644", "f6471a40e332a23711e406ba47982df008be7756"]},
+    "tests/integration/image-worker-entry.ts": {"original": None,
+                                                "head": ["100644", "11df757dfe0088d9debb2427f6a4571276173cc3"]},
+}
+
 SOAK_LAUNCH_VERSION_TRACE = {
     **SOAK_VERSION_TRACE,
     "packages/daemon/src/cli.ts": "64dfa90caf54d92b98fee3ed39cf5f5f058758cb82acc539d8531415401d1fa2",
@@ -633,6 +686,7 @@ VALIDATION_PUBLIC_ROOTS = (
     "c04f69541be39ea5ed1aac58abe396ce04e8afbc",
     "c1c71ef456d075bd11c6bc01d4648fe6ee24169d",
     "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7",
+    SOAK_IMAGE_ENTRY_SOURCE_ROOT,
 )
 VALIDATION_PUBLIC_BLOBS = (
     "08c583da4b17c7844a5db98a978bc64ad69e6d37",
@@ -1572,6 +1626,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
     # Match complete changed-path populations before reading the unchanged published graph.
     launch_paths = set(SOAK_LAUNCH_TRANSITION)
     decode_paths = set(SOAK_DECODE_TRANSITION)
+    image_entry_paths = set(SOAK_IMAGE_ENTRY_TRANSITION)
     changed = set(paths)
     worker = False
     if launch_paths <= changed:
@@ -1581,11 +1636,17 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
         if changed & set(SOAK_DECODE_WORKER_TRANSITION):
             worker = True
             policy = {**SOAK_DECODE_TRANSITION, **SOAK_DECODE_WORKER_TRANSITION}
+    elif image_entry_paths <= changed:
+        name, policy = "Image worker entry", SOAK_IMAGE_ENTRY_TRANSITION
     else:
         return None
     required = set(policy)
-    if not required <= changed or any(path not in required and path not in {"package.json", "packages/daemon/src/cli.ts"} and not ordinary_soak_doc(path)
-                                      for path in changed):
+    if name == "Image worker entry":
+        allowed = required | SOAK_IMAGE_ENTRY_DOCS | {"packages/daemon/src/cli.ts"}
+        if not required <= changed or not SOAK_IMAGE_ENTRY_DOCS <= changed or changed - allowed:
+            return None
+    elif not required <= changed or any(path not in required and path not in {"package.json", "packages/daemon/src/cli.ts"} and not ordinary_soak_doc(path)
+                                        for path in changed):
         return None
     try:
         trees = {}
@@ -1608,9 +1669,10 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
         for path, roles in policy.items():
             for ref, role in ((base, "original"), (merge_base, "original"), (head, "head")):
                 expected = roles[role]
-                if name == "CLI-default" and path == "packages/daemon/src/cli.ts":
+                if ((name == "CLI-default" and path == "packages/daemon/src/cli.ts") or
+                        (name == "Image worker entry" and path == "package.json")):
                     if trees[ref].get(path, (None,))[0] != "100644":
-                        return None  # Its whole reviewed bytes are normalized below, not weakened.
+                        return None  # Whole reviewed bytes are normalized below, not weakened.
                 elif trees[ref].get(path) != (tuple(expected) if expected is not None else None):
                     return None
             expected_status = "M" if roles["original"] is not None else "A"
@@ -1618,9 +1680,14 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                          merge_base, head, "--", path)
             if status != f"{expected_status}\0{path}\0".encode():
                 return None
-        fixed = {path: value for path, value in SOAK_TRANSITION_CORE.items() if path not in required}
-        if name == "Dormant full-decoder":
-            fixed.update({path: value for path, value in SOAK_DECODE_SUPPORT.items() if path not in required})
+        # The image-entry transition uses its separately reviewed public source
+        # baseline, which includes the already-published lock/package/support updates.
+        fixed = ({path: value for path, value in SOAK_IMAGE_ENTRY_CORE.items() if path not in required}
+                 if name == "Image worker entry" else
+                 {path: value for path, value in SOAK_TRANSITION_CORE.items() if path not in required})
+        if name in {"Dormant full-decoder", "Image worker entry"}:
+            support = SOAK_IMAGE_ENTRY_SUPPORT if name == "Image worker entry" else SOAK_DECODE_SUPPORT
+            fixed.update({path: value for path, value in support.items() if path not in required})
         for path, value in fixed.items():
             if any(trees[ref].get(path) != tuple(value) for ref in trees):
                 return None
@@ -1642,6 +1709,11 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                     launch_role = role
                     break
             if launch_role is None:
+                return None
+        elif name == "Image worker entry":
+            if not all(soak_versions_reviewed(trees[ref], SOAK_LAUNCH_VERSION_TRACE)
+                       for ref in dict.fromkeys((base, merge_base))) or not soak_versions_reviewed(
+                           trees[head], SOAK_IMAGE_ENTRY_VERSION_TRACE):
                 return None
         else:
             if not all(soak_versions_reviewed(trees[ref], SOAK_VERSION_TRACE)
@@ -1676,7 +1748,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
             if len(content) != int(header[2]) or stream.read(1) != b"\n" or hashlib.sha1(
                     f"blob {len(content)}\0".encode() + content).hexdigest() != blob:
                 return None
-            if name == "Dormant full-decoder" and path in COLD_IMAGE_BINARY:
+            if name in {"Dormant full-decoder", "Image worker entry"} and path in COLD_IMAGE_BINARY:
                 continue  # Exact binary fixture mode/blob fixed at all3refs above.
             text = content.decode()
             if "\0" in text:
@@ -1688,6 +1760,10 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
             targets = {"packages/daemon/src/cli/launch-harness.ts"}
             identifiers = ("resolveLaunchHarness", "isSessionLaunch", "HarnessConfig")
             known = required
+        elif name == "Image worker entry":
+            targets = {"packages/daemon/src/entry.ts", "packages/daemon/src/tunnel/image-worker-command.ts"}
+            identifiers = SOAK_IMAGE_ENTRY_CALLERS
+            known = required | set(SOAK_IMAGE_ENTRY_SUPPORT)
         else:
             targets = {"packages/daemon/src/tunnel/image-decode.ts", "packages/daemon/src/tunnel/image-codecs.d.ts",
                        "scripts/tunnel-decoder-proof/decode.ts"}
@@ -1711,7 +1787,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                 if (cold_image_reference(path, text, targets, identifiers) if name == "Dormant full-decoder" else
                         cold_reference(path, text, targets, identifiers)):
                     return None
-                if name == "Dormant full-decoder" and cold_image_reference(
+                if name in {"Dormant full-decoder", "Image worker entry"} and cold_image_reference(
                         path, text, COLD_IMAGE_CALLERS | COLD_IMAGE_RUNNERS, ()):
                     return None
         return name + (" with complete owned worker" if worker else "")
