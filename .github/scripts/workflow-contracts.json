@@ -71,13 +71,20 @@
           "run": "set -euo pipefail\nuv pip install --python python3 --only-binary=:all: --target \"$RUNNER_TEMP/remi-ci-python\" PyYAML==6.0.3\nmkdir -p \"$RUNNER_TEMP/remi-ci-tools\"\ncurl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o \"$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz\"\necho '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | (cd \"$RUNNER_TEMP/remi-ci-tools\" && sha256sum -c -)\ntar -xzf \"$RUNNER_TEMP/remi-ci-tools/actionlint.tar.gz\" -C \"$RUNNER_TEMP/remi-ci-tools\" actionlint\n"
         },
         {
+          "name": "Determine validator scope",
+          "id": "validation",
+          "shell": "bash",
+          "run": "python3 .github/scripts/ci-scope.py --validation-needed"
+        },
+        {
           "name": "Verify classifier controls",
           "shell": "bash",
           "env": {
             "PYTHONPATH": "${{ runner.temp }}/remi-ci-python",
             "ACTIONLINT": "${{ runner.temp }}/remi-ci-tools/actionlint"
           },
-          "run": "python3 .github/scripts/check-ci-scope.py"
+          "run": "python3 .github/scripts/check-ci-scope.py",
+          "if": "steps.validation.outputs.validation_required != 'false'"
         },
         {
           "name": "Validate workflow YAML and execution contracts",
@@ -86,7 +93,8 @@
             "PYTHONPATH": "${{ runner.temp }}/remi-ci-python",
             "ACTIONLINT": "${{ runner.temp }}/remi-ci-tools/actionlint"
           },
-          "run": "python3 .github/scripts/workflow-scope.py"
+          "run": "python3 .github/scripts/workflow-scope.py",
+          "if": "steps.validation.outputs.validation_required != 'false'"
         },
         {
           "name": "Classify complete diff",

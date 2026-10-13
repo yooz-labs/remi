@@ -23,6 +23,17 @@ SOAK_SKIP = {
 def validate_action(action):
     # The independent corpus invokes this too; deleting the validator step cannot evade it.
     assert action == CONTRACTS["scope_action"], "scope action order/commands/IDs/env/pins/outputs changed"
+    steps = action["runs"]["steps"]
+    assert steps[2] == {"name": "Determine validator scope", "id": "validation", "shell": "bash",
+                        "run": "python3 .github/scripts/ci-scope.py --validation-needed"}
+    conditional = {"Verify classifier controls", "Validate workflow YAML and execution contracts"}
+    assert {step.get("name") for step in steps if "if" in step} == conditional
+    for step in steps:
+        if step.get("name") in conditional:
+            assert step["if"] == "steps.validation.outputs.validation_required != 'false'"
+        else:
+            assert "if" not in step  # Classification, output checking and tool setup always execute.
+        assert "continue-on-error" not in step
 
 
 def lint_result(proc):

@@ -161,7 +161,7 @@ describe('createCreateSessionHandlers', () => {
       {
         port: 20005,
         directory: '/tmp/project',
-        extraArgs: ['--auth', '--bind', '0.0.0.0'],
+        extraArgs: ['--auth', '--bind', '0.0.0.0', '--harness', 'claude'],
       },
     ]);
     // Spawn port should be released from the in-flight set.
