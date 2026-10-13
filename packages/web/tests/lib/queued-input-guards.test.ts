@@ -3,7 +3,14 @@ import * as os from 'node:os';
 import type { Question, ProtocolMessage, ErrorMessage } from '@remi/shared';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { generateId, createHello, createHelloAck, createUserInput } from '@remi/shared';
+import {
+  generateId,
+  createHello,
+  createHelloAck,
+  createUserInput,
+  createTranscriptContent,
+  now,
+} from '@remi/shared';
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter.ts';
 import { WebSocketClient } from '../../src/lib/websocket-client.ts';
 import {
@@ -12,6 +19,7 @@ import {
   markInputReceipt,
 } from '../../src/lib/input-refusal.ts';
 import { mergeResyncSurvivors, selectResyncSurvivors } from '../../src/lib/message-resync.ts';
+import { deduplicateMessage } from '../../src/lib/message-dedup.ts';
 import { createSessionHandlers } from '../../../daemon/src/cli/handlers/session-events.ts';
 import { ClaudeHarness } from '../../../daemon/src/harness/claude.ts';
 import { TranscriptDiscovery } from '../../../daemon/src/transcript/transcript-discovery.ts';
@@ -345,6 +353,42 @@ for (const scenario of [
         };
         expect(selectResyncSurvivors([bubble], sid)).toContain(bubble);
         expect(mergeResyncSurvivors([transcriptCopy], [bubble])).toContain(bubble);
+        const transcriptId = generateId();
+        api.handleMessage({
+          id: transcriptId,
+          sessionId: sid,
+          sender: 'user',
+          content: bubble.content,
+          createdAt: now(),
+          state: 'sent',
+          stateChangedAt: now(),
+          isEditing: false,
+        });
+        const structured = api.getMessage(transcriptId);
+        if (!structured) throw new Error('No actual MessageAPI transcript structure');
+        adapter!.sendRaw(
+          cid,
+          createTranscriptContent(sid, transcriptId, 'user', bubble.content, structured, false),
+        );
+        await until(
+          () =>
+            received.some((m) => m.type === 'transcript_content' && m.entryUuid === transcriptId),
+          'Matching transcript did not cross the real wire',
+        );
+        const actualTranscript = received.find(
+          (m) => m.type === 'transcript_content' && m.entryUuid === transcriptId,
+        );
+        if (actualTranscript?.type !== 'transcript_content')
+          throw new Error('No actual transcript frame');
+        expect(
+          deduplicateMessage([bubble], {
+            sessionId: actualTranscript.sessionId,
+            sender: actualTranscript.role,
+            content: actualTranscript.content,
+            entryUuid: actualTranscript.entryUuid,
+            source: 'transcript',
+          }),
+        ).toEqual({ action: 'add' });
       }
       if (scenario === 'detach-while-queued') {
         registry.attachConnection(sid, cid);
