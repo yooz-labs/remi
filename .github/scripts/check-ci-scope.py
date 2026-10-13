@@ -250,6 +250,32 @@ auth_blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=aut
 assert auth_blob == module["SOAK_FIXTURES"][SOAK_AUTH_PATH][1]
 SOAK_FINAL_CONTENT[SOAK_AUTH_PATH] = auth_final
 
+# #1480 adds only the first valid-auth test's existing success/error readiness.
+readiness_start = auth_final.index("    test('transitions to connecting after valid auth_response'")
+readiness_end = auth_final.index("    test('full handshake: auth -> hello -> connected'", readiness_start)
+readiness_slice = auth_final[readiness_start:readiness_end]
+for before, after in (
+        ("      let authSuccess = false;\n", "      let authSuccess = false;\n      const authenticated = Promise.withResolvers<void>();\n"),
+        ("            authSuccess = true;\n", "            authSuccess = true;\n            authenticated.resolve();\n"),
+        ("          },\n        },\n        { authenticator },", "          },\n          onAuthFailed: (error) => authenticated.reject(new Error(error)),\n        },\n        { authenticator },"),
+        ("      // Wait for async auth processing\n      await new Promise((r) => setTimeout(r, 100));",
+         "      // Wait for the actual auth outcome, within the existing test deadline.\n      await authenticated.promise;")):
+    assert readiness_slice.count(before) == 1, before
+    readiness_slice = readiness_slice.replace(before, after, 1)
+AUTH_READINESS_CONTENT = auth_final[:readiness_start] + readiness_slice + auth_final[readiness_end:]
+readiness_blob = subprocess.check_output(["git", "hash-object", "--stdin"], input=AUTH_READINESS_CONTENT.encode(),
+                                       stderr=subprocess.PIPE).decode().strip()
+assert readiness_blob == module["SOAK_AUTH_READINESS"][1]
+AUTH_READINESS_CI_ORIGINAL_CONTENT = {
+    path: subprocess.check_output(["git", "cat-file", "blob", blob], stderr=subprocess.PIPE)
+    for path, blob in module["SOAK_AUTH_READINESS_CI_ORIGINALS"].items()
+}
+# These are the reviewed executing inputs; reading them does not establish their trust.
+# CI changes still require the full validation commands before publication.
+AUTH_READINESS_CI_FINAL_CONTENT = {
+    path: (SCRIPT.parents[2] / path).read_bytes() for path in module["SOAK_AUTH_READINESS_CI_ORIGINALS"]
+}
+
 # New candidate bytes are reconstructed from published originals, never unpublished commit objects.
 COLD_FULL_BASE = "a0f0c8502a518aa41ef48145eef3b0cd87a1e593"
 COLD_PROOF = "scripts/tunnel-storage-proof/"
@@ -807,6 +833,102 @@ def selected(result):
     assert result["typecheck"] == any(result[key] for key in
                                       ("root", "web", "signaling", "integration", "notices"))
     return {key for key in gates if result[key]}
+
+
+def auth_readiness_controls(soak_tree, transition_updates, owned_missing_transition_objects):
+    # Reuse the existing full-tree runner; append only #1480-specific histories.
+    def readiness_assert(left, right, label, skip):
+        global count
+        result = classify(left, right)
+        assert selected(result) == gates and result["typecheck"] and result["relay"] and (
+            result["relay_soak"] is not skip), (label, result)
+        count += 1
+
+    ci_originals = [(path, body, "100644") for path, body in AUTH_READINESS_CI_ORIGINAL_CONTENT.items()]
+    ci_finals = [(path, body, "100644") for path, body in AUTH_READINESS_CI_FINAL_CONTENT.items()]
+    base = soak_tree(LAUNCH_PUBLIC_BASE, ci_originals)
+    assert git("rev-parse", f"{base}:{SOAK_AUTH_PATH}") == module["SOAK_AUTH_READINESS"][0]
+    launch = soak_tree(base, transition_updates("CLI-default", base))
+    update = (SOAK_AUTH_PATH, AUTH_READINESS_CONTENT, "100644")
+    doc = ("docs/owned-auth-readiness.md", "ordinary prose only\n", "100644")
+    candidates = {}
+    for role, left in (("original CLI", base), ("default CLI", launch)):
+        for qualification in (False, True):
+            updates = [update, *(ci_finals if qualification else [])]
+            candidate = soak_tree(left, updates)
+            candidates[(role, qualification)] = candidate
+            readiness_assert(left, candidate, ("auth readiness", role, qualification), True)
+            readiness_assert(left, soak_tree(left, [*updates, doc]),
+                              ("auth readiness ordinary docs", role, qualification), True)
+        for kind in ("wrong original", "wrong final", "reverse", "deleted", "renamed", "added", "executable", "symlink"):
+            old, updates, removals = left, [update], ()
+            if kind == "wrong original":
+                old = soak_tree(left, [(SOAK_AUTH_PATH, auth_original, "100644")])
+            elif kind == "wrong final":
+                updates = [(SOAK_AUTH_PATH, AUTH_READINESS_CONTENT + "\n// unreviewed\n", "100644")]
+            elif kind == "reverse":
+                old, updates = candidates[(role, False)], [(SOAK_AUTH_PATH, auth_final, "100644")]
+            elif kind == "deleted":
+                updates, removals = [], (SOAK_AUTH_PATH,)
+            elif kind == "renamed":
+                updates, removals = [("docs/moved-auth-fixture.md", AUTH_READINESS_CONTENT, "100644")], (SOAK_AUTH_PATH,)
+            elif kind == "added":
+                old = soak_tree(left, removals=(SOAK_AUTH_PATH,))
+            elif kind == "executable":
+                updates = [(SOAK_AUTH_PATH, AUTH_READINESS_CONTENT, "100755")]
+            elif kind == "symlink":
+                updates = [(SOAK_AUTH_PATH, "owned-target", "120000")]
+            readiness_assert(old, soak_tree(old, updates, removals), ("auth readiness", role, kind), False)
+        for path in ("packages/daemon/src/auth/authenticator.ts", "packages/daemon/src/cli.ts", "package.json"):
+            body = git("show", f"{left}:{path}") + "\n// unreviewed input\n"
+            drifted = soak_tree(left, [(path, body, "100644")])
+            readiness_assert(drifted, soak_tree(drifted, [update]), ("auth readiness upstream drift", role, path), False)
+        readiness_assert(left, soak_tree(left, [update, (SOAK_AUTH_PATH.replace("connection-auth", "neighbor-auth"),
+                                                        "export {};\n", "100644")]),
+                          ("auth readiness mixed test", role), False)
+        readiness_assert(left, soak_tree(left, [update, ("packages/shared/src/protocol.ts", "export {};\n", "100644")]),
+                          ("auth readiness mixed runtime", role), False)
+    readiness_assert(base, soak_tree(base, [update, *transition_updates("CLI-default", base)]),
+                      "auth readiness cannot compose with CLI transition", False)
+    ci_paths = tuple(AUTH_READINESS_CI_FINAL_CONTENT)
+    for choices in ((ci_paths[0],), (ci_paths[1],), (ci_paths[2],),
+                    ci_paths[:2], ci_paths[1:], (ci_paths[0], ci_paths[2])):
+        readiness_assert(base, soak_tree(base, [update, *[(path, AUTH_READINESS_CI_FINAL_CONTENT[path], "100644")
+                                                         for path in choices]]),
+                          ("auth readiness partial qualification", choices), False)
+    for index, path in enumerate(ci_paths):
+        original = AUTH_READINESS_CI_ORIGINAL_CONTENT[path]
+        drifted = soak_tree(base, [(path, original + b"\n# unreviewed original\n", "100644")])
+        readiness_assert(drifted, soak_tree(drifted, [update, *ci_finals]),
+                          ("auth readiness qualification original pin", path), False)
+        altered = list(ci_finals)
+        altered[index] = (path, AUTH_READINESS_CI_FINAL_CONTENT[path] + b"\n# unreviewed final\n", "100644")
+        readiness_assert(base, soak_tree(base, [update, *altered]),
+                          ("auth readiness qualification executing-byte pin", path), False)
+        altered[index] = (path, AUTH_READINESS_CI_FINAL_CONTENT[path], "100755")
+        readiness_assert(base, soak_tree(base, [update, *altered]),
+                          ("auth readiness qualification mode", path), False)
+    for path in ("packages/daemon/src/owned-auth-reader.ts", "owned-auth-launch.json"):
+        body = f"import '{SOAK_AUTH_PATH}';\n" if path.endswith(".ts") else json.dumps({"test": SOAK_AUTH_PATH})
+        caller = (path, body, "100644")
+        for context in ("head", "both", "base-only"):
+            left = base if context == "head" else soak_tree(base, [caller])
+            right = soak_tree(base, [update]) if context == "base-only" else soak_tree(
+                left, [update, *([caller] if context == "head" else [])])
+            readiness_assert(left, right, ("auth readiness caller", path, context), False)
+    for path, body in (("owned-auth-scan.txt", b"\xff"), ("owned-auth-scan.txt", b"owned\0text"),
+                       ("secrets.json", b"owned refusal sentinel")):
+        left = soak_tree(base, [(path, body, "100644")])
+        readiness_assert(left, soak_tree(left, [update]), ("auth readiness scan refusal", path, body), False)
+    other_fixture = "tests/integration/relay-r3-drain.test.ts"
+    old = soak_tree(base, [(other_fixture, SOAK_ORIGINAL_CONTENT[other_fixture], "100644")])
+    readiness_assert(old, soak_tree(old, [update, (other_fixture, SOAK_FINAL_CONTENT[other_fixture], "100644")]),
+                      "auth readiness cannot compose with legacy fixture", False)
+    owned_missing_transition_objects(base, candidates[("original CLI", True)], [
+        ("original", SOAK_AUTH_PATH), ("head", SOAK_AUTH_PATH),
+        ("original", ci_paths[0]), ("head", ci_paths[1]),
+        ("core", "packages/daemon/src/cli.ts"),
+        ("core", next(iter(module["SOAK_AUTH_COMMENTS"])))], "auth readiness")
 
 
 def validation_controls():
@@ -3233,6 +3355,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                           *[(path, body, "100644") for path, body in WORKER_CONTENT.items()]]), "review fixed complete D2+D3", True)
         # END root indirect decoder entry regressions.
         validation_controls()
+        auth_readiness_controls(soak_tree, transition_updates, owned_missing_transition_objects)
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
