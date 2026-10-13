@@ -131,10 +131,14 @@ export function readHubStatus(): { port: number; bind?: string; auth?: boolean }
 export function resolveRemiCommand(): { command: string; baseArgs: string[] } {
   // In compiled Bun binaries, process.execPath points to the actual binary,
   // while process.argv[0] may report as "bun" (the embedded runtime).
-  // Bun.argv[0] also gives the real path in compiled binaries.
+  // #1170: bundled module paths also identify arbitrary-named release/test artifacts.
   const execPath = process.execPath ?? '';
   const argv0 = process.argv[0] ?? '';
   const argv1 = process.argv[1] ?? '';
+
+  if (import.meta.path.startsWith('/$bunfs/')) {
+    return { command: execPath, baseArgs: [] };
+  }
 
   // Compiled binary: execPath ends with /remi (the installed binary)
   if (execPath.endsWith('/remi') || execPath.endsWith('\\remi')) {

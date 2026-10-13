@@ -39,7 +39,10 @@ export class DecoderProcess {
   lastChildPID: number | undefined;
   lastChildExit: Readonly<DecoderChildExit> | undefined;
 
-  constructor(private readonly command: readonly string[]) {}
+  constructor(
+    private readonly command: readonly string[],
+    private readonly cwd?: string,
+  ) {}
 
   async decode(
     bytes: Buffer,
@@ -84,6 +87,7 @@ export class DecoderProcess {
         stderr: 'ignore',
         // No application credentials or configuration are inherited by the worker.
         env: decoderWorkerEnvironment(),
+        ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
       });
       child = started;
       this.lastChildPID = child.pid;
@@ -214,6 +218,7 @@ export class DecoderProcess {
         stdout: 'pipe',
         stderr: 'ignore',
         env: decoderWorkerEnvironment(),
+        ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
       });
       child = started;
       this.lastChildPID = child.pid;
