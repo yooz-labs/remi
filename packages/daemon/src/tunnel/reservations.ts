@@ -1,4 +1,5 @@
-// #1170 internal reservation accounting. No production caller or file-deletion authority.
+// #1170 reservation accounting used by authenticated image staging and owned recovery.
+// A charged row supplies no transfer authority or independent file-deletion authority.
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';

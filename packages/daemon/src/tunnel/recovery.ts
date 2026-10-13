@@ -1,4 +1,5 @@
-// #1170 internal immutable ownership journal; no transfer authority or runtime caller.
+// #1170 immutable ownership journal used by image staging and its recovery/retirement paths.
+// Filesystem ownership grants no transfer or insertion authority.
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { DirectoryRoot } from './admission';

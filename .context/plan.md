@@ -494,6 +494,10 @@ these rows require the matching daemon for recovery and remain charged otherwise
 The correction preserves all 105 predecessor compiled groups and adds 18
 actual-file/image-name groups, including both formats, wrong-format refusal,
 descriptor/name/root mutation and six killed-retirement restart boundaries per
-format. Current source and compiled results will be recorded before publication.
+format. Both Bun source populations pass 25 tests/635 assertions, and all six
+supported compiled cells pass 123 groups with unchanged source, clean runtime
+temp and no cleanup errors, using the predecessor's 256 MiB/64-PID Linux envelope.
+Independent review found only stale caller banners in three touched storage
+modules; those descriptions are corrected in this same change.
 The corrected exact-path model check, managed insertion retirement, shared
 vectors, handler/client integration and native conformance remain subsequent gates.

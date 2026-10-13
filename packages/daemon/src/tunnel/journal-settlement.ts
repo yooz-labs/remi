@@ -1,4 +1,5 @@
-// #1170 internal journal composition; no transfer authority or runtime caller.
+// #1170 journal composition used by authenticated direct image staging and recovery.
+// Captured transfer authority belongs to ImageStagingService; insertion remains separately gated.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DirectoryRoot } from './admission';
