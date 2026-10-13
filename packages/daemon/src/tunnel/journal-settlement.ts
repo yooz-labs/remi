@@ -1,5 +1,6 @@
 // #1170 internal journal composition; no transfer authority or runtime caller.
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { DirectoryRoot } from './admission';
 import { type JournalLease, sameWitnesses } from './journal-schema';
 import { RecoveryError, RecoveryIntent, type RecoveryOps } from './recovery';
@@ -43,6 +44,8 @@ export type JournalRead = {
   readonly lease: JournalLease;
   readonly byteLength: number;
   read(position: number, length: number): Buffer;
+  /** Internal host handoff only. Validate again at the queued effect; never send this on the wire. */
+  referencePath(): string;
   retainStaged(): 'staged';
   close(): void;
 };
@@ -73,6 +76,7 @@ function openJournalRead(
     const stat = original;
     let closed = false;
     let closeFailed = false;
+    let staged = false;
     const current = () => {
       if (closed) throw new RecoveryError('unavailable');
       roots(lease, scratch, metadata);
@@ -115,9 +119,16 @@ function openJournalRead(
         }
         return buffer;
       },
+      referencePath() {
+        if (!staged) throw new RecoveryError('unavailable');
+        account();
+        return path.join(scratch.pathname, `${lease.id}.artifact`);
+      },
       retainStaged() {
         if (closed) throw new RecoveryError('unavailable');
-        return store.retainJournal(lease, measure);
+        const result = store.retainJournal(lease, measure);
+        staged = true;
+        return result;
       },
       close() {
         if (closeFailed) throw new RecoveryError('unavailable');
