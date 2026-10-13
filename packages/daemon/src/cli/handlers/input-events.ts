@@ -1422,8 +1422,79 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return;
       }
 
-      // Structured input from web/mobile client: append Enter
-      await session.pty.submitInput(content);
+      // Capture the host's binding even for a legacy sender with none (#1488).
+      // A failed read cannot establish a context safe to type into.
+      let capturedBinding: string | undefined;
+      try {
+        capturedBinding = bindingStore.get(session.sessionId)?.claudeSessionId ?? undefined;
+      } catch {
+        send(connectionId, createInputNotDeliveredError(session.sessionId, messageId));
+        return;
+      }
+      const pty = session.pty;
+      let inputMayBePartial = false;
+      const refuse = (code: string, reason: string, bound?: string): false => {
+        send(
+          connectionId,
+          createError(
+            code,
+            inputMayBePartial
+              ? 'Message was not submitted. Some text may remain in the terminal; check it before sending again.'
+              : reason,
+            {
+              sessionId: session.sessionId,
+              ...(messageId !== undefined && { messageId }),
+              ...(inputMayBePartial && { inputMayBePartial: true }),
+              ...(bound !== undefined && { boundClaudeSessionId: bound }),
+            },
+          ),
+        );
+        return false;
+      };
+      try {
+        await pty.submitInput(content, () => {
+          if (
+            session.sessionId !== sessionId ||
+            sessionRegistry.getSessionForConnection(connectionId) !== session ||
+            sessionRegistry.getSession(session.sessionId) !== session ||
+            session.pty !== pty
+          ) {
+            return refuse(
+              'SESSION_NOT_FOUND',
+              'This connection is no longer attached; input was not submitted.',
+            );
+          }
+          let currentBinding: string | undefined;
+          try {
+            currentBinding = bindingStore.get(session.sessionId)?.claudeSessionId ?? undefined;
+          } catch {
+            return refuse(
+              'INPUT_NOT_DELIVERED',
+              'The session binding could not be checked; input was not submitted.',
+            );
+          }
+          if (currentBinding !== capturedBinding) {
+            return refuse(
+              'STALE_BINDING',
+              'The session changed; input was not submitted.',
+              currentBinding,
+            );
+          }
+          if (acceptsTypedChat?.(session.sessionId) === false) {
+            return refuse(PROMPT_WAITING_ERROR_CODE, CHAT_NOT_ACCEPTED_MESSAGE);
+          }
+          const currentPrompt = promptUp?.(session.sessionId) ?? null;
+          if (currentPrompt !== null) {
+            return refuse(PROMPT_WAITING_ERROR_CODE, PROMPT_UP_MESSAGE[currentPrompt]);
+          }
+          // From this synchronous boundary onward, a failed write may have typed text.
+          inputMayBePartial = true;
+          return true;
+        });
+      } catch (err) {
+        log(`[PTY] structured write failed: ${errorToString(err)}`);
+        refuse('INPUT_NOT_DELIVERED', 'Input was not submitted because the terminal write failed.');
+      }
     },
 
     // The WebSocket path: route the answer and reply over the connection on

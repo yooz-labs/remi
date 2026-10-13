@@ -23,7 +23,9 @@
 import type { UIMessage } from '../types';
 
 /**
- * A user message counts as "unconfirmed" if the daemon hasn't acked it yet
+ * A partial input or its independent notice remains uncertain across resync:
+ * neither a receipt nor a matching transcript entry proves its line was submitted (#1488).
+ * Otherwise a user message counts as "unconfirmed" if the daemon hasn't acked it yet
  * ('sending', or 'sent' -- #663's post-send/pre-ack state) or the
  * ack-timeout/immediate-send-failure path gave up on it ('failed'). A
  * 'delivered' or 'read' message already has a daemon ack; if a rotation
@@ -31,7 +33,11 @@ import type { UIMessage } from '../types';
  * other pre-rotation history, not to otherwise-unrecoverable user intent.
  */
 function isUnconfirmedUserMessage(m: UIMessage): boolean {
-  return m.sender === 'user' && (m.state === 'sending' || m.state === 'sent' || m.state === 'failed');
+  // A partial-input notice must survive even when rotation removed its user row (#1488).
+  return (
+    m.inputMayBePartial === true ||
+    (m.sender === 'user' && (m.state === 'sending' || m.state === 'sent' || m.state === 'failed'))
+  );
 }
 
 /**
@@ -47,9 +53,7 @@ export function selectResyncSurvivors(
   sessionId: string,
 ): readonly UIMessage[] {
   const sessionMessages = messages.filter((m) => m.sessionId === sessionId);
-  const unconfirmedIds = new Set(
-    sessionMessages.filter(isUnconfirmedUserMessage).map((m) => m.id),
-  );
+  const unconfirmedIds = new Set(sessionMessages.filter(isUnconfirmedUserMessage).map((m) => m.id));
   if (unconfirmedIds.size === 0) return [];
   return sessionMessages.filter(
     (m) =>
@@ -113,8 +117,9 @@ function candidateLandedIndices(survivor: UIMessage, reloaded: readonly UIMessag
  * reloaded transcript's entry ids are generated independently of the
  * client's wire message id, so content is the only correlation available
  * here -- same as the existing optimistic <-> transcript reconciliation in
- * message-dedup.ts). A system note is kept only alongside the send it
- * describes, never on its own.
+ * message-dedup.ts). Partial input is always retained: content/time matching
+ * cannot prove its stopped line was submitted (#1488). An independent partial
+ * system notice is kept on its own; other related notes follow their send.
  *
  * Claim discipline: each reloaded entry can satisfy at most one survivor
  * (first-come, in `survivors` order). Without this, two distinct sends with
@@ -140,6 +145,10 @@ export function mergeResyncSurvivors(
 
   for (const m of survivors) {
     if (m.sender !== 'user') continue;
+    if (m.inputMayBePartial) {
+      survivingUserIds.add(m.id);
+      continue;
+    }
     const candidates = candidateLandedIndices(m, reloaded).filter(
       (i) => !claimedReloadedIndices.has(i),
     );

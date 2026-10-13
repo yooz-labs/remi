@@ -570,10 +570,15 @@ idle-prompt recognition when the redraw matches it (no capture of the redraw
 right after an Esc exists, so that exact frame is not claimed), otherwise the
 next status or Claude's own `idle_prompt` notification, which it sends only
 after the session has sat idle for a while. Until then the chat is refused (the
-card and the terminal still answer). (2) `submitInput` writes the text, waits
-50 ms, then writes the Enter; the observation is checked once, before the
-text, so a menu that renders inside that window still gets the Enter. Chat has
-no atomic "no prompt now" check to wait on. (3) A PTY-parsed status is a text
+card and the terminal still answer). (2) For chat and Stop, `submitInput` checks
+a synchronous caller guard inside its write queue before text and again after
+the 50 ms delay before Enter (#1488). Chat rechecks its captured session/PTY,
+attachment, binding, typed-chat support and `promptUp`; Stop rechecks its
+captured runtime, binding and `promptUp`, force-closing that runtime if invalid.
+If chat's context changes after text, Enter is withheld but some text may remain
+in the terminal: a correlated partial-input error gives the web message a
+"Not submitted" status without Retry. A late receipt or matching transcript
+text does not clear that uncertainty. (3) A PTY-parsed status is a text
 guess and can clear the observation while the menu is still up; for a
 hook-backed prompt the gate's half of `promptUp` still refuses then. (4) The
 no-tracker branch is effectively dead in production: `cli.ts` builds a tracker

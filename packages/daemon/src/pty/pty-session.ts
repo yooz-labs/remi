@@ -52,6 +52,9 @@ export interface PTYSessionConfig {
   readonly size?: TerminalSize;
 }
 
+/** Synchronous caller validity at each queued submission effect (#1488). */
+export type SubmitInputGuard = (phase: 'text' | 'enter') => boolean;
+
 /** Default terminal size */
 const DEFAULT_SIZE: TerminalSize = {
   cols: 120,
@@ -246,7 +249,7 @@ export class PTYSession {
    * with respect to any other queued write (another submit, or a raw write)
    * for this session.
    */
-  async submitInput(text: string): Promise<void> {
+  async submitInput(text: string, guard?: SubmitInputGuard): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
@@ -258,12 +261,19 @@ export class PTYSession {
         throw new Error(`Cannot write to session in state: ${this.state}`);
       }
 
+      // The caller's attachment/binding/prompt can change while queued (#1488).
+      if (guard && !guard('text')) return;
       // Write the text first
       this.termWrite(text);
 
       // Small delay to let Claude Code process the text
       await new Promise((resolve) => setTimeout(resolve, 50));
 
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
+      // A prompt can also appear during the text-to-Enter delay (#1488).
+      if (guard && !guard('enter')) return;
       // Send CR (Enter key) separately
       this.termWrite('\r');
     });

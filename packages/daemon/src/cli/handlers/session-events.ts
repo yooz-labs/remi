@@ -197,23 +197,55 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // same path a failed /exit write takes.
       const up = promptUp?.(sessionId) ?? null;
       const exitInput = harness.gracefulExitInput;
-      const forceClose = up !== null || exitInput === null;
+      let capturedBinding: string | null = null;
+      let bindingReadable = true;
+      try {
+        capturedBinding = bindingStore.getIdentity(sessionId)?.harnessSessionId ?? null;
+      } catch {
+        bindingReadable = false;
+      }
+      const forceClose = up !== null || exitInput === null || !bindingReadable;
       if (up !== null) {
         log(
           `[Stop] a prompt is up for ${sessionName} (${up}); not typing ${exitInput ?? 'an exit command'} into it, forcing close`,
         );
       } else if (exitInput === null) {
         log(`[Stop] ${sessionName} has no graceful exit input; forcing close`);
+      } else if (!bindingReadable) {
+        log(`[Stop] ${sessionName}'s binding cannot be checked; forcing close`);
       } else {
-        session.pty.submitInput(exitInput).catch((err) => {
-          logError(
-            `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
-          );
-          sessionRegistry.closeSession(sessionId, 'forced');
-        });
+        const pty = session.pty;
+        session.pty
+          .submitInput(exitInput, () => {
+            let valid = sessionRegistry.getSession(sessionId) === session && session.pty === pty;
+            try {
+              valid =
+                valid &&
+                (bindingStore.getIdentity(sessionId)?.harnessSessionId ?? null) ===
+                  capturedBinding &&
+                (promptUp?.(sessionId) ?? null) === null;
+            } catch {
+              valid = false;
+            }
+            if (!valid) {
+              // Reuse Stop's existing safe close: never type cleanup keys (#1488).
+              if (sessionRegistry.getSession(sessionId) === session) {
+                sessionRegistry.closeSession(sessionId, 'forced');
+              }
+            }
+            return valid;
+          })
+          .catch((err) => {
+            logError(
+              `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+            );
+            if (sessionRegistry.getSession(sessionId) === session) {
+              sessionRegistry.closeSession(sessionId, 'forced');
+            }
+          });
       }
       const fallbackTimer = setTimeout(() => {
-        if (sessionRegistry.getSession(sessionId)) {
+        if (sessionRegistry.getSession(sessionId) === session) {
           log(
             `Session ${sessionName} did not exit on ${exitInput ?? 'a forced close'} within ${exitFallbackMs}ms; forcing`,
           );
