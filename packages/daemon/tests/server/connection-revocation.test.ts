@@ -13,7 +13,12 @@ import {
   createSessionListRequest,
   createSessionListResponse,
   deserialize,
+  encodeImageInsertionFrame,
+  encodeImageStagingFrame,
+  encodeStructuredChatFrame,
   fromBase64,
+  generateId,
+  now,
   serialize,
   sign,
   unlockIdentity,
@@ -41,6 +46,7 @@ async function fixture(pingInterval = 60_000) {
   const authenticator = new Authenticator({ identity, identityStore: store });
   const capability = '0'.repeat(64);
   const queries: string[] = [];
+  const effects: string[] = [];
   const disconnects: string[] = [];
   const sockets: WebSocket[] = [];
   const server = new WebSocketServer(
@@ -51,6 +57,15 @@ async function fixture(pingInterval = 60_000) {
       connection: { authenticator, pingInterval },
     },
     {
+      onStructuredChat: () => {
+        effects.push('chat');
+      },
+      onImageInsert: () => {
+        effects.push('insert');
+      },
+      onImageUpload: () => {
+        effects.push('upload');
+      },
       onSessionListRequest: (cid, id) => {
         queries.push(id);
         server.sendTo(cid, createSessionListResponse([], id));
@@ -70,6 +85,7 @@ async function fixture(pingInterval = 60_000) {
     const messages: ProtocolMessage[] = [];
     let tail = Promise.resolve();
     let failure: unknown;
+    let answerPings = true;
     ws.onmessage = (event) => {
       tail = tail
         .then(async () => {
@@ -88,7 +104,7 @@ async function fixture(pingInterval = 60_000) {
             );
           else if (message.type === 'auth_result' && message.success)
             ws.send(serialize(createHello('revocation-test', '1.0.0')));
-          else if (message.type === 'ping' && ws.readyState === WebSocket.OPEN)
+          else if (message.type === 'ping' && answerPings && ws.readyState === WebSocket.OPEN)
             ws.send(serialize(createPong(message.id)));
         })
         .catch((error) => {
@@ -104,6 +120,9 @@ async function fixture(pingInterval = 60_000) {
     return {
       ws,
       messages,
+      silencePongs: () => {
+        answerPings = false;
+      },
       settled: async () => {
         await tail;
         if (failure) throw failure;
@@ -116,6 +135,7 @@ async function fixture(pingInterval = 60_000) {
     client,
     connect,
     queries,
+    effects,
     disconnects,
     async cleanup() {
       for (const ws of sockets) ws.close();
@@ -128,11 +148,98 @@ async function fixture(pingInterval = 60_000) {
   };
 }
 
+const envelope = () => ({ id: generateId(), timestamp: now(), sessionId: generateId() });
+const typedFrames = [
+  {
+    name: 'chat',
+    frame: () =>
+      encodeStructuredChatFrame({
+        ...envelope(),
+        type: 'chat_submit_request',
+        seq: 1,
+        binding: { harness: 'codex', harnessSessionId: generateId() },
+        content: 'owned test',
+      }),
+  },
+  {
+    name: 'insertion',
+    frame: () =>
+      encodeImageInsertionFrame({
+        ...envelope(),
+        type: 'image_insert_request',
+        binding: { harness: 'claude', harnessSessionId: generateId() },
+        artifactId: Buffer.alloc(16).toString('base64url'),
+      }),
+  },
+  {
+    name: 'upload',
+    frame: () =>
+      encodeImageStagingFrame({
+        ...envelope(),
+        type: 'image_upload_begin',
+        binding: { harness: 'claude', harnessSessionId: generateId() },
+        mediaType: 'image/png',
+        byteLength: 1,
+        digest: Buffer.alloc(32).toString('base64url'),
+      }),
+  },
+];
+for (const encoding of ['text', 'binary'] as const) {
+  for (const typed of typedFrames) {
+    test(`revoked ${encoding} ${typed.name} frame cannot reach its domain callback (#1305)`, async () => {
+      const owned = await fixture();
+      try {
+        const open = await owned.connect();
+        expect(owned.store.removeAuthorizedKey(owned.client.fingerprint)).toBe(true);
+        const frame = typed.frame();
+        open.ws.send(encoding === 'text' ? frame : new TextEncoder().encode(frame));
+        await until(
+          () => open.ws.readyState === WebSocket.CLOSED || owned.effects.length > 0,
+          `revoked ${encoding} ingress disposition`,
+        );
+        expect(owned.effects).toHaveLength(0);
+        await until(
+          () => open.ws.readyState === WebSocket.CLOSED,
+          `revoked ${encoding} socket closed`,
+        );
+        await open.settled();
+        expect(owned.effects).toHaveLength(0);
+        expect(owned.disconnects).toEqual([
+          'Device authorization removed; local approval required',
+        ]);
+      } finally {
+        await owned.cleanup();
+      }
+    }, 10000);
+  }
+}
+
 for (const stimulus of ['next-frame', 'heartbeat'] as const) {
   test(`removing a grant closes its authenticated ${stimulus} peer (#1305)`, async () => {
     const owned = await fixture(stimulus === 'heartbeat' ? 40 : 60_000);
     try {
       const open = await owned.connect();
+      if (stimulus === 'heartbeat') {
+        await until(
+          () => open.messages.some((message) => message.type === 'ping'),
+          'healthy heartbeat',
+        );
+        await open.settled();
+        open.silencePongs();
+        // A real ordered response proves prior Pongs passed the server before
+        // revocation. No new inbound frame can satisfy the heartbeat guard.
+        const barrier = createSessionListRequest(false);
+        open.ws.send(serialize(barrier));
+        await until(
+          () =>
+            open.messages.some(
+              (message) =>
+                message.type === 'session_list_response' && message.requestId === barrier.id,
+            ),
+          'pre-removal message barrier',
+        );
+      }
+      const queriesBefore = owned.queries.length;
       expect(owned.store.removeAuthorizedKey(owned.client.fingerprint)).toBe(true);
       if (stimulus === 'next-frame') open.ws.send(serialize(createSessionListRequest(false)));
       await until(
@@ -140,7 +247,7 @@ for (const stimulus of ['next-frame', 'heartbeat'] as const) {
         'revoked direct connection closed',
       );
       await open.settled();
-      expect(owned.queries).toHaveLength(0);
+      expect(owned.queries).toHaveLength(queriesBefore);
       expect(owned.disconnects).toEqual(['Device authorization removed; local approval required']);
       expect(
         open.messages.some(

@@ -702,3 +702,26 @@ retired or replaced child sockets cannot notify. Background refresh failures
 are logged without payloads and retire the channel. No new polling or wire shape.
 The original head's full suite and actual R7 soak remain evidence for that head;
 the corrected relay source needs fix-delta review and fresh hosted validation.
+
+## Direct connections after key removal (#1305)
+
+Local continuation reuses the already verified exact identity and the existing
+heartbeat: reread the shared grant before generic/typed text or binary domain
+dispatch and at each ping tick. A removed or unreadable grant closes through
+the ordinary visible CLOSING/disconnect cleanup. Connected silent peers retire at the
+next existing tick (default 30 seconds plus scheduling delay). Current-grant
+checks retain existing in-flight cancellation and separate capability/relay
+admission. No new timer, watcher, wire shape, native code or account call.
+
+Real signed WebSocket clients first reproduced next-frame, idle and unreadable
+store failures on both Mac Buns. Caller tracing and additional valid binary
+controls exposed the three dedicated ingress paths; their guards now precede
+domain callbacks too. The real hub/CLI provisioning case requires the old
+socket to close and retains fresh UNKNOWN_KEY, pending and reapproval checks.
+The complete focused auth/connection/server/provisioning population passes
+73 tests with 281 assertions on each Mac Bun; root/web types and format pass.
+Eight exact guard-removal/original failure cells passed their negative oracles;
+source bytes were restored. Independent full R1 and final hosted validation remain.
+This branch uses the pending #1515 held-port fix; publish after that prerequisite
+lands and preserve its current gate's base while preparing locally.
+Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-connection-revocation/`.
