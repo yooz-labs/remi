@@ -1,6 +1,6 @@
 # ADR 0045: Explicit direct file downloads
 
-**Status:** proposed; owner review required before contract freeze or runtime adoption
+**Status:** accepted fields and limits; HTTPS/WSS required before direct release; runtime adoption pending
 **Date:** 2026-10-14
 **Owner:** Yahya
 
@@ -18,10 +18,13 @@ already holds arbitrary nonempty bytes; its writer and closed reader own the
 same private artifact. The separate private-copy publication prototype is not
 selected: the managed path needs no additional hard-link factory or cleanup format.
 
-This proposal adds no models, registry entries, capability or runtime caller.
-ADR 0044 is reserved by the independent link proposal in PR #1508.
+The owner accepted the fields, limits, cleanup rules and `file_download` name on
+2026-10-14, then explicitly retained the 10 MiB ceiling and required HTTPS/WSS
+before the first direct link/download release. Full relay tunneling follows.
+This document adds no models, registry entries, capability or runtime caller.
+Browser-link fields are separately accepted in ADR 0044 (#1508).
 
-## Proposed decision
+## Decision
 
 ### 1. Explicit download and scope
 
@@ -36,12 +39,18 @@ Advertise it only with accepted strict codecs/goldens, an authenticated handler
 and one shipping client caller. Native implementation/conformance belongs to the
 Xcode track and does not become available through this document.
 
-Initial transport is the existing signed direct connection, with a known live
-Claude or Codex binding. Downloading does not type into either harness or call a
-model, and may proceed while a permission is held if answer responsiveness passes.
-Direct authentication adds no encryption: privacy requires the existing private
-transport, such as Tailscale, a VPN or an SSH tunnel (ADR 0009).
-Relay bytes require a separate actual encrypted hub/child/client acceptance.
+Initial release requires an HTTPS/WSS direct connection with normal certificate
+and hostname validation, the existing signed device authentication, and a known
+live Claude or Codex binding. The current daemon supplies no HTTPS/WSS listener;
+its signed `ws://` transport alone does not satisfy this prerequisite. Tailscale,
+a VPN or an SSH tunnel does not waive the owner's HTTPS/WSS requirement for this
+release. This amends ADR 0009 for the new link/download features; it does not claim
+that existing direct connections are encrypted by Remi.
+
+Downloading does not type into either harness or call a model, and may proceed
+while a permission is held if answer responsiveness passes. No automatic
+plaintext fallback is permitted for this feature. Relay bytes follow direct
+release and require separate actual encrypted hub/child/client acceptance.
 
 ### 2. Exact envelope and encodings
 
@@ -49,7 +58,7 @@ Every frame contains exactly `type`, `id`, `timestamp`, `sessionId` and the list
 additional fields. Responses also contain `requestId`, the initiating request's
 `id`. No field in these shapes is optional.
 
-| Field | Proposed required shape |
+| Field | Required shape |
 |---|---|
 | `id`, `requestId`, `beginId` | Lowercase canonical UUID v4. `beginId` names the original begin request on this connection/session. |
 | `sessionId` | Lowercase canonical UUID of the actual attached live Remi session. |
@@ -167,9 +176,15 @@ outside host transfer retention. No preview, HTML/SVG render or archive extracti
 
 ## Verification and implementation order
 
-Owner review fixes the fields, pull/cancel semantics, arbitrary inert regular-file
-policy, nonempty first version, limits and `file_download` name before models.
-Then use one implementation lead and one independent reviewer per bounded PR:
+Owner review accepted the fields, pull/cancel semantics, arbitrary inert regular-file
+policy, nonempty first version, 10 MiB limit and `file_download` name. The later
+HTTPS/WSS-first decision is a release prerequisite. Use one implementation lead
+and one independent reviewer per bounded PR:
+
+0. Implement and verify direct HTTPS/WSS, preserving device authentication,
+   local CLI and hub/child operation, endpoint discovery and certificate validation.
+   Native URL construction/conformance remains with the Xcode track. Gate actual
+   download availability on the completed secure transport and its shipping client.
 
 1. Characterize/extract one admitted-read validation core from the existing
    private-copy proof; reuse it with the managed writer, without a second copy
@@ -180,14 +195,14 @@ Then use one implementation lead and one independent reviewer per bounded PR:
    supported compiled targets and both recorded Bun gates. Measure before adding
    a disposable worker; none is selected by this proposal.
 3. Add strict TypeScript codec/goldens and registry/direction handling only after
-   acceptance. Add malformed/boundary/duplicate/sequence/cancellation vectors.
+   the accepted contract. Add malformed/boundary/duplicate/sequence/cancellation vectors.
 4. Add authenticated direct dispatch and one explicit web Save caller, with real
    generated files through the shipping daemon/client endpoint. Exercise both
    known harness bindings without consuming model quota, current/revoked grants,
    disconnect, source races, slow consumers and a held answer.
 5. Render web progress/cancel/error/Save on phone/tablet/desktop. Native runs the
    same goldens plus its Save/share/device acceptance. Relay gets its own actual
-   ciphertext-only Worker/hub/child/client controls; neither blocks direct work.
+   ciphertext-only Worker/hub/child/client controls after the direct release.
 
 No protocol, download availability or native completion is established by review
 of this document. Empty-file support is deferred explicitly; changing the shared
@@ -206,7 +221,7 @@ reservation invariant needs its own reviewed implementation and controls.
 
 ## Receipts
 
-Source at develop `a3eda3a9`: `tunnel/admission.ts` supplies descriptor admission;
+Original proposal source at develop `a3eda3a9`: `tunnel/admission.ts` supplies descriptor admission;
 `tunnel/journal-settlement.ts` bounds reads and owns the journal lifecycle;
 `tunnel/reservations.ts` requires positive byte admission. There is no production
 `FileAdmission` constructor or file-fetch handler/caller at that source.

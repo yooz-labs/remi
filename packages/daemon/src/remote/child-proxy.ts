@@ -51,8 +51,15 @@ export class ChildProxy {
       reject: (error: Error) => void;
     }
   >();
+  /** Recent issued replies are correlations, never child invalidations (#1285). */
+  private readonly issuedLists = new Set<string>();
   async list(sessionId: string, includeExternal: boolean): Promise<SessionListResponseMessage> {
     const request = createSessionListRequest(includeExternal);
+    this.issuedLists.add(request.id);
+    if (this.issuedLists.size > 128) {
+      const oldest = this.issuedLists.values().next().value;
+      if (oldest !== undefined) this.issuedLists.delete(oldest);
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const result = new Promise<SessionListResponseMessage>((resolve, reject) => {
       this.lists.set(request.id, { sessionId, resolve, reject });
@@ -158,6 +165,7 @@ export class ChildProxy {
     private readonly failed: (sessionId: string, chatOwnerLost?: boolean) => void,
     private readonly authorized: () => boolean,
     private readonly relayAuthority?: SecurePushAuthority,
+    private readonly listChanged?: () => void,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
@@ -266,6 +274,9 @@ export class ChildProxy {
           if (incoming.type === 'session_list_response') {
             const list = this.lists.get(incoming.requestId);
             if (list?.sessionId === sessionId && list.ws === ws) list.resolve(incoming);
+            // Verified current children may invalidate the hub's aggregate, but their
+            // unsolicited payload must never bypass its filtering/routing boundary.
+            else if (!list && !this.issuedLists.has(incoming.requestId)) this.listChanged?.();
             return;
           }
           if (incoming.type === 'answer_result') {
@@ -347,6 +358,7 @@ export class ChildProxy {
     this.refuseAnswers();
     for (const list of this.lists.values()) list.reject(new Error('CHILD_UNAVAILABLE'));
     this.lists.clear();
+    this.issuedLists.clear();
     for (const child of this.children.values()) child.ws.close();
     this.children.clear();
   }
