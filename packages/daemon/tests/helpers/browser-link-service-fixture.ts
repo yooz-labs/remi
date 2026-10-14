@@ -67,7 +67,7 @@ export async function browserFixture(
     producer?: BrowserLinkProducerRuntime;
     reservation?: ReturnType<typeof Bun.serve> | undefined;
   } = {};
-  async function close() {
+  async function close(cleanup: { preserveFiles?: boolean } = {}) {
     const errors: unknown[] = [];
     // Retire synchronously before the first await, preserving the launcher until actual exit.
     try {
@@ -97,7 +97,7 @@ export async function browserFixture(
         ),
       );
       await attempt(() => owned.producer?.close());
-      await attempt(() => files.cleanup());
+      if (!cleanup.preserveFiles) await attempt(() => files.cleanup());
     } else {
       // A failed consumer close does not authorize removing its still-needed launcher/profile.
       errors.push(new Error('Owned browser consumers have not ended'));

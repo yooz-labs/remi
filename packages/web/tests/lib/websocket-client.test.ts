@@ -746,3 +746,53 @@ describe('WebSocketClient reconnectStaggerMs (#685)', () => {
     expect(gap).toBeGreaterThanOrEqual(stepMs * 0.8);
   });
 });
+
+describe('browser link original-byte ingress over real sockets', () => {
+  test('host frames bypass generic messages and generate no ACK; identified malformed and wrong-direction frames close', async () => {
+    const { decodeBrowserLinkFrame, isBrowserLinkCandidate } = await import('@remi/shared');
+    const vectors = await Bun.file(new URL('../../../shared/tests/fixtures/browser-links/vectors.json', import.meta.url)).json() as {
+      positive: {raw:string}[]; negative:{raw?:string;hex?:string}[];
+    };
+    const cases = [...vectors.positive.map(v=>v.raw),...vectors.negative.flatMap(v=>v.raw?[v.raw]:[])].filter(isBrowserLinkCandidate);
+    for (const raw of cases) {
+      let outbound=0, generic=0, dedicated=0, closed=false;
+      const expected=decodeBrowserLinkFrame(raw);
+      const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch(req,server){if(server.upgrade(req))return;return new Response('owned');},websocket:{open(ws){ws.send(raw);},message(){outbound++;}}});
+      const client=new WebSocketClient({url:`ws://127.0.0.1:${server.port}/ws`,autoReconnect:false,heartbeatInterval:0},{onMessage:()=>generic++,onBrowserLinkMessage:()=>dedicated++,onStatusChange:s=>{if(s==='disconnected')closed=true;}});
+      try { client.connect();const end=performance.now()+3000;while(!dedicated&&!closed&&performance.now()<end)await Bun.sleep(5);
+        if(expected&&expected.type!=='browser_link_receiver_request')expect(dedicated).toBe(1);else expect(closed).toBe(true);
+        expect(generic).toBe(0);expect(outbound).toBe(0);
+      }finally{client.disconnect();server.stop(true);}
+    }
+  },15000);
+});
+
+test('browser raw binary identified invalid UTF-8 and oversize close; unidentified bytes and BOM retain generic rejection', async () => {
+  const prefix = new TextEncoder().encode('{"type":"browser_link_candidate","url":"');
+  const cases = [
+    { raw: new Uint8Array([...prefix, 192, 175]), close: true },
+    { raw: `{"type":"browser_link_candidate","extra":"${'a'.repeat(65536)}"}`, close: true },
+    { raw: new Uint8Array([192, 175]), close: false },
+    { raw: '\uFEFF{"type":"browser_link_candidate"}', close: false },
+  ];
+  for (const item of cases) {
+    let observed = 0, generic = 0, dedicated = 0, outbound = 0, closed = false;
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
+      fetch(req, server) { if (server.upgrade(req)) return; return new Response('owned'); },
+      websocket: { open(ws) { ws.send(item.raw); }, message() { outbound++; } },
+    });
+    const client = new WebSocketClient({ url: `ws://127.0.0.1:${server.port}/ws`, autoReconnect: false, heartbeatInterval: 0 }, {
+      onMessage: () => generic++, onBrowserLinkMessage: () => dedicated++,
+      onStatusChange: status => { if (status === 'disconnected') closed = true; },
+    });
+    try {
+      client.connect();
+      const socket = Reflect.get(client, 'ws') as WebSocket;
+      socket.addEventListener('message', () => observed++);
+      const end = performance.now() + 3000;
+      while ((!observed || item.close && !closed) && performance.now() < end) await Bun.sleep(5);
+      expect(observed).toBe(1); expect(closed).toBe(item.close);
+      expect(generic).toBe(0); expect(dedicated).toBe(0); expect(outbound).toBe(0);
+    } finally { client.disconnect(); server.stop(true); }
+  }
+}, 15000);

@@ -247,7 +247,7 @@ test('unidentified BOM/invalid UTF8 keeps generic parse rejection, with no brows
   ).toBe(false);
 }, 15000);
 
-test('actual enrolled relay rejects dormant browser frames and cannot displace a direct TLS lease', async () => {
+test('actual enrolled relay refuses browser frames and cannot displace a direct TLS lease', async () => {
   const f = await fixture();
   const direct = await f.client();
   await direct.submit(direct.request(1));
@@ -260,7 +260,7 @@ test('actual enrolled relay rejects dormant browser frames and cannot displace a
   });
   try {
     await remote.channel.send(new TextEncoder().encode(encodeBrowserLinkFrame(direct.request(1))));
-    await until(() => remote.socket.isClosed, 'actual relay unregistered browser refusal');
+    await until(() => remote.socket.isClosed, 'actual relay unavailable browser refusal');
     expect(invoked).toBe(0);
     expect(f.service.isAvailable(remote.cid)).toBe(false);
     expect(f.service.offer(f.context(), 'https://example.invalid/still-direct')).toBe(true);

@@ -7,6 +7,9 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./browser-links": "./src/browser-links.ts",
+    "./image-wire": "./src/image-wire.ts",
+    "./relay/bytes": "./src/relay/bytes.ts",
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
     "./types.ts": "./src/types.ts",

@@ -29,6 +29,7 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
       'image_staging',
       'image_insertion',
       'structured_chat',
+      'browser_links',
     ]);
     expect(PROTOCOL_CAPABILITIES['image_insertion']).toBe(
       'add an image to the attached Claude draft',

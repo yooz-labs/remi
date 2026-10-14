@@ -66,6 +66,14 @@ import {
   encodeBrowserLinkFrame,
 } from '@remi/shared';
 import { isBrowserLinkCandidate } from '@remi/shared';
+import {
+  type FileDownloadMessage,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchComplete,
+  type FileFetchRead,
+  encodeFileDownloadFrame,
+} from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
@@ -298,8 +306,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
-    if (this.events.onBrowserLinkReceiver && isBrowserLinkCandidate(data)) {
-      this.handleBrowserLinkFrame(data);
+    if (isBrowserLinkCandidate(data)) {
+      if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
+      else if (this.checkAuthorization())
+        this.sendError('INVALID_MESSAGE', 'Failed to parse message');
       return;
     }
     if (isStructuredChatCandidate(data)) {
@@ -369,6 +379,7 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        browser_link_receiver_request: () => this.close('Invalid browser link route'),
         chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
@@ -482,6 +493,28 @@ export class Connection {
       )
         return false;
       const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One bounded send attempt only; positive status is not client receipt or an OS Save. */
+  sendFileDownloadFrame(
+    message: Exclude<
+      FileDownloadMessage,
+      FileFetchBegin | FileFetchRead | FileFetchComplete | FileFetchCancel
+    >,
+  ): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeFileDownloadFrame(message));
       return typeof status === 'number' && status > 0;
     } catch {
       return false;

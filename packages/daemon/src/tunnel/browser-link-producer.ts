@@ -1,10 +1,10 @@
-/** Dormant session-owned local producer. No device authority, harness activation or URL fetch. */
+/** Session-owned local producer. Device/receiver authority belongs to BrowserLinkService; no URL fetch. */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { type Server, type Socket, createServer } from 'node:net';
 import { isAbsolute, join } from 'node:path';
-import { normalizeBrowserLinkURL } from '../../../shared/src/browser-links.ts';
-import { exact, imageWireValue, uuid } from '../../../shared/src/image-wire.ts';
+import { normalizeBrowserLinkURL } from '@remi/shared/browser-links';
+import { exact, imageWireValue, uuid } from '@remi/shared/image-wire';
 import { shellQuote } from '../session/shell-quote.ts';
 import { writeRestrictedJson } from '../storage/restricted-json.ts';
 import { browserLinkCommand, isBrowserProducerToken } from './browser-link-command.ts';
@@ -47,6 +47,7 @@ export class BrowserLinkProducerRuntime {
   private context: BrowserLinkProducerContext;
   private readonly offer: (context: BrowserLinkProducerContext, url: string) => boolean;
   private readonly temporaryRoot: string;
+  private readonly onUnavailable: (() => void) | undefined;
   private directory: string | null = null;
   private server: Server | null = null;
   private generation: Generation | null = null;
@@ -65,9 +66,11 @@ export class BrowserLinkProducerRuntime {
     readonly context: BrowserLinkProducerContext;
     readonly offer: (context: BrowserLinkProducerContext, url: string) => boolean;
     readonly temporaryRoot?: string;
+    readonly onUnavailable?: () => void;
   }) {
     this.context = capture(options.context);
     this.offer = options.offer;
+    this.onUnavailable = options.onUnavailable;
     const temporaryRoot = options.temporaryRoot ?? '/tmp';
     if (!isAbsolute(temporaryRoot) || /\s/u.test(temporaryRoot)) throw new Error(FAILURE);
     try {
@@ -159,8 +162,13 @@ export class BrowserLinkProducerRuntime {
 
   /** Synchronous invalidation; keep the launcher/profile until the consumer has actually ended. */
   retire(): void {
+    if (this.retired) return;
     this.retired = true;
     this.generation = null;
+    // Observer failures never prevent permanent invalidation or owned resource cleanup.
+    try {
+      this.onUnavailable?.();
+    } catch {}
   }
 
   private accept(socket: Socket): void {

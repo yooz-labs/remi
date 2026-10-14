@@ -46,6 +46,8 @@ export interface PtyOutputSink {
 }
 
 export interface PtySessionSetupDeps {
+  /** Actual tracked child exit, before registry/process cleanup drops its ownership. */
+  onConsumerEnded?: () => void;
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
   /**
@@ -327,6 +329,11 @@ export function createPtySessionForSession(
         }
       },
       onExit: (code: number | null) => {
+        try {
+          deps.onConsumerEnded?.();
+        } catch {
+          logError('Browser consumer exit notification failed');
+        }
         try {
           outputSink.flush();
         } catch (err) {

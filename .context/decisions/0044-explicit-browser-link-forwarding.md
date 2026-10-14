@@ -1,6 +1,6 @@
 # ADR 0044: Explicit browser-link forwarding
 
-Status: baseline fields accepted by owner on 2026-10-14; runtime implementation pending; no wire registration, capability or handler.
+Status: baseline fields accepted by owner on 2026-10-14; direct Claude daemon/web composition implemented in source. Independent review and fresh hosted qualification precede release.
 Date: 2026-10-14 UTC.
 Issue: #1170, T2 in docs/FILE-TUNNEL.md.
 
@@ -18,8 +18,7 @@ The host never fetches the URL or opens a browser for this operation.
 
 Initial release requires direct HTTPS/WSS with normal certificate/hostname validation
 and existing signed device authentication; it is Claude only. The daemon's
-optional `[daemon.tls]` listener supplies the host transport; actual producer,
-receiver and client integration remain required. Existing signed `ws://` operation
+optional `[daemon.tls]` listener supplies the host transport. The source now composes the session-local producer, current-grant receiver and explicit web caller; native, relay and Codex producers remain unavailable. Existing signed `ws://` operation
 alone does not satisfy this release prerequisite, and the feature must not fall
 back to plaintext.
 Codex commands run in its shared app-server, so changing its TUI environment alone would not establish tool-process forwarding.
@@ -32,7 +31,7 @@ There is no port forwarding or localhost rewriting: the stated URL opens on the 
 - docs/FILE-TUNNEL.md already requires a session-local producer capability, a selected authenticated recipient, HTTP(S) only and a visible open choice.
 - pty-session-setup.ts builds the Claude child environment; child-env.ts removes Remi's secret environment variables.
 - The protocol registry, capability support check, identity/attachment/binding stores and original-grant locking provide the existing boundaries.
-- No BROWSER producer, browser-link messages or receiver selection were found in current daemon/shared/web source.
+- The original baseline had no BROWSER producer, browser-link messages or receiver selection. The current source installs them only for a ready signed public-TLS Claude session and its explicit web receiver.
 - Structured chat sequencing in proposed ADR 0043 is a pattern to reuse, not a generic link implementation: its current codec and digest are specific to Codex text.
 
 ## Proposed wire
@@ -116,5 +115,14 @@ This establishes that launcher profile and environment seam only, not installed 
 6. Independently review with at most two rounds, pass fresh relevant hosted checks, then give native the accepted fields and vectors. Relay/Codex producer support and file downloads remain separate gates.
 
 The owner accepted exclusive explicit selection, the fields/names, 4096-byte URL limit, 10/minute producer rate, eight retained candidates, two-minute lifetime and the initial Claude/direct scope on 2026-10-14.
-The owner then explicitly required HTTPS/WSS before the first direct link/download release and deferred the full relay tunnel. The separate download ceiling stays at 10 MiB. This amends ADR 0009 for these new features; it does not claim a TLS listener or enable runtime delivery.
+The owner then explicitly required HTTPS/WSS before the first direct link/download release and deferred the full relay tunnel. The separate download ceiling stays at 10 MiB. This amends ADR 0009 for these new features. Optional TLS and the direct Claude/web composition now exist in source; that does not establish installed-consumer, native, Linux or operator certificate acceptance.
 One implementation lead and one independent reviewer are sufficient; no new cloud resources, account/model calls or phone access are required for the proposal.
+
+
+## Direct source integration and qualification limits (C3)
+
+`cli.ts` owns `BrowserLinkSessionHost`, awaits the actual producer before constructing the Claude BROWSER environment, and delegates selection/delivery to the existing `BrowserLinkService`. The startup attachment barrier preserves the original signed grant and concrete socket. Every observed binding write removes readiness before commit and publishes a fresh runtime only after durable binding/mirror readback. Producer resources survive retirement until the captured actual PTY exit or explicit never-spawned proof.
+
+The web connection manager requires its own signed WSS hello, exact socket generation, identity revision, attachment, Claude binding and connection-scoped `browser_links` capability. Global/list/relay descriptors remain base-only. Receive and Stop are explicit; uncertain sends are not retried automatically. Eight ephemeral candidates expire after 120000 monotonic milliseconds. Open rechecks context and lease and invokes `window.open` once with `noopener,noreferrer`; its null return is not a navigation verdict.
+
+The real local controls are `daemon/tests/integration/browser-link-composition.test.ts`, `web/tests/lib/browser-links.test.ts` and the opt-in `web/tests/browser/browser-links-browser.test.ts`. They use owned inert consumers, stores, signed TLS, actual source/copied/compiled entries and Chromium/App. The deterministic pending-start guard is component evidence; the natural shipping CLI early-client race was not observed. Isolated child CA and browser fixture-SPKI profiles qualify that local transport setup, not operator certificate provisioning or general hostname conformance. Natural 120-second client expiry is explicitly selected for phase qualification; ordinary CI skips that long profile unless selected. Native, relay/Codex producers, installed launcher rosters and hosted release acceptance remain separate.

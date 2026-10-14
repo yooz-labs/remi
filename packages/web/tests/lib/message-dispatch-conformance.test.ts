@@ -15,7 +15,7 @@
  * this broadcasts the checked-in golden fixture
  * (packages/shared/tests/fixtures/protocol/) and asserts:
  *
- *   1. the real `WebSocketClient`'s ordinary or dedicated image event receives it,
+ *   1. the real `WebSocketClient`'s ordinary or dedicated strict event receives it,
  *      byte-for-byte round-tripped over the wire (real TCP, real JSON
  *      serialize/deserialize -- not an in-process function call), and
  *   2. `packages/web/src/App.tsx`'s `handleMessage` switch has a real,
@@ -126,6 +126,7 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
         onImageInsertionMessage: (msg) => {
           received.push(msg);
         },
+        onBrowserLinkMessage: (msg) => { received.push(msg); },
         onStructuredChatResult: (msg) => { received.push(msg); },
         onImageStagingMessage: (msg) => {
           received.push(msg);

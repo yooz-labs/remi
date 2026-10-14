@@ -29,6 +29,8 @@ import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
+  /** Selected session startup only; false refuses this exact connection without attach/hello. */
+  beforeAttach?: (id: UUID) => Promise<boolean>;
   /** Read after identity initialization; undefined when authentication is disabled (#1234). */
   machine?: () => MachineDescriptor | undefined;
   sessionRegistry: SessionRegistry;
@@ -139,6 +141,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
 
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
+      if (deps.beforeAttach && !(await deps.beforeAttach(connectionId))) return;
 
       // resumeSessionId and mode are only carried by the websocket adapter.
       // Telegram and relay clients have no equivalent (their adapter selects
