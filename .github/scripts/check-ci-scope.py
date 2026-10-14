@@ -969,7 +969,8 @@ def validation_controls():
             git("config", "user.name", "Owned validator scope control")
             git("config", "user.email", "test@example.com")
             git("fetch", "--quiet", "--no-tags", str(original), source_parent)
-            git("fetch", "--quiet", "--no-tags", str(original), module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"])
+            git("fetch", "--quiet", "--no-tags", str(original), module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"],
+                module["SOAK_CODEC_SOURCE_ROOT"], module["SOAK_CODEC_CANDIDATE_ROOT"])
 
             def tree(parent, updates=(), removals=()):
                 git("read-tree", parent)
@@ -1678,6 +1679,204 @@ def isolated_test_controls():
         finally:
             os.chdir(prior)
             os.environ.update(inherited)
+
+
+def dormant_codec_controls():
+    """Actual complete public trees and conservative refusal histories; never a live soak."""
+    prior = Path.cwd()
+    source = SCRIPT.parents[2]
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        del os.environ[key]
+    controls = 0
+    with tempfile.TemporaryDirectory(prefix="remi-codec-scope-") as owned:
+        try:
+            os.chdir(owned)
+            def actual(*args, data=None):
+                return subprocess.check_output(["git", *args], input=data, stderr=subprocess.PIPE)
+            actual("init", "-q")
+            actual("config", "user.name", "Owned codec scope control")
+            actual("config", "user.email", "test@example.com")
+            actual("fetch", "--quiet", "--no-tags", str(source), module["SOAK_CODEC_SOURCE_ROOT"],
+                   module["SOAK_CODEC_CANDIDATE_ROOT"])
+            def body(ref, path):
+                return actual("show", f"{ref}:{path}")
+            def make(parent, updates=(), removals=()):
+                actual("read-tree", parent)
+                for path in removals:
+                    actual("update-index", "--force-remove", "--", path)
+                for path, content, mode in updates:
+                    content = content.encode() if isinstance(content, str) else content
+                    oid = parent if mode == "160000" else actual("hash-object", "-w", "--stdin", data=content).decode().strip()
+                    actual("update-index", "--add", "--cacheinfo", mode, oid, path)
+                tree = actual("write-tree").decode().strip()
+                return actual("commit-tree", tree, "-p", parent, "-m", "owned codec scope history").decode().strip()
+            def check(left, right, label, skip=False, classifier=classify):
+                nonlocal controls
+                result = classifier(left, right)
+                assert selected(result) == gates and result["typecheck"] and result["relay"] and (
+                    result["relay_soak"] is not skip), (label, result)
+                controls += 1
+            policy_paths = (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md",
+                            ".github/workflows/relay-r7.yml", ".github/scripts/workflow-scope.py",
+                            ".github/scripts/workflow-contracts.json")
+            base = make(module["SOAK_CODEC_SOURCE_ROOT"],
+                        [(path, (source / path).read_bytes(), "100644") for path in policy_paths])
+            updates = [(path, body(module["SOAK_CODEC_CANDIDATE_ROOT"], path), "100644")
+                       for path in module["SOAK_CODEC_TRANSITION"]]
+            head = make(base, updates)
+            check(base, head, "complete exact codec transition", True)
+            check(base, make(base, [*updates, ("docs/owned-codec.md", "inert prose\n", "100644")]),
+                  "codec plus inert docs", True)
+            version = json.loads(body(base, "package.json"))["version"]
+            version_updates = [("package.json", body(base, "package.json").replace(
+                f'"version": "{version}"'.encode(), b'"version": "0.7.17-dev.999"'), "100644"),
+                ("packages/daemon/src/cli.ts", body(base, "packages/daemon/src/cli.ts").replace(
+                    f"return '{version}'; // REMI_COMPILED_VERSION".encode(),
+                    b"return '0.7.17-dev.999'; // REMI_COMPILED_VERSION"), "100644")]
+            version_base = make(base, version_updates)
+            check(version_base, make(version_base, updates), "synchronized version already on base", True)
+            check(base, make(base, [*updates, *version_updates]), "version edit mixed into codec PR")
+            for path, content, _ in updates:
+                others = [item for item in updates if item[0] != path]
+                for replacement, mode, label in ((content + b"\n// unreviewed\n", "100644", "body"),
+                                                  (content, "100755", "mode"),
+                                                  (b"../owned-codec", "120000", "type")):
+                    check(base, make(base, [*others, (path, replacement, mode)]), (path, label))
+                check(base, make(base, others), (path, "omitted"))
+                check(base, make(base, others, [path]), (path, "deleted"))
+                check(base, make(base, [*others, (path + ".moved", content, "100644")], [path]),
+                      (path, "rename out"))
+                old = make(base, [(path + ".moved", content, "100644")])
+                check(old, make(old, updates, [path + ".moved"]), (path, "rename in"))
+                if module["SOAK_CODEC_TRANSITION"][path]["original"] is None:
+                    old = make(base, [(path, content, "100644")])
+                    check(old, make(old, updates), (path, "preexisting addition"))
+                    # Target/head independently add the same producer after a missing common ancestor.
+                    check(old, make(base, updates), (path, "divergent addition"))
+            for path in module["SOAK_CODEC_CORE"]:
+                drift = (path, body(base, path) + b"\n# unreviewed core\n", "100644")
+                old = make(base, [drift])
+                check(old, make(old, updates), (path, "already-on-base core drift"))
+                check(base, make(base, [*updates, drift]), (path, "head core drift"))
+            consumers = ("packages/daemon/src/owned-codec.ts", "packages/shared/src/owned-codec.ts",
+                         "packages/web/src/owned-codec.ts", "packages/signaling/src/owned-codec.ts",
+                         "packages/native/owned-codec.swift", "tests/owned-codec.ts", "scripts/owned-codec.sh",
+                         ".github/workflows/owned-codec.yml", ".github/actions/owned-codec/action.yml",
+                         ".github/scripts/owned-codec.py", "owned-codec-config.json")
+            for path in consumers:
+                for text in ("import 'browser-links';\n", "const codec = decodeFileDownloadFrame;\n",
+                             "const wire = 'browser_link_candidate';\n",
+                             "entry: 'packages/shared/src/file-download.ts'\n"):
+                    drift = (path, text, "100644")
+                    old = make(base, [drift])
+                    check(old, make(old, updates), (path, text, "already on base and head"))
+                    check(base, make(base, [*updates, drift]), (path, text, "new head caller"))
+                    check(old, make(old, updates, [path]), (path, text, "removed caller"))
+            for path in ("packages/daemon/src/server/connection.ts", "packages/shared/src/protocol-version.ts",
+                         "packages/shared/src/owned-neighbor.ts", "packages/shared/tests/owned-neighbor.test.ts",
+                         "bun.lock", "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "docs/owned-codec.test.ts", "package.json",
+                         "packages/daemon/src/cli.ts"):
+                content = body(base, path) if path not in {"packages/shared/src/owned-neighbor.ts",
+                          "packages/shared/tests/owned-neighbor.test.ts", "docs/owned-codec.test.ts"} else b"export {};\n"
+                check(base, make(base, [*updates, (path, content + b"\n// mixed\n", "100644")]),
+                      (path, "mixed input"))
+            for path, mode, content in (("packages/web/src/owned-link.ts", "120000",
+                                        "../../shared/src/browser-links.ts"),
+                                       ("packages/web/owned-dir", "120000", "../shared"),
+                                       ("scripts/owned-submodule", "160000", ""),
+                                       ("docs/owned-symlink.md", "120000", "../packages/shared")):
+                for context in ("base", "head"):
+                    drift = (path, content, mode)
+                    old = make(base, [drift]) if context == "base" else base
+                    check(old, make(old, [*updates, *([drift] if context == "head" else [])]),
+                          (path, context, "nonregular tree"))
+            check(base, "f" * 40, "unavailable head / git command failure")
+            check("f" * 40, head, "unavailable base / git command failure")
+            # A unique owned loose object is actually removed/corrupted, never a mocked Git reply.
+            probe_path = "scripts/owned-plain-object.ts"
+            unique_base = make(base, [(probe_path, "export const ownedPlain = 724819;\n", "100644")])
+            unique_head = make(unique_base, updates)
+            check(unique_base, unique_head, "regular owned scanned object", True)
+            oid = actual("rev-parse", f"{unique_base}:{probe_path}").decode().strip()
+            loose = Path(".git/objects") / oid[:2] / oid[2:]
+            assert (not loose.is_symlink() and loose.is_file() and loose.stat().st_nlink == 1 and
+                    loose.resolve().is_relative_to(Path(owned).resolve()) and
+                    not Path(".git/objects/info/alternates").exists()), "owned private loose-object store"
+            saved = loose.read_bytes()
+            try:
+                loose.unlink()
+                check(unique_base, unique_head, "missing actual scanned blob")
+                loose.write_bytes(b"invalid owned zlib object")
+                check(unique_base, unique_head, "corrupt actual scanned blob")
+            finally:
+                loose.write_bytes(saved)
+            check(unique_base, unique_head, "restored actual scanned blob", True)
+            for path in ("scripts/owned\tentry.ts", "scripts/owned\nentry.ts"):
+                old = make(base, [(path, "export {};\n", "100644")])
+                check(old, make(old, updates), (path, "actual control character path"))
+            escaped = ("packages/web/src/owned-escaped.ts", "import '../../shared/src/browser-\\x6cinks.ts';\n", "100644")
+            old = make(base, [escaped])
+            check(old, make(old, updates), "already-on-base escaped literal consumer")
+            # Guard-removal witnesses run the actual classifier on these same real histories.
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_guard_control"}
+            text = SCRIPT.read_text()
+            disabled = text.replace('if codec_paths <= changed:', 'if False and codec_paths <= changed:', 1)
+            exec(compile(disabled, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit classifier mutation control
+            result = namespace["classify"](base, head)
+            assert result["relay_soak"], "positive must detect removed codec eligibility branch"
+            controls += 1
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_core_guard_control"}
+            exec(compile(text, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit reviewed classifier mutation
+            caller = "packages/daemon/src/server/connection.ts"
+            drift_base = make(base, [(caller, body(base, caller) + b"\n// owned readiness drift\n", "100644")])
+            drift_head = make(drift_base, updates)
+            namespace["SOAK_CODEC_CORE"] = {path: pin for path, pin in namespace["SOAK_CODEC_CORE"].items()
+                                            if path != caller}
+            assert namespace["classify"](drift_base, drift_head)["relay_soak"] is False, "core drift witness"
+            controls += 1
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_token_guard_control"}
+            disabled = text.replace('and any(token in text for token in SOAK_CODEC_TOKENS):', 'and False:', 1)
+            exec(compile(disabled, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit reviewed classifier mutation
+            wire_base = make(base, [("scripts/owned-wire-reference.ts", "const wire = 'browser_link_candidate';\n", "100644")])
+            assert namespace["classify"](wire_base, make(wire_base, updates))["relay_soak"] is False, "wire token witness"
+            controls += 1
+            # Exact old/new reporter semantics agree; altered mappings are never normalized away.
+            import copy
+            workflow = WORKFLOW_TOOLS["load"]((source / ".github/workflows/relay-r7.yml").read_text())
+            old_workflow = copy.deepcopy(workflow)
+            old_steps = old_workflow["jobs"]["local-relay"]["steps"]
+            old_steps[old_steps.index(WORKFLOW_TOOLS["SOAK_SKIP"])] = WORKFLOW_TOOLS["SOAK_SKIP_PREVIOUS"]
+            assert WORKFLOW_TOOLS["execution"](workflow, "relay-r7.yml") == WORKFLOW_TOOLS["execution"](
+                old_workflow, "relay-r7.yml")
+            controls += 1
+            assert old_workflow["jobs"]["local-relay"] != WORKFLOW_TOOLS["CONTRACTS"]["relay_reuse_job"]
+            controls += 1
+            for field, value in (("run", "true"), ("if", "true"), ("name", "wrong"), ("env", {"X": "1"})):
+                altered = copy.deepcopy(old_workflow)
+                step = next(step for step in altered["jobs"]["local-relay"]["steps"]
+                            if step.get("name") == "Report scoped soak skip")
+                step[field] = value
+                assert WORKFLOW_TOOLS["execution"](altered, "relay-r7.yml") != WORKFLOW_TOOLS["execution"](
+                    workflow, "relay-r7.yml"), field
+                controls += 1
+            return controls
+        finally:
+            os.chdir(prior)
+            os.environ.update(inherited)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--codecs-only"]:
+    print(json.dumps({"dormant_codec_controls": dormant_codec_controls(), "failed": 0,
+                      "scope": "actual owned Git codec controls, not runtime acceptance"}))
+    raise SystemExit(0)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--validation-only"]:
+    original, count = Path.cwd(), 0
+    validation_controls()
+    print(json.dumps({"validation_controls": count, "failed": 0}))
+    raise SystemExit(0)
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--isolated-tests-only"]:
@@ -4224,9 +4423,11 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         assert not selected(doc_result) and not doc_result["relay_soak"] and not soak_fixture_calls, doc_result
         focused_status_controls += 1
         isolated_controls = isolated_test_controls()
+        codec_controls = dormant_codec_controls()
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
                           "isolated_test_controls": isolated_controls,
+                          "dormant_codec_controls": codec_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)

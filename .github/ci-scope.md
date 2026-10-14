@@ -718,3 +718,35 @@ policy differs from protected base and cannot self-qualify reuse. First live
 reuse acceptance belongs to the first later eligible PR after this policy
 lands. No backfill, docs-only follow-up on the initial PR, measured savings or
 completed live reuse pair is claimed. #1206 remains open for that acceptance.
+
+## Exact dormant browser/download transition (#1170)
+
+Only the complete reviewed seven-path addition is eligible to omit the hour:
+`browser-links.ts`, `file-download.ts`, their exact tests and vector JSON files
+under `packages/shared`, and the exact four-line barrel export addition. All
+ordinary gates and actual short relay controls remain selected. The runtime
+barrel can evaluate both modules; their exact reviewed initialization is pure
+constants and guard closures, not an absent import. Neither codec is registered
+or advertised, and no external operation caller was found in the reviewed graph.
+
+Eligibility checks exact original/final blobs and A/M statuses, all three real
+base/head/merge-base trees, 29 separately reviewed current runner/helper/caller
+pins, and the synchronized package/CLI version trace. Historical transition
+pins remain unchanged. Every other non-document input must stay identical.
+Whole-tree scans detect literal imports, identifiers, wire tokens and entry
+references already present on base, as well as new/removed callers. Arbitrary
+computed references are a static-analysis limit; this is one fixed reviewed
+transition, not a reusable dormant-source exemption. Partial families, edited
+codec bytes, mixed runtime/auth/registry changes, executable documents, unknown
+inputs, modes, renames, links, object/read errors or pin drift retain full gates.
+
+The reporter uses two exact inert old/new mappings during migration; only the
+current mapping validates. Three current workflow/validator caller pins move
+with that wording-only change. Actual short/soak commands, measurement hashes,
+Bun and bundler pins, timeouts, permissions and required names do not change.
+
+A qualifying source run must show real ordinary tests/coverage and short relay
+execution, with the long/reuse/producer steps explicitly skipped. Uploading the
+short log artifact is expected. It is not a completed soak, reusable producer,
+measured savings, live reuse or release acceptance. Any failed proof keeps the
+existing full gate; push/manual runs remain full.
