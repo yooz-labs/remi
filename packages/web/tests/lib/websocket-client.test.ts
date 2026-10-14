@@ -7,6 +7,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
+import { connect } from 'node:net';
 import type {
   PingMessage,
   PongMessage,
@@ -62,9 +63,21 @@ function openThenCloseServer() {
   });
 }
 
-/** A loopback port with nothing listening (connections are refused). */
-const DEAD_URL_A = 'ws://127.0.0.1:49250/ws';
-const DEAD_URL_B = 'ws://127.0.0.1:49251/ws';
+/**
+ * Close an OS-assigned loopback endpoint instead of guessing a free port (#1206).
+ * Another process could still bind it after release; this is not a reservation.
+ */
+async function closedLoopbackUrl(): Promise<string> {
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response('closing test endpoint'),
+  });
+  const port = server.port;
+  await server.stop(true);
+  if (port === undefined) throw new Error('test endpoint has no TCP port');
+  return `ws://127.0.0.1:${port}/ws`;
+}
 
 const clients: WebSocketClient[] = [];
 function track(c: WebSocketClient): WebSocketClient {
@@ -76,17 +89,33 @@ afterEach(() => {
 });
 
 describe('WebSocketClient reconnect ceiling', () => {
+  test('closed loopback fixture refuses a real TCP connection', async () => {
+    const url = new URL(await closedLoopbackUrl());
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const socket = connect({ host: url.hostname, port: Number(url.port) });
+        socket.setTimeout(1000, () => socket.destroy(new Error('TCP refusal timed out')));
+        socket.once('error', reject);
+        socket.once('connect', () => {
+          socket.destroy();
+          resolve();
+        });
+      }),
+    ).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+  });
+
   test('default max reconnect attempts is finite (not Infinity)', () => {
     expect(Number.isFinite(DEFAULT_MAX_RECONNECT_ATTEMPTS)).toBe(true);
     expect(DEFAULT_MAX_RECONNECT_ATTEMPTS).toBeGreaterThan(0);
   });
 
   test('fires onReconnectExhausted after the ceiling on a dead port', async () => {
+    const deadUrl = await closedLoopbackUrl();
     let exhausted = false;
     const client = track(
       new WebSocketClient(
         {
-          url: DEAD_URL_A,
+          url: deadUrl,
           autoReconnect: true,
           maxReconnectAttempts: 2,
           reconnectDelay: 10,
@@ -108,11 +137,12 @@ describe('WebSocketClient reconnect ceiling', () => {
   });
 
   test('does NOT fire onReconnectExhausted after an intentional disconnect', async () => {
+    const deadUrl = await closedLoopbackUrl();
     let exhausted = false;
     const client = track(
       new WebSocketClient(
         {
-          url: DEAD_URL_A,
+          url: deadUrl,
           autoReconnect: true,
           maxReconnectAttempts: 2,
           reconnectDelay: 10,
@@ -235,11 +265,12 @@ describe('WebSocketClient reconnectWithUrl', () => {
   test('recovers onto a live server after exhaustion (rediscover path)', async () => {
     const server = liveWsServer();
     const liveUrl = `ws://127.0.0.1:${server.port}/ws`;
+    const deadUrl = await closedLoopbackUrl();
     let recovered = false;
     const client = track(
       new WebSocketClient(
         {
-          url: DEAD_URL_B,
+          url: deadUrl,
           autoReconnect: true,
           maxReconnectAttempts: 2,
           reconnectDelay: 10,

@@ -26,6 +26,8 @@ import type {
 } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import { ImageUploadController, type ImageUploadContext } from '@/lib/image-upload';
+import { StructuredChatController } from '@/lib/structured-chat';
+import type { ChatSubmitOutcome } from '@remi/shared';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import { type ClientSigningIdentity, signClient } from '@/lib/client-signer';
 import { currentNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
@@ -80,6 +82,12 @@ const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
 
 /** Internal per-connection state */
 interface ManagedConnection {
+  relayChatSessions?: Map<string, {
+    harness: string; threadId: string | null; capabilities: readonly string[];
+    protocolVersion: unknown; attachState: 'attached' | 'queued' | undefined;
+  }>;
+  /** Explicit session selection to reattach after a fresh verified machine channel. */
+  relayResumeSessionId?: string;
   client: ConnectionTransport;
   connectionId: ConnectionId;
   url: string;
@@ -93,6 +101,7 @@ interface ManagedConnection {
   protocolVersion?: unknown;
   imageUploadAuthenticated: boolean;
   imageUploadController?: ImageUploadController;
+  structuredChatController?: StructuredChatController;
   imageUploadState: ConnectionState['imageUploadState'];
   imageUploadSessionId?: UUID | null;
   imageStopRequest?: { readonly id: string; readonly sessionId: string };
@@ -179,6 +188,7 @@ export interface UseConnectionManagerReturn {
   disconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection by re-running port discovery against its host (#435). */
   reconnect: (connectionId: ConnectionId) => void;
+  reconnectChat: (connectionId: ConnectionId) => void;
   /** Disconnect all connections */
   disconnectAll: () => void;
   /**
@@ -194,6 +204,8 @@ export interface UseConnectionManagerReturn {
     claudeSessionId?: UUID,
     id?: UUID,
   ) => boolean;
+  submitStructuredChat: (connectionId: ConnectionId, sessionId: UUID, threadId: string,
+    content: string, id: UUID) => Promise<ChatSubmitOutcome>;
   /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
   sendEscape: (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID) => boolean;
   /** Send answer to a question via the correct connection */
@@ -294,6 +306,11 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     imageUploadState: mc.imageUploadState,
     imageUploadSessionId: mc.imageUploadSessionId,
     imageUploadEnabled: mc.imageUploadController?.canUpload ?? false,
+    structuredChatEnabled: !!(mc.sessionId && mc.harnessSessionId &&
+      mc.structuredChatController?.canSubmit(mc.sessionId, mc.harnessSessionId)),
+    structuredChatSessions: [...mc.relayChatSessions ?? []].filter(([id, value]) =>
+      !!value.threadId && mc.structuredChatController?.canSubmit(id, value.threadId)).map(([id]) => id),
+    structuredChatNeedsReconnect: mc.structuredChatController?.needsReconnect ?? false,
     approval: mc.approval.snapshot,
     relayPin: mc.relayPin,
     relayConfirmation: mc.relayConfirmation,
@@ -347,7 +364,7 @@ export function useConnectionManager(
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
-        mc.imageUploadController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
       }
     }
     if (unlockedIdentity) {
@@ -357,7 +374,7 @@ export function useConnectionManager(
           // React commits the matching prop update. Keep a proof that completed
           // in that window; only a real key transition invalidates it.
           mc.imageUploadAuthenticated = false;
-          mc.imageUploadController?.disconnect();
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
@@ -374,7 +391,7 @@ export function useConnectionManager(
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
-        mc.imageUploadController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
         mc.approval.reset();
         mc.authAttempt = null;
         if (usesNativeIdentity() || mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -662,6 +679,23 @@ export function useConnectionManager(
         if (message.type === 'hello_ack') {
           if (mc.mode === 'relay') {
             if (message.sessionId && message.attachState) mc.sessionAttachments?.set(message.sessionId, message.attachState);
+            if (message.sessionId) {
+              const next = {
+                harness: message.harness ?? 'claude',
+                threadId: message.harnessSessionId ?? message.claudeSessionId ?? null,
+                capabilities: Array.isArray(message.capabilities) ? message.capabilities.filter((c): c is string => typeof c === 'string') : [],
+                protocolVersion: message.protocolVersion as unknown,
+                attachState: message.attachState,
+              };
+              const previous = mc.relayChatSessions?.get(message.sessionId);
+              if (previous && (previous.threadId !== next.threadId || previous.harness !== next.harness ||
+                previous.attachState !== next.attachState || previous.protocolVersion !== next.protocolVersion ||
+                JSON.stringify(previous.capabilities) !== JSON.stringify(next.capabilities)))
+                mc.structuredChatController?.invalidateSession(message.sessionId);
+              const contexts = mc.relayChatSessions;
+              if (contexts && (contexts.has(message.sessionId) || contexts.size < 64))
+                contexts.set(message.sessionId, next);
+            }
           } else {
             const nextHarness = message.harness ?? 'claude';
             const nextHarnessSessionId =
@@ -686,7 +720,7 @@ export function useConnectionManager(
               capabilitiesChanged ||
               !Object.is(mc.protocolVersion, nextProtocolVersion)
             ) {
-              mc.imageUploadController?.disconnect();
+              mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
             }
             mc.sessionId = message.sessionId;
             mc.attachState = message.attachState;
@@ -706,7 +740,7 @@ export function useConnectionManager(
           mc.mode === 'direct' &&
           mc.sessionId === message.sessionId
         ) {
-          mc.imageUploadController?.disconnect();
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
           mc.harness = 'claude';
           mc.harnessSessionId = message.newClaudeSessionId;
           syncState();
@@ -716,6 +750,8 @@ export function useConnectionManager(
 
         if (message.type === 'session_update' && message.session.endedAt !== undefined) {
           mc.imageUploadController?.endSession(message.session.id);
+          mc.structuredChatController?.invalidateSession(message.session.id);
+          mc.relayChatSessions?.delete(message.session.id);
         }
 
         if (
@@ -727,6 +763,28 @@ export function useConnectionManager(
         }
 
         if (message.type === 'session_list_response') {
+          if (mc.mode === 'relay') {
+            for (const entry of message.sessions) {
+              if (entry.source !== 'daemon') continue;
+              const context = mc.relayChatSessions?.get(entry.sessionId);
+              if (!context) continue;
+              const harness = entry.harness ?? 'claude';
+              const threadId = entry.harnessSessionId ?? (harness === 'claude' ? entry.claudeSessionId ?? null : null);
+              if (context.harness !== harness || context.threadId !== threadId || entry.status === 'orphaned')
+                mc.structuredChatController?.invalidateSession(entry.sessionId);
+              context.harness = harness;
+              context.threadId = entry.status === 'orphaned' ? null : threadId;
+            }
+            syncState();
+          }
+          const own = message.sessions.find((entry) => entry.sessionId === mc.sessionId && entry.source === 'daemon');
+          if (mc.mode === 'direct' && own) {
+            const harness = own.harness ?? 'claude';
+            const thread = own.harnessSessionId ?? (harness === 'claude' ? own.claudeSessionId ?? null : null);
+            if (mc.harness !== harness || mc.harnessSessionId !== thread) mc.structuredChatController?.disconnect();
+            mc.harness = harness; mc.harnessSessionId = thread;
+            syncState();
+          }
           for (const session of message.sessions) {
             if (session.source === 'daemon' && session.status === 'orphaned') {
               mc.imageUploadController?.endSession(session.sessionId);
@@ -818,7 +876,7 @@ export function useConnectionManager(
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
-        existing.imageUploadController?.dispose();
+        existing.imageUploadController?.dispose(); existing?.structuredChatController?.dispose();
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
         // Free its stagger slot: this connection may be recreated repeatedly
@@ -897,7 +955,7 @@ export function useConnectionManager(
             newStatus === 'error'
           ) {
             mc.imageUploadAuthenticated = false;
-            mc.imageUploadController?.disconnect();
+            mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
             mc.sessionId = null;
             mc.attachState = undefined;
             mc.harness = undefined;
@@ -916,6 +974,10 @@ export function useConnectionManager(
           syncState();
         },
         onMessage: messageHandler,
+        onStructuredChatResult: (message) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
+          mc.structuredChatController?.receive(message);
+        },
         onImageInsertionMessage: (message) => {
           if (connectionsMapRef.current.get(connectionId) !== mc) return;
           mc.imageUploadController?.receiveInsertion(message);
@@ -936,6 +998,19 @@ export function useConnectionManager(
       });
 
       mc.client = client;
+      mc.structuredChatController = new StructuredChatController({
+        send: (request) => connectionsMapRef.current.get(connectionId) === mc && mc.mode === 'direct'
+          ? client.sendStructuredChat(request) : false,
+        context: () => {
+          if (connectionsMapRef.current.get(connectionId) !== mc || mc.mode !== 'direct' ||
+            mc.status !== 'connected' || !mc.imageUploadAuthenticated || mc.attachState !== 'attached' ||
+            mc.harness !== 'codex' || !mc.sessionId || !mc.harnessSessionId ||
+            !hubSupport({protocolVersion: mc.protocolVersion, capabilities: mc.capabilities}, ['structured_chat']).supported)
+            return null;
+          const generation = client.imageUploadGeneration;
+          return generation ? {generation, sessionId: mc.sessionId, threadId: mc.harnessSessionId} : null;
+        },
+      });
       mc.imageUploadController = new ImageUploadController(
         {
           send: (request) =>
@@ -1030,13 +1105,13 @@ export function useConnectionManager(
     const connectionId = makeConnectionId(`relay:${pin.machinePublicKey}`);
     const existing = connectionsMapRef.current.get(connectionId);
     if (existing && !isConnectionReplaceable(existing.status)) { await first?.close(); return connectionId; }
-    existing?.imageUploadController?.dispose();
+    existing?.imageUploadController?.dispose(); existing?.structuredChatController?.dispose();
     existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
     const mc: ManagedConnection = {
       client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
       status: 'connecting', error: null, sessionId: null, imageUploadAuthenticated: false, imageUploadState: { phase: 'idle' }, imageUploadSessionId: null, helloSent: false, pendingChallenge: null,
       approval: new ConnectionApproval(), authAttempt: null, needsPassphrase: false,
-      serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(),
+      serverFingerprint: null, staggerSlot: -1, relayPin: pin, sessionAttachments: new Map(), relayChatSessions: new Map(),
     };
     const alive = () => currentIdentity() && connectionsMapRef.current.get(connectionId) === mc;
     let nativeAttempt: NativePairingAttempt | null = null;
@@ -1068,7 +1143,14 @@ export function useConnectionManager(
       }
       return RelayMachineChannel.resume(pin, signer, alive, events);
     }, alive, autoReconnectRef.current, {
-      onMessage: messages,
+      onMessage: message => {
+        if (!alive()) return;
+        if (message.type === 'chat_submit_result') {
+          mc.structuredChatController?.receive(message);
+          return;
+        }
+        messages(message);
+      },
       onPhase: (phase, fingerprint) => {
         if (!alive()) return;
         mc.relayConfirmation = phase === 'confirmation' ? fingerprint : undefined; syncState();
@@ -1086,15 +1168,41 @@ export function useConnectionManager(
         mc.relayCancel?.(); mc.relayPin = verifiedPin;
       },
       onError: error => { if (alive()) { mc.error = error; syncState(); } },
-      onClose: () => { cancelNativeAttempt(); if (connectionsMapRef.current.get(connectionId) === mc) mc.relayRequests?.closed(); },
+      onClose: () => {
+        cancelNativeAttempt();
+        if (connectionsMapRef.current.get(connectionId) === mc) {
+          mc.relayRequests?.closed(); mc.structuredChatController?.disconnect(); mc.relayChatSessions?.clear();
+        }
+      },
       onStatus: status => {
         if (!alive()) return;
         mc.status = status;
-        if (status === 'connected') { mc.error = null; mc.relayConfirmation = undefined; mc.helloSent = false; sendHello(mc); }
-        if (status === 'disconnected') { mc.helloSent = false; mc.sessionAttachments?.clear(); }
+        if (status === 'connected') {
+          mc.error = null; mc.relayConfirmation = undefined; mc.helloSent = false; sendHello(mc);
+          if (mc.relayResumeSessionId) mc.client.send(createHello(clientId, clientVersion, {
+            resumeSessionId: mc.relayResumeSessionId, deviceId: getOrCreateDeviceId(window.localStorage),
+          }));
+        }
+        if (status !== 'connected') {
+          mc.structuredChatController?.disconnect();
+          mc.relayChatSessions?.clear();
+          mc.sessionAttachments?.clear();
+        }
+        if (status === 'disconnected') { mc.helloSent = false; mc.sessionAttachments?.clear(); mc.relayChatSessions?.clear(); }
         syncState();
       },
     }, typeof tokenOrPin !== 'string');
+    mc.structuredChatController = new StructuredChatController({
+      send: request => alive() ? mc.client.send(request) : false,
+      context: (sessionId, threadId) => {
+        const context = mc.relayChatSessions?.get(sessionId);
+        const generation = mc.client.structuredChatGeneration;
+        if (!alive() || mc.status !== 'connected' || !generation ||
+          context?.harness !== 'codex' || context.threadId !== threadId || context.attachState !== 'attached' ||
+          !hubSupport({protocolVersion:context.protocolVersion,capabilities:context.capabilities},['structured_chat']).supported) return null;
+        return {generation,sessionId,threadId};
+      },
+    });
     connectionsMapRef.current.set(connectionId, mc);
     if (signal && typeof tokenOrPin === 'string') {
       const cancel = () => {
@@ -1110,11 +1218,12 @@ export function useConnectionManager(
       if (signal.aborted) { cancel(); throw new Error('Pairing canceled.'); }
     }
     void (mc.client as RelayTransport).connect(); syncState(); return connectionId;
-  }, [createMessageHandler, sendHello, syncState]);
+  }, [clientId, clientVersion, createMessageHandler, sendHello, syncState]);
 
   const requestSessionAttach = useCallback((connectionId: ConnectionId, sessionId: string): boolean => {
     const mc = connectionsMapRef.current.get(connectionId);
     if (!mc || mc.mode !== 'relay') return false;
+    mc.relayResumeSessionId = sessionId;
     return mc.client.send(createHello(clientId, clientVersion, { resumeSessionId: sessionId,
       deviceId: getOrCreateDeviceId(window.localStorage) }));
   }, [clientId, clientVersion]);
@@ -1161,12 +1270,22 @@ export function useConnectionManager(
     [connectRelay, escalateReconnect, syncState],
   );
 
+  /** Explicit recovery of uncertain chat, including an otherwise healthy socket. */
+  const reconnectChat = useCallback((connectionId: ConnectionId) => {
+    const mc = connectionsMapRef.current.get(connectionId);
+    if (!mc?.structuredChatController?.needsReconnect ||
+      mc.status === 'connecting' || mc.status === 'authenticating' || mc.status === 'reconnecting') return;
+    mc.structuredChatController.disconnect();
+    mc.relayRequests?.closed();
+    mc.client.forceReconnect();
+  }, []);
+
   // Disconnect a specific connection
   const disconnect = useCallback(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
-      mc.imageUploadController?.dispose();
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose();
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1181,7 +1300,7 @@ export function useConnectionManager(
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
-      mc.imageUploadController?.dispose();
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose();
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1302,6 +1421,15 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
+  const submitStructuredChat = useCallback(async (connectionId: ConnectionId, sessionId: UUID,
+    threadId: string, content: string, id: UUID): Promise<ChatSubmitOutcome> => {
+    const mc = connectionsMapRef.current.get(connectionId);
+    if (!mc?.structuredChatController) return {outcome: 'refused', code: 'unsupported'};
+    const pending = mc.structuredChatController.submit(sessionId, threadId, content, id);
+    syncState();
+    try { return await pending; } finally { syncState(); }
+  }, [syncState]);
+
   const requestBulletExpand = useCallback(
     (connectionId: ConnectionId, sessionId: UUID, bulletId: number): boolean => {
       return sendToConnection(connectionId, createBulletExpandRequest(sessionId, bulletId));
@@ -1360,7 +1488,7 @@ export function useConnectionManager(
       // otherwise sees the replacement as already current (#873).
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
-        mc.imageUploadController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect();
       }
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
@@ -1560,7 +1688,7 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
-        mc.imageUploadController?.dispose();
+        mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose();
         mc.relayCancel?.();
         mc.relayRequests?.closed();
         mc.client.disconnect();
@@ -1581,6 +1709,7 @@ export function useConnectionManager(
     unregisterRelayPush,
     disconnect,
     reconnect,
+    reconnectChat,
     disconnectAll,
     sendInput,
     sendEscape,
@@ -1588,6 +1717,7 @@ export function useConnectionManager(
     sendAuqAnswer,
     sendCancelQuestion,
     sendMessage,
+    submitStructuredChat,
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,

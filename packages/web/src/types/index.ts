@@ -85,6 +85,9 @@ export interface ConnectionState {
   readonly imageUploadSessionId?: UUID | null;
   /** True only while its exact direct socket/session context can start an upload. */
   readonly imageUploadEnabled: boolean;
+  readonly structuredChatEnabled?: boolean;
+  readonly structuredChatSessions?: readonly string[];
+  readonly structuredChatNeedsReconnect?: boolean;
 }
 
 /** Message sender type */
@@ -121,6 +124,8 @@ export interface UIMessage {
   readonly state: UIMessageState;
   /** Text may be in the terminal but Enter was withheld; never retry blindly (#1488). */
   readonly inputMayBePartial?: boolean;
+  /** Structured submission is distinct from a transport receipt or model completion. */
+  readonly chatSubmission?: { readonly outcome: 'pending' | 'accepted' | 'refused' | 'uncertain'; readonly label: string };
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
@@ -187,6 +192,8 @@ export interface UISession {
    * only a harness other than Claude is labeled (`harnessLabel`).
    */
   readonly harness?: HarnessId;
+  /** Current harness thread, kept separate from the Claude-specific identity. */
+  readonly harnessSessionId?: string | null;
   /**
    * This entry is a subagent view spawned by a parent session, not a
    * top-level session (epic #499 phase 3). Its `id` is the subagent's

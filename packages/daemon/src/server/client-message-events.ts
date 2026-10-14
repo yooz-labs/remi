@@ -39,6 +39,7 @@
  */
 import type {
   AnswerExtras,
+  ChatSubmitRequest,
   CreateSessionRequestMessage,
   ImageInsertionIngressResult,
   ImageStagingIngressResult,
@@ -83,6 +84,7 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onStructuredChat: [request: ChatSubmitRequest];
   onImageInsert: [ingress: Exclude<ImageInsertionIngressResult, { kind: 'uncorrelatable' }>];
   /** Strictly decoded request or bounded lookup hints; authority stays on the host (#1170). */
   onImageUpload: [ingress: Exclude<ImageStagingIngressResult, { kind: 'uncorrelatable' }>];
@@ -164,6 +166,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onStructuredChat',
   'onImageInsert',
   'onImageUpload',
   'onNativeAnswer',
@@ -228,7 +231,7 @@ export type ClientMessageEvents = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert'
+      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
         ? void | Promise<void>
         : void;
 };
@@ -250,7 +253,7 @@ export type ClientMessageEventsWithConnectionId = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert'
+      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
         ? void | Promise<void>
         : void;
 };
