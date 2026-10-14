@@ -1,5 +1,6 @@
 /** Owned real service/PTY/producer/stores and signed socket endpoints. No installed configuration. */
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createAuthResponse,
@@ -197,7 +198,7 @@ export async function browserFixture(
     owned.service = service;
     const producer = new BrowserLinkProducerRuntime({
       context,
-      temporaryRoot: '/Volumes/S1/yooz/remi/t',
+      temporaryRoot: tmpdir(),
       offer: (captured, url) => service.offer(captured, url),
     });
     owned.producer = producer;
