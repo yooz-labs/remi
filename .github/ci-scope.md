@@ -21,6 +21,7 @@ always select their existing full gates.
 | Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
 | Exact Bun test diagnostics runner and its test | All normal gates | Skip with pinned coverage/workflow callers |
 | Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
+| Four named isolated unit-test producers | All normal gates | Skip with exact modification, reference and runner proof |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -112,6 +113,58 @@ matching complete comment line in each. Any changed/missing blob, extra, moved o
 modified occurrence, other reference or scan failure restores all gates. This
 allows reviewed comments without a whole-file exclusion or generic comment
 stripping. Literal scans cannot establish the absence of computed references.
+
+Four additional exact unit-test producers use the same bounded reference policy
+(#1516): `packages/daemon/tests/cli/attach-client.test.ts`,
+`packages/daemon/tests/harness/claude-session.test.ts`,
+`packages/daemon/tests/server/origin-policy.test.ts`, and
+`packages/web/tests/lib/push-answer-relay.test.ts`. Each qualifies independently;
+no test directory or filename glob is exempt. Every ordinary lint, root/web/Worker/
+integration type check, notice, full unchanged coverage suite and Mac gate remains
+selected. Only the separate R7 workflow is omitted.
+
+The complete PR diff must contain only exact modifications of those producers,
+the classifier/corpus, this scope document and inert Markdown/CHANGELOG.
+Executable provisioning docs, relay gate docs, rules, workflows/actions/contracts,
+runtime source, dependencies/configuration, other tests and helpers restore all
+gates. Producers must be mode-100644 blobs at base, head and merge-base, and their
+merge-base-to-head status must be M. Add/delete/rename/type/mode changes and
+unavailable, malformed or conflicting metadata restore all gates. The existing
+lazy status map is shared only inside one classification.
+
+Complete package/test/script/workflow/action/scope-tool trees and root files are
+checked as regular blobs at all three refs. Their complete blob bodies are read
+and hashed with the bounded object reader; missing/corrupt objects and failed
+reference scans restore all gates. Each producer is scanned separately by its
+literal `.test` basename. Only that producer and the exact classifier/corpus are
+excluded, so another qualified producer cannot conceal a cross-import.
+
+`attach-client.test` and `push-answer-relay.test` require successful no-match
+scans. The only permitted external matches for the other two are five exact
+comment lines, whose entire mode/blob and occurrence must remain unchanged:
+
+| Comment file under `packages/daemon/tests/` | Blob | Line |
+| --- | --- | ---: |
+| `cli/log-guard-wiring.test.ts` | `86546f0dfd548ee9bfcf7a4953f34eec46f5b4cb` | 4 |
+| `cli/push-token-refresh-wiring.test.ts` | `8eaef6d033da636805e2d95b4b2e5669284b5801` | 6 |
+| `notifications/claude-turn-stop.test.ts` | `47fb9decbddd0a3556acbf326294228d08f85d35` | 10 |
+| `notifications/turn-failed.test.ts` | `b9e41ede3f4c83341f69c84686586f4eb5951c8e` | 581 |
+| `websocket-server.test.ts` | `bb6a7aa9f014839b6e7d87aa5385ef3970522041` | 124 |
+
+The reviewed R7 workflow, root bunfig, its two actual preloads, Worker bundler and
+Worker test entry, and `tests/integration/relay-r7-portability.test.ts` reader
+also have exact mode/blob pins at all three refs. These prove the known runner,
+preload, computed esbuild import and explicit fixture-list assumptions; changes
+already present at both endpoints still invalidate the exception. A later Bun
+workflow migration must review/refresh that runner pin or keep the full fallback.
+Root package version bytes are not pinned, so an ordinary auto-bump at both
+endpoints does not invalidate qualification. A package edit inside the PR is
+still a mixed configuration input and restores every gate.
+
+This literal-reference policy does not prove the absence of arbitrary computed
+imports in every module. A new computed consumer requires source tracing and
+review; it is not authority to extend this table or add a general test exemption.
+The original HookServer qualification remains unchanged.
 
 The proof exemption also scans source/test files at the PR head and target base for consumers;
 any reference to either proof directory, or an unavailable scan, runs all gates.
