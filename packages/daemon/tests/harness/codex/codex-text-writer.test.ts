@@ -59,6 +59,16 @@ describe('CodexTextWriter local refusal', () => {
     client.stop();
   });
 
+  test('valid leading-BOM text passes validation before an unstarted client refuses delivery', async () => {
+    const { client, writer } = idle();
+    expect(await writer.send({ ...input(), text: '\uFEFFhello' }, () => true)).toEqual({
+      outcome: 'refused',
+      code: 'unavailable',
+    });
+    expect(client.state).toBe('idle');
+    client.stop();
+  });
+
   test('invalid UUIDs, empty text, NUL, invalid Unicode and oversized UTF-8 fail before any connection', async () => {
     const { client, writer } = idle();
     for (const request of [
@@ -377,6 +387,7 @@ live(
       currentThread = threads[1] as string;
       epoch = {};
       const readOnlyRequest = request();
+      readOnlyRequest.text = `\uFEFF${readOnlyRequest.text}`;
       const readOnly = await writer.send(readOnlyRequest, () => true);
       expect(readOnly).toMatchObject({ outcome: 'accepted', method: 'turn/start' });
       expect(effects.at(-1)?.params).toEqual({

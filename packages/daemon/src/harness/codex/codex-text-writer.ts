@@ -68,7 +68,7 @@ function valid(request: CodexTextRequest): boolean {
   const bytes = new TextEncoder().encode(request.text);
   return (
     bytes.byteLength <= CODEX_CHAT_TEXT_BYTES &&
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes) === request.text
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) === request.text
   );
 }
 
