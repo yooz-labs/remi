@@ -91,6 +91,36 @@ describe('bindNear (test helper)', () => {
 });
 
 describe('secure discovery never selects a plaintext responder', () => {
+  test('legacy WS discovery retains its existing HTTP redirect behavior', async () => {
+    let effects = 0;
+    const destination = requirePort(
+      Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch() {
+          effects++;
+          return Response.json({ authRequired: true });
+        },
+      }),
+    );
+    const source = requirePort(
+      Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch() {
+          return Response.redirect(`http://127.0.0.1:${destination.port}/auth-info`, 302);
+        },
+      }),
+    );
+    try {
+      expect(await resolveDaemonPort('127.0.0.1', source.port, { portRange: 0 })).toBe(source.port);
+      expect(effects).toBe(1);
+    } finally {
+      source.stop(true);
+      destination.stop(true);
+    }
+  });
+
   test('WSS hint and range use HTTPS exclusively; WS keeps its existing HTTP behavior', async () => {
     let calls = 0;
     const server = requirePort(
@@ -250,6 +280,18 @@ describe('secure discovery never selects a plaintext responder', () => {
             rows.push({certificate,success,effects});
           } finally {server.stop(true);}
         }
+        let plaintextEffects = 0, redirectEffects = 0;
+        const plaintext = Bun.serve({hostname:'127.0.0.1',port:0,
+          fetch(){plaintextEffects++; return Response.json({authRequired:true});}});
+        const redirect = Bun.serve({hostname:'127.0.0.1',port:0,
+          tls:{key:Bun.file(directory+'/leaf.key'),cert:Bun.file(directory+'/ip.pem')},
+          fetch(){redirectEffects++; return Response.redirect('http://127.0.0.1:'+plaintext.port+'/auth-info',302);}});
+        try {
+          const hint = await resolveDaemonPort('127.0.0.1',redirect.port,{protocol:'wss',portRange:0,timeoutMs:1000});
+          const scan = await discoverDaemonPort('127.0.0.1',{protocol:'wss',basePort:redirect.port,portRange:1,timeoutMs:1000});
+          if(hint!==null || scan!==null || plaintextEffects!==0 || redirectEffects!==(trusted?2:0)) throw new Error('WSS_PLAINTEXT_REDIRECT');
+          rows.push({certificate:'redirect',success:false,effects:plaintextEffects,redirectEffects});
+        } finally {redirect.stop(true); plaintext.stop(true);}
         console.log(JSON.stringify(rows));
       `;
       for (const trusted of [false, true]) {
@@ -263,6 +305,7 @@ describe('secure discovery never selects a plaintext responder', () => {
         expect(JSON.parse(result)).toEqual([
           { certificate: 'ip', success: trusted, effects: trusted ? 2 : 0 },
           { certificate: 'dns', success: false, effects: 0 },
+          { certificate: 'redirect', success: false, effects: 0, redirectEffects: trusted ? 2 : 0 },
         ]);
       }
     } finally {

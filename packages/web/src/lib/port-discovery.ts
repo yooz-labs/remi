@@ -74,7 +74,11 @@ async function probePort(
   outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
   try {
-    const res = await fetch(httpUrl, { signal: controller.signal });
+    const res = await fetch(httpUrl, {
+      signal: controller.signal,
+      // A redirect must not make an HTTPS-only probe contact a plaintext endpoint.
+      redirect: protocol === 'wss' ? 'error' : 'follow',
+    });
     return res.ok ? port : null;
   } catch {
     // Failure modes collapse to null: connection refused, timeout, outer
