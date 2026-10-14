@@ -750,6 +750,18 @@ The complete focused auth/connection/server/provisioning population passes
 Eight exact guard-removal/original failure cells passed their negative oracles;
 source bytes were restored. Independent full R1 has no actionable findings.
 The reviewed source is normally integrated with the landed #1515 held-port fix,
-#1519 fixture cleanup and owner-accepted #1508 contract; fresh exact-head hosted
-full-suite and relay validation remain before landing.
+#1519 fixture cleanup and owner-accepted #1508 contract.
+
+The first hosted full suite passed the 73 focused cases but failed an older
+image insertion case: after removing its own grant, that case awaited a semantic
+reply on the connection that #1305 now closes. The unchanged case passes the
+base and times out on the candidate on both Mac Buns. Its corrected expectation
+requires CLOSING, a closed socket, no image result or acknowledgement, and no
+PTY output; it fails against the old base and passes the candidate on both Buns.
+No runtime guard or timeout was relaxed. The expanded nine-module population
+passes 126 tests with 1,648 assertions on each Mac Bun; final root/web types and
+formatting pass, and fix-only R2 has no actionable findings. Fresh hosted
+full-suite/relay validation remains before landing.
+The first hosted failure and all differential attempts are preserved separately;
+its in-progress relay run cannot qualify the corrected head.
 Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-connection-revocation/`.
