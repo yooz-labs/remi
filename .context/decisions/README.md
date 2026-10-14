@@ -59,6 +59,7 @@ add a row below.
 | [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; direct staging and web caller validated; native conformance remains separate |
 | [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; guarded one-write lease/coordinator, strict signed-direct dispatch and explicit expiring web draft caller validated; native conformance remains separate |
 | [0043](0043-structured-chat-submission.md) | Proposed structured Codex submission contract with bounded connection/session sequencing, signed direct and admitted relay child callers, explicit uncertainty/reconnect and native failure recovery; hosted checks, relay review and native UI remain separate gates |
+| [0045](0045-direct-file-download.md) | Proposed explicit signed-direct download: one admitted project file, validated existing managed journal, bounded pull responses and explicit client Save; owner freeze and actual implementation remain pending |
 
 ## By area
 
@@ -68,6 +69,6 @@ another one closed.
 
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
-- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0041, 0043, 0012, 0013, 0014, 0006
+- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0041, 0043, 0045, 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034
 - **Process:** 0007, 0008, 0011, 0040

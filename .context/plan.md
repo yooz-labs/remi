@@ -663,3 +663,30 @@ This fixture uses inert cat and no account; it complements the earlier three app
 Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Direct download contract proposal (#1170 T3)
+
+[Proposed ADR0045](decisions/0045-direct-file-download.md) makes the next file-egress
+slice reviewable while the independent browser-link proposal (#1508) awaits owner
+review. Existing descriptor admission and generic managed-journal ownership are
+reused; the reviewed extra publication factory remains unpublished because the
+actual managed path does not need it.
+
+The proposal specifies one explicit project-relative nonempty regular file up to
+10 MiB, exact completed private-copy validation, one 32 KiB pull response at a time,
+preparation cancellation by begin ID, five-minute total/30-second idle expiry and
+explicit client Save with no automatic preview/open/extraction. It starts with
+signed direct and known Claude/Codex bindings. Empty files remain an explicit
+first-version limitation of current positive-byte reservations. Owner review
+fixes these fields, limits, type policy and `file_download` name before models or
+handlers. No download availability, native UI or relay byte acceptance is claimed.
+
+After acceptance: characterize/extract the single admitted-read core, compose the
+existing journal writer/read/settlement with process-death/debt controls, then strict
+codec/goldens, actual authenticated daemon/web Save caller and rendered acceptance.
+Keep the original proof populations and supported compiled matrix; measure held
+answers before deciding whether a worker is needed. Native conformance/Save and
+relay transfer remain their own caller gates. One implementation lead and one
+independent reviewer per bounded change; no model-account or phone call is needed
+for this proposal.
