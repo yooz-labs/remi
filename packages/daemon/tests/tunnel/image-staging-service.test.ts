@@ -439,8 +439,32 @@ test('strict wire malformed insertion hints distinguish only the original curren
   ).toBe('unavailable');
   expect(f.output()).toBe('');
   expect(f.ledger()).toEqual(ledger);
+  const beforeRemoval = f.owner.received.length;
   expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
-  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('unavailable');
+  // #1305 retires the revoked connection before a malformed hint reaches the service.
+  f.owner.socket.send(raw);
+  await pollUntil(
+    () => f.owner.socket.readyState === WebSocket.CLOSED,
+    1000,
+    'revoked insertion connection closes before a semantic reply',
+  );
+  const afterRemoval = f.owner.received.slice(beforeRemoval);
+  expect(
+    afterRemoval.some(
+      (message) =>
+        message.type === 'error' &&
+        message.code === 'CLOSING' &&
+        message.message === 'Device authorization removed; local approval required',
+    ),
+  ).toBe(true);
+  expect(
+    afterRemoval.some(
+      (message) => message.type === 'image_insert_result' && message.requestId === request.id,
+    ),
+  ).toBe(false);
+  expect(
+    afterRemoval.some((message) => message.type === 'ack' && message.ack.messageId === request.id),
+  ).toBe(false);
   expect(f.output()).toBe('');
 });
 
