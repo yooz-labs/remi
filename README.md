@@ -183,6 +183,8 @@ Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN — needs
 
 Use an SSH tunnel, or a direct connection over LAN or Tailscale with `daemon.bind` widened and authentication enabled. The opt-in v2 daemon path is described in [relay-daemon-v2.md](docs/relay-daemon-v2.md); deployed and signed-device acceptance are pending. Permanent connection codes are retired.
 
+Optional [direct HTTPS/WSS setup](docs/DIRECT-TLS.md) is available for WSS-capable clients. Local CLI commands use the host's private control connection automatically. Legacy mDNS/direct QR, native endpoint adoption and remote CLI WSS remain separate work; read those limits before enabling TLS.
+
 ## Architecture
 
 ```

@@ -41,12 +41,12 @@ An unauthenticated peer has no tunnel authority.
 An authorized client may request an explicit transfer for a live session it is attached to; possession of another session's ID or transfer ID grants nothing.
 The hub must capture the authenticated device, authorization grant incarnation and current session binding, and the child must recheck them before reading, writing or inserting a reference.
 Cancellation, detach, authorization removal and a changed session binding invalidate unfinished transfers.
-This requires a tunnel-specific current-grant-incarnation check: today's authenticated connections survive key removal (#1305), so connection authentication alone cannot establish revocation.
+This requires a tunnel-specific current-grant-incarnation check: direct connections recheck their grant before dispatch and at the existing heartbeat (#1305), and each queued transfer effect must still verify its captured original grant.
 Removing and granting the same key again must not revive an earlier transfer; an epoch mismatch or an unavailable authority store permanently invalidates that transfer.
 
 A malicious relay may inspect metadata, delay, truncate or replay transport frames.
 Relay encryption does not stop a legitimately authenticated client from requesting files or exhaustively uploading data; filesystem policy and budgets are separate checks.
-Direct WebSockets provide authentication without encryption by remi (ADR 0009); use a trusted network, VPN or SSH tunnel for sensitive transfers.
+Direct `ws://` provides authentication without encryption by Remi; optional `[daemon.tls]` supplies HTTPS/WSS ([setup](DIRECT-TLS.md), ADR 0009 amendment). The new link/download release requires HTTPS/WSS with normal certificate and hostname validation.
 
 A malicious project or agent may plant traversal paths, symlinks, credential files, URL schemes or deceptive display text.
 The daemon must not acquire credentials for this feature, inspect credential stores or interpret an agent's output as permission to transfer a file or open a link.
@@ -811,8 +811,9 @@ The production web connection manager owns a stop-and-wait upload controller.
 The chat panel selects a PNG/JPEG, shows acknowledged progress, permits explicit
 cancellation and reports the staged result or uncertainty. An unconfirmed attempt
 cannot blindly restart on the same context. No upload inserts an image into the
-harness or returns a host path. Direct WebSocket encryption remains outside Remi;
-use an existing private transport as described in ADR 0009.
+harness or returns a host path. Unconfigured direct `ws://` remains unencrypted
+by Remi; use the optional TLS listener or an existing private transport as
+described in ADR 0009.
 
 Both Bun source populations pass 1,462 tests and 5,427 assertions across eleven
 files, including both shipping direct-dispatch endpoints. Root, web app and web

@@ -11,9 +11,13 @@ before the first direct browser-link and file-download release (ADRs
 [0044](0044-explicit-browser-link-forwarding.md) and
 [0045](0045-direct-file-download.md)). Full relay tunneling follows.
 This supersedes the direct-transport exemption below for those new features.
-The current daemon has no TLS listener, and existing direct `ws://` connections
-remain unencrypted by Remi. Do not advertise the new features before the secure
-transport and actual shipping caller pass their own acceptance.
+The daemon supports an optional `[daemon.tls]` certificate/key pair for its public
+HTTPS/WSS listener; see [direct TLS setup](../../docs/DIRECT-TLS.md).
+Unconfigured direct `ws://` connections remain unencrypted by Remi. A configured
+TLS startup failure stops startup without a plaintext fallback. Local commands
+use a separate capability-protected loopback listener. Do not advertise the new
+features before the secure transport and actual shipping caller pass their own
+acceptance. Native endpoint and secure pairing adoption remain separate.
 
 The original decision and its historical source references follow.
 

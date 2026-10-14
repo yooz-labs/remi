@@ -119,3 +119,18 @@ This remains local preparation. Fresh integration/hosted checks precede landing;
 CLI configuration, local routing, secure clients and actual feature availability
 remain the subsequent phases above. No runtime publication starts while #1520's
 current exact-base relay validation is active, avoiding an unnecessary base change.
+
+## Combined local transport continuation
+
+B2 at `a038e2f8` adds strict optional TLS config, startup-only PEM reads, all three
+adapter callers and paired local URL/capability resolution for the seven CLI
+paths and verified child proxies. Real hub/child/wrapper, pairing refusal, relay
+control and public-port retention run on both Mac Buns: 969 pass, zero failures
+across 59 modules. The B1 implementation remains byte-identical. Normal merge of
+reviewed WSS head `37f2b287` preserves all six web source hashes.
+
+The setup/ADR descriptions distinguish optional TLS from unconfigured WS, and
+retain the 10 MiB/HTTPS-first owner decisions. Browser/file runtime handlers,
+rendered secure-client, native/QR, remote CLI WSS, certificate provisioning and
+physical-device acceptance remain later gates. No live config or trust store
+was changed by this continuation.

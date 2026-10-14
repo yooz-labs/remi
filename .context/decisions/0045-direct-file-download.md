@@ -41,11 +41,12 @@ Xcode track and does not become available through this document.
 
 Initial release requires an HTTPS/WSS direct connection with normal certificate
 and hostname validation, the existing signed device authentication, and a known
-live Claude or Codex binding. The current daemon supplies no HTTPS/WSS listener;
-its signed `ws://` transport alone does not satisfy this prerequisite. Tailscale,
+live Claude or Codex binding. The daemon supplies an optional `[daemon.tls]`
+HTTPS/WSS listener; the download handler and client remain separate integration.
+Its signed `ws://` transport alone does not satisfy this prerequisite. Tailscale,
 a VPN or an SSH tunnel does not waive the owner's HTTPS/WSS requirement for this
 release. This amends ADR 0009 for the new link/download features; it does not claim
-that existing direct connections are encrypted by Remi.
+that unconfigured direct connections are encrypted by Remi.
 
 Downloading does not type into either harness or call a model, and may proceed
 while a permission is held if answer responsiveness passes. No automatic
