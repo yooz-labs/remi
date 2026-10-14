@@ -213,12 +213,19 @@ export class RelayMachineChannel {
         return;
       }
       if (this.closing || this.generation !== generation || !this.identityCurrent()) return;
-      const message = deserialize(new TextDecoder('utf-8', { fatal: true }).decode(plaintext));
+      // Preserve the original BOM for the shared strict frame decoders (#1207).
+      const message = deserialize(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(plaintext),
+      );
       if (
         !message ||
-        ['auth_challenge', 'auth_result', 'raw_pty_output', 'terminal_resize'].includes(
-          message.type,
-        )
+        [
+          'auth_challenge',
+          'auth_result',
+          'raw_pty_output',
+          'terminal_resize',
+          'chat_submit_request',
+        ].includes(message.type)
       ) {
         throw new Error('Unsupported relay application message.');
       }
