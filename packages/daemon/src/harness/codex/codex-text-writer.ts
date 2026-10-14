@@ -1,7 +1,8 @@
 /**
- * Internal #1207 RPC writer. No production caller/capability yet.
+ * #1207 RPC writer used by CodexSession.structuredChat on the signed direct path.
  *
- * The future caller owns device authority, request replay and correlated delivery.
+ * StructuredChatService owns device/session authority, sequencing and correlated
+ * delivery, including the original grant lock around this writer's commit callback.
  * This writer performs at most one selected turn RPC per call, with no PTY or
  * retry/fallback path. Acceptance is not model completion. Requests omit every
  * sandbox/approval/cwd override, preserving the thread's configured posture.
