@@ -24,6 +24,7 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onBrowserLinkReceiver',
   'onStructuredChat',
   'onImageInsert',
   // Explicit R6 signed-proof event, added to the original 13 (#1201).
@@ -45,10 +46,33 @@ const GOLDEN_KEYS = [
   'onUnregisterDeviceToken',
 ];
 
+test('the browser semantic event crosses the actual generic pick/bind forwarders', async () => {
+  const seen: unknown[] = [];
+  const source: Partial<ClientMessageEventsWithConnectionId> = {
+    onBrowserLinkReceiver(id, request) {
+      seen.push(id, request);
+    },
+  };
+  const request = {
+    type: 'browser_link_receiver_request' as const,
+    id: generateId(),
+    timestamp: new Date().toISOString(),
+    sessionId: generateId(),
+    binding: { harness: 'claude' as const, harnessSessionId: generateId() },
+    seq: 1,
+    action: 'select' as const,
+  };
+  const connectionId = generateId();
+  await bindConnectionId(connectionId, pickClientMessageEvents(source)).onBrowserLinkReceiver?.(
+    request,
+  );
+  expect(seen).toEqual([connectionId, request]);
+});
+
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 18 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(18);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(18);
+  test('has exactly 19 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(19);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(19);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

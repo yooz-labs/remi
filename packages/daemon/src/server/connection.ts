@@ -59,11 +59,21 @@ import type {
   UnregisterDeviceTokenMessage,
   UserInputMessage,
 } from '@remi/shared';
+import {
+  type BrowserLinkMessage,
+  type BrowserLinkReceiverRequest,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
+
+/** Internal actual listener provenance, never a client assertion or wire field. */
+export type ConnectionListenerTransport = 'public-tls' | 'public-plain' | 'private-control';
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
@@ -71,6 +81,7 @@ export interface ConnectionTransport {
   readonly readyState: number;
   send(data: string): unknown;
   close(): void;
+  getBufferedAmount?(): number;
 }
 
 /**
@@ -186,6 +197,7 @@ export class Connection {
     id?: UUID,
     peerAddress?: string | null,
     relayChatAuthority?: SecurePushAuthority,
+    private readonly listenerTransport: ConnectionListenerTransport = 'public-plain',
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
@@ -272,6 +284,10 @@ export class Connection {
     return this._peerAddress;
   }
 
+  get connectionListenerTransport(): ConnectionListenerTransport {
+    return this.listenerTransport;
+  }
+
   /** Check if connection is active */
   get isConnected(): boolean {
     return this.state === 'connected';
@@ -282,6 +298,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (this.events.onBrowserLinkReceiver && isBrowserLinkCandidate(data)) {
+      this.handleBrowserLinkFrame(data);
+      return;
+    }
     if (isStructuredChatCandidate(data)) {
       this.handleStructuredChatFrame(data);
       return;
@@ -431,6 +451,40 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Installed service only: original units bypass ordinary ACK/deduplication. */
+  handleBrowserLinkFrame(data: string | Uint8Array): void {
+    if (!this.events.onBrowserLinkReceiver || !this.checkAuthorization()) return;
+    const request = decodeBrowserLinkFrame(data);
+    if (request?.type !== 'browser_link_receiver_request' || !this.isConnected) {
+      this.close('Invalid browser link frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onBrowserLinkReceiver(request);
+      if (pending) void pending.catch(() => this.close('Browser links unavailable'));
+    } catch {
+      this.close('Browser links unavailable');
+    }
+  }
+
+  /** Best effort only: a positive send is not an application delivery or Open acknowledgement. */
+  sendBrowserLinkFrame(message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
     }
   }
 
