@@ -299,8 +299,38 @@ live(
         'wrong binding, false/throwing authority, blocked prompt, epoch change and authority loss make no turn RPC',
       );
 
+      expect(
+        await writer.send(
+          request(),
+          () => true,
+          () => false,
+        ),
+      ).toEqual({ outcome: 'refused', code: 'unavailable' });
+      let delayed: (() => void) | undefined;
+      expect(
+        await writer.send(
+          request(),
+          () => true,
+          (send) => {
+            delayed = send;
+            return false;
+          },
+        ),
+      ).toEqual({ outcome: 'refused', code: 'unavailable' });
+      delayed?.();
+      expect(effects).toHaveLength(0);
+      receipt.checks.push('refused and delayed commit callbacks emit no turn RPC');
+
       const original = request();
-      const starting = writer.send(original, () => true);
+      const starting = writer.send(
+        original,
+        () => true,
+        (send) => {
+          send();
+          send();
+          return true;
+        },
+      );
       expect(await writer.send(request(), () => true)).toEqual({
         outcome: 'refused',
         code: 'busy',
@@ -396,6 +426,31 @@ live(
         input: [{ type: 'text', text: readOnlyRequest.text }],
       });
       receipt.checks.push('explicit read-only thread start also omits all posture overrides');
+      const beforeCommitRefusal = effects.length;
+      expect(
+        await writer.send(
+          request(),
+          () => true,
+          (send) => {
+            send();
+            return false;
+          },
+        ),
+      ).toEqual({ outcome: 'uncertain', code: 'delivery_unknown' });
+      expect(effects).toHaveLength(beforeCommitRefusal + 1);
+      const beforeCommitException = effects.length;
+      expect(
+        await writer.send(
+          request(),
+          () => true,
+          (send) => {
+            send();
+            throw new Error('controlled commit failure after send');
+          },
+        ),
+      ).toEqual({ outcome: 'uncertain', code: 'delivery_unknown' });
+      expect(effects).toHaveLength(beforeCommitException + 1);
+      receipt.checks.push('false and throwing post-send commits stay uncertain, with one RPC each');
       writer.close();
       const afterClose = effects.length;
       expect(await writer.send(request(), () => true)).toEqual({

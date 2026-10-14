@@ -23,6 +23,13 @@ export interface CodexTextRequest {
   readonly text: string;
 }
 
+/** Synchronous authority decision owning the send itself, not only a prior boolean check. */
+export type CodexTextCommit = (send: () => void) => boolean;
+const immediateCommit: CodexTextCommit = (send) => {
+  send();
+  return true;
+};
+
 export type CodexTextResult =
   | {
       readonly outcome: 'accepted';
@@ -103,7 +110,11 @@ export class CodexTextWriter {
     this.closed = true;
   }
 
-  async send(request: CodexTextRequest, guard: () => boolean): Promise<CodexTextResult> {
+  async send(
+    request: CodexTextRequest,
+    guard: () => boolean,
+    commit: CodexTextCommit = immediateCommit,
+  ): Promise<CodexTextResult> {
     // Capture caller-owned values before any await; later mutation cannot retarget a call.
     const captured = { id: request.id, threadId: request.threadId, text: request.text };
     if (!valid(captured)) return refused('malformed');
@@ -174,15 +185,31 @@ export class CodexTextWriter {
       if (lost) return lost;
       const method = turnId ? 'turn/steer' : 'turn/start';
       // This exact boundary may enqueue input. Every later fault is uncertain, not retry authority.
-      possibleEffect = true;
-      const response = record(
-        await this.deps.client.request(method, {
-          threadId: captured.threadId,
-          clientUserMessageId: captured.id,
-          input: [{ type: 'text', text: captured.text }],
-          ...(turnId ? { expectedTurnId: turnId } : {}),
-        }),
-      );
+      let pending: Promise<unknown> | undefined;
+      let commitOpen = true;
+      let allowed: boolean;
+      try {
+        allowed =
+          commit(() => {
+            // A host callback can neither schedule a later send nor invoke it twice.
+            if (!commitOpen || possibleEffect) return;
+            possibleEffect = true;
+            pending = this.deps.client.request(method, {
+              threadId: captured.threadId,
+              clientUserMessageId: captured.id,
+              input: [{ type: 'text', text: captured.text }],
+              ...(turnId ? { expectedTurnId: turnId } : {}),
+            });
+            // A host may throw/refuse after sending. Observe the owned response even
+            // when we must return uncertainty before awaiting its result.
+            void pending.catch(() => {});
+          }) === true;
+      } finally {
+        commitOpen = false;
+      }
+      if (!possibleEffect) return refused('unavailable');
+      if (!allowed || !pending) return { outcome: 'uncertain', code: 'delivery_unknown' };
+      const response = record(await pending);
       const acceptedId =
         method === 'turn/start' ? record(response?.['turn'])?.['id'] : response?.['turnId'];
       if (!uuid(acceptedId) || (turnId !== null && acceptedId !== turnId) || current())
