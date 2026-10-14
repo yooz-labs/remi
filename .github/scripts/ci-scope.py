@@ -938,6 +938,35 @@ def git(*args):
     return subprocess.check_output(["git", *args], stderr=subprocess.PIPE)
 
 
+def parse_name_status(raw, expected_paths):
+    """Parse one complete `git diff --name-status -z --no-renames` result."""
+    expected = set(expected_paths)
+    if not expected or len(expected) != len(expected_paths) or not raw or not raw.endswith(b"\0"):
+        raise ValueError("incomplete diff status output")
+    fields = raw[:-1].split(b"\0")
+    if len(fields) % 2:
+        raise ValueError("malformed diff status fields")
+    statuses = {}
+    for index in range(0, len(fields), 2):
+        status = fields[index].decode("ascii", "strict")
+        path = fields[index + 1].decode("utf-8", "strict")
+        if status not in {"A", "M", "D"} or not path or path in statuses:
+            raise ValueError("unknown or duplicate diff status")
+        statuses[path] = status
+    if statuses.keys() != expected:
+        raise ValueError("diff status paths do not match changed paths")
+    return statuses
+
+
+def diff_status_matches(status_lookup, base, head, merge_base, path, expected):
+    if status_lookup is None:
+        status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                     merge_base, head, "--", path)
+        return status == f"{expected}\0{path}\0".encode()
+    statuses = status_lookup()
+    return statuses is not None and statuses.get(path) == expected
+
+
 def all_gates(reason):
     return {**dict.fromkeys(GATES, True), "typecheck": True, "relay_soak": True, "reason": reason}
 
@@ -1053,7 +1082,7 @@ def bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
         return False
 
 
-def staging_is_dormant(base, head, merge_base, paths):
+def staging_is_dormant(base, head, merge_base, paths, status_lookup=None):
     try:
         trees = {}
         for ref in dict.fromkeys((base, head, merge_base)):
@@ -1072,12 +1101,10 @@ def staging_is_dormant(base, head, merge_base, paths):
                 tree[path] = header.split()[-1].decode()
             trees[ref] = tree
         for path in set(paths) & STAGING_INPUTS:
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
             kind = "M" if path in trees[merge_base] and path in trees[base] else "A"
             if (path not in trees[head] or (kind == "A" and
                     (path in trees[merge_base] or path in trees[base])) or
-                    status != f"{kind}\0{path}\0".encode()):
+                    not diff_status_matches(status_lookup, base, head, merge_base, path, kind)):
                 return False
         if STAGING_SOURCE not in trees[head]:
             return False
@@ -1127,7 +1154,7 @@ def staging_is_dormant(base, head, merge_base, paths):
         return False
 
 
-def accounting_relocation_is_dormant(base, head, merge_base, paths):
+def accounting_relocation_is_dormant(base, head, merge_base, paths, status_lookup=None):
     try:
         trees = {}
         for ref in dict.fromkeys((base, head, merge_base)):
@@ -1163,9 +1190,7 @@ def accounting_relocation_is_dormant(base, head, merge_base, paths):
             kind = "M" if path in ACCOUNTING_ORIGINALS else "A"
             if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
                 return False
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
-            if status != f"{kind}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, kind):
                 return False
         # Immutable proof consumers cannot acquire extra execution while remaining excluded.
         for path, blob in ACCOUNTING_ORIGINALS.items():
@@ -1437,7 +1462,7 @@ def cold_image_reference(path, text, targets, identifiers):
     return cold_reference(path, unescaped, targets, identifiers) or cold_image_runner_reference(path, unescaped)
 
 
-def cold_relocation_paths(base, head, merge_base, paths):
+def cold_relocation_paths(base, head, merge_base, paths, status_lookup=None):
     changed = set(paths)
     selected = [policy for policy in COLD_RELOCATIONS.values() if changed & set(policy["head"])]
     if not selected:
@@ -1494,8 +1519,7 @@ def cold_relocation_paths(base, head, merge_base, paths):
             kind = "D" if final[path] is None else "M" if path in original else "A"
             if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
                 return set()
-            if git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                   merge_base, head, "--", path) != f"{kind}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, kind):
                 return set()
         names = {Path(p).name for p in final if p.endswith(".ts")}
         targets = {p for p in original | final if p.endswith(".ts") and Path(p).name in names}
@@ -1582,7 +1606,7 @@ def soak_versions_reviewed(tree, reviewed=None):
                for path, data in normalized.items())
 
 
-def soak_fixture_only(base, head, merge_base, paths):
+def soak_fixture_only(base, head, merge_base, paths, status_lookup=None):
     changed = set(paths) & set(SOAK_FIXTURES)
     auth_path = "packages/daemon/tests/connection-auth.test.ts"
     auth_changed = auth_path in changed
@@ -1653,9 +1677,7 @@ def soak_fixture_only(base, head, merge_base, paths):
                     final = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                     if trees[head].get(path) != ("100644", final):
                         return False
-                    status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                                 merge_base, head, "--", path)
-                    if status != f"M\0{path}\0".encode():
+                    if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
                         return False
                     if validation_objects({final: "blob"})[final] != content:
                         return False
@@ -1677,9 +1699,7 @@ def soak_fixture_only(base, head, merge_base, paths):
                     return False
                 if trees[head].get(path) != ("100644", new):
                     return False
-                status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                             merge_base, head, "--", path)
-                if status != f"M\0{path}\0".encode():
+                if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
                     return False
         # Trace wiring, helpers/config and every non-doc object/mode stay identical at both ends.
         def remaining(tree):
@@ -1731,7 +1751,7 @@ def soak_fixture_only(base, head, merge_base, paths):
         return False
 
 
-def reviewed_launch_or_decode_only(base, head, merge_base, paths):
+def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=None):
     # Match complete changed-path populations before reading the unchanged published graph.
     launch_paths = set(SOAK_LAUNCH_TRANSITION)
     decode_paths = set(SOAK_DECODE_TRANSITION)
@@ -1785,9 +1805,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                 elif trees[ref].get(path) != (tuple(expected) if expected is not None else None):
                     return None
             expected_status = "M" if roles["original"] is not None else "A"
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
-            if status != f"{expected_status}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, expected_status):
                 return None
         # The image-entry transition uses its separately reviewed public source
         # baseline, which includes the already-published lock/package/support updates.
@@ -1931,19 +1949,44 @@ def classify(base, head):
         bun_diagnostic_pair = bool(set(paths) & set(CI_BUN_DIAGNOSTIC_INPUTS))
         if bun_diagnostic_pair and not bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
             return all_gates("Bun diagnostic runner/test caller or transition changed; running all gates")
-        transition = reviewed_launch_or_decode_only(base, head, merge_base, paths)
+        status_state = {"loaded": False, "value": None, "error": False}
+
+        def changed_statuses():
+            # Lazy and scoped to this classify call. Git/object state is never cached between controls.
+            if not status_state["loaded"]:
+                status_state["loaded"] = True
+                try:
+                    raw_status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                                     merge_base, head, "--")
+                    status_state["value"] = parse_name_status(raw_status, paths)
+                except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+                    status_state["error"] = True
+            return status_state["value"]
+
+        transition = reviewed_launch_or_decode_only(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         if transition:
             return {**all_gates(f"Exact reviewed {transition} transition; ordinary and short relay controls retained"),
                     "relay_soak": False}
         gates = dict.fromkeys(GATES, False)
-        cold_paths = cold_relocation_paths(base, head, merge_base, paths)
+        cold_paths = cold_relocation_paths(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         cold_inputs = set().union(*(policy["head"] for policy in COLD_RELOCATIONS.values()))
         accounting_paths = set(paths) & (set(ACCOUNTING_HEAD) - cold_paths)
-        accounting_dormant = bool(accounting_paths) and accounting_relocation_is_dormant(base, head, merge_base, paths)
+        accounting_dormant = bool(accounting_paths) and accounting_relocation_is_dormant(
+            base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         if set(paths) & cold_inputs and not cold_paths and not accounting_dormant:
             return all_gates("Cold relocation, consumer or scan failure; running all gates")
-        if set(paths) & STAGING_INPUTS and not staging_is_dormant(base, head, merge_base, paths):
-            return all_gates("Staging consumer, producer state or scan failure; running all gates")
+        if set(paths) & STAGING_INPUTS:
+            staging_dormant = staging_is_dormant(base, head, merge_base, paths, changed_statuses)
+            if status_state["error"]:
+                return all_gates("Diff status unavailable or malformed; running all gates")
+            if not staging_dormant:
+                return all_gates("Staging consumer, producer state or scan failure; running all gates")
         if accounting_paths and not accounting_dormant:
             return all_gates("Accounting relocation, consumer or scan failure; running all gates")
         for path in paths:
@@ -2075,7 +2118,10 @@ def classify(base, head):
                 continue
             else:
                 return all_gates("Unknown path or global/gate configuration changed")
-        return {**gates, "relay_soak": gates["relay"] and not soak_fixture_only(base, head, merge_base, paths), "typecheck": any(gates[key] for key in
+        soak_skip = soak_fixture_only(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
+        return {**gates, "relay_soak": gates["relay"] and not soak_skip, "typecheck": any(gates[key] for key in
                 ("root", "web", "signaling", "integration", "notices")),
                 "reason": f"Classified complete PR diff ({len(paths)} paths)"}
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):

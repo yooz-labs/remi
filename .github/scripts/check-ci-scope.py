@@ -3926,7 +3926,48 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         diagnostic_assert(closure_drift, soak_tree(closure_drift, diagnostic_updates),
                           "pinned caller drift at all endpoints", False)
         assert count - diagnostic_start == 14, count - diagnostic_start
+        # Focused parser controls stay separately reported; the established 2,381-control
+        # population and ordering above remain unchanged.
+        focused_status_controls = 0
+        status_modified = "docs/owned-status space.md"
+        status_added = "docs/owned-status\tadded.md"
+        status_deleted = "docs/owned-status\ndeleted-λ.md"
+        status_base = soak_tree(soak_base, [(status_modified, "before\n", "100644"),
+                                           (status_deleted, "remove\n", "100644")])
+        status_head = soak_tree(status_base, [(status_modified, "after\n", "100644"),
+                                              (status_added, "add\n", "100644")],
+                                removals=(status_deleted,))
+        status_paths = {status_modified, status_added, status_deleted}
+        status_raw = subprocess.check_output(
+            ["git", "diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+             status_base, status_head, "--"], stderr=subprocess.PIPE)
+        assert module["parse_name_status"](status_raw, status_paths) == {
+            status_modified: "M", status_added: "A", status_deleted: "D",
+        }
+        focused_status_controls += 1
+        malformed_statuses = (
+            (b"", ("owned.md",)),
+            (b"M\0owned.md\0", ("owned.md", "missing.md")),
+            (b"M\0owned.md\0A\0owned.md\0", ("owned.md",)),
+            (b"M\0owned.md\0A\0extra.md\0", ("owned.md",)),
+            (b"X\0owned.md\0", ("owned.md",)),
+            (b"M\0\xff\0", ("owned.md",)),
+        )
+        for raw_status, expected_paths in malformed_statuses:
+            try:
+                module["parse_name_status"](raw_status, expected_paths)
+            except (ValueError, UnicodeError):
+                focused_status_controls += 1
+            else:
+                raise AssertionError(("malformed status accepted", raw_status, expected_paths))
+        try:
+            module["parse_name_status"](b"M\0owned.md\0", ("owned.md", "owned.md"))
+        except (ValueError, UnicodeError):
+            focused_status_controls += 1
+        else:
+            raise AssertionError("duplicate expected diff path accepted")
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
+                          "focused_status_controls": focused_status_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)
