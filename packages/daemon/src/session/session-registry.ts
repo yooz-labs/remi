@@ -216,6 +216,8 @@ export interface ManagedSession {
  */
 export class SessionRegistry {
   private session: ManagedSession | null = null;
+  /** Process-local attachment incarnations; detach/re-attach must not revive a captured effect. */
+  private readonly attachmentTokens = new Map<UUID, object>();
   /** Per-session "never evict this question" reads (#1126), see
    *  `setQuestionEvictionGuard`. */
   private readonly evictionGuards = new Map<UUID, (questionId: UUID) => boolean>();
@@ -347,6 +349,13 @@ export class SessionRegistry {
     return undefined;
   }
 
+  /** Host-only identity, absent outside a live attachment; never serialized or restored. */
+  getAttachmentToken(connectionId: UUID): object | undefined {
+    return this.getSessionForConnection(connectionId)
+      ? this.attachmentTokens.get(connectionId)
+      : undefined;
+  }
+
   /**
    * Check whether a session can be attached/resumed. Now simply "does the
    * session exist" (#795) — attaching a second, third, etc. connection is
@@ -387,6 +396,8 @@ export class SessionRegistry {
       this.session.orphanTimeoutId = null;
     }
 
+    if (!this.session.attachedConnections.has(connectionId))
+      this.attachmentTokens.set(connectionId, {});
     this.session.attachedConnections.add(connectionId);
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
@@ -441,6 +452,7 @@ export class SessionRegistry {
 
     const { sessionId } = this.session;
     this.session.attachedConnections.delete(connectionId);
+    this.attachmentTokens.delete(connectionId);
 
     // #1038: BEFORE the still-attached early return below. A detach that
     // leaves others attached is not an orphan, but it did change the set, and
@@ -618,6 +630,7 @@ export class SessionRegistry {
 
     // Clear the session
     this.session = null;
+    this.attachmentTokens.clear();
 
     this.events.onSessionClosed?.(sessionId, reason, pendingQuestionIds);
   }
@@ -769,6 +782,7 @@ export class SessionRegistry {
         console.error('Failed to close PTY during shutdown:', err);
       }
       this.session = null;
+      this.attachmentTokens.clear();
     }
   }
 }

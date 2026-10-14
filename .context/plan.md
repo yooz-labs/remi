@@ -499,5 +499,30 @@ supported compiled cells pass 123 groups with unchanged source, clean runtime
 temp and no cleanup errors, using the predecessor's 256 MiB/64-PID Linux envelope.
 Independent review found only stale caller banners in three touched storage
 modules; those descriptions are corrected in this same change.
-The corrected exact-path model check, managed insertion retirement, shared
-vectors, handler/client integration and native conformance remain subsequent gates.
+The subsequent corrected exact-path model check passed, as recorded below.
+Managed insertion retirement, shared vectors, handler/client integration and
+native conformance are separate subsequent gates.
+
+## Image insertion: corrected CLI route and internal lease
+
+The filename correction landed in #1495 at `9a6ef90b`.
+One separately approved corrective Claude turn passed with exact retained PNG
+and JPEG paths outside its project: both image payloads and color answers match,
+with zero CR/LF before one explicit Enter. Exactly six authorized turns are used.
+
+The internal lease prepares the existing reader, original PTY and expiry.
+It rechecks original signed socket, grant incarnation, attachment incarnation,
+live session/runtime, binding, deadline, prompt and current file at retirement.
+Retirement marks one possible write for the image before a sink can run; a
+lease reports whether it crossed that boundary. It allocates no new file,
+reader, quota, deadline or retry map and registers no wire message/capability.
+
+A real detach/reattach control exposed that membership alone revived an old
+capture on the same socket. Process-local attachment tokens now preserve
+duplicate attach, change on genuine reattach and clear on detach/session exit.
+Staging's existing authority checks use the same token. The original control
+failed before this fix and passes afterward; the old upload cannot revive either.
+
+Correlated outcome/retry handling, strict shared vectors and dispatch, an explicit
+client action, capability availability and native conformance remain subsequent
+integration work. The internal lease is not a shipping Add to draft action.

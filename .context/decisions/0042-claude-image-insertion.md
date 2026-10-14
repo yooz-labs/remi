@@ -1,6 +1,6 @@
 # ADR 0042: Explicit Claude image-reference insertion
 
-**Status:** accepted contract; implementation and corrected CLI route gates remain
+**Status:** accepted contract; production insertion gates remain
 **Date:** 2026-10-13
 **Owner:** Yahya
 
@@ -20,9 +20,12 @@ Deleting a new draft reference's original before Enter produced no image attachm
 The owner accepted the two-message contract, capability name, original-connection
 restriction and visible draft expiry on 2026-10-13.
 The separately authorized exact `.artifact` route check failed: neither image
-became an embedded attachment. New image journals are being corrected to use
-their verified media extension from creation; this changes no wire field or
-deadline and does not make insertion available.
+became an embedded attachment. The filename correction landed through #1495.
+One separately approved corrective turn then embedded the exact original PNG
+and JPEG from their actual retained paths outside the CLI project, with spaces
+in the private home path. The answer correctly identified both images' colors.
+The measured draft write contained zero CR/LF before one explicit Enter.
+These observations change no wire field or deadline and do not make insertion available.
 
 ## Decision
 
@@ -103,7 +106,7 @@ No retention extension or second storage namespace is introduced.
 
 Owner acceptance of the two-message contract, `image_insertion` name,
 first-version connection restriction and expiring unsent draft is recorded above.
-First pass the corrected exact managed filename route on the installed CLI.
+The corrected exact managed filename route passed on the installed CLI.
 Then implement managed artifact acquisition and one-effect retirement, strict shared vectors, dispatch/direction handling and one production explicit client action.
 Real signed socket/grant/session/binding/held-hook controls must prove zero bytes on refusal, one reference and zero CR/LF on success, and no replay after uncertainty.
 Run source/compiled controls on the three supported hosts and both Bun versions; native runs the shared conformance corpus independently.

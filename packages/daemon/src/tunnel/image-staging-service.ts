@@ -1,4 +1,5 @@
-// #1170 authenticated direct image staging. Staged images are never inserted into the harness.
+// #1170 authenticated direct image staging and internal insertion lease preparation.
+// Staging writes no harness input; insertion has no production handler or capability yet.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -24,6 +25,7 @@ import type { ManagedSession, SessionRegistry } from '../session/session-registr
 import { withInterprocessFileLockNonblocking } from '../storage/interprocess-file-lock';
 import { DirectoryRoot } from './admission';
 import { admitImage } from './image-admission';
+import { ImageInsertionError, type ImageInsertionLease } from './image-insertion-lease';
 import { type ImageDecoder, createImageDecoder } from './image-worker-command';
 import type { JournalLease } from './journal-schema';
 import {
@@ -66,6 +68,7 @@ type Authority = {
   storageOwner: string;
   epoch: string;
   binding: ImageStagingBinding;
+  attachment: object;
 };
 type Transfer = {
   begin: ImageUploadBegin;
@@ -76,6 +79,7 @@ type Transfer = {
   reader: JournalRead | undefined;
   writerClosed: boolean;
   retired: boolean;
+  insertionRetired?: boolean;
   state: 'receiving' | 'checking' | 'staged' | 'cancelled' | 'expired' | 'cleanup_failed';
   received: number;
   sequence: number;
@@ -237,8 +241,10 @@ export class ImageStagingService {
         if (!epoch) return fault('unavailable');
         const session = this.host.sessionRegistry.getSessionForConnection(id);
         const binding = this.host.bindingStore.getIdentity(sessionId as UUID);
+        const attachment = this.host.sessionRegistry.getAttachmentToken(id);
         if (
           !session ||
+          !attachment ||
           session.sessionId !== sessionId ||
           !session.pty.isRunning ||
           binding?.harness !== 'claude' ||
@@ -254,6 +260,7 @@ export class ImageStagingService {
           storageOwner: createHash('sha256').update(Buffer.from(publicKey, 'base64')).digest('hex'),
           epoch,
           binding: { harness: 'claude', harnessSessionId: binding.harnessSessionId },
+          attachment,
         };
       },
       true,
@@ -355,6 +362,7 @@ export class ImageStagingService {
           current.connectionClientFingerprint !== captured.fingerprint ||
           session !== captured.session ||
           session.pty !== captured.pty ||
+          this.host.sessionRegistry.getAttachmentToken(current.id) !== captured.attachment ||
           !captured.pty.isRunning
         )
           return fault('unavailable');
@@ -370,6 +378,83 @@ export class ImageStagingService {
         return operation();
       },
     );
+  }
+
+  /** Internal host lease only. Preparing never writes input or changes the original storage lifetime. */
+  prepareInsertion(
+    id: UUID,
+    sessionId: UUID,
+    binding: ImageStagingBinding,
+    artifactId: string,
+  ): ImageInsertionLease {
+    const record = [...this.transfers.values()].find((item) => item.artifact?.id === artifactId);
+    const requested = { ...binding };
+    let possibleWrite = false;
+    const refuse = (code: ImageInsertionError['code']): never => {
+      throw new ImageInsertionError(code);
+    };
+    const current = <T>(operation: (reader: JournalRead) => T): T => {
+      try {
+        if (
+          this.closed ||
+          !record ||
+          record.begin.sessionId !== sessionId ||
+          this.direct(id) !== record.authority.connection
+        )
+          return refuse('unavailable');
+        return this.owner(record, () => {
+          if (record.retired || record.state !== 'staged' || !record.reader || !record.artifact)
+            return refuse('unavailable');
+          if (this.expired(record)) return refuse('expired');
+          if (
+            requested.harness !== 'claude' ||
+            requested.harnessSessionId !== record.authority.binding.harnessSessionId
+          )
+            return refuse('binding_changed');
+          if (record.insertionRetired) return refuse('conflict');
+          return operation(record.reader);
+        });
+      } catch (error) {
+        if (error instanceof ImageInsertionError) throw error;
+        if (error instanceof StagingFault && error.code === 'binding_changed')
+          return refuse('binding_changed');
+        if (error instanceof Error && 'code' in error && error.code === 'busy')
+          return refuse('busy');
+        return refuse('unavailable');
+      }
+    };
+    const reference = (reader: JournalRead) => {
+      const filename = reader.referencePath();
+      const extension = record?.begin.mediaType === 'image/png' ? '.png' : '.jpg';
+      if (!filename.endsWith(extension) || /["\\\u0000-\u001f\u007f-\u009f]/u.test(filename))
+        return refuse('unavailable');
+      return filename;
+    };
+    // Capture only after current authority and the held/named file pass. No new reader, copy or alias.
+    return current((reader) => {
+      reference(reader);
+      const captured = record;
+      if (!captured?.artifact) return refuse('unavailable');
+      return {
+        pty: captured.authority.pty,
+        expiresAt: captured.artifact.expiresAt,
+        get possibleWrite() {
+          return possibleWrite;
+        },
+        referencePath() {
+          return current(reference);
+        },
+        retire(expectedReference, promptUp) {
+          current((reader) => {
+            if (promptUp()) return refuse('prompt_up');
+            if (reference(reader) !== expectedReference) return refuse('unavailable');
+            // Retire BEFORE a sink may write. An uncertain/failed sink never restores authority.
+            captured.insertionRetired = true;
+            possibleWrite = true;
+          });
+        },
+      };
+    });
   }
 
   private partialLifetimeEnded(record: Transfer): boolean {
