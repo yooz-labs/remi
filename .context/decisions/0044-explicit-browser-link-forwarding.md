@@ -1,6 +1,6 @@
 # ADR 0044: Explicit browser-link forwarding
 
-Status: proposed for owner review; no wire registration, capability or handler.
+Status: baseline fields accepted by owner on 2026-10-14; runtime implementation pending; no wire registration, capability or handler.
 Date: 2026-10-14 UTC.
 Issue: #1170, T2 in docs/FILE-TUNNEL.md.
 
@@ -109,6 +109,6 @@ This establishes that launcher profile and environment seam only, not installed 
 5. Remove each new guard and require its original malformed/other-session/stale-authority/replay control to fail. Retain all initial failures.
 6. Independently review with at most two rounds, pass fresh relevant hosted checks, then give native the accepted fields and vectors. Relay/Codex producer support and file downloads remain separate gates.
 
-Owner approval is required before contract freeze or runtime implementation.
-Open decisions for that review are exclusive explicit selection, the proposed fields/names, 4096-byte URL limit, 10/minute producer rate, eight retained candidates, two-minute lifetime and the initial Claude/direct scope.
+The owner accepted exclusive explicit selection, the fields/names, 4096-byte URL limit, 10/minute producer rate, eight retained candidates, two-minute lifetime and the initial Claude/direct scope on 2026-10-14.
+The owner also requested HTTPS/WSS direct operation and deferred the full relay tunnel. Transport sequencing is being clarified alongside the separate download limits; this acceptance does not claim a TLS listener or enable runtime delivery.
 One implementation lead and one independent reviewer are sufficient; no new cloud resources, account/model calls or phone access are required for the proposal.
