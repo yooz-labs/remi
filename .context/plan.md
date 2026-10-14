@@ -674,3 +674,42 @@ This fixture uses inert cat and no account; it complements the earlier three app
 Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Workspace updates after existing reads (#1285)
+
+The cache's existing registration/stale-list reads now notify the daemon only
+when published repository/directory/branch metadata changes. The callback runs
+after value/freshness/pending state is committed, so the shared `buildSessionList`
+push uses the new metadata without blocking requests or starting another read.
+Initial known metadata and removal notify once; unchanged/unknown/initial-none
+reads do not. Callback failure is logged while the cached answer remains usable.
+The current session membership, harness decoration, machine descriptor and
+sibling ports are read at broadcast time; a read finishing after closure pushes
+nothing. No new polling, timer, watcher, message shape or native code.
+
+Real repository/cache controls first reproduced the original missing change
+notification. The connected control constructs the shipping WebSocketServer,
+real registry/binding/transcript/harness objects and an unstarted genuine PTY;
+no harness process/model is launched. Its port-zero setup exposed the server's
+configured-zero getter: the server now reports its actual held OS port when
+running, including onStart (#1232), allowing held ephemeral listeners without
+port guessing. Configured nonzero ports retain their existing value.
+
+Focused workspace/cache/builder/real-client/server/authority and harness-boundary
+controls passed 107 tests with 562 assertions on each installed Mac Bun gate.
+Root types and format checks passed; independent review and fresh exact-head
+hosted checks remain before landing. These focused controls are not a full-suite,
+native-device or actual R7 acceptance result.
+Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-workspace-change-push/`.
+
+Pre-merge caller tracing found that the hub dropped unsolicited child lists,
+so the first daemon-only change did not update enrolled relay clients. The same
+PR now adds a payload-free invalidation from a verified current child to the
+existing filtered hub aggregate. Updates coalesce behind one active list, keep
+the last accepted external-session preference, and preserve BUSY and answer
+responsiveness. Duplicate recent replies do not invalidate; revoked, unverified,
+retired or replaced child sockets cannot notify. Background refresh failures
+are logged without payloads and retire the channel. No new polling or wire shape.
+The original head's full suite and actual R7 soak remain evidence for that head;
+the corrected relay source needs fix-delta review and fresh hosted validation.

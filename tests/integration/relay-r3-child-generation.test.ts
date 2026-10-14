@@ -8,9 +8,11 @@ import {
   createAnswerResult,
   createHelloAck,
   createPing,
+  createSessionListResponse,
   createSessionUpdate,
   createUserInput,
   deserialize,
+  generateId,
   serialize,
 } from '@remi/shared';
 import {
@@ -33,6 +35,7 @@ async function fixture() {
   }>();
   const forwarded: ProtocolMessage[] = [];
   const failures: string[] = [];
+  const invalidations: number[] = [];
   let authority = true;
   const server = Bun.serve({
     port: 0,
@@ -75,6 +78,8 @@ async function fixture() {
     (message) => forwarded.push(message),
     (id) => failures.push(id),
     () => authority,
+    undefined,
+    () => invalidations.push(1),
   );
   const ack = () => createHelloAck('2.0.0', entry.sessionId, { attachState: 'attached' });
   const cleanup = () => {
@@ -91,6 +96,7 @@ async function fixture() {
     requests,
     forwarded,
     failures,
+    invalidations,
     ack,
     cleanup,
     revoke: () => {
@@ -98,6 +104,66 @@ async function fixture() {
     },
   };
 }
+
+for (const retirement of ['revoked', 'generation-replaced', 'proxy-closed'] as const) {
+  test(`only fresh verified child lists invalidate the aggregate before ${retirement} (#1285)`, async () => {
+    const owned = await fixture();
+    try {
+      const result = owned.proxy.list(owned.entry.sessionId, false);
+      const hello = await owned.requests.next();
+      hello.reply(createSessionListResponse([], generateId()));
+      await Bun.sleep(40);
+      expect(owned.invalidations).toHaveLength(0);
+      hello.reply(owned.ack());
+      const request = await owned.requests.next();
+      const response = createSessionListResponse([], request.message.id);
+      request.reply(response);
+      expect(await result).toEqual(response);
+      // A duplicate or late issued response must not cause a refresh loop.
+      request.reply(response);
+      await Bun.sleep(40);
+      expect(owned.invalidations).toHaveLength(0);
+      request.reply(createSessionListResponse([], generateId()));
+      await Bun.sleep(40);
+      expect(owned.invalidations).toHaveLength(1);
+      expect(owned.forwarded).toHaveLength(0);
+      if (retirement === 'revoked') owned.revoke();
+      else if (retirement === 'generation-replaced')
+        owned.registry.register({ ...owned.entry, startedAt: '2026-01-02T00:00:00Z' });
+      else owned.proxy.close();
+      request.reply(createSessionListResponse([], generateId()));
+      await Bun.sleep(40);
+      expect(owned.invalidations).toHaveLength(1);
+      expect(owned.forwarded).toHaveLength(0);
+    } finally {
+      owned.cleanup();
+    }
+  }, 3000);
+}
+
+test('issued child list correlations retain at most 128 recent IDs (#1285)', async () => {
+  const owned = await fixture();
+  try {
+    for (let index = 0; index < 130; index++) {
+      const result = owned.proxy.list(owned.entry.sessionId, false);
+      let request = await owned.requests.next();
+      if (index === 0) {
+        request.reply(owned.ack());
+        request = await owned.requests.next();
+      }
+      const response = createSessionListResponse([], request.message.id);
+      request.reply(response);
+      expect(await result).toEqual(response);
+    }
+    const issued = (owned.proxy as unknown as { issuedLists: Set<string> }).issuedLists;
+    expect(issued.size).toBe(128);
+    expect(owned.invalidations).toHaveLength(0);
+    owned.proxy.close();
+    expect(issued.size).toBe(0);
+  } finally {
+    owned.cleanup();
+  }
+}, 5000);
 
 for (const retirement of ['revoked', 'generation-replaced', 'proxy-closed'] as const) {
   test(`the verified child ping stays on its socket and ${retirement} refuses another Pong`, async () => {
