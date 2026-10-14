@@ -52,10 +52,13 @@ export async function fileDownloadCliFixture(
         consumerState: 'reaped' | 'not-started';
         consumerReaped: boolean;
         daemonReaped: boolean;
+        stdinMeasured: boolean;
       }
     | undefined;
   let closeTask: Promise<NonNullable<typeof closed>> | undefined;
   let neverStarted = false;
+  let startupExitedBeforeReady = false;
+  let completedArgv: string | undefined;
   const rawInput = join(files.directory, 'consumer-input');
   const readyFile = join(files.directory, 'consumer-ready');
   const drain = async (stream: ReadableStream<Uint8Array>) => {
@@ -117,6 +120,19 @@ export async function fileDownloadCliFixture(
       }
     }
     await attempt(() => Promise.all(drains));
+    // Source-traced daemon bind refusal is classified only after its actual output is complete.
+    neverStarted =
+      startupExitedBeforeReady &&
+      options.mode !== 'wrapper' &&
+      options.port !== undefined &&
+      proc?.exitCode === 1 &&
+      !forcedKill &&
+      output.text.includes('TLS_START_FAILED: cannot start the configured secure listener.') &&
+      consumerPidFile !== undefined &&
+      !fs.existsSync(consumerPidFile) &&
+      !fs.existsSync(readyFile) &&
+      completedArgv !== undefined &&
+      !fs.existsSync(completedArgv);
     await attempt(() => server?.stop());
     // The actual owning daemon/consumer has ended before generated keys and state are removed.
     let ended = false;
@@ -130,8 +146,20 @@ export async function fileDownloadCliFixture(
     });
     const daemonReaped = !proc || proc.exitCode !== null;
     // Snapshot actual raw bytes only after the owning daemon and recorded consumer ended.
-    const stdin = ended && fs.existsSync(rawInput) ? fs.readFileSync(rawInput) : Buffer.alloc(0);
-    if (daemonReaped && ended) await attempt(() => files.cleanup());
+    let stdin: Buffer = Buffer.alloc(0);
+    let stdinMeasured = false;
+    if (ended && consumerPid !== undefined) {
+      await attempt(() => {
+        if (!fs.lstatSync(rawInput).isFile())
+          throw new Error('Raw input witness is not a regular file');
+        stdin = fs.readFileSync(rawInput);
+        stdinMeasured = true;
+      });
+      if (!stdinMeasured)
+        errors.push(new Error('Raw input witness missing or unreadable; fixture retained'));
+    }
+    if (daemonReaped && ended && (consumerPid === undefined || stdinMeasured))
+      await attempt(() => files.cleanup());
     else
       errors.push(
         new Error('Owned download CLI/consumer death was not confirmed; fixture retained'),
@@ -143,6 +171,7 @@ export async function fileDownloadCliFixture(
       consumerState: consumerPid === undefined ? 'not-started' : 'reaped',
       consumerReaped: consumerPid !== undefined && ended,
       daemonReaped,
+      stdinMeasured,
     };
     return closed;
   }
@@ -154,6 +183,7 @@ export async function fileDownloadCliFixture(
     if (options.tls === false)
       fs.writeFileSync(files.configPath, files.config.replace(files.tlsTable, ''));
     const agents = installFakeAgents(files.directory, { [harness]: true });
+    completedArgv = join(agents.codexDir, 'argv');
     const bin = agents.env['PATH']?.split(':')[0];
     if (!bin) throw new Error('Owned agent path absent');
     consumerPidFile = join(files.directory, 'consumer-pid');
@@ -234,19 +264,7 @@ await new Promise<void>((resolve)=>{
     await until(
       () => {
         if (proc?.exitCode !== null) {
-          // cli.ts daemon TLS bind failure returns before createNewSession (3234 vs3451).
-          // This narrow observed disposition is not a general exit1/missing-PID shortcut.
-          neverStarted =
-            options.mode !== 'wrapper' &&
-            options.port !== undefined &&
-            proc?.exitCode === 1 &&
-            !forcedKill &&
-            output.text.includes(
-              'TLS_START_FAILED: cannot start the configured secure listener.',
-            ) &&
-            !fs.existsSync(consumerPidFile!) &&
-            !fs.existsSync(readyFile) &&
-            !fs.existsSync(join(agents.codexDir, 'argv'));
+          startupExitedBeforeReady = true;
           throw new Error(`Owned download CLI startup failed (${proc?.exitCode})`);
         }
         return harness === 'claude'

@@ -443,3 +443,38 @@ for (const harness of ['claude', 'codex'] as const)
       expect(reaped.stdin).toEqual(Buffer.from('q'));
     }
   }, 30000);
+
+test('a missing raw-input record is unproven after actual reap and retains its fixture', async () => {
+  const f = await fileDownloadCliFixture();
+  const pid = Number(fs.readFileSync(join(f.files.directory, 'consumer-pid'), 'utf8'));
+  try {
+    await f.peer();
+    fs.unlinkSync(join(f.files.directory, 'consumer-input'));
+    const failure = await f.close().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError))
+      throw Error('Missing raw witness was incorrectly accepted');
+    expect(
+      failure.errors.some(
+        (error: unknown) =>
+          error instanceof Error && error.message.includes('Raw input witness missing'),
+      ),
+    ).toBe(true);
+    expect(fs.existsSync(f.files.directory)).toBe(true);
+    expect(f.proc.exitCode).not.toBeNull();
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    await f.close().catch(() => {});
+    let gone = false;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      gone = (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+    // Cleanup after proved death is separate from claiming a measured zero-byte receipt.
+    if (f.proc.exitCode !== null && gone) f.files.cleanup();
+  }
+}, 30000);
