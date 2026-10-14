@@ -37,6 +37,11 @@ export interface SessionBinding {
   claudeSessionId: string | null;
 }
 
+export interface SessionBindingObservers {
+  beforeWrite(id: UUID): void;
+  afterCommit(id: UUID, expectedClaudeId: string | null, mirrorVerified: boolean): void;
+}
+
 export class SessionBindingStore {
   /**
    * Optional durable mirror (#577). Every binding write (preAssign + update)
@@ -48,6 +53,7 @@ export class SessionBindingStore {
   constructor(
     private readonly store: SessionStore,
     private readonly transcriptIndex?: TranscriptIndex,
+    private readonly observers?: SessionBindingObservers,
   ) {}
 
   /**
@@ -120,6 +126,7 @@ export class SessionBindingStore {
    * a record of another harness (#1176), before the transcript index is touched.
    */
   update(remiSessionId: UUID, claudeSessionId: string): void {
+    this.observers?.beforeWrite(remiSessionId);
     const updated = this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
     // Refresh the durable mirror with the (possibly rotated) claude id so a
     // later transcript load resolves the CURRENT transcript, not a stale one.
@@ -128,6 +135,15 @@ export class SessionBindingStore {
     // a null record, leaving the index pinned to the pre-rotation id (#577).
     if (updated) {
       this.transcriptIndex?.record(remiSessionId, claudeSessionId, updated.projectPath);
+      const mirror = this.observers && this.transcriptIndex?.get(remiSessionId);
+      this.observers?.afterCommit(
+        remiSessionId,
+        updated.claudeSessionId,
+        !this.transcriptIndex ||
+          (!!mirror &&
+            mirror.claudeSessionId === updated.claudeSessionId &&
+            mirror.projectPath === updated.projectPath),
+      );
     }
   }
 
@@ -173,6 +189,7 @@ export class SessionBindingStore {
    * responsibility to populate correctly — the accessor does not own them.
    */
   preAssign(session: StoredSession): void {
+    this.observers?.beforeWrite(session.remiSessionId);
     // A non-Claude record that names its thread id up front (a Codex resume)
     // must not collide with a dead process's unpurged record of that thread.
     if (!isClaudeRecord(session) && typeof session.harnessSessionId === 'string') {
@@ -196,5 +213,19 @@ export class SessionBindingStore {
         `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );
     }
+    this.observers?.afterCommit(
+      saved.remiSessionId,
+      isClaudeRecord(saved) ? saved.claudeSessionId : null,
+      !this.transcriptIndex ||
+        !saved.claudeSessionId ||
+        (() => {
+          const mirror = this.transcriptIndex.get(saved.remiSessionId);
+          return (
+            !!mirror &&
+            mirror.claudeSessionId === saved.claudeSessionId &&
+            mirror.projectPath === saved.projectPath
+          );
+        })(),
+    );
   }
 }

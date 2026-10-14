@@ -93,6 +93,7 @@ const NO_EVENT_TYPES = new Set([
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
  *  name `connection.ts`'s (and the unified router's) handler map invokes. */
 const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
+  browser_link_receiver_request: 'onBrowserLinkReceiver',
   chat_submit_request: 'onStructuredChat',
   image_insert_request: 'onImageInsert',
   image_upload_begin: 'onImageUpload',
@@ -144,6 +145,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
         record('onConnect')(id);
       },
       onDisconnect: record('onDisconnect'),
+      onBrowserLinkReceiver: record('onBrowserLinkReceiver'),
       onStructuredChat: async (...args) => { record('onStructuredChat')(...args); },
       onImageInsert: async (...args) => {
         record('onImageInsert')(...args);
@@ -187,7 +189,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 30 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly the 31 INBOUND_ROUTED types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -195,7 +197,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(30);
+    expect(C2D_TYPES.length).toBe(31);
   });
 
   test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
@@ -239,7 +241,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       if (expectedEvent === 'onImageUpload' || expectedEvent === 'onImageInsert') {
         expect(call?.args[1]).toEqual({ kind: 'request', request: fixture });
       }
-      if (expectedEvent === 'onStructuredChat') {
+      if (expectedEvent === 'onStructuredChat' || expectedEvent === 'onBrowserLinkReceiver') {
         expect(call?.args[1]).toEqual(fixture);
         expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
       }

@@ -298,8 +298,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
-    if (this.events.onBrowserLinkReceiver && isBrowserLinkCandidate(data)) {
-      this.handleBrowserLinkFrame(data);
+    if (isBrowserLinkCandidate(data)) {
+      if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
+      else if (this.checkAuthorization())
+        this.sendError('INVALID_MESSAGE', 'Failed to parse message');
       return;
     }
     if (isStructuredChatCandidate(data)) {
@@ -369,6 +371,7 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        browser_link_receiver_request: () => this.close('Invalid browser link route'),
         chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.

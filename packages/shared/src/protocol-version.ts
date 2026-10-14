@@ -42,6 +42,7 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
   image_staging: 'upload an image to the attached Claude session',
   image_insertion: 'add an image to the attached Claude draft',
   structured_chat: 'send chat to the attached Codex session',
+  browser_links: 'receive browser links from the attached Claude session',
 };
 
 /** Whether a machine supports what a client needs, from its `hello_ack`. */

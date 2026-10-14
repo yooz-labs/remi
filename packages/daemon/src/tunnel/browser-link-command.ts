@@ -2,9 +2,9 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { normalizeBrowserLinkURL } from '../../../shared/src/browser-links.ts';
-import { exact, imageWireValue } from '../../../shared/src/image-wire.ts';
-import { fromB64u } from '../../../shared/src/relay/bytes.ts';
+import { normalizeBrowserLinkURL } from '@remi/shared/browser-links';
+import { exact, imageWireValue } from '@remi/shared/image-wire';
+import { fromB64u } from '@remi/shared/relay/bytes';
 
 const DEADLINE_MS = 1000;
 const FRAME_BYTES = 65536;

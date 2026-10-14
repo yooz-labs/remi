@@ -17,6 +17,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { decodeBrowserLinkFrame } from '../../../src/browser-links.ts';
 import { identityFromClaudeId } from '../../../src/harness.ts';
 import { decodeImageInsertionFrame } from '../../../src/image-insertion.ts';
 import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
@@ -290,7 +291,27 @@ function insertionVector<K extends 'image_insert_request' | 'image_insert_result
   return message as ProtocolMessageMap[K];
 }
 
+function browserVector<
+  K extends
+    | 'browser_link_receiver_request'
+    | 'browser_link_receiver_result'
+    | 'browser_link_receiver_ended'
+    | 'browser_link_candidate',
+>(type: K): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../browser-links/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeBrowserLinkFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict browser fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  browser_link_receiver_request: () => browserVector('browser_link_receiver_request'),
+  browser_link_receiver_result: () => browserVector('browser_link_receiver_result'),
+  browser_link_receiver_ended: () => browserVector('browser_link_receiver_ended'),
+  browser_link_candidate: () => browserVector('browser_link_candidate'),
   chat_submit_request: () => chatVector('chat_submit_request'),
   chat_submit_result: () => chatVector('chat_submit_result'),
   image_insert_request: () => insertionVector('image_insert_request'),

@@ -80,6 +80,7 @@ export interface ConnectionState {
   readonly harness?: HarnessId;
   readonly harnessSessionId?: string | null;
   /** Direct image staging UI state owned by this concrete connection. */
+  readonly browserLinks?: import('@/lib/browser-links').BrowserLinksState;
   readonly imageUploadState: ImageUploadState;
   /** Session whose upload status should be displayed, retained across reconnects. */
   readonly imageUploadSessionId?: UUID | null;

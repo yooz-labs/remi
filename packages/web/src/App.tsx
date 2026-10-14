@@ -1015,6 +1015,9 @@ function App() {
         // degradation is a stated principle, so skip-and-continue preserves it
         // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          // Browser links are live ephemeral frames; never replay or print their destinations.
+          if (replayMsg && typeof replayMsg === 'object' && 'type' in replayMsg &&
+            typeof replayMsg.type === 'string' && replayMsg.type.startsWith('browser_link_')) continue;
           if (!isValidMessage(replayMsg)) {
             console.debug('Skipping unknown message type in replay batch', replayMsg);
             continue;
@@ -1869,6 +1872,10 @@ function App() {
 
       // Direct staging is strictly decoded by WebSocketClient and owned by the
       // connection manager's ImageUploadController; it never becomes a chat bubble.
+      case 'browser_link_receiver_request':
+      case 'browser_link_receiver_result':
+      case 'browser_link_receiver_ended':
+      case 'browser_link_candidate':
       case 'image_upload_begin':
       case 'image_upload_chunk':
       case 'image_upload_complete':
@@ -2018,6 +2025,7 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    receiveBrowserLinks, stopBrowserLinks, openBrowserLink,
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
@@ -3452,6 +3460,14 @@ function App() {
       onDetach={handleDetach}
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
+      browserLinks={{
+        state: activeConnection?.sessionId === activeSession.id
+          ? activeConnection.browserLinks ?? {phase: 'unavailable', candidates: []}
+          : {phase: 'unavailable', candidates: []},
+        onReceive: () => receiveBrowserLinks(activeSession.connectionId),
+        onStop: () => stopBrowserLinks(activeSession.connectionId),
+        onOpen: (id) => openBrowserLink(activeSession.connectionId, id),
+      }}
       imageUpload={{
         enabled:
           activeConnection?.mode === 'direct' &&
