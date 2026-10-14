@@ -43,7 +43,7 @@ const client=new WebSocketClient({url:input.url,autoReconnect:false,heartbeatInt
  if(m.type==='auth_result'&&m.success){authenticated=true;client.setConnected();client.send(createHello(crypto.randomUUID(),'controller'));}
 },onBrowserLinkMessage:m=>controller.receive(m)});
 const connection=client;let bindingId=input.bindingId;
-const controller=new BrowserLinkController({context:()=>{const generation=client.imageUploadGeneration;return authenticated&&generation?{connection,generation,identityRevision:getIdentityRevision(),identityKey:identity.publicKeyRaw,sessionId:input.sessionId,bindingId}:null},send:(r,g)=>{sent.push(r);return client.sendBrowserLink(r,g)}},()=>{});
+const controller=new BrowserLinkController({context:()=>{const generation=client.imageUploadGeneration;return authenticated&&generation?{connection,generation,attachment:generation,identityRevision:getIdentityRevision(),identityKey:identity.publicKeyRaw,sessionId:input.sessionId,bindingId}:null},send:(r,g)=>{sent.push(r);return client.sendBrowserLink(r,g)}},()=>{});
 try{
  client.connect();await until(()=>client.isConnected,'actual signed TLS');await Bun.sleep(20);assert(sent.length===0,'mount sends no selection');
  controller.receiveHere();await until(()=>controller.state.phase==='receiving','selection');assert(sent[0].seq===1,'first sequence');

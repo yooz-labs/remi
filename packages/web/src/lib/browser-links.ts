@@ -10,6 +10,7 @@ import {
 export interface BrowserLinkContext {
   readonly connection: object;
   readonly generation: object;
+  readonly attachment: object;
   readonly identityRevision: number;
   readonly identityKey: string;
   readonly sessionId: string;
@@ -40,6 +41,7 @@ const same = (a: BrowserLinkContext, b: BrowserLinkContext | null) =>
   !!b &&
   a.connection === b.connection &&
   a.generation === b.generation &&
+  a.attachment === b.attachment &&
   a.identityRevision === b.identityRevision &&
   a.identityKey === b.identityKey &&
   a.sessionId === b.sessionId &&
@@ -127,12 +129,8 @@ export class BrowserLinkController {
   }
   stop(): void {
     this.refresh();
-    if (this.pending) {
-      this.clear();
-      this.phase = 'uncertain';
-      this.changed();
-      return;
-    }
+    // A user Stop supersedes the old local correlation with one new release, never a retry.
+    if (this.pending) this.clear();
     this.request('release');
   }
   private request(action: BrowserLinkReceiverRequest['action']): void {
@@ -207,8 +205,11 @@ export class BrowserLinkController {
         this.phase = 'ready';
       } else {
         this.clear();
-        this.phase = 'ready';
-        this.error = 'Receiver request refused. Choose Receive again to make a new request.';
+        this.phase = pending.request.action === 'release' ? 'uncertain' : 'ready';
+        this.error =
+          pending.request.action === 'release'
+            ? 'Release not confirmed. Choose Stop receiving to make a new request.'
+            : 'Receiver request refused. Choose Receive again to make a new request.';
       }
     } else if (message.type === 'browser_link_receiver_ended') {
       if (message.leaseId !== this.lease) return;

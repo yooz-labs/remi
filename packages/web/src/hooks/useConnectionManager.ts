@@ -105,6 +105,7 @@ interface ManagedConnection {
   imageUploadController?: ImageUploadController;
   structuredChatController?: StructuredChatController;
   browserLinkController?: BrowserLinkController;
+  browserAttachment?: object;
   browserIdentity?: { readonly revision: number; readonly key: string };
   imageUploadState: ConnectionState['imageUploadState'];
   imageUploadSessionId?: UUID | null;
@@ -694,6 +695,9 @@ export function useConnectionManager(
                 contexts.set(message.sessionId, next);
             }
           } else {
+            // Every observed attached hello starts a fresh client attachment scope.
+            mc.browserLinkController?.disconnect();
+            mc.browserAttachment = message.sessionId && message.attachState === 'attached' ? {} : undefined;
             const nextHarness = message.harness ?? 'claude';
             const nextHarnessSessionId =
               message.harnessSessionId !== undefined
@@ -740,6 +744,15 @@ export function useConnectionManager(
           mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
           mc.harness = 'claude';
           mc.harnessSessionId = message.newClaudeSessionId;
+          syncState();
+        }
+
+        // These observed lifecycle signals remain authoritative if best-effort ended is lost.
+        if ((message.type === 'detach_session_ack' && message.success && message.sessionId === mc.sessionId) ||
+          (message.type === 'session_update' && message.session.id === mc.sessionId && message.session.endedAt !== undefined) ||
+          (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId)) {
+          mc.browserAttachment = undefined;
+          mc.browserLinkController?.disconnect();
           syncState();
         }
 
@@ -1011,12 +1024,12 @@ export function useConnectionManager(
           if (connectionsMapRef.current.get(connectionId) !== mc || mc.mode !== 'direct' ||
             new URL(mc.url).protocol !== 'wss:' || isNative() || usesNativeIdentity() ||
             mc.status !== 'connected' || !mc.imageUploadAuthenticated || mc.attachState !== 'attached' ||
-            mc.harness !== 'claude' || !mc.sessionId || !mc.harnessSessionId || !identity ||
+            mc.harness !== 'claude' || !mc.sessionId || !mc.harnessSessionId || !mc.browserAttachment || !identity ||
             getIdentityRevision() !== identity.revision || identityRef.current?.publicKeyRaw !== identity.key ||
             !hubSupport({protocolVersion: mc.protocolVersion, capabilities: mc.capabilities}, ['browser_links']).supported)
             return null;
           const generation = client.imageUploadGeneration;
-          return generation ? {connection: mc, generation, identityRevision: identity.revision,
+          return generation ? {connection: mc, generation, attachment: mc.browserAttachment, identityRevision: identity.revision,
             identityKey: identity.key, sessionId: mc.sessionId, bindingId: mc.harnessSessionId} : null;
         },
       }, () => { if (connectionsMapRef.current.get(connectionId) === mc) syncState(); });

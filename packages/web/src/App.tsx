@@ -1401,7 +1401,8 @@ function App() {
         };
         setMessages((prev) => [...prev, detachedMsg]);
         // On successful detach, clear active session so the UI reflects
-        // the disconnected state. The WebSocket close will handle cleanup.
+        // the detached view. The connection manager invalidates receiver context;
+        // the daemon may keep this WebSocket open.
         if (message.success) {
           setActiveSessionId(null);
         }

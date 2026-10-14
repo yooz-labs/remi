@@ -5,17 +5,38 @@ import { join, resolve } from 'node:path';
 import { createHash, X509Certificate } from 'node:crypto';
 import { chromium } from '@playwright/test';
 import { createServer } from 'vite';
-import { createIdentity, serializeIdentity } from '@remi/shared';
+import {
+  createIdentity,
+  serializeIdentity,
+  unlockIdentity,
+  createAuthResponse,
+  createHello,
+  createKillSessionRequest,
+  createResumeSessionRequest,
+  createHelloAck,
+  createSessionListResponse,
+  createSessionUpdate,
+  fromBase64,
+  serialize,
+  sign,
+} from '@remi/shared';
 import { IdentityStore } from '../../../daemon/src/auth/identity-store.ts';
 import { directTlsFixture } from '../../../daemon/tests/helpers/direct-tls-fixture.ts';
+import { browserFixture } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';
 import { until } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';
 const enabled = process.env['REMI_BROWSER_TESTS'] === '1';
 const loss = process.env['REMI_BROWSER_LOSS_TEST'] === '1';
+const lifecycle = process.env['REMI_BROWSER_LIFECYCLE_TEST'];
+const stopUncertain = process.env['REMI_BROWSER_STOP_UNCERTAIN_TEST'] === '1';
+const stopPending = process.env['REMI_BROWSER_STOP_TEST'] === '1';
 const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
 (enabled ? test : test.skip)(
-  'actual App renders full destinations at three sizes; explicit Open has no opener/referrer; replacement and identity loss clear',
+  `actual App browser links: ${lifecycle === 'endedAt' ? 'component-wire endedAt after real PTY exit (no CLI producer)' : (lifecycle ?? (stopPending ? 'pending Stop' : 'shipping direct/loss'))} renders and explicit Open`,
   async () => {
-    const f = directTlsFixture();
+    const component = lifecycle === 'endedAt' ? await browserFixture() : undefined;
+    const f = component?.files ?? directTlsFixture();
+    let componentCid = '';
+    let componentHello: Promise<void> | undefined;
     let proc: Bun.Subprocess | undefined;
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     let vite: Awaited<ReturnType<typeof createServer>> | undefined;
@@ -27,6 +48,12 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
     let offeredToSelected = 0;
     let firstCandidate: string | null = null;
     let resendOldCandidate: (() => void) | undefined;
+    let liveFront = false;
+    let droppedEnded = 0;
+    let currentSessionId = '';
+    let terminalSeen = false;
+    const receiverSeqs: number[] = [];
+    let sendBackend: ((raw: string) => void) | undefined;
     let sendWithheld: (() => void) | undefined;
     const target = Bun.serve({
       hostname: '127.0.0.1',
@@ -44,47 +71,51 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
     fs.mkdirSync(artifact, { recursive: true });
     try {
       const identity = await createIdentity();
-      const store = new IdentityStore(f.home);
-      await store.generate();
+      const store = component?.trust ?? new IdentityStore(f.home);
+      if (!component) await store.generate();
       await store.addAuthorizedKey(identity.publicKey, 'owned App');
       const bin = join(f.directory, 'bin');
       fs.mkdirSync(bin);
       fs.writeFileSync(
         join(bin, 'claude'),
-        `#!/bin/sh\nprintf '%s' "$BROWSER" > '${join(f.directory, 'browser-path')}'\nwhile [ ! -e '${join(f.directory, 'invoke')}' ]; do sleep 0.02; done\n"$BROWSER" '${`http://127.0.0.1:${target.port}/destination?q=${'full-destination-'.repeat(100)}`}'\nwhile [ ! -e '${join(f.directory, 'release')}' ]; do sleep 0.02; done\n`,
+        `#!/bin/sh\nprintf '%s' "$BROWSER" > '${join(f.directory, 'browser-path')}'\nwhile [ ! -e '${join(f.directory, 'invoke')}' ]; do sleep 0.02; done\n"$BROWSER" '${`http://127.0.0.1:${target.port}/destination?q=${'full-destination-'.repeat(100)}`}'\nwhile IFS= read -r line; do case "$line" in /exit*) exit 0;; esac; done\n`,
         { mode: 0o700 },
       );
       const held = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('held') });
-      const port = held.port!;
+      const port = component?.port ?? held.port!;
       held.stop(true);
-      proc = Bun.spawn(
-        [
-          process.execPath,
-          '--no-env-file',
-          resolve(import.meta.dir, '../../../daemon/src/entry.ts'),
-          '--daemon',
-          '--port',
-          String(port),
-          '--dir',
-          f.work,
-          '--no-mdns',
-          '--no-telegram',
-        ],
-        {
-          cwd: f.work,
-          env: { ...f.env, PATH: `${bin}:/opt/homebrew/bin:/usr/bin:/bin` },
-          stdout: 'ignore',
-          stderr: 'ignore',
-        },
-      );
-      await until(
-        () => fs.existsSync(join(f.directory, 'browser-path')) || proc!.exitCode !== null,
-        'App consumer',
-        15000,
-      );
-      expect(proc.exitCode).toBeNull();
+      if (component) {
+        fs.writeFileSync(join(f.directory, 'browser-path'), component.producer.browserPath);
+      } else {
+        proc = Bun.spawn(
+          [
+            process.execPath,
+            '--no-env-file',
+            resolve(import.meta.dir, '../../../daemon/src/entry.ts'),
+            '--daemon',
+            '--port',
+            String(port),
+            '--dir',
+            f.work,
+            '--no-mdns',
+            '--no-telegram',
+          ],
+          {
+            cwd: f.work,
+            env: { ...f.env, PATH: `${bin}:/opt/homebrew/bin:/usr/bin:/bin` },
+            stdout: 'ignore',
+            stderr: 'ignore',
+          },
+        );
+        await until(
+          () => fs.existsSync(join(f.directory, 'browser-path')) || proc!.exitCode !== null,
+          'App consumer',
+          15000,
+        );
+        expect(proc.exitCode).toBeNull();
+      }
       let publicUrl = `wss://127.0.0.1:${port}/ws`;
-      if (loss) {
+      if (loss || lifecycle) {
         proxy = Bun.serve<{ backend: WebSocket; pending: (string | Uint8Array)[] }>({
           hostname: '127.0.0.1',
           port: 0,
@@ -98,10 +129,12 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
           },
           websocket: {
             open(front) {
+              liveFront = true;
               const back = new WebSocket(`wss://127.0.0.1:${port}/ws`, {
                 tls: { ca: f.ca },
               } as never);
               front.data.backend = back;
+              sendBackend = (raw) => back.send(raw);
               proxies.add(back);
               back.onopen = () => {
                 for (const frame of front.data.pending) back.send(frame);
@@ -110,7 +143,14 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
               back.onmessage = (event) => {
                 const raw = String(event.data);
                 const frame = JSON.parse(raw);
-                if (frame.type === 'browser_link_receiver_result' && !withheld) {
+                if (frame.type === 'hello_ack' && frame.sessionId)
+                  currentSessionId = frame.sessionId;
+                if (frame.type === 'error' && frame.code === 'SESSION_ENDED') terminalSeen = true;
+                if (lifecycle && frame.type === 'browser_link_receiver_ended') {
+                  droppedEnded++;
+                  return;
+                }
+                if (loss && frame.type === 'browser_link_receiver_result' && !withheld) {
                   withheld = raw;
                   sendWithheld = () => front.send(raw);
                   return;
@@ -124,13 +164,28 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
                 }
                 front.send(raw);
               };
-              back.onclose = () => front.close();
+              back.onclose = () => {
+                if (!lifecycle) front.close();
+              };
               back.onerror = () => front.close();
             },
             message(front, raw) {
               const text = typeof raw === 'string' ? raw : raw.toString();
               const frame = JSON.parse(text);
-              if (frame.type === 'browser_link_receiver_request') receiverRequests++;
+              // Component-wire profile withholds auxiliary UI queries; it supplies no fake replies.
+              if (
+                component &&
+                [
+                  'session_list_request',
+                  'transcript_load_request',
+                  'session_history_request',
+                ].includes(frame.type)
+              )
+                return;
+              if (frame.type === 'browser_link_receiver_request') {
+                receiverRequests++;
+                receiverSeqs.push(frame.seq);
+              }
               const back = front.data.backend;
               if (back.readyState === WebSocket.OPEN) back.send(text);
               else {
@@ -142,6 +197,7 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
               }
             },
             close(front) {
+              liveFront = false;
               front.data.backend.close();
             },
           },
@@ -207,12 +263,54 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
           try {
             if (JSON.parse(String(event.payload)).type === 'browser_link_candidate')
               receivedCandidates++;
-          } catch { /* Observer ignores non-JSON transport frames. */ }
+          } catch {
+            /* Observer ignores non-JSON transport frames. */
+          }
         }),
       );
       const errors: string[] = [];
       page.on('pageerror', (e) => errors.push(e.message));
+      if (component)
+        componentHello = (async () => {
+          await until(
+            () =>
+              (component.registry.getSession(component.sessionId)?.attachedConnections.size ?? 0) >
+              0,
+            'actual component attachment',
+          );
+          componentCid = [
+            ...component.registry.getSession(component.sessionId)!.attachedConnections,
+          ][0]!;
+          expect(component.service.isAvailable(componentCid)).toBe(true);
+          component.adapter.sendRaw(
+            componentCid,
+            createHelloAck('owned-component', component.sessionId, {
+              attachState: 'attached',
+              capabilities: ['browser_links'],
+              binding: {
+                identity: component.bindings.getIdentity(component.sessionId)!,
+                transcriptPath: null,
+              },
+            }),
+          );
+          const bound = component.bindings.getIdentity(component.sessionId);
+          component.adapter.sendRaw(
+            componentCid,
+            createSessionListResponse(
+              component.registry
+                .listSessions()
+                .map((row) => ({
+                  ...row,
+                  harness: 'claude',
+                  harnessSessionId: bound?.harnessSessionId ?? undefined,
+                  claudeSessionId: bound?.harnessSessionId ?? undefined,
+                })),
+              crypto.randomUUID(),
+            ),
+          );
+        })();
       await page.goto(origin);
+      await componentHello;
       await page.waitForTimeout(1500);
       fs.writeFileSync(join(artifact, 'initial-dom.txt'), await page.locator('body').innerText());
       fs.writeFileSync(join(artifact, 'initial-errors.json'), JSON.stringify(errors));
@@ -242,10 +340,41 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
         await until(() => offeredToSelected === 1, 'independent actual C2 selected offer');
         expect(await page.locator('[data-browser-destination]').count()).toBe(0);
         expect(navigation).toEqual([]);
+        const proveStop = async () => {
+          await page.getByRole('button', { name: 'Stop receiving', exact: true }).click();
+          const end = performance.now() + 3000;
+          while (receiverRequests < 2 && performance.now() < end) await Bun.sleep(5);
+          expect(receiverRequests).toBe(2);
+          await page
+            .getByText('Choose where this session sends browser links.', { exact: false })
+            .waitFor();
+          const before = offeredToSelected;
+          const launcher = fs.readFileSync(join(f.directory, 'browser-path'), 'utf8');
+          const refused = Bun.spawn([launcher, 'https://example.test/after-stop'], {
+            env: f.env,
+            stdout: 'pipe',
+            stderr: 'pipe',
+          });
+          expect(await refused.exited).toBe(0);
+          expect(await new Response(refused.stderr).text()).toContain('Browser link unavailable');
+          expect(offeredToSelected).toBe(before);
+          expect(receiverSeqs).toEqual([1, 2]);
+        };
+        if (stopPending) {
+          await proveStop();
+          return;
+        }
         await page
           .getByText('Receiver outcome unknown.', { exact: false })
           .waitFor({ timeout: 17000 });
         expect(receiverRequests).toBe(1);
+        expect(
+          await page.getByRole('button', { name: 'Stop receiving', exact: true }).count(),
+        ).toBe(1);
+        if (stopUncertain) {
+          await proveStop();
+          return;
+        }
         for (const [width, height] of [
           [390, 844],
           [768, 1024],
@@ -271,6 +400,13 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
       }
       await page.getByText('Receiving browser links here.', { exact: false }).waitFor();
       fs.writeFileSync(join(f.directory, 'invoke'), 'owned');
+      if (component)
+        expect(
+          component.service.offer(
+            component.context(),
+            `http://127.0.0.1:${target.port}/destination?q=${'full-destination-'.repeat(100)}`,
+          ),
+        ).toBe(true);
       const destination = page.locator('[data-browser-destination]');
       await destination.waitFor();
       const exact = await destination.textContent();
@@ -346,6 +482,71 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
         }
         await background.close();
       }
+      if (lifecycle) {
+        if (component) {
+          component.registry.closeSession(component.sessionId, 'forced');
+          await until(
+            () => component.pty.sessionState === 'exited',
+            'actual component consumer ended',
+          );
+          component.service.invalidateSession(component.sessionId);
+          const update = createSessionUpdate(component.sessionId, 'idle');
+          component.adapter.sendRaw(componentCid, {
+            ...update,
+            session: { ...update.session, endedAt: new Date().toISOString() },
+          });
+        } else if (lifecycle === 'detach') {
+          await page.getByRole('button', { name: 'Detach session', exact: true }).first().click();
+          await page.getByText('work', { exact: true }).first().click();
+        } else {
+          const own = await unlockIdentity(identity);
+          const query = new WebSocket(`wss://127.0.0.1:${port}/ws`, { tls: { ca: f.ca } } as never);
+          proxies.add(query);
+          query.onmessage = async (event) => {
+            const frame = JSON.parse(String(event.data));
+            if (frame.type === 'auth_challenge')
+              query.send(
+                serialize(
+                  createAuthResponse(
+                    own.publicKeyRaw,
+                    await sign(own.privateKey, fromBase64(frame.challenge)),
+                    own.fingerprint,
+                  ),
+                ),
+              );
+            else if (frame.type === 'auth_result' && frame.success)
+              query.send(
+                serialize(createHello(crypto.randomUUID(), 'end-control', { mode: 'query' })),
+              );
+            else if (frame.type === 'hello_ack')
+              query.send(serialize(createKillSessionRequest(currentSessionId)));
+          };
+          await until(() => terminalSeen, 'actual shipping third-party SESSION_ENDED', 15000);
+        }
+        await until(() => droppedEnded > 0, 'genuine receiver ended withheld');
+        expect(liveFront).toBe(true);
+        expect(droppedEnded).toBeGreaterThan(0);
+        expect(await page.getByRole('button', { name: 'Open', exact: true }).count()).toBe(0);
+        expect(await receive.isEnabled()).toBe(false);
+        expect(navigation).toHaveLength(1);
+        await page.screenshot({ path: join(artifact, `${lifecycle}-invalidated.png`) });
+        if (lifecycle === 'detach') {
+          sendBackend?.(serialize(createResumeSessionRequest(currentSessionId)));
+          await page.waitForFunction(
+            () =>
+              !document.querySelector<HTMLButtonElement>(
+                'section[aria-label="Browser links"] button',
+              )?.disabled,
+          );
+          expect(await receive.isEnabled()).toBe(true);
+          expect(await destination.count()).toBe(0);
+          expect(receiverRequests).toBe(1);
+          await receive.click();
+          await page.getByText('Receiving browser links here.', { exact: false }).waitFor();
+          expect(receiverSeqs).toEqual([1, 2]);
+        }
+        return;
+      }
       const other = await browser.newContext();
       await other.addInitScript(
         ({ identity, url }) => {
@@ -397,7 +598,8 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
         proc.kill('SIGTERM');
         await proc.exited;
       }
-      f.cleanup();
+      await component?.close();
+      if (!component) f.cleanup();
     }
   },
   180000,

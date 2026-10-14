@@ -1,4 +1,4 @@
-/** Dormant browser receiver core. No production composition, URL history or capability advertisement. */
+/** Browser receiver core; CLI owns production composition/readiness. No URL history. */
 import { createHash, randomUUID } from 'node:crypto';
 import type { UUID } from '@remi/shared';
 import {

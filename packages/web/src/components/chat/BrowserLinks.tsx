@@ -12,7 +12,7 @@ const labels: Record<BrowserLinksState['phase'], string> = {
   pending: 'Receiver request pending…',
   receiving: 'Receiving browser links here. Destinations expire after two minutes.',
   replaced: 'Another receiver was selected.',
-  uncertain: 'Receiver outcome unknown. Choose Receive again to make a new request.',
+  uncertain: 'Receiver outcome unknown. Choose Receive or Stop receiving to make a new request.',
   expired: 'The previous destinations expired. Still receiving here.',
 };
 export function BrowserLinks({ state, onReceive, onStop, onOpen }: BrowserLinksProps) {
@@ -31,7 +31,7 @@ export function BrowserLinks({ state, onReceive, onStop, onOpen }: BrowserLinksP
         >
           Receive browser links here
         </button>
-        {['receiving', 'expired', 'pending'].includes(state.phase) && (
+        {['receiving', 'expired', 'pending', 'uncertain'].includes(state.phase) && (
           <button
             type="button"
             onClick={onStop}
