@@ -4,11 +4,13 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { withInterprocessFileLockNonblocking } from '../../packages/daemon/src/storage/interprocess-file-lock';
 import {
   type DownloadCopyContext,
   DownloadPreparationError,
   prepareDownloadCopy,
 } from '../../packages/daemon/src/tunnel/download-preparation';
+import { openManagedTunnelStorage } from '../../packages/daemon/src/tunnel/managed-tunnel-storage';
 import { DirectoryRoot, FileAdmission } from './admission';
 import { recoveryNative } from './recovery-native';
 import { Reservations } from './reservations';
@@ -23,6 +25,10 @@ export const DOWNLOAD_PREPARATION_CHECKS = [
   'managed download private mutation refuses before exposure',
   'managed download current read guard and idempotent retirement',
   'managed download settlement fault retains debt and closed-read truth',
+  'managed download capacity busy is pre-reservation with confirmed source close',
+  'managed download held ledger lock busy is pre-reservation and nonblocking',
+  'managed download post-reservation failure retains charged cleanup debt',
+  'managed storage independent native owners preserve exact shared namespace',
 ] as const;
 
 export async function downloadPreparationProbe() {
@@ -47,6 +53,7 @@ export async function downloadPreparationProbe() {
     const source = new FileAdmission(openAt, []).open(project, ['data.bin']);
     assert(source, 'actual admitted download source');
     const store = Reservations.create(path.join(home, 'ledger'));
+    const selectedOwner = owner();
     let allowed = true;
     let afterYield: ((count: number) => void) | undefined;
     const context: DownloadCopyContext & { effects: number; yields: number } = {
@@ -68,9 +75,10 @@ export async function downloadPreparationProbe() {
       filename,
       source,
       store,
+      selectedOwner,
       context,
       prepare: () =>
-        prepareDownloadCopy(source, store, owner(), scratch, metadata, native.ops, context),
+        prepareDownloadCopy(source, store, selectedOwner, scratch, metadata, native.ops, context),
       refuse: () => {
         allowed = false;
       },
@@ -288,6 +296,102 @@ export async function downloadPreparationProbe() {
         f.close();
       }
       checks.push(DOWNLOAD_PREPARATION_CHECKS[7]);
+    }
+    for (const kind of ['quota', 'held-lock', 'post-debit'] as const) {
+      const f = fixture(Buffer.from('actual admission stage bytes'));
+      const ledger = path.join(f.home, 'ledger', 'reservations.json');
+      if (kind === 'quota') {
+        f.store.reserve(f.selectedOwner, 1);
+        f.store.reserve(f.selectedOwner, 1);
+      }
+      const original = fs.readFileSync(ledger);
+      try {
+        if (kind === 'post-debit') fs.chmodSync(path.join(f.home, 'scratch'), 0o500);
+        const started = performance.now();
+        const pending =
+          kind === 'held-lock'
+            ? withInterprocessFileLockNonblocking(ledger, () => f.prepare())
+            : f.prepare();
+        await assert.rejects(
+          pending,
+          (error: unknown) =>
+            error instanceof DownloadPreparationError &&
+            error.code === (kind === 'post-debit' ? 'cleanup_failed' : 'busy') &&
+            error.cleanupConfirmed === (kind !== 'post-debit'),
+          'pre-reservation busy is distinguished from charged post-reservation failure',
+        );
+        assert(!f.source.isCurrent(), 'admission refusal closes original source');
+        assert.throws(
+          () => fs.fstatSync(f.source.fd),
+          { code: 'EBADF' },
+          'admission refusal closed actual descriptor',
+        );
+        if (kind === 'post-debit') {
+          fs.chmodSync(path.join(f.home, 'scratch'), 0o700);
+          assert(!fs.readFileSync(ledger).equals(original), 'post-reservation debit persists');
+          assert(
+            f.store.inspect().some((row) => row.state === 'active' && row.charge > 0),
+            'uncertain begin keeps charged debt',
+          );
+        } else {
+          assert(
+            fs.readFileSync(ledger).equals(original),
+            'pre-reservation busy never changes ledger',
+          );
+          assert.deepEqual(
+            fs.readdirSync(path.join(f.home, 'scratch')),
+            [],
+            'pre-reservation busy allocates no artifact',
+          );
+          assert.deepEqual(
+            fs.readdirSync(path.join(f.home, 'metadata')),
+            [],
+            'pre-reservation busy allocates no journal marker',
+          );
+          assert(performance.now() - started < 1000, 'pre-reservation busy remains nonblocking');
+        }
+      } finally {
+        fs.chmodSync(path.join(f.home, 'scratch'), 0o700);
+        f.close();
+      }
+      checks.push(
+        DOWNLOAD_PREPARATION_CHECKS[kind === 'quota' ? 8 : kind === 'held-lock' ? 9 : 10],
+      );
+    }
+    {
+      const home = path.join(temporary, 'shared-owner');
+      fs.mkdirSync(home, { mode: 0o700 });
+      const first = await openManagedTunnelStorage(home);
+      const second = await openManagedTunnelStorage(home);
+      try {
+        const ledger = fs.lstatSync(path.join(home, 'image-staging', 'ledger'), { bigint: true });
+        const expected = createHash('sha256')
+          .update(`remi-image-staging:${ledger.dev}:${ledger.ino}`)
+          .digest('hex')
+          .slice(0, 32);
+        assert.equal(first.hub, expected, 'shared managed storage keeps original hub scope');
+        assert.equal(second.hub, expected, 'independent managed owner shares exact ledger scope');
+        const selected = { ...owner(), hub: first.hub };
+        first.store.reserve(selected, 1);
+        second.store.reserve(selected, 1);
+        assert.throws(
+          () => second.store.reserve(selected, 1),
+          (error) => error instanceof Error && 'code' in error && error.code === 'busy',
+          'shared native owners retain combined device limit',
+        );
+        second.close();
+        second.close();
+        assert(
+          first.scratch.isCurrent() && first.metadata.isCurrent(),
+          'another owner close preserves actual descriptor receivers',
+        );
+        assert.equal(first.store.inspect().length, 2, 'another owner close preserves ledger reads');
+      } finally {
+        second.close();
+        first.close();
+        first.close();
+      }
+      checks.push(DOWNLOAD_PREPARATION_CHECKS[11]);
     }
     return {
       checks,

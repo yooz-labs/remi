@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AdmittedFile, DirectoryRoot } from './admission';
 import { ADMITTED_READ_CHUNK_SIZE, AdmittedRead } from './admitted-read';
 import {
+  JournalAdmissionBusy,
   type JournalRead,
   type JournalWriter,
   beginJournal,
@@ -13,7 +14,7 @@ import type { Reservations } from './reservations';
 
 export class DownloadPreparationError extends Error {
   constructor(
-    readonly code: 'unavailable' | 'empty_file' | 'cleanup_failed',
+    readonly code: 'unavailable' | 'empty_file' | 'cleanup_failed' | 'busy',
     readonly cleanupConfirmed: boolean,
   ) {
     super(`download preparation ${code}`);
@@ -150,7 +151,7 @@ export async function prepareDownloadCopy(
       retire,
     }));
   } catch (error) {
-    let cleanupConfirmed = !beginAttempted;
+    let cleanupConfirmed = !beginAttempted || error instanceof JournalAdmissionBusy;
     try {
       closeSource();
     } catch {
@@ -174,6 +175,7 @@ export async function prepareDownloadCopy(
       cleanupConfirmed = false;
     }
     if (!cleanupConfirmed) throw new DownloadPreparationError('cleanup_failed', false);
+    if (error instanceof JournalAdmissionBusy) throw new DownloadPreparationError('busy', true);
     if (error instanceof DownloadPreparationError) throw error;
     throw new DownloadPreparationError('unavailable', true);
   }
