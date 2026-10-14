@@ -588,3 +588,24 @@ reviewed executing CI bytes; its original policy objects became public when
 #1481 landed. Reconstruction never requires an unpublished fixture or candidate
 CI object, and all previously established scenario bodies and order are
 preserved.
+
+## Classifier lexical projection profile
+
+The cold-reference checks repeatedly derived `Path.stem` and `Path.name` sets
+from the same immutable target-path sets. The classifier now caches only those
+pure lexical projections in bounded 32-entry LRU maps keyed by the complete
+frozen target set. It does not cache file contents, Git/object state, scan
+results, validation decisions or authority. The predicates and ordered control
+corpus are unchanged.
+
+The same S1 filesystem and pinned Python 3.14 cProfile command ran the full
+2,291-control corpus at baseline `4afa6be43ec3c49ba3587afc11ff3dba88929158`
+and candidate `b62afe6431a208ca6f62d91118e6fbcb8560255b`. Both exited zero; the
+candidate passed 2,291/2,291 controls and verified source hashes unchanged
+during measurement. Profiled elapsed time was 818.73 seconds at baseline and
+747.26 seconds for the candidate (8.7% lower); cProfile's internal totals were
+798.10 and 723.13 seconds. `Path.stem` calls fell from 14,226,524 to 103 and
+`Path.name` calls from 20,989,082 to 2,689,924. These are instrumented profile
+measurements, not hosted job times. No unprofiled baseline/candidate pair was
+run, so they do not establish an unprofiled speedup. The full profile receipts
+are stored with the 2026-10-13 S1 CI efficiency artifacts.
