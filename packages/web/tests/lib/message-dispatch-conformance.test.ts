@@ -15,7 +15,7 @@
  * this broadcasts the checked-in golden fixture
  * (packages/shared/tests/fixtures/protocol/) and asserts:
  *
- *   1. the real `WebSocketClient`'s ordinary or dedicated staging event receives it,
+ *   1. the real `WebSocketClient`'s ordinary or dedicated image event receives it,
  *      byte-for-byte round-tripped over the wire (real TCP, real JSON
  *      serialize/deserialize -- not an in-process function call), and
  *   2. `packages/web/src/App.tsx`'s `handleMessage` switch has a real,
@@ -121,6 +121,9 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
       { url: `ws://localhost:${port}/ws`, heartbeatInterval: 0, connectionTimeout: 2000 },
       {
         onMessage: (msg) => {
+          received.push(msg);
+        },
+        onImageInsertionMessage: (msg) => {
           received.push(msg);
         },
         onImageStagingMessage: (msg) => {
