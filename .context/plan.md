@@ -69,6 +69,17 @@ The existing native caller needs no new Swift model or wire field for this persi
 
 ## Tracks (work outside the milestones)
 
+The #1190 fixture cleanup continuation records actual ownership assertions for
+attachment output directories and Claude-session directories.
+The original whole two-file population passed 75 cases but left 18 attachment
+directories and one Claude directory on each Mac Bun runtime.
+The cleanup closes output before removing its owned directory and awaits the
+existing PTY exit before removing the session store directory.
+All 75 cases now pass on both runtimes with zero new fixture directories;
+removing either cleanup fails its specific assertion on both runtimes.
+Historical temporary directories are untouched. Independent review and fresh
+hosted acceptance remain separate; no product behavior or timeout changes.
+
 Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 

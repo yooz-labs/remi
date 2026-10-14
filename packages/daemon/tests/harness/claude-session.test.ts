@@ -141,7 +141,8 @@ describe('ClaudeHarness.createSession', () => {
 
   afterEach(async () => {
     for (const session of launched) {
-      if (session.pty.isRunning) session.pty.signal('SIGKILL');
+      // Await real exit callbacks before they can recreate a removed store directory (#1190).
+      if (session.pty.isRunning) await session.pty.close(1000);
     }
     for (const restore of restoreEnv) restore();
     __resetWrapperStateForTests();

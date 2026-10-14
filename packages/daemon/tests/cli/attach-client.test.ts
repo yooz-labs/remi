@@ -55,13 +55,15 @@ describe('runAttachClient', () => {
     ).toEqual([]);
   });
   let server: ReturnType<typeof Bun.serve> | null = null;
+  let outputDirectory: string | null = null;
   let outputPath: string;
-  let outputFd: number;
-  let outputClosed: boolean;
+  let outputFd = -1;
+  let outputClosed = true;
 
   function setupOutput(): void {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-attach-test-'));
     temporaryDirectories.add(dir);
+    outputDirectory = dir;
     outputPath = path.join(dir, 'output.txt');
     fs.writeFileSync(outputPath, '');
     outputFd = fs.openSync(outputPath, 'w');
@@ -77,16 +79,19 @@ describe('runAttachClient', () => {
   }
 
   afterEach(() => {
-    if (server) {
-      server.stop(true);
+    try {
+      if (server) server.stop(true);
+    } finally {
       server = null;
-    }
-    if (!outputClosed) {
       try {
-        fs.closeSync(outputFd);
+        if (!outputClosed) fs.closeSync(outputFd);
+      } finally {
         outputClosed = true;
-      } catch {
-        // fd may be invalid if setupOutput was never called
+        outputFd = -1;
+        if (outputDirectory !== null) {
+          fs.rmSync(outputDirectory, { recursive: true });
+          outputDirectory = null;
+        }
       }
     }
   });
