@@ -63,6 +63,16 @@ SETTLEMENT_CHECKS = {
     "260 actual complete cycles bound device and home rows preserve pending and refuse evicted retries",
 }
 STAGING_CHECKS = {
+    *(f"journal image {extension} {case}" for extension in ("png", "jpg") for case in (
+        "original name quota markers and reopened cleanup",
+        "wrong lease and immutable format refuse alternate cleanup",
+        "actual name mutations refuse retained references",
+    )),
+    *(f"journal image {extension} actual SIGKILL {stage} restart settles original name"
+      for extension in ("png", "jpg") for stage in (
+          "retirement-committed", "retired-owned", "retired-cleaned", "retired-intent",
+          "metadata-fsynced", "settled-committed",
+      )),
     "journal closed owned PNG JPEG reads are bounded and expose no raw descriptor",
     "journal staged conversion frees active slots preserves all debt and same artifact",
     "journal staged rows keep device home artifact and byte admission barriers",
@@ -92,7 +102,7 @@ def proof_for(source=None):
             "entry": "scripts/tunnel-storage-proof/settlement-entry.ts",
             "container_prefix": "remi-settlement-proof",
             "checks": CHECKS,
-            "scope": "88 preserved predecessor and 17 owned staging groups; no transfer authority, held-answer or R7 rerun",
+            "scope": "105 preserved groups and 18 original image-name groups; no insertion authority, held-answer or R7 rerun",
         }
     )
     return proof
