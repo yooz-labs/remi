@@ -3,7 +3,8 @@
 ## Availability on develop
 
 The direct and encrypted relay text paths landed in [#1507](https://github.com/yooz-labs/remi/pull/1507)
-at merge `49094b025b18e4156bd834c7a4b607504cbb1a91` (develop build 169).
+at merge `49094b025b18e4156bd834c7a4b607504cbb1a91`, followed by
+`0.7.17-dev.169` at bump `7ec81be594a05b48e87c8326285f3679f9bb97d9`.
 The [actual CI run](https://github.com/yooz-labs/remi/actions/runs/38529063958)
 passed 9,808 tests with 30 skips and zero failures, and 91.79% line coverage;
 the [relay run](https://github.com/yooz-labs/remi/actions/runs/38529063934)
