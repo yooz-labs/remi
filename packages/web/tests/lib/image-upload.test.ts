@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from '../../../shared/src/image-insertion.ts';
+import {
   type ImageStagingMessage,
   type ImageStagingRequest,
   decodeImageStagingFrame,
@@ -65,7 +71,7 @@ function sendMessage(ws: Bun.ServerWebSocket<unknown>, message: ImageStagingMess
   ws.send(encodeImageStagingFrame(message));
 }
 
-function responseBase(request: ImageStagingRequest) {
+function responseBase(request: { id: string; sessionId: string }) {
   return {
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
@@ -986,7 +992,10 @@ describe('ImageUploadController over direct WebSocket', () => {
   });
 
   test('the shipping ID and staging codec work without crypto.randomUUID or Object.hasOwn', async () => {
-    const fixturePath = new URL('../../../shared/tests/fixtures/image-staging/fixture.png', import.meta.url).pathname;
+    const fixturePath = new URL(
+      '../../../shared/tests/fixtures/image-staging/fixture.png',
+      import.meta.url,
+    ).pathname;
     const protocolPath = new URL('../../../shared/src/protocol.ts', import.meta.url).pathname;
     const codecPath = new URL('../../../shared/src/image-staging.ts', import.meta.url).pathname;
     const script = `
@@ -1150,4 +1159,407 @@ describe('WebSocketClient image staging boundary', () => {
     expect(connectionClosed).toBe(true);
     expect(client.connectionStatus).toBe('disconnected');
   });
+});
+
+/** Real raw-wire client controls only; host authority/effects are proven separately. */
+async function insertionFixture(options: { caps?: string[]; expiryMs?: number } = {}) {
+  const requests: ImageInsertRequest[] = [];
+  const otherRequests: ImageStagingRequest[] = [];
+  let socket: Bun.ServerWebSocket<unknown> | null = null;
+  let begin: Extract<ImageStagingRequest, { type: 'image_upload_begin' }> | null = null;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, instance) {
+      if (instance.upgrade(request)) return undefined;
+      return new Response('websocket required', { status: 400 });
+    },
+    websocket: {
+      open() {},
+      close() {},
+      message(ws, data) {
+        socket = ws;
+        const raw = typeof data === 'string' ? data : new Uint8Array(data);
+        const insertion = decodeImageInsertionFrame(raw);
+        if (insertion?.type === 'image_insert_request') {
+          requests.push(insertion);
+          return;
+        }
+        const staging = decodeImageStagingFrame(raw);
+        if (!staging || 'requestId' in staging) throw new Error('Unexpected client frame');
+        const request = staging as ImageStagingRequest;
+        otherRequests.push(request);
+        if (request.type === 'image_upload_begin') {
+          begin = request;
+          sendMessage(ws, {
+            type: 'image_upload_accepted',
+            ...responseBase(request),
+            transferId: TRANSFER_ID,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          });
+        } else if (request.type === 'image_upload_chunk') {
+          sendMessage(ws, {
+            type: 'image_upload_chunk_ack',
+            ...responseBase(request),
+            transferId: TRANSFER_ID,
+            seq: request.seq,
+            receivedBytes: begin?.byteLength ?? 0,
+          });
+        } else if (request.type === 'image_upload_complete' && begin) {
+          sendMessage(ws, {
+            type: 'image_upload_result',
+            ...responseBase(request),
+            transferId: TRANSFER_ID,
+            outcome: 'staged',
+            artifactId: ARTIFACT_ID,
+            artifactExpiresAt: new Date(Date.now() + (options.expiryMs ?? 60_000)).toISOString(),
+            mediaType: begin.mediaType,
+            byteLength: begin.byteLength,
+            digest: begin.digest,
+          });
+        }
+      },
+    },
+  });
+  servers.push(server);
+  let controller: ImageUploadController | null = null;
+  const client = await connectedClient(server, {
+    onImageStagingMessage: (message) => controller?.receive(message),
+    onImageInsertionMessage: (message) => controller?.receiveInsertion(message),
+    onMessage: (message) => controller?.receiveInputReceipt(message),
+  });
+  const generation = await authenticate(client);
+  let context: ImageUploadContext | null = {
+    ...testContext(client, generation),
+    capabilities: options.caps ?? ['image_staging', 'image_insertion'],
+  };
+  const states: ImageUploadState[] = [];
+  controller = new ImageUploadController(
+    {
+      send: (request) => client.sendImageStaging(request),
+      sendInsertion: (request) => client.sendImageInsertion(request),
+      context: () => context,
+    },
+    (state) => states.push(state),
+  );
+  controllers.push(controller);
+  const bytes = await Bun.file(new URL('fixture.png', FIXTURES)).arrayBuffer();
+  await controller.upload(actualFile('fixture.png', bytes, 'image/png'));
+  function lastDraft() {
+    const state = states.at(-1);
+    return state?.phase === 'staged' ? state.draft : undefined;
+  }
+  function result(effect: Pick<ImageInsertResult, 'outcome' | 'code'>, request = requests.at(-1)) {
+    if (!request || !socket) throw new Error('No insertion request');
+    return {
+      type: 'image_insert_result' as const,
+      ...responseBase(request),
+      ...effect,
+    } as ImageInsertResult;
+  }
+  function send(result: ImageInsertResult, binary = false) {
+    if (!socket) throw new Error('No socket');
+    const text = encodeImageInsertionFrame(result);
+    socket.send(binary ? new TextEncoder().encode(text) : text);
+  }
+  return {
+    client,
+    controller,
+    requests,
+    otherRequests,
+    states,
+    lastDraft,
+    result,
+    send,
+    current: () => context,
+    context: (next: ImageUploadContext | null) => {
+      context = next;
+    },
+    raw: (text: string) => {
+      if (!socket) throw new Error('No socket');
+      socket.send(text);
+    },
+  };
+}
+
+describe('explicit image draft client over real WebSocket', () => {
+  test('staging never inserts, repeated clicks share one attempt, and success never submits', async () => {
+    const f = await insertionFixture();
+    expect(f.lastDraft()?.phase).toBe('available');
+    expect(f.requests).toHaveLength(0);
+    const originalExpiry = f.lastDraft()?.expiresAt;
+    f.controller.addToDraft();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    expect(f.controller.canUpload).toBe(false);
+    expect(f.requests[0]).toMatchObject({
+      sessionId: SESSION_ID,
+      artifactId: ARTIFACT_ID,
+      binding: { harness: 'claude', harnessSessionId: 'claude-session-for-test' },
+    });
+    f.send(f.result({ outcome: 'inserted', code: 'none' }), true);
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    f.controller.addToDraft();
+    await wait(20);
+    expect(f.requests).toHaveLength(1);
+    expect(f.otherRequests.map((request) => request.type)).toEqual([
+      'image_upload_begin',
+      'image_upload_chunk',
+      'image_upload_complete',
+    ]);
+    expect(f.lastDraft()?.expiresAt).toBe(originalExpiry);
+  });
+
+  for (const code of ['busy', 'prompt_up'] as const) {
+    test(`${code} permits a fresh explicit attempt but no automatic retry`, async () => {
+      const f = await insertionFixture();
+      f.controller.addToDraft();
+      await waitFor(() => f.requests.length === 1);
+      const original = f.requests[0];
+      f.send(f.result({ outcome: 'refused', code }));
+      await waitFor(() => f.lastDraft()?.phase === 'refused');
+      expect(f.requests).toHaveLength(1);
+      expect(f.lastDraft()?.action).toBe('insert');
+      f.controller.addToDraft();
+      await waitFor(() => f.requests.length === 2);
+      expect(f.requests[1]?.id).not.toBe(original?.id);
+      f.send(f.result({ outcome: 'inserted', code: 'none' }, original));
+      await wait(20);
+      expect(f.lastDraft()?.phase).toBe('inserting');
+      f.send(f.result({ outcome: 'inserted', code: 'none' }));
+      await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    });
+  }
+
+  test('timeout keeps the exact request; status check resends it and a late reply resolves it', async () => {
+    const f = await insertionFixture();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    const original = f.requests[0];
+    f.send({ ...f.result({ outcome: 'inserted', code: 'none' }), requestId: crypto.randomUUID() });
+    f.send({ ...f.result({ outcome: 'inserted', code: 'none' }), sessionId: crypto.randomUUID() });
+    expect(f.lastDraft()?.phase).toBe('inserting');
+    await waitFor(() => f.lastDraft()?.phase === 'uncertain', 16_000);
+    expect(f.lastDraft()?.action).toBe('check');
+    const beforeDismiss = f.states.at(-1);
+    f.controller.dismiss();
+    expect(f.states.at(-1)).toBe(beforeDismiss);
+    expect(f.controller.canUpload).toBe(false);
+    expect(f.requests).toHaveLength(1);
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 2);
+    expect(f.requests[1]).toEqual(original);
+    f.send(f.result({ outcome: 'inserted', code: 'none' }, original));
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    f.controller.addToDraft();
+    expect(f.requests).toHaveLength(2);
+  }, 20_000);
+
+  for (const change of [
+    'generation',
+    'connection',
+    'binding',
+    'capability',
+    'protocol',
+    'detach',
+  ] as const) {
+    test(`${change} cannot revive completed upload insertion authority`, async () => {
+      const f = await insertionFixture();
+      const original = f.current();
+      if (!original) throw new Error('No context');
+      if (change === 'generation') f.context({ ...original, generation: {} });
+      else if (change === 'connection') f.context({ ...original, connection: {} });
+      else if (change === 'binding')
+        f.context({ ...original, binding: { harness: 'claude', harnessSessionId: 'other' } });
+      else if (change === 'capability') f.context({ ...original, capabilities: ['image_staging'] });
+      else if (change === 'protocol') f.context({ ...original, protocolVersion: 2 });
+      else {
+        f.context(null);
+        f.controller.disconnect();
+      }
+      f.controller.addToDraft();
+      expect(f.lastDraft()?.phase).toBe('unavailable');
+      f.context(original);
+      f.controller.addToDraft();
+      await wait(15);
+      expect(f.requests).toHaveLength(0);
+    });
+  }
+
+  test('original expiry cancels a pending result without resurrection', async () => {
+    const f = await insertionFixture({ expiryMs: 120 });
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    await waitFor(() => f.lastDraft()?.phase === 'expired');
+    f.send(f.result({ outcome: 'inserted', code: 'none' }));
+    await wait(20);
+    expect(f.lastDraft()?.phase).toBe('expired');
+    f.controller.addToDraft();
+    expect(f.requests).toHaveLength(1);
+  });
+
+  test('disconnect after confirmed insertion removes image-only Send permanently', async () => {
+    const f = await insertionFixture();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    f.send(f.result({ outcome: 'inserted', code: 'none' }));
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    f.controller.disconnect();
+    expect(f.lastDraft()?.phase).toBe('unavailable');
+    expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
+    f.controller.addToDraft();
+    expect(f.requests).toHaveLength(1);
+  });
+
+  test('explicit Send is consumed once and a repeated insertion result cannot revive it', async () => {
+    const f = await insertionFixture();
+    expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
+    const response = f.result({ outcome: 'inserted', code: 'none' });
+    f.send(response);
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    const sendId = crypto.randomUUID();
+    expect(f.controller.takeImageDraftForSend(sendId)).toBe(true);
+    expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
+    f.send(response);
+    await wait(20);
+    expect(f.lastDraft()?.phase).toBe('submitting');
+    f.raw(
+      JSON.stringify({
+        type: 'ack',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        ack: { messageId: sendId, state: 'delivered', timestamp: new Date().toISOString() },
+      }),
+    );
+    await waitFor(() => f.lastDraft()?.phase === 'send_requested');
+    expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
+    expect(f.otherRequests.map((request) => request.type)).toEqual([
+      'image_upload_begin',
+      'image_upload_chunk',
+      'image_upload_complete',
+    ]);
+  });
+
+  test('send timeout and transport receipts preserve possible-reference metadata', async () => {
+    const f = await insertionFixture();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    f.send(f.result({ outcome: 'inserted', code: 'none' }));
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    const sendId = crypto.randomUUID();
+    const expiry = f.lastDraft()?.expiresAt;
+    expect(f.controller.canUpload).toBe(false);
+    expect(f.controller.takeImageDraftForSend(sendId)).toBe(true);
+    expect(f.controller.canUpload).toBe(false);
+    const ack = (messageId: string, state = 'delivered') =>
+      JSON.stringify({
+        type: 'ack',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        ack: { messageId, state, timestamp: new Date().toISOString() },
+      });
+    f.raw(ack(crypto.randomUUID()));
+    f.raw(ack(sendId, 'sent'));
+    await wait(20);
+    expect(f.lastDraft()?.phase).toBe('submitting');
+    await waitFor(() => f.lastDraft()?.phase === 'send_uncertain', 16_000);
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    expect(f.controller.canUpload).toBe(false);
+    f.raw(ack(sendId));
+    await wait(20);
+    expect(f.lastDraft()?.phase).toBe('send_uncertain');
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss(true);
+    expect(f.states.at(-1)).toEqual({ phase: 'idle' });
+    expect(f.controller.canUpload).toBe(true);
+    expect(f.requests).toHaveLength(1);
+  }, 20_000);
+
+  test('input receipt alone never means submitted; a later actual refusal keeps the deadline', async () => {
+    const f = await insertionFixture();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    f.send(f.result({ outcome: 'inserted', code: 'none' }));
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    const expiry = f.lastDraft()?.expiresAt;
+    const sendId = crypto.randomUUID();
+    expect(f.controller.takeImageDraftForSend(sendId)).toBe(true);
+    f.raw(
+      JSON.stringify({
+        type: 'ack',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        ack: { messageId: sendId, state: 'delivered', timestamp: new Date().toISOString() },
+      }),
+    );
+    await waitFor(() => f.lastDraft()?.phase !== 'submitting');
+    expect(f.lastDraft()?.phase).toBe('send_requested');
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    expect(f.lastDraft()?.requiresAbandonment).toBe(true);
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.phase).toBe('send_requested');
+    f.raw(
+      JSON.stringify({
+        type: 'error',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        code: 'PROMPT_WAITING',
+        message: 'held test question',
+        details: { sessionId: SESSION_ID, messageId: sendId },
+      }),
+    );
+    await waitFor(() => f.lastDraft()?.phase === 'send_uncertain');
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.phase).toBe('send_uncertain');
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss(true);
+    expect(f.states.at(-1)).toEqual({ phase: 'idle' });
+    expect(f.controller.canUpload).toBe(true);
+  });
+
+  test('known session end expires the reference and dismiss cancels the local timer', async () => {
+    const f = await insertionFixture({ expiryMs: 120 });
+    f.controller.endSession(crypto.randomUUID());
+    expect(f.lastDraft()?.phase).toBe('available');
+    f.controller.endSession(SESSION_ID);
+    expect(f.lastDraft()?.phase).toBe('expired');
+    f.controller.dismiss(true);
+    const count = f.states.length;
+    await wait(150);
+    expect(f.states).toHaveLength(count);
+    expect(f.states.at(-1)).toEqual({ phase: 'idle' });
+  });
+
+  test('staging capability alone keeps the existing staging-only UI', async () => {
+    const f = await insertionFixture({ caps: ['image_staging'] });
+    expect(f.lastDraft()).toBeUndefined();
+    f.controller.addToDraft();
+    expect(f.requests).toHaveLength(0);
+    expect(f.states.at(-1)).toEqual({ phase: 'staged', filename: 'fixture.png' });
+  });
+
+  for (const raw of ['duplicate', 'direction'] as const) {
+    test(`strict insertion ingress closes on ${raw} with no result callback`, async () => {
+      const f = await insertionFixture();
+      f.controller.addToDraft();
+      await waitFor(() => f.requests.length === 1);
+      const text =
+        raw === 'duplicate'
+          ? encodeImageInsertionFrame(f.result({ outcome: 'inserted', code: 'none' })).replace(
+              '"outcome":"inserted"',
+              '"outcome":"inserted","outcome":"inserted"',
+            )
+          : encodeImageInsertionFrame(f.requests[0] as ImageInsertRequest);
+      f.raw(text);
+      await waitFor(() => f.client.connectionStatus === 'disconnected');
+      expect(f.lastDraft()?.phase).not.toBe('inserted');
+    });
+  }
 });

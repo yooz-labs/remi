@@ -291,4 +291,6 @@ export * from './secure-push-messages.ts';
 
 // Authenticated direct image staging (#1170, ADR 0041).
 export * from './image-staging.ts';
-export { isImageStagingCandidate } from './image-staging-ingress.ts';
+// Accepted structural vocabulary; availability still requires the insertion caller gates.
+export * from './image-insertion.ts';
+export { isImageStagingCandidate, isImageInsertionCandidate } from './image-staging-ingress.ts';

@@ -5,7 +5,7 @@
  * Handles connection lifecycle, message routing, and broadcasting.
  */
 
-import { isImageStagingCandidate } from '@remi/shared';
+import { isImageInsertionCandidate, isImageStagingCandidate } from '@remi/shared';
 import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
@@ -662,6 +662,10 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
+      if (typeof message !== 'string' && isImageInsertionCandidate(message)) {
+        connection.handleImageInsertionFrame(message);
+        return;
+      }
       if (typeof message !== 'string' && isImageStagingCandidate(message)) {
         connection.handleImageStagingFrame(message);
         return;

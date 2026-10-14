@@ -73,6 +73,8 @@ interface ChatViewProps {
     readonly onSelect: (file: File) => void;
     readonly onCancel: () => void;
     readonly onDismiss: () => void;
+    readonly onAddToDraft?: () => void;
+    readonly onAbandonDraft?: () => void;
   };
   readonly className?: string;
 }
@@ -212,16 +214,23 @@ export function ChatView({
           real daemon session), so there is no input to route (#499 phase 3). */}
       {!session.isSubagent && (
         <>
-          {imageUpload && <ImageUpload {...imageUpload} />}
+          {imageUpload && <ImageUpload key={`${session.connectionId}:${session.id}`} {...imageUpload} />}
           <InputArea
             onSend={onSend}
+            hasImageDraft={
+              imageUpload?.state.phase === 'staged' && imageUpload.state.draft?.phase === 'inserted'
+            }
             onAnswer={(answer) => {
               if (primaryQuestion) onAnswer(primaryQuestion, answer);
             }}
             onCancel={onCancel}
             question={null}
             isAgentBusy={isAgentBusy}
-            disabled={!isConnected || isQueued}
+            disabled={
+              !isConnected ||
+              isQueued ||
+              (imageUpload?.state.phase === 'staged' && imageUpload.state.draft?.phase === 'inserting')
+            }
             replyContext={replyContext ?? null}
             onClearReply={onClearReply}
             // Session-scoped draft persistence so a half-typed message survives

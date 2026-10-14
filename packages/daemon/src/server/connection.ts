@@ -24,9 +24,11 @@ import {
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeImageInsertionIngress,
   decodeImageStagingIngress,
   deserialize,
   generateId,
+  isImageInsertionCandidate,
   isImageStagingCandidate,
   now,
   serialize,
@@ -269,6 +271,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isImageInsertionCandidate(data)) {
+      this.handleImageInsertionFrame(data);
+      return;
+    }
     if (isImageStagingCandidate(data)) {
       this.handleImageStagingFrame(data);
       return;
@@ -327,6 +333,7 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
         image_upload_begin: () => this.close('Invalid image staging route'),
         image_upload_chunk: () => this.close('Invalid image staging route'),
@@ -407,6 +414,47 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Exact original insertion frames bypass ordinary deduplication; retries belong to the coordinator. */
+  handleImageInsertionFrame(data: string | Uint8Array): void {
+    const ingress = decodeImageInsertionIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid image insertion frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const correlation =
+      ingress.kind === 'request'
+        ? { requestId: ingress.request.id, sessionId: ingress.request.sessionId }
+        : ingress.correlation;
+    const unavailable = () =>
+      this.send({
+        type: 'image_insert_result',
+        id: generateId(),
+        timestamp: now(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        outcome: 'refused',
+        code: 'unavailable',
+      });
+    const failed = () => {
+      try {
+        unavailable();
+      } catch {
+        this.close('Image insertion unavailable');
+      }
+    };
+    try {
+      if (!this.events.onImageInsert) {
+        failed();
+        return;
+      }
+      const pending = this.events.onImageInsert(ingress);
+      if (pending) void pending.catch(failed);
+    } catch {
+      failed();
     }
   }
 

@@ -229,10 +229,12 @@ function MessageContent({
     ? message.contentBlocks!.filter((b) => b.type === 'tool_use' || b.type === 'tool_result')
     : [];
 
+  const content = message.content || (isUser && message.source === 'optimistic' ? 'Image draft' : '');
+
   if (enhanced) {
     return (
       <>
-        {message.content && <ChatMessage content={message.content} isUser={isUser} />}
+        {content && <ChatMessage content={content} isUser={isUser} />}
         {toolBlocks.length > 0 && (
           <div className="mt-1">
             {toolBlocks.map((block, i) => (
@@ -246,7 +248,7 @@ function MessageContent({
 
   return (
     <>
-      {message.content && <InlineMarkdown content={message.content} isUser={isUser} />}
+      {content && <InlineMarkdown content={content} isUser={isUser} />}
       {toolBlocks.length > 0 && (
         <div className="mt-1">
           {toolBlocks.map((block, i) => (

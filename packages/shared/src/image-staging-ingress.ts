@@ -1,5 +1,16 @@
-/** Dormant raw candidacy probe; selection is neither JSON validation nor transfer authority. */
+/** Raw route selection only; strict validation and original authority still belong to the caller. */
 export function isImageStagingCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'image_upload_');
+}
+
+export function isImageInsertionCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'image_insert_');
+}
+
+function imageOperationCandidate(
+  input: string | Uint8Array,
+  prefix: 'image_upload_' | 'image_insert_',
+): boolean {
   if (typeof input !== 'string' && !(input instanceof Uint8Array)) return false;
   // Read the received units directly: no input-sized copy, UTF-8/JSON/base64 conversion or cutoff.
   const code = (index: number): number =>
@@ -53,8 +64,7 @@ export function isImageStagingCandidate(input: string | Uint8Array): boolean {
         typeKey = string('type');
         member = 1;
       } else {
-        if (string(depth === 1 && member === 2 && typeKey ? 'image_upload_' : '', true))
-          return true;
+        if (string(depth === 1 && member === 2 && typeKey ? prefix : '', true)) return true;
         if (depth === 1) member = 3;
       }
       continue;

@@ -266,3 +266,39 @@ uv run python scripts/tunnel-decoder-proof/approval-matrix.py \
   --linux-x64-image oven/bun:1.3.11 \
   --linux-memory-mib 512 --linux-pids-limit 64
 ```
+
+## Signed direct insertion caller (#1170)
+
+`insertion-dispatch-entry.ts` is a standalone acceptance wrapper. Its owned proof
+operand runs the driver; every ordinary CLI operand and internal image-worker
+operand dispatches the actual production entry. The driver runs that compiled
+entry with a private home/project and an inert `cat` executable named Claude.
+It consumes no model quota and changes no owner configuration.
+
+The driver provisions an ephemeral signed device through the actual CLI, uploads
+and decodes the original PNG/JPEG, inserts exactly one retained reference per
+image with zero CR/LF, replays an equivalent reordered request and refuses a fresh
+ID for the same artifact. It posts an owned PermissionRequest to the actual
+installed local HTTP hook, observes its question, verifies prompt-up refusal
+without reference bytes and sends No. Revoking the original grant through the CLI
+then prevents cached result disclosure. Helper commands and daemon exit are
+awaited and ESRCH-confirmed; all three staged reservations must settle to zero
+charge and both staging directories must be empty before owned fixture removal.
+These controls establish the compiled host path and its conditional signed-direct
+capability. The explicit web caller is rendered and verified separately; native
+decoder conformance remains a separate availability gate.
+
+Prepare a symlink-free copy of the installed production dependency closure with
+`prepare-insertion-dispatch-deps.py --out <owned-S1-directory>`. No version is
+resolved or installed: the matrix pins the seven root versions and hashes every
+copied transitive file. The same module can occur at different versions in nested
+locations. Missing required dependencies or cycles fail instead of guessing.
+
+Run `insertion-dispatch-matrix.py` through the existing matrix flags, first with
+`--canary-only` on both Mac Buns, then on all six supported cells. Supply that
+prepared directory with `--node-modules`, the existing pinned Linux image, an
+owned canonical `--runtime-temp-base`, `--linux-memory-mib 512` and
+`--linux-pids-limit 64`. The profile enables execution on its private tmpfs for the
+inert CLI script. The memory/PID limits are this multi-process Linux fixture;
+they do not establish a portable production memory budget. No Intel Mac or
+Rosetta execution is part of this profile.

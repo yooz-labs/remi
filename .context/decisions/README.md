@@ -56,8 +56,8 @@ add a row below.
 | [0038](0038-the-decision-object.md) | The decision object, frozen: it is the `question` message's `Question`; `Question.answerPath` (structured, keystroke, none) says how a phone answer applies and `question_resolved.resolvedBy` (phone, lockscreen, terminal, harness, timeout) what resolved a card, both optional and sent only when known; one resolver sends each card's resolution once (the first wins); `localRender` stays off the wire; `kind` is an open set with no sandbox or trust kinds |
 | [0039](0039-machine-object-on-the-wire.md) | Machine descriptor on hello and lists: existing relay room ID, shared bounded pairing name, connection-scoped version/harnesses/capabilities, session machine IDs, and native alias/pin handoff |
 | [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
-| [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; `image_staging` availability waits for production handler/caller conformance |
-| [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; internal guarded no-Enter lease, one possible insertion per artifact and an expiring unsent draft; coordinator, shared wire, production handler/client and native conformance gates remain |
+| [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; direct staging and web caller validated; native conformance remains separate |
+| [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; guarded one-write lease/coordinator, strict signed-direct dispatch and explicit expiring web draft caller validated; native conformance remains separate |
 
 ## By area
 

@@ -11,7 +11,13 @@
  */
 
 import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
-import { isImageStagingCandidate } from './image-staging-ingress.ts';
+import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from './image-insertion.ts';
+import { isImageInsertionCandidate, isImageStagingCandidate } from './image-staging-ingress.ts';
 import {
   type ImageUploadAccepted,
   type ImageUploadBegin,
@@ -107,6 +113,8 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  image_insert_request: ImageInsertRequest;
+  image_insert_result: ImageInsertResult;
   image_upload_begin: ImageUploadBegin;
   image_upload_accepted: ImageUploadAccepted;
   image_upload_chunk: ImageUploadChunk;
@@ -238,6 +246,8 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  image_insert_request: 'c2d',
+  image_insert_result: 'd2c',
   image_upload_begin: 'c2d',
   image_upload_accepted: 'd2c',
   image_upload_chunk: 'c2d',
@@ -1534,6 +1544,8 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type === 'image_insert_request' || message.type === 'image_insert_result')
+    return encodeImageInsertionFrame(message);
   if (message.type.startsWith('image_upload_'))
     return encodeImageStagingFrame(message as import('./image-staging.ts').ImageStagingMessage);
   return JSON.stringify(message);
@@ -1546,6 +1558,7 @@ export function serialize(message: ProtocolMessage): string {
 export function deserialize(data: string): ProtocolMessage | null {
   // Stage frames never pass through the permissive legacy parser (#1170).
   if (isImageStagingCandidate(data)) return decodeImageStagingFrame(data);
+  if (isImageInsertionCandidate(data)) return decodeImageInsertionFrame(data);
   try {
     const parsed: unknown = JSON.parse(data);
     // Inspect the original spelling before choosing a protocol. JSON.parse's
