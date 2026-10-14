@@ -47,6 +47,44 @@ HOOK_TEST_COMMENTS = {
         " * at it exactly like `hook-server.test.ts` does, and exits; the parent test",
     ),
 }
+# Exact unit-test producers outside the reviewed R7 runner, never a test-directory exemption (#1516).
+ISOLATED_TEST_INPUTS = {
+    "packages/daemon/tests/cli/attach-client.test.ts": {},
+    "packages/daemon/tests/harness/claude-session.test.ts": {
+        "packages/daemon/tests/cli/log-guard-wiring.test.ts": (
+            "86546f0dfd548ee9bfcf7a4953f34eec46f5b4cb", 4,
+            " * `claude-session.test.ts` does); the debug sinks are tested by behavior in",
+        ),
+        "packages/daemon/tests/cli/push-token-refresh-wiring.test.ts": (
+            "8eaef6d033da636805e2d95b4b2e5669284b5801", 6,
+            " * `cli.ts` wiring by its source (as `claude-session.test.ts` does).",
+        ),
+        "packages/daemon/tests/notifications/claude-turn-stop.test.ts": (
+            "47fb9decbddd0a3556acbf326294228d08f85d35", 10,
+            " * filter's answer (what the harness says; its own tests are `harness/claude-session.test.ts`) and",
+        ),
+        "packages/daemon/tests/notifications/turn-failed.test.ts": (
+            "b9e41ede3f4c83341f69c84686586f4eb5951c8e", 581,
+            "       *  is covered through the real Worker in claude-session.test.ts; this pins only which",
+        ),
+    },
+    "packages/daemon/tests/server/origin-policy.test.ts": {
+        "packages/daemon/tests/websocket-server.test.ts": (
+            "bb6a7aa9f014839b6e7d87aa5385ef3970522041", 124,
+            "    // tests/server/origin-policy.test.ts.",
+        ),
+    },
+    "packages/web/tests/lib/push-answer-relay.test.ts": {},
+}
+ISOLATED_TEST_RUNNERS = {
+    ".github/workflows/relay-r7.yml": "5a148fe948049d6dbece7b62e26a017addbdafca",
+    "bunfig.toml": "3cdd70fa50576ab11b0ca1d8faeac951c3786196",
+    "packages/daemon/tests/debug/test-harness-marker.ts": "e0e598b09ea569730495b91e42a485e0541fafd2",
+    "packages/daemon/tests/unset-remi-home.ts": "5183f291018ec6e71d63708c35edcaddc926eb09",
+    "packages/signaling/tests/e2e/harness.ts": "df152a92fd95d8dcfd5176e79c3110aa7b500628",
+    "packages/signaling/tests/e2e/test-entry.ts": "be546df77024a1e7e3a32023ac53e5175627f526",
+    "tests/integration/relay-r7-portability.test.ts": "8a72829ad961a187d6af82d3976dd3cee8e9e2ef",
+}
 # Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
 STAGING_SOURCE = "packages/shared/src/image-staging.ts"
 STAGING_INPUTS = {
@@ -938,6 +976,35 @@ def git(*args):
     return subprocess.check_output(["git", *args], stderr=subprocess.PIPE)
 
 
+def parse_name_status(raw, expected_paths):
+    """Parse one complete `git diff --name-status -z --no-renames` result."""
+    expected = set(expected_paths)
+    if not expected or len(expected) != len(expected_paths) or not raw or not raw.endswith(b"\0"):
+        raise ValueError("incomplete diff status output")
+    fields = raw[:-1].split(b"\0")
+    if len(fields) % 2:
+        raise ValueError("malformed diff status fields")
+    statuses = {}
+    for index in range(0, len(fields), 2):
+        status = fields[index].decode("ascii", "strict")
+        path = fields[index + 1].decode("utf-8", "strict")
+        if status not in {"A", "M", "D"} or not path or path in statuses:
+            raise ValueError("unknown or duplicate diff status")
+        statuses[path] = status
+    if statuses.keys() != expected:
+        raise ValueError("diff status paths do not match changed paths")
+    return statuses
+
+
+def diff_status_matches(status_lookup, base, head, merge_base, path, expected):
+    if status_lookup is None:
+        status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                     merge_base, head, "--", path)
+        return status == f"{expected}\0{path}\0".encode()
+    statuses = status_lookup()
+    return statuses is not None and statuses.get(path) == expected
+
+
 def all_gates(reason):
     return {**dict.fromkeys(GATES, True), "typecheck": True, "relay_soak": True, "reason": reason}
 
@@ -974,6 +1041,72 @@ def hook_test_references_reviewed(base, head):
             # Scan whole known files too: only their single exact comment lines are permitted.
             if consumers.returncode != 0 or sorted(consumers.stdout.decode().splitlines()) != sorted(expected):
                 return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
+def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=None):
+    """Keep ordinary gates for exact isolated tests; unknown consumers/metadata restore R7."""
+    try:
+        producers = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        self_tools = {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md"}
+        if not producers or any(path not in producers and path not in self_tools and not (
+                ordinary_soak_doc(path) and not path.startswith((".github/", ".rules/"))) for path in paths):
+            return False
+        for path in producers:
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
+                return False
+        surfaces = ("packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts")
+        inventories = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref, "--", *surfaces)
+            root = git("ls-tree", "-z", ref)
+            if not raw or not raw.endswith(b"\0") or not root or not root.endswith(b"\0"):
+                return False
+            entries = raw[:-1].split(b"\0")
+            for entry in root[:-1].split(b"\0"):
+                header, separator, _ = entry.partition(b"\t")
+                if not separator:
+                    return False
+                if not re.fullmatch(rb"040000 tree [0-9a-f]{40}", header):
+                    entries.append(entry)
+            tree = {}
+            for entry in entries:
+                header, separator, encoded_path = entry.partition(b"\t")
+                path = encoded_path.decode("utf-8", "strict")
+                if (not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header) or
+                        path in tree or any(part in ("", ".", "..") for part in path.split("/")) or
+                        any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                    return False
+                mode, _, blob = header.decode("ascii", "strict").split()
+                tree[path] = (mode, blob)
+            for path in producers:
+                if tree.get(path, (None,))[0] != "100644":
+                    return False
+            pins = dict(ISOLATED_TEST_RUNNERS)
+            for producer in producers:
+                pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS[producer].items()})
+            if any(tree.get(path) != ("100644", blob) for path, blob in pins.items()):
+                return False
+            inventories[ref] = tree
+        # Git grep alone need not detect a corrupt unreferenced object. Read and hash the
+        # complete scanned blob population, with the existing bounded batch reader, each call.
+        validation_objects({blob: "blob" for tree in inventories.values() for _, blob in tree.values()})
+        for ref, tree in inventories.items():
+            roots = [f":(literal){path}" for path in tree if "/" not in path]
+            for producer in producers:
+                expected = [f"{ref}:{path}:{line}:{text}" for path, (_, line, text) in
+                            ISOLATED_TEST_INPUTS[producer].items()]
+                scan = subprocess.run(
+                    ["git", "grep", "-n", "-F", "--no-textconv", "-e", Path(producer).stem, ref, "--",
+                     *surfaces, *roots, f":(exclude){producer}",
+                     ":(exclude).github/scripts/ci-scope.py", ":(exclude).github/scripts/check-ci-scope.py"],
+                    capture_output=True, check=False,
+                )
+                if (scan.returncode != (0 if expected else 1) or
+                        sorted(scan.stdout.decode("utf-8", "strict").splitlines()) != sorted(expected)):
+                    return False
         return True
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
         return False
@@ -1053,7 +1186,7 @@ def bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
         return False
 
 
-def staging_is_dormant(base, head, merge_base, paths):
+def staging_is_dormant(base, head, merge_base, paths, status_lookup=None):
     try:
         trees = {}
         for ref in dict.fromkeys((base, head, merge_base)):
@@ -1072,12 +1205,10 @@ def staging_is_dormant(base, head, merge_base, paths):
                 tree[path] = header.split()[-1].decode()
             trees[ref] = tree
         for path in set(paths) & STAGING_INPUTS:
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
             kind = "M" if path in trees[merge_base] and path in trees[base] else "A"
             if (path not in trees[head] or (kind == "A" and
                     (path in trees[merge_base] or path in trees[base])) or
-                    status != f"{kind}\0{path}\0".encode()):
+                    not diff_status_matches(status_lookup, base, head, merge_base, path, kind)):
                 return False
         if STAGING_SOURCE not in trees[head]:
             return False
@@ -1127,7 +1258,7 @@ def staging_is_dormant(base, head, merge_base, paths):
         return False
 
 
-def accounting_relocation_is_dormant(base, head, merge_base, paths):
+def accounting_relocation_is_dormant(base, head, merge_base, paths, status_lookup=None):
     try:
         trees = {}
         for ref in dict.fromkeys((base, head, merge_base)):
@@ -1163,9 +1294,7 @@ def accounting_relocation_is_dormant(base, head, merge_base, paths):
             kind = "M" if path in ACCOUNTING_ORIGINALS else "A"
             if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
                 return False
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
-            if status != f"{kind}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, kind):
                 return False
         # Immutable proof consumers cannot acquire extra execution while remaining excluded.
         for path, blob in ACCOUNTING_ORIGINALS.items():
@@ -1437,7 +1566,7 @@ def cold_image_reference(path, text, targets, identifiers):
     return cold_reference(path, unescaped, targets, identifiers) or cold_image_runner_reference(path, unescaped)
 
 
-def cold_relocation_paths(base, head, merge_base, paths):
+def cold_relocation_paths(base, head, merge_base, paths, status_lookup=None):
     changed = set(paths)
     selected = [policy for policy in COLD_RELOCATIONS.values() if changed & set(policy["head"])]
     if not selected:
@@ -1494,8 +1623,7 @@ def cold_relocation_paths(base, head, merge_base, paths):
             kind = "D" if final[path] is None else "M" if path in original else "A"
             if kind == "A" and any(path in trees[ref] for ref in (base, merge_base)):
                 return set()
-            if git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                   merge_base, head, "--", path) != f"{kind}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, kind):
                 return set()
         names = {Path(p).name for p in final if p.endswith(".ts")}
         targets = {p for p in original | final if p.endswith(".ts") and Path(p).name in names}
@@ -1582,7 +1710,7 @@ def soak_versions_reviewed(tree, reviewed=None):
                for path, data in normalized.items())
 
 
-def soak_fixture_only(base, head, merge_base, paths):
+def soak_fixture_only(base, head, merge_base, paths, status_lookup=None):
     changed = set(paths) & set(SOAK_FIXTURES)
     auth_path = "packages/daemon/tests/connection-auth.test.ts"
     auth_changed = auth_path in changed
@@ -1653,9 +1781,7 @@ def soak_fixture_only(base, head, merge_base, paths):
                     final = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                     if trees[head].get(path) != ("100644", final):
                         return False
-                    status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                                 merge_base, head, "--", path)
-                    if status != f"M\0{path}\0".encode():
+                    if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
                         return False
                     if validation_objects({final: "blob"})[final] != content:
                         return False
@@ -1677,9 +1803,7 @@ def soak_fixture_only(base, head, merge_base, paths):
                     return False
                 if trees[head].get(path) != ("100644", new):
                     return False
-                status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                             merge_base, head, "--", path)
-                if status != f"M\0{path}\0".encode():
+                if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
                     return False
         # Trace wiring, helpers/config and every non-doc object/mode stay identical at both ends.
         def remaining(tree):
@@ -1731,7 +1855,7 @@ def soak_fixture_only(base, head, merge_base, paths):
         return False
 
 
-def reviewed_launch_or_decode_only(base, head, merge_base, paths):
+def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=None):
     # Match complete changed-path populations before reading the unchanged published graph.
     launch_paths = set(SOAK_LAUNCH_TRANSITION)
     decode_paths = set(SOAK_DECODE_TRANSITION)
@@ -1785,9 +1909,7 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths):
                 elif trees[ref].get(path) != (tuple(expected) if expected is not None else None):
                     return None
             expected_status = "M" if roles["original"] is not None else "A"
-            status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
-                         merge_base, head, "--", path)
-            if status != f"{expected_status}\0{path}\0".encode():
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, expected_status):
                 return None
         # The image-entry transition uses its separately reviewed public source
         # baseline, which includes the already-published lock/package/support updates.
@@ -1931,19 +2053,47 @@ def classify(base, head):
         bun_diagnostic_pair = bool(set(paths) & set(CI_BUN_DIAGNOSTIC_INPUTS))
         if bun_diagnostic_pair and not bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
             return all_gates("Bun diagnostic runner/test caller or transition changed; running all gates")
-        transition = reviewed_launch_or_decode_only(base, head, merge_base, paths)
+        status_state = {"loaded": False, "value": None, "error": False}
+
+        def changed_statuses():
+            # Lazy and scoped to this classify call. Git/object state is never cached between controls.
+            if not status_state["loaded"]:
+                status_state["loaded"] = True
+                try:
+                    raw_status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                                     merge_base, head, "--")
+                    status_state["value"] = parse_name_status(raw_status, paths)
+                except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+                    status_state["error"] = True
+            return status_state["value"]
+
+        isolated_tests = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        if isolated_tests and not isolated_test_inputs_reviewed(base, head, merge_base, paths, changed_statuses):
+            return all_gates("Isolated test transition, reference or runner proof unavailable; running all gates")
+        transition = reviewed_launch_or_decode_only(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         if transition:
             return {**all_gates(f"Exact reviewed {transition} transition; ordinary and short relay controls retained"),
                     "relay_soak": False}
         gates = dict.fromkeys(GATES, False)
-        cold_paths = cold_relocation_paths(base, head, merge_base, paths)
+        cold_paths = cold_relocation_paths(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         cold_inputs = set().union(*(policy["head"] for policy in COLD_RELOCATIONS.values()))
         accounting_paths = set(paths) & (set(ACCOUNTING_HEAD) - cold_paths)
-        accounting_dormant = bool(accounting_paths) and accounting_relocation_is_dormant(base, head, merge_base, paths)
+        accounting_dormant = bool(accounting_paths) and accounting_relocation_is_dormant(
+            base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
         if set(paths) & cold_inputs and not cold_paths and not accounting_dormant:
             return all_gates("Cold relocation, consumer or scan failure; running all gates")
-        if set(paths) & STAGING_INPUTS and not staging_is_dormant(base, head, merge_base, paths):
-            return all_gates("Staging consumer, producer state or scan failure; running all gates")
+        if set(paths) & STAGING_INPUTS:
+            staging_dormant = staging_is_dormant(base, head, merge_base, paths, changed_statuses)
+            if status_state["error"]:
+                return all_gates("Diff status unavailable or malformed; running all gates")
+            if not staging_dormant:
+                return all_gates("Staging consumer, producer state or scan failure; running all gates")
         if accounting_paths and not accounting_dormant:
             return all_gates("Accounting relocation, consumer or scan failure; running all gates")
         for path in paths:
@@ -1959,6 +2109,8 @@ def classify(base, head):
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path in CI_BUN_DIAGNOSTIC_INPUTS:
                 # This exact CI-only test producer retains every ordinary gate, not R7.
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
+            elif path in isolated_tests:
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(
@@ -2075,7 +2227,10 @@ def classify(base, head):
                 continue
             else:
                 return all_gates("Unknown path or global/gate configuration changed")
-        return {**gates, "relay_soak": gates["relay"] and not soak_fixture_only(base, head, merge_base, paths), "typecheck": any(gates[key] for key in
+        relay_soak = gates["relay"] and not soak_fixture_only(base, head, merge_base, paths, changed_statuses)
+        if status_state["error"]:
+            return all_gates("Diff status unavailable or malformed; running all gates")
+        return {**gates, "relay_soak": relay_soak, "typecheck": any(gates[key] for key in
                 ("root", "web", "signaling", "integration", "notices")),
                 "reason": f"Classified complete PR diff ({len(paths)} paths)"}
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):

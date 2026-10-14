@@ -6,7 +6,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
 
 ## Where things stand
 
-- **Codex remote chat (#1207):** combined direct/relay integration #1507 landed at `49094b02` after 9,808 tests, the actual coverage threshold and its actual 61-minute relay measurement passed on reviewed head `422d64dd`. It includes #1504 and its reviewed prerequisites; the two incomplete earlier direct-head Test attempts remain preserved and are not a cause/fix result. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless native controls and rendered phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md).
+- **Codex remote chat (#1207):** the reviewed combined direct/relay implementation landed in #1507 at `49094b02`, including #1504 and its reviewed prerequisites. The actual hosted suite passed 9,808 tests with 30 skips and zero failures, 91.79% line coverage and the actual 61-minute relay gate. Two earlier direct-head Test timeouts remain preserved; the combined pass does not diagnose them. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless installed-server controls and rendered web phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI, physical-device acceptance and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md) and the [native handoff](../docs/codex-remote-chat.md#native-integration-handoff).
 
 - **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. The owner accepted its baseline fields on 2026-10-14 and requested HTTPS/WSS direct operation; transport sequencing and actual producer/client delivery remain pending; Codex producer support, relay delivery, native conformance and file downloads remain separate.
 
@@ -70,6 +70,17 @@ The existing native caller needs no new Swift model or wire field for this persi
 3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): reuse the standalone storage/decoder proofs and accepted staging codec/fixtures, settle production helper/budget adoption, integrate reservations and authenticated direct staging, then add one production client caller. Coordinate Swift wire conformance against the shared vectors in the existing native track. Claude insertion, links, outbound files and relay/native depth each have separate gates. The sharp candidate failed compiled loading; the existing pngjs/jpeg-js candidate has standalone malformed-input, cancellation and held-answer evidence, with production decoder/budget selection still pending. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
 
 ## Tracks (work outside the milestones)
+
+The #1190 fixture cleanup continuation records actual ownership assertions for
+attachment output directories and Claude-session directories.
+The original whole two-file population passed 75 cases but left 18 attachment
+directories and one Claude directory on each Mac Bun runtime.
+The cleanup closes output before removing its owned directory and awaits the
+existing PTY exit before removing the session store directory.
+All 75 cases now pass on both runtimes with zero new fixture directories;
+removing either cleanup fails its specific assertion on both runtimes.
+Historical temporary directories are untouched. Independent review and fresh
+hosted acceptance remain separate; no product behavior or timeout changes.
 
 Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
@@ -665,3 +676,42 @@ This fixture uses inert cat and no account; it complements the earlier three app
 Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Workspace updates after existing reads (#1285)
+
+The cache's existing registration/stale-list reads now notify the daemon only
+when published repository/directory/branch metadata changes. The callback runs
+after value/freshness/pending state is committed, so the shared `buildSessionList`
+push uses the new metadata without blocking requests or starting another read.
+Initial known metadata and removal notify once; unchanged/unknown/initial-none
+reads do not. Callback failure is logged while the cached answer remains usable.
+The current session membership, harness decoration, machine descriptor and
+sibling ports are read at broadcast time; a read finishing after closure pushes
+nothing. No new polling, timer, watcher, message shape or native code.
+
+Real repository/cache controls first reproduced the original missing change
+notification. The connected control constructs the shipping WebSocketServer,
+real registry/binding/transcript/harness objects and an unstarted genuine PTY;
+no harness process/model is launched. Its port-zero setup exposed the server's
+configured-zero getter: the server now reports its actual held OS port when
+running, including onStart (#1232), allowing held ephemeral listeners without
+port guessing. Configured nonzero ports retain their existing value.
+
+Focused workspace/cache/builder/real-client/server/authority and harness-boundary
+controls passed 107 tests with 562 assertions on each installed Mac Bun gate.
+Root types and format checks passed; independent review and fresh exact-head
+hosted checks remain before landing. These focused controls are not a full-suite,
+native-device or actual R7 acceptance result.
+Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-workspace-change-push/`.
+
+Pre-merge caller tracing found that the hub dropped unsolicited child lists,
+so the first daemon-only change did not update enrolled relay clients. The same
+PR now adds a payload-free invalidation from a verified current child to the
+existing filtered hub aggregate. Updates coalesce behind one active list, keep
+the last accepted external-session preference, and preserve BUSY and answer
+responsiveness. Duplicate recent replies do not invalidate; revoked, unverified,
+retired or replaced child sockets cannot notify. Background refresh failures
+are logged without payloads and retire the channel. No new polling or wire shape.
+The original head's full suite and actual R7 soak remain evidence for that head;
+the corrected relay source needs fix-delta review and fresh hosted validation.

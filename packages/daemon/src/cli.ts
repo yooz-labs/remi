@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.170'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.175'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.170'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.175'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -177,7 +177,7 @@ import {
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
-import { buildSessionList } from './cli/handlers/session-list-entries.ts';
+import { broadcastWorkspaceChange, buildSessionList } from './cli/handlers/session-list-entries.ts';
 import { StructuredChatService } from './cli/handlers/structured-chat-events.ts';
 import {
   type TranscriptHandlers,
@@ -1266,7 +1266,23 @@ let closingResolved: Set<UUID> | null = null;
 // the repeated onQuestionsChanged calls a single question's lifecycle fires.
 const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 // The workspace each listed session runs in (#1236 phase B), read from git without making the list wait.
-const workspaceCache = new WorkspaceCache({ log: (line) => log(`[Workspace] ${line}`) });
+const workspaceCache = new WorkspaceCache({
+  log: (line) => log(`[Workspace] ${line}`),
+  onChange: (directory) =>
+    broadcastWorkspaceChange(
+      {
+        sessionRegistry,
+        bindingStore,
+        transcriptDiscovery,
+        harness,
+        currentPort: () => PORT,
+        getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+        machine: machineDescriptor,
+        broadcast: (message) => registry.broadcast(message),
+      },
+      directory,
+    ),
+});
 
 const sessionRegistry = new SessionRegistry(
   {
