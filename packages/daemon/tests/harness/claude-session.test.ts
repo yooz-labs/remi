@@ -15,7 +15,7 @@
  * the values the harness needs.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -94,6 +94,13 @@ async function until(cond: () => boolean, what: string, timeoutMs = 5000): Promi
 }
 
 describe('ClaudeHarness.createSession', () => {
+  const temporaryDirectories = new Set<string>();
+  afterAll(() => {
+    expect(
+      [...temporaryDirectories].filter((directory) => fs.existsSync(directory)),
+      'owned Claude fixture directories must be removed after child exit',
+    ).toEqual([]);
+  });
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
@@ -113,6 +120,7 @@ describe('ClaudeHarness.createSession', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-claude-session-'));
+    temporaryDirectories.add(tmpDir);
     configureLogger({ writeLog: () => {} });
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));

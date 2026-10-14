@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -47,6 +47,13 @@ function makeMessage(content: string): Message {
 }
 
 describe('runAttachClient', () => {
+  const temporaryDirectories = new Set<string>();
+  afterAll(() => {
+    expect(
+      [...temporaryDirectories].filter((directory) => fs.existsSync(directory)),
+      'owned attachment fixture directories must be removed',
+    ).toEqual([]);
+  });
   let server: ReturnType<typeof Bun.serve> | null = null;
   let outputPath: string;
   let outputFd: number;
@@ -54,6 +61,7 @@ describe('runAttachClient', () => {
 
   function setupOutput(): void {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-attach-test-'));
+    temporaryDirectories.add(dir);
     outputPath = path.join(dir, 'output.txt');
     fs.writeFileSync(outputPath, '');
     outputFd = fs.openSync(outputPath, 'w');
