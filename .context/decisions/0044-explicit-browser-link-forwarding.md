@@ -16,7 +16,10 @@ Each candidate displays its destination and an **Open** action.
 Selection permits candidate delivery, never automatic opening or a standing grant to launch websites.
 The host never fetches the URL or opens a browser for this operation.
 
-Initial delivery is signed direct and Claude only.
+Initial release requires direct HTTPS/WSS with normal certificate/hostname validation
+and existing signed device authentication; it is Claude only. The current daemon
+has no TLS listener. Existing signed `ws://` operation alone does not satisfy this
+release prerequisite, and the feature must not fall back to plaintext.
 Codex commands run in its shared app-server, so changing its TUI environment alone would not establish tool-process forwarding.
 Relay and native callers adopt this capability only after their own actual route/conformance controls.
 There is no port forwarding or localhost rewriting: the stated URL opens on the receiving device, where localhost names that device.
@@ -103,12 +106,12 @@ This establishes that launcher profile and environment seam only, not installed 
 ## Implementation order and fixed gates
 
 1. Prove the actual producer/environment/argument path with an inert owned process, exact generated URL bytes and real launcher behavior; no paid model turn is needed for that process control.
-2. After owner acceptance, add strict shapes, vectors and capability metadata; no availability from a dormant codec.
+2. Implement direct HTTPS/WSS before release; add strict shapes/vectors and register capability metadata only with the actual handler and client. A dormant codec supplies no availability.
 3. Add current-grant selection and producer delivery, then one real web receive/open caller.
 4. Verify actual signed client/host delivery, bounded resource behavior and phone/tablet/desktop rendering. Observe zero browser launches before a click and one exact launch afterward, with no host fetch.
 5. Remove each new guard and require its original malformed/other-session/stale-authority/replay control to fail. Retain all initial failures.
 6. Independently review with at most two rounds, pass fresh relevant hosted checks, then give native the accepted fields and vectors. Relay/Codex producer support and file downloads remain separate gates.
 
 The owner accepted exclusive explicit selection, the fields/names, 4096-byte URL limit, 10/minute producer rate, eight retained candidates, two-minute lifetime and the initial Claude/direct scope on 2026-10-14.
-The owner also requested HTTPS/WSS direct operation and deferred the full relay tunnel. Transport sequencing is being clarified alongside the separate download limits; this acceptance does not claim a TLS listener or enable runtime delivery.
+The owner then explicitly required HTTPS/WSS before the first direct link/download release and deferred the full relay tunnel. The separate download ceiling stays at 10 MiB. This amends ADR 0009 for these new features; it does not claim a TLS listener or enable runtime delivery.
 One implementation lead and one independent reviewer are sufficient; no new cloud resources, account/model calls or phone access are required for the proposal.
