@@ -33,17 +33,17 @@ import {
   sign,
   unlockIdentity,
 } from '@remi/shared';
-import { StructuredChatController } from '../../src/lib/structured-chat';
-import { WebSocketClient } from '../../src/lib/websocket-client';
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter';
 import { MessageAPI } from '../../../daemon/src/api/message-api';
 import { Authenticator } from '../../../daemon/src/auth/authenticator';
+import { loadOrCreateCapabilityToken } from '../../../daemon/src/auth/capability-token';
 import { IdentityStore } from '../../../daemon/src/auth/identity-store';
 import { StructuredChatService } from '../../../daemon/src/cli/handlers/structured-chat-events';
 import { AppServerClient } from '../../../daemon/src/harness/codex/app-server-client';
 import { CodexHarness } from '../../../daemon/src/harness/codex/codex';
 import { connectUnixWebSocket } from '../../../daemon/src/harness/codex/unix-ws';
 import type { HarnessSession } from '../../../daemon/src/harness/types';
+import { SecurePushStore } from '../../../daemon/src/notifications/secure-push-store';
 import { SessionBindingStore } from '../../../daemon/src/session/session-binding-store';
 import { SessionRegistry } from '../../../daemon/src/session/session-registry';
 import { SessionRegistryFile } from '../../../daemon/src/session/session-registry-file';
@@ -53,10 +53,14 @@ import {
   withInterprocessFileLockNonblocking,
 } from '../../../daemon/src/storage/interprocess-file-lock';
 import { findTestPort, pollUntil } from '../../../daemon/tests/integration/hub-test-utils';
+import { StructuredChatController } from '../../src/lib/structured-chat';
+import { WebSocketClient } from '../../src/lib/websocket-client';
+import { runRelayChatControl } from '../helpers/structured-chat-relay';
 
 const cli = process.env['REMI_CODEX_ACCOUNTLESS_CLI'];
+const relayControl = process.env['REMI_CODEX_RELAY_CONTROL'] === '1';
 (cli ? test : test.skip)(
-  'actual direct route correlates one RPC, guarded commit, replay, rotation and revocation',
+  `actual ${relayControl ? 'encrypted relay' : 'direct'} route correlates one RPC, guarded commit, replay, rotation and revocation`,
   async () => {
     if (!cli?.startsWith('/'))
       throw new Error('An absolute accountless native Codex path is required');
@@ -256,7 +260,14 @@ const cli = process.env['REMI_CODEX_ACCOUNTLESS_CLI'];
       });
       let connected = Promise.withResolvers<UUID>();
       adapter = new WebSocketAdapter(
-        { host: '127.0.0.1', port, authenticator },
+        {
+          host: '127.0.0.1',
+          port,
+          authenticator,
+          ...(relayControl
+            ? { capabilityToken: loadOrCreateCapabilityToken(join(root, 'auth', 'capability.key')) }
+            : {}),
+        },
         {
           onConnect(id) {
             expect(registry.attachConnection(sessionId, id).success).toBe(true);
@@ -285,12 +296,42 @@ const cli = process.env['REMI_CODEX_ACCOUNTLESS_CLI'];
       );
       service = new StructuredChatService({
         identityStore: trust,
+        relayAuthority: new SecurePushStore(join(root, 'auth'), trust),
         sessions: registry,
         bindings: binding,
         harnessFor: (id) => (id === sessionId ? session : undefined),
         directAdapter: () => adapter,
       });
       await adapter.start();
+      if (relayControl) {
+        receipt.checks.push(
+          ...(await runRelayChatControl({
+            directory: join(root, 'auth'),
+            trust,
+            identity: unlocked,
+            sessionId,
+            threadId,
+            cwd,
+            port,
+            liveSessions,
+            registry,
+            adapter,
+            service,
+            effects: () => effects.length,
+            onMetadata: (operation) => {
+              afterMetadata = operation;
+            },
+            nextChildConnection: () => {
+              connected = Promise.withResolvers<UUID>();
+              return connected.promise;
+            },
+          })),
+        );
+        receipt.effects = effects.length;
+        expect(receipt.lockedEffects).toBe(effects.length);
+        receipt.state = 'passed';
+        return;
+      }
       async function client() {
         connected = Promise.withResolvers<UUID>();
         const messages: ProtocolMessage[] = [];

@@ -1,15 +1,12 @@
-/** Signed direct structured chat; transport receipts confer no model-write authority (#1207). */
+/** Signed direct and capability-proved relay child chat; receipts confer no authority (#1207). */
 import { randomUUID } from 'node:crypto';
 import type { UUID } from '@remi/shared';
-import type {
-  ChatSubmitOutcome,
-  ChatSubmitRequest,
-  ChatSubmitResult,
-} from '@remi/shared/structured-chat.ts';
+import type { ChatSubmitOutcome, ChatSubmitRequest, ChatSubmitResult } from '@remi/shared';
 import { WebSocketAdapter } from '../../adapters/websocket-adapter';
 import type { IdentityStore } from '../../auth/identity-store';
 import { SubmissionSequence } from '../../harness/submission-sequence';
 import type { HarnessSession, HarnessStructuredChat } from '../../harness/types';
+import type { SecurePushAuthority, SecurePushStore } from '../../notifications/secure-push-store';
 import type { Connection } from '../../server/connection';
 import type { SessionBindingStore } from '../../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../../session/session-registry';
@@ -20,6 +17,7 @@ interface Host {
   readonly bindings: SessionBindingStore;
   readonly harnessFor: (sessionId: UUID) => HarnessSession | undefined;
   readonly directAdapter: () => WebSocketAdapter | undefined;
+  readonly relayAuthority?: SecurePushStore;
 }
 interface Authority {
   readonly connection: Connection;
@@ -32,6 +30,7 @@ interface Authority {
   readonly writer: HarnessStructuredChat;
   readonly runtime: object;
   readonly threadId: string;
+  readonly proxy: SecurePushAuthority | null;
 }
 interface Pair {
   readonly sequence: SubmissionSequence;
@@ -48,6 +47,7 @@ function same(a: Authority | null, b: Authority | null): boolean {
       a.publicKey === b.publicKey &&
       a.fingerprint === b.fingerprint &&
       a.grant === b.grant &&
+      a.proxy === b.proxy &&
       a.session === b.session &&
       a.pty === b.pty &&
       a.attachment === b.attachment &&
@@ -79,10 +79,35 @@ export class StructuredChatService {
     const adapter = this.host.directAdapter();
     const connection = adapter instanceof WebSocketAdapter ? adapter.getDirectConnection(id) : null;
     return connection?.isConnected &&
-      connection.connectionClientPublicKey &&
-      connection.connectionClientFingerprint
+      ((connection.connectionClientPublicKey && connection.connectionClientFingerprint) ||
+        connection.structuredChatProxyAuthority)
       ? connection
       : null;
+  }
+
+  private publicKey(connection: Connection | null): string | null {
+    return (
+      connection?.connectionClientPublicKey ??
+      connection?.structuredChatProxyAuthority?.publicKey ??
+      null
+    );
+  }
+
+  /** Called only while this device's original grant lock is held. */
+  private identity(connection: Connection, grant: string | null) {
+    const proxy = connection.structuredChatProxyAuthority;
+    if (proxy) {
+      if (
+        connection.connectionClientPublicKey ||
+        connection.connectionClientFingerprint ||
+        !this.host.relayAuthority?.isCurrentAuthorityInsideLock(proxy, grant)
+      )
+        return null;
+      return { publicKey: proxy.publicKey, fingerprint: proxy.fingerprint, proxy };
+    }
+    const publicKey = connection.connectionClientPublicKey;
+    const fingerprint = connection.connectionClientFingerprint;
+    return publicKey && fingerprint ? { publicKey, fingerprint, proxy: null } : null;
   }
 
   /** Must run inside the grant lock. It never re-enters that lock. */
@@ -94,12 +119,10 @@ export class StructuredChatService {
     const identity = this.host.bindings.getIdentity(sessionId);
     const writer = this.host.harnessFor(sessionId)?.structuredChat;
     const runtime = writer?.context();
-    const publicKey = connection?.connectionClientPublicKey;
-    const fingerprint = connection?.connectionClientFingerprint;
+    const actor = connection ? this.identity(connection, grant) : null;
     if (
       !connection ||
-      !publicKey ||
-      !fingerprint ||
+      !actor ||
       !session ||
       session.sessionId !== sessionId ||
       !session.pty.isRunning ||
@@ -112,8 +135,7 @@ export class StructuredChatService {
       return null;
     return {
       connection,
-      publicKey,
-      fingerprint,
+      ...actor,
       grant,
       session,
       pty: session.pty,
@@ -126,7 +148,7 @@ export class StructuredChatService {
 
   private capture(id: UUID, sessionId: UUID): Authority | null {
     try {
-      const publicKey = this.direct(id)?.connectionClientPublicKey;
+      const publicKey = this.publicKey(this.direct(id));
       if (!publicKey) return null;
       return this.host.identityStore.withAuthorizationEpochNonblocking(
         publicKey,
@@ -165,14 +187,15 @@ export class StructuredChatService {
     // arrive after hello. Admission still requires a live exact bound context.
     try {
       const connection = this.direct(id);
-      const publicKey = connection?.connectionClientPublicKey;
-      if (this.closed || !publicKey) return false;
+      const publicKey = this.publicKey(connection);
+      if (this.closed || !connection || !publicKey) return false;
       return this.host.identityStore.withAuthorizationEpochNonblocking(
         publicKey,
         (grant) => {
           const session = this.host.sessions.getSessionForConnection(id);
           return !!(
             grant &&
+            this.identity(connection, grant) &&
             connection === this.direct(id) &&
             session?.pty.isRunning &&
             this.host.harnessFor(session.sessionId)?.structuredChat &&

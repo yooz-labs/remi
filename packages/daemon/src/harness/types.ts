@@ -17,7 +17,7 @@
  */
 
 import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } from '@remi/shared';
-import type { ChatSubmitOutcome, ChatSubmitRequest } from '@remi/shared/structured-chat.ts';
+import type { ChatSubmitOutcome, ChatSubmitRequest } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/index.ts';

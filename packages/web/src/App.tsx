@@ -3425,7 +3425,8 @@ function App() {
       questions={sessionQuestions}
       error={chatError}
       onSend={handleSend}
-      chatUnavailable={activeSession.harness === 'codex' && !activeConnection?.structuredChatEnabled
+      chatUnavailable={activeSession.harness === 'codex' && !activeConnection?.structuredChatEnabled &&
+        !activeConnection?.structuredChatSessions?.includes(activeSession.id)
         ? 'Codex chat is waiting for the connection or submission. After an unknown delivery, check the session and reconnect.' : null}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}

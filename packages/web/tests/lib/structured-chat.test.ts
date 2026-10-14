@@ -3,13 +3,13 @@ import { expect, test } from 'bun:test';
 import { type ChatSubmitRequest, createHello, generateId } from '@remi/shared';
 import { WebSocketServer } from '../../../daemon/src/server/websocket-server';
 import { findTestPort, pollUntil } from '../../../daemon/tests/integration/hub-test-utils';
+import { deduplicateMessage, replaceTranscriptMessage } from '../../src/lib/message-dedup';
+import { mergeResyncSurvivors, selectResyncSurvivors } from '../../src/lib/message-resync';
 import { StructuredChatController, chatSubmissionLabel } from '../../src/lib/structured-chat';
 import { WebSocketClient } from '../../src/lib/websocket-client';
-import { mergeResyncSurvivors, selectResyncSurvivors } from '../../src/lib/message-resync';
 import type { UIMessage } from '../../src/types';
-import { deduplicateMessage, replaceTranscriptMessage } from '../../src/lib/message-dedup';
 
-async function fixture(silent = false) {
+async function fixture(silent = false, multiple = false) {
   const port = await findTestPort();
   const server = new WebSocketServer(
     { host: '127.0.0.1', port },
@@ -17,8 +17,8 @@ async function fixture(silent = false) {
   );
   const sessionId = generateId();
   let threadId = generateId();
+  const other = { sessionId: generateId(), threadId: generateId() };
   const sent: ChatSubmitRequest[] = [];
-  let controller: StructuredChatController | undefined;
   const client = new WebSocketClient(
     { url: `ws://127.0.0.1:${port}/ws`, autoReconnect: false, heartbeatInterval: 0 },
     {
@@ -32,10 +32,13 @@ async function fixture(silent = false) {
       onStructuredChatResult: (result) => controller?.receive(result),
     },
   );
-  controller = new StructuredChatController(
+  const controller = new StructuredChatController(
     {
-      context: () => {
+      context: (target) => {
         const generation = client.imageUploadGeneration;
+        if (multiple && target === other.sessionId)
+          return generation ? { generation, ...other } : null;
+        if (target !== sessionId) return null;
         return generation ? { generation, sessionId, threadId } : null;
       },
       send: (request) => {
@@ -55,6 +58,7 @@ async function fixture(silent = false) {
     sessionId,
     thread: () => threadId,
     sent,
+    other,
     rotate: () => {
       threadId = generateId();
       controller?.disconnect();
@@ -95,6 +99,46 @@ test('actual unavailable host refuses, preserves sequence on binding change, and
     expect(f.sent).toHaveLength(2);
   } finally {
     await f.close();
+  }
+});
+
+test('actual transport keeps separate child sequences and only invalidates the affected pending session', async () => {
+  const f = await fixture(false, true);
+  try {
+    expect(await f.controller.submit(f.sessionId, f.thread(), 'First child.')).toMatchObject({
+      outcome: 'refused',
+    });
+    expect(
+      await f.controller.submit(f.other.sessionId, f.other.threadId, 'Second child.'),
+    ).toMatchObject({ outcome: 'refused' });
+    expect(await f.controller.submit(f.sessionId, f.thread(), 'First child again.')).toMatchObject({
+      outcome: 'refused',
+    });
+    expect(f.sent.map((value) => [value.sessionId, value.seq])).toEqual([
+      [f.sessionId, 1],
+      [f.other.sessionId, 1],
+      [f.sessionId, 2],
+    ]);
+  } finally {
+    await f.close();
+  }
+  const silent = await fixture(true, true);
+  try {
+    let finished = false;
+    const pending = silent.controller
+      .submit(silent.sessionId, silent.thread(), 'Pending first child.')
+      .then((value) => {
+        finished = true;
+        return value;
+      });
+    silent.controller.invalidateSession(silent.other.sessionId);
+    await Bun.sleep(10);
+    expect(finished).toBe(false);
+    silent.controller.invalidateSession(silent.sessionId);
+    expect(await pending).toMatchObject({ outcome: 'uncertain' });
+    expect(silent.sent).toHaveLength(1);
+  } finally {
+    await silent.close();
   }
 });
 

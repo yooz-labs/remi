@@ -14,6 +14,11 @@ import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
 import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  decodeRelayChatAuthority,
+} from '../auth/relay-chat-authority';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import {
   type ClientMessageEventsWithConnectionId,
   bindConnectionId,
 } from './client-message-events.ts';
@@ -117,6 +122,7 @@ const MAX_REFUSED_ORIGINS_TRACKED = 64;
 
 /** WebSocket data attached to each connection */
 interface WSData {
+  relayChatAuthority?: SecurePushAuthority;
   relayControl?: boolean;
   connectionId: UUID;
   /** Peer IP captured at upgrade time (used to skip auth for loopback). */
@@ -293,12 +299,23 @@ export class WebSocketServer {
             self.config.capabilityToken,
           );
 
+          const relayHeader = req.headers.get(RELAY_CHAT_AUTHORITY_HEADER);
+          let relayChatAuthority: SecurePushAuthority | null = null;
+          if (relayHeader !== null) {
+            if (!shouldSkipAuthForPeer(true, peerAddress, { hasCapability }))
+              return new Response('Forbidden', { status: 403 });
+            relayChatAuthority = decodeRelayChatAuthority(relayHeader);
+            if (!relayChatAuthority)
+              return new Response('Invalid relay descriptor', { status: 400 });
+          }
+
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
               connectionId: generateId(),
               peerAddress,
               hasCapability,
+              ...(relayChatAuthority ? { relayChatAuthority } : {}),
             },
           });
 
@@ -658,6 +675,7 @@ export class WebSocketServer {
       perConnectionConfig,
       ws.data.connectionId,
       ws.data.peerAddress,
+      ws.data.relayChatAuthority,
     );
 
     this.connections.set(ws.data.connectionId, connection);

@@ -77,15 +77,17 @@ export class SecurePushStore {
    */
   isCurrentAuthority(authority: SecurePushAuthority, onFault?: (error: unknown) => void): boolean {
     try {
-      return this.trust.withAuthorizationEpochNonblocking(
-        authority.publicKey,
-        (epoch) =>
-          !!epoch && epoch === authority.authorizationEpoch && this.enrollmentCurrent(authority),
+      return this.trust.withAuthorizationEpochNonblocking(authority.publicKey, (epoch) =>
+        this.isCurrentAuthorityInsideLock(authority, epoch),
       );
     } catch (error) {
       onFault?.(error);
       return false;
     }
+  }
+  /** Pure reads under an already-held authorization lock; never migrates or re-enters it. */
+  isCurrentAuthorityInsideLock(authority: SecurePushAuthority, epoch: string | null): boolean {
+    return !!epoch && epoch === authority.authorizationEpoch && this.enrollmentCurrent(authority);
   }
   async register(
     authority: SecurePushAuthority,

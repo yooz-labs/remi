@@ -14,7 +14,7 @@ export interface StructuredChatContext {
   readonly threadId: string;
 }
 interface Transport {
-  context(): StructuredChatContext | null;
+  context(sessionId: string, threadId: string): StructuredChatContext | null;
   send(request: ChatSubmitRequest): boolean;
 }
 interface Pending {
@@ -40,9 +40,9 @@ export class StructuredChatController {
     this.timeoutMs = timeoutMs;
   }
 
-  private context(): StructuredChatContext | null {
+  private context(sessionId: string, threadId: string): StructuredChatContext | null {
     if (this.closed) return null;
-    const current = this.transport.context();
+    const current = this.transport.context(sessionId, threadId);
     if (current && current.generation !== this.generation) {
       this.disconnect();
       this.generation = current.generation;
@@ -52,7 +52,7 @@ export class StructuredChatController {
     return current;
   }
   canSubmit(sessionId: string, threadId: string): boolean {
-    const current = this.context();
+    const current = this.context(sessionId, threadId);
     return (
       !!current &&
       current.sessionId === sessionId &&
@@ -68,7 +68,7 @@ export class StructuredChatController {
     id = generateId(),
   ): Promise<ChatSubmitOutcome> {
     if (!validChatSubmitText(content)) return { outcome: 'refused', code: 'malformed' };
-    const context = this.context();
+    const context = this.context(sessionId, threadId);
     if (!context || context.sessionId !== sessionId || context.threadId !== threadId)
       return { outcome: 'refused', code: 'unavailable' };
     if (this.pending || this.blockedGeneration === context.generation)
@@ -92,7 +92,10 @@ export class StructuredChatController {
       this.pending = { request, context: { ...context }, resolve, timer };
       // Once send is invoked, a thrown/false transport result cannot establish non-delivery.
       try {
-        if (!same(context, this.transport.context()) || !this.transport.send(request))
+        if (
+          !same(context, this.transport.context(sessionId, threadId)) ||
+          !this.transport.send(request)
+        )
           this.finish(unknown());
       } catch {
         this.finish(unknown());
@@ -108,7 +111,14 @@ export class StructuredChatController {
       result.sessionId !== pending.request.sessionId
     )
       return;
-    this.finish(same(pending.context, this.transport.context()) ? result : unknown());
+    this.finish(
+      same(
+        pending.context,
+        this.transport.context(pending.request.sessionId, pending.request.binding.harnessSessionId),
+      )
+        ? result
+        : unknown(),
+    );
   }
   private finish(outcome: ChatSubmitOutcome): void {
     const pending = this.pending;
@@ -120,6 +130,9 @@ export class StructuredChatController {
   }
   disconnect(): void {
     this.finish(unknown());
+  }
+  invalidateSession(sessionId: string): void {
+    if (this.pending?.request.sessionId === sessionId) this.finish(unknown());
   }
   dispose(): void {
     this.closed = true;

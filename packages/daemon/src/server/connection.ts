@@ -60,6 +60,7 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
@@ -146,6 +147,7 @@ export class Connection {
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
   private readonly _peerAddress: string | null;
+  private readonly relayChatAuthority: SecurePushAuthority | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
    *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
    *  lifetime of the connection when no authenticator is configured (auth
@@ -183,10 +185,12 @@ export class Connection {
     config: Partial<ConnectionConfig> = {},
     id?: UUID,
     peerAddress?: string | null,
+    relayChatAuthority?: SecurePushAuthority,
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
     this._peerAddress = peerAddress ?? null;
+    this.relayChatAuthority = relayChatAuthority ? Object.freeze({ ...relayChatAuthority }) : null;
     this.events = events;
     this.messageTracker = new MessageIdTracker();
 
@@ -254,6 +258,11 @@ export class Connection {
   /** Internal direct upload identity; absent for capability-only and virtual relay connections. */
   get connectionClientPublicKey(): string | null {
     return this.authenticatedPublicKey;
+  }
+
+  /** Machine-asserted relay context, proved locally at upgrade; never a direct signature. */
+  get structuredChatProxyAuthority(): SecurePushAuthority | null {
+    return this.relayChatAuthority;
   }
 
   /** TCP peer address captured at upgrade time (server.requestIP), for

@@ -86,6 +86,7 @@ export interface ConnectionState {
   /** True only while its exact direct socket/session context can start an upload. */
   readonly imageUploadEnabled: boolean;
   readonly structuredChatEnabled?: boolean;
+  readonly structuredChatSessions?: readonly string[];
 }
 
 /** Message sender type */

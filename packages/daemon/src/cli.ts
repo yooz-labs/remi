@@ -2678,6 +2678,7 @@ if (
 if (!serveMode && authEnabled && harnessId === 'codex') {
   structuredChatService = new StructuredChatService({
     identityStore: relayTrust,
+    relayAuthority: new SecurePushStore(REMI_DIR, relayTrust),
     sessions: sessionRegistry,
     bindings: bindingStore,
     harnessFor: (id) => harnessSessions.get(id),
