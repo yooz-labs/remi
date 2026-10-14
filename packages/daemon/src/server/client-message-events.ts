@@ -41,6 +41,7 @@ import type {
   AnswerExtras,
   ChatSubmitRequest,
   CreateSessionRequestMessage,
+  FileDownloadIngressResult,
   ImageInsertionIngressResult,
   ImageStagingIngressResult,
   NativeAnswerMessage,
@@ -85,6 +86,7 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onFileDownload: [ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>];
   onBrowserLinkReceiver: [request: BrowserLinkReceiverRequest];
   onStructuredChat: [request: ChatSubmitRequest];
   onImageInsert: [ingress: Exclude<ImageInsertionIngressResult, { kind: 'uncorrelatable' }>];
@@ -168,6 +170,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onFileDownload',
   'onBrowserLinkReceiver',
   'onStructuredChat',
   'onImageInsert',
@@ -240,6 +243,7 @@ export type ClientMessageEvents = {
             | 'onImageInsert'
             | 'onStructuredChat'
             | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
         ? void | Promise<void>
         : void;
 };
@@ -267,6 +271,7 @@ export type ClientMessageEventsWithConnectionId = {
             | 'onImageInsert'
             | 'onStructuredChat'
             | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
         ? void | Promise<void>
         : void;
 };

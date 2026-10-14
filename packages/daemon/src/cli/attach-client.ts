@@ -334,6 +334,15 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      file_fetch_begin: 'ignore',
+      file_fetch_accepted: 'ignore',
+      file_fetch_read: 'ignore',
+      file_fetch_chunk: 'ignore',
+      file_fetch_complete: 'ignore',
+      file_fetch_result: 'ignore',
+      file_fetch_cancel: 'ignore',
+      file_fetch_cancel_result: 'ignore',
+      file_fetch_refused: 'ignore',
       browser_link_receiver_request: 'ignore',
       browser_link_receiver_result: 'ignore',
       browser_link_receiver_ended: 'ignore',

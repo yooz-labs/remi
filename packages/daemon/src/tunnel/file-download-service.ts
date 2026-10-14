@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   FILE_DOWNLOAD_LIMITS,
   type FileDownloadBinding,
+  type FileDownloadCorrelation,
   type FileDownloadMessage,
   type FileDownloadRefusalCode,
   type FileFetchBegin,
@@ -95,7 +96,7 @@ const totalLifetime = 300_000;
 const idleLifetime = 30_000;
 const recordLimit = 128;
 const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
-const envelope = (request: FileDownloadRequest) => ({
+const envelope = (request: Pick<FileDownloadRequest, 'id' | 'sessionId'>) => ({
   id: randomUUID(),
   requestId: request.id,
   timestamp: new Date().toISOString(),
@@ -356,7 +357,7 @@ export class FileDownloadService {
   }
   private refusal(
     id: UUID,
-    request: FileDownloadRequest,
+    request: Pick<FileDownloadRequest, 'id' | 'sessionId' | 'type'>,
     code: FileDownloadRefusalCode,
     authority?: Authority,
   ) {
@@ -542,6 +543,49 @@ export class FileDownloadService {
       if (record.terminal) this.cleanup(record);
     }
   }
+  /** Hints locate an existing owner only; malformed input never allocates or advances work. */
+  refuseMalformed(connectionId: UUID, correlation: FileDownloadCorrelation): void {
+    if (this.closed || this.poisoned) return;
+    const request = {
+      type: correlation.operation,
+      id: correlation.requestId,
+      sessionId: correlation.sessionId,
+    };
+    try {
+      const connection = this.direct(connectionId);
+      if (!connection) return;
+      const known =
+        correlation.operation === 'file_fetch_begin'
+          ? this.beginMap(connection, correlation.sessionId)?.get(correlation.requestId)
+          : correlation.operation === 'file_fetch_cancel'
+            ? correlation.beginId
+              ? this.beginMap(connection, correlation.sessionId)?.get(correlation.beginId)
+              : undefined
+            : correlation.transferId
+              ? this.transfers.get(correlation.transferId)
+              : undefined;
+      if (
+        known &&
+        !known.terminal &&
+        known.authority.connection === connection &&
+        known.begin.sessionId === correlation.sessionId
+      ) {
+        this.owner(known, () =>
+          connection.sendFileDownloadFrame({
+            ...envelope(request),
+            type: 'file_fetch_refused',
+            operation: correlation.operation,
+            code: 'malformed',
+          }),
+        );
+        return;
+      }
+    } catch {
+      // Lost original authority cannot expose a more specific operation result.
+    }
+    this.refusal(connectionId, request, 'unavailable');
+  }
+
   handle(connectionId: UUID, input: FileDownloadRequest): Promise<void> {
     let request: FileDownloadRequest;
     try {

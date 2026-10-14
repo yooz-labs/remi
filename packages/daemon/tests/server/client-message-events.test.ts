@@ -24,6 +24,7 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onFileDownload',
   'onBrowserLinkReceiver',
   'onStructuredChat',
   'onImageInsert',
@@ -69,10 +70,32 @@ test('the browser semantic event crosses the actual generic pick/bind forwarders
   expect(seen).toEqual([connectionId, request]);
 });
 
+test('the file download semantic event crosses the actual generic pick/bind forwarders', async () => {
+  const seen: unknown[] = [];
+  const source: Partial<ClientMessageEventsWithConnectionId> = {
+    onFileDownload(id, ingress) {
+      seen.push(id, ingress);
+    },
+  };
+  const ingress = {
+    kind: 'malformed' as const,
+    correlation: {
+      operation: 'file_fetch_cancel' as const,
+      requestId: generateId(),
+      sessionId: generateId(),
+      transferId: null,
+      beginId: generateId(),
+    },
+  };
+  const id = generateId();
+  await bindConnectionId(id, pickClientMessageEvents(source)).onFileDownload?.(ingress);
+  expect(seen).toEqual([id, ingress]);
+});
+
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 19 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(19);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(19);
+  test('has exactly 20 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(20);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(20);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {
