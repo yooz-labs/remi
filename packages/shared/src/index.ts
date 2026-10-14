@@ -294,6 +294,7 @@ export * from './image-staging.ts';
 // Accepted structural vocabulary; availability still requires the insertion caller gates.
 export * from './image-insertion.ts';
 export {
+  isBrowserLinkCandidate,
   isImageStagingCandidate,
   isImageInsertionCandidate,
   isStructuredChatCandidate,

@@ -47,6 +47,7 @@ import type {
   PushPreferences,
   UUID,
 } from '@remi/shared';
+import type { BrowserLinkReceiverRequest } from '../../../shared/src/browser-links.ts';
 
 /**
  * What a create request asks of a harness (#1179), as it arrived: untrusted JSON, so `unknown`.
@@ -84,6 +85,7 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onBrowserLinkReceiver: [request: BrowserLinkReceiverRequest];
   onStructuredChat: [request: ChatSubmitRequest];
   onImageInsert: [ingress: Exclude<ImageInsertionIngressResult, { kind: 'uncorrelatable' }>];
   /** Strictly decoded request or bounded lookup hints; authority stays on the host (#1170). */
@@ -166,6 +168,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onBrowserLinkReceiver',
   'onStructuredChat',
   'onImageInsert',
   'onImageUpload',
@@ -231,7 +234,12 @@ export type ClientMessageEvents = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
         ? void | Promise<void>
         : void;
 };
@@ -253,7 +261,12 @@ export type ClientMessageEventsWithConnectionId = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
         ? void | Promise<void>
         : void;
 };

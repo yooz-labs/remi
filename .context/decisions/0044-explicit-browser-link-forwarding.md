@@ -65,6 +65,7 @@ An identical recent request returns its receipt only while its original selectio
 A changed variant conflicts; an old selection that ended returns stale_receiver and cannot acquire a new lease.
 Skipped, older evicted or exhausted sequences never change selection.
 The next sequence is consumed on refusal too; binding changes or detach/reattach do not reset it.
+A skipped future sequence is consumed as a refused high-water mark: lower sequences stay old, an identical recent retry cannot become effectful, and only the following sequence may perform a new explicit action.
 A fresh connection starts a fresh sequence, with no automatic reselection or request replay.
 
 Selecting captures the original device/grant incarnation, actual connection/attachment, live session/PTY, current Claude binding and runtime.
