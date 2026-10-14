@@ -58,9 +58,31 @@ describe('browser-link structural codec and vectors (NOT transport/end-to-end/na
     const atLimit = `${prefix}${'a'.repeat(BROWSER_LINKS_LIMITS.urlBytes - prefix.length)}`;
     expect(atLimit.length).toBe(BROWSER_LINKS_LIMITS.urlBytes);
     expect(normalizeBrowserLinkURL(atLimit)).toBe(atLimit);
-    expect(normalizeBrowserLinkURL(`${atLimit}a`)).toBeNull();
-    expect(normalizeBrowserLinkURL(`https://example.com/${' '.repeat(1400)}`)).toBeNull();
-    expect(normalizeBrowserLinkURL('https://example.com/é'.repeat(500))).toBeNull();
+    expect(normalizeBrowserLinkURL(`${atLimit}a`) === null).toBe(true);
+
+    const expandingInput = `${prefix}${'é'.repeat(1000)}`;
+    const inputBytes = new TextEncoder().encode(expandingInput);
+    const parsed = new URL(expandingInput);
+    const serialized = parsed.href;
+    const serializedBytes = new TextEncoder().encode(serialized);
+    expect(expandingInput.length < BROWSER_LINKS_LIMITS.urlBytes).toBe(true);
+    expect(inputBytes.length <= BROWSER_LINKS_LIMITS.urlBytes).toBe(true);
+    expect(
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(inputBytes) ===
+        expandingInput,
+    ).toBe(true);
+    expect(expandingInput.trim() === expandingInput).toBe(true);
+    expect(!/[\\\u0000-\u001f\u007f-\u009f]/.test(expandingInput)).toBe(true);
+    expect(
+      parsed.protocol === 'https:' &&
+        parsed.hostname === 'example.com' &&
+        parsed.username === '' &&
+        parsed.password === '',
+    ).toBe(true);
+    expect(/^[\x00-\x7f]*$/.test(serialized)).toBe(true);
+    expect(serialized.length > BROWSER_LINKS_LIMITS.urlBytes).toBe(true);
+    expect(serializedBytes.length > BROWSER_LINKS_LIMITS.urlBytes).toBe(true);
+    expect(normalizeBrowserLinkURL(expandingInput) === null).toBe(true);
   });
 
   test('encoder uses one payload-free error for every invalid message', () => {
