@@ -114,11 +114,11 @@ describe('dedupeConnectionUrls (#682)', () => {
 
 describe('actual direct URL identity and child derivation', () => {
   test('implicit ports follow the actual WS/WSS transport', () => {
-    expect(parseConnectionId('wss://example.com/ws')).toBe('example.com:443');
-    expect(parseConnectionId('wss://example.com:443/ws')).toBe('example.com:443');
-    expect(parseConnectionId('ws://example.com/ws')).toBe('example.com:80');
-    expect(parseConnectionId('ws://example.com:80/ws')).toBe('example.com:80');
-    expect(parseConnectionId('wss://example.com:18765/ws')).toBe('example.com:18765');
+    expect(parseConnectionId('wss://example.com/ws')).toBe(cid('example.com:443'));
+    expect(parseConnectionId('wss://example.com:443/ws')).toBe(cid('example.com:443'));
+    expect(parseConnectionId('ws://example.com/ws')).toBe(cid('example.com:80'));
+    expect(parseConnectionId('ws://example.com:80/ws')).toBe(cid('example.com:80'));
+    expect(parseConnectionId('wss://example.com:18765/ws')).toBe(cid('example.com:18765'));
     expect(
       dedupeConnectionUrls(
         ['wss://example.com/ws', 'ws://example.com:18765/ws', 'ws://example.com/ws'],
@@ -128,7 +128,7 @@ describe('actual direct URL identity and child derivation', () => {
   });
 
   test('a child retains WSS and the certificate hostname despite bookkeeping aliases', () => {
-    expect(parseConnectionId('wss://localhost:18765/ws')).toBe('127.0.0.1:18765');
+    expect(parseConnectionId('wss://localhost:18765/ws')).toBe(cid('127.0.0.1:18765'));
     expect(childDaemonUrl('wss://localhost:18765/ws', 18766)).toBe('wss://localhost:18766/ws');
     expect(childDaemonUrl('wss://example.com/ws', 443)).toBe('wss://example.com/ws');
     expect(childDaemonUrl('ws://example.com:18765/ws', 18766)).toBe('ws://example.com:18766/ws');
