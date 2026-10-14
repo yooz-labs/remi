@@ -316,6 +316,24 @@ function parsePage(v: unknown): Page | null {
   return { items, nextCursor: next ?? null };
 }
 
+/** Codex0.162.1 removed items/list: full turns contain the same item vocabulary. */
+function turnItemsPage(value: unknown, maximum: number): unknown | 'capped' {
+  if (!isRecord(value) || !Array.isArray(value['data']) || value['data'].length > 1) return null;
+  const nextCursor = value['nextCursor'];
+  if (nextCursor !== null && (typeof nextCursor !== 'string' || nextCursor === '')) return null;
+  const data: Array<{ item: unknown; completedAtMs: number | null }> = [];
+  for (const turn of value['data']) {
+    if (!isRecord(turn) || turn['itemsView'] !== 'full' || !Array.isArray(turn['items']))
+      return null;
+    if (turn['items'].length > maximum) return 'capped';
+    const completed = turn['completedAt'];
+    const completedAtMs =
+      typeof completed === 'number' && Number.isFinite(completed) ? completed * 1000 : null;
+    for (const item of turn['items']) data.push({ item, completedAtMs });
+  }
+  return { data, nextCursor };
+}
+
 /** Words for a failed request that carry the code and nothing the server said. */
 function historyError(error: unknown): CodexHistoryError {
   if (error instanceof AppServerRpcError) {
@@ -374,19 +392,33 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     const asked = new Set<string>();
     const startedAt = clockMs();
     let cursor: string | undefined;
+    let turns = false;
+    let remainingItems = limits.maxItems ?? HISTORY_PAGE_SIZE * HISTORY_MAX_PAGES;
     for (let pageNumber = 1; pageNumber <= limits.maxPages; pageNumber++) {
       let result: unknown;
       try {
-        result = await deps.client.request(
-          'thread/items/list',
-          {
-            threadId,
-            sortDirection: 'asc',
-            limit: HISTORY_PAGE_SIZE,
-            ...(cursor !== undefined ? { cursor } : {}),
-          },
-          limits.timeoutMs,
-        );
+        const readPage = () =>
+          deps.client.request(
+            turns ? 'thread/turns/list' : 'thread/items/list',
+            {
+              threadId,
+              sortDirection: 'asc',
+              limit: turns ? 1 : HISTORY_PAGE_SIZE,
+              ...(turns ? { itemsView: 'full' } : {}),
+              ...(cursor !== undefined ? { cursor } : {}),
+            },
+            limits.timeoutMs,
+          );
+        try {
+          result = await readPage();
+        } catch (error) {
+          // Only method absence on the first page selects another read API.
+          // A cursor, permissions failure, malformed reply or write never falls back.
+          if (pageNumber !== 1 || !(error instanceof AppServerRpcError) || error.code !== -32601)
+            throw error;
+          turns = true;
+          result = await readPage();
+        }
       } catch (error) {
         // A thread nothing was written to has no rollout yet, and `thread/resume` answers that
         // way before the first message (LV-2); asked for its first page, it is an empty history.
@@ -394,7 +426,10 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
           pageNumber === 1 &&
           error instanceof AppServerRpcError &&
           error.code === INVALID_REQUEST &&
-          /no rollout found/i.test(error.message)
+          (/no rollout found/i.test(error.message) ||
+            (turns &&
+              error.message ===
+                `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`))
         ) {
           deps.log('the thread has no history yet');
           return 'complete';
@@ -402,19 +437,25 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         throw historyError(error);
       }
 
+      if (turns) {
+        result = turnItemsPage(result, remainingItems);
+        if (result === 'capped') return 'capped';
+      }
+
       // Catch-up bounds every raw entry, including non-chat and malformed ones, before parsing:
       // a server may exceed the requested page size, but it must not exceed the replay budget.
       if (
-        limits.maxItems !== undefined &&
         isRecord(result) &&
         Array.isArray(result['data']) &&
-        result['data'].length > limits.maxItems
+        result['data'].length > remainingItems
       )
         return 'capped';
 
       const page = parsePage(result);
       if (page === null)
         throw new CodexHistoryError('the Codex app-server sent a history page remi cannot read');
+      if (isRecord(result) && Array.isArray(result['data']))
+        remainingItems -= result['data'].length;
 
       for (const { item, completedAtMs } of page.items) {
         const entry = item === null ? null : entryOf(item);

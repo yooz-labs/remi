@@ -293,4 +293,9 @@ export * from './secure-push-messages.ts';
 export * from './image-staging.ts';
 // Accepted structural vocabulary; availability still requires the insertion caller gates.
 export * from './image-insertion.ts';
-export { isImageStagingCandidate, isImageInsertionCandidate } from './image-staging-ingress.ts';
+export {
+  isImageStagingCandidate,
+  isImageInsertionCandidate,
+  isStructuredChatCandidate,
+} from './image-staging-ingress.ts';
+export * from './structured-chat.ts';

@@ -1074,16 +1074,22 @@ describe('CodexDecisions', () => {
 
   describe('what the session reads from it', () => {
     test('isHeld is a live actionable card, and only that', () => {
+      expect(decisions.blocksStructuredChat()).toBe(false);
       expect(decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
       request(5, 'touch sub', SUB);
       const sub = only();
       expect(decisions.isHeld(sub.id)).toBe(false);
+      expect(decisions.blocksStructuredChat()).toBe(false);
       request(6);
       const main = pending().find((q) => q.id !== sub.id) as Question;
       expect(decisions.isHeld(main.id)).toBe(true);
+      expect(decisions.blocksStructuredChat()).toBe(true);
       // Answered: nothing is waiting on the phone any more.
       decisions.answerHeld(main.id, optionNamed(main, 'Yes'));
       expect(decisions.isHeld(main.id)).toBe(false);
+      expect(decisions.blocksStructuredChat()).toBe(true);
+      decisions.handleResolved({ threadId: MAIN, requestId: 6 });
+      expect(decisions.blocksStructuredChat()).toBe(false);
     });
 
     test('the chat guard and Stop read nothing held, whatever is shown: phone chat is refused earlier and a Stop force-closes', () => {

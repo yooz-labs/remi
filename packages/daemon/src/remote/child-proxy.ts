@@ -13,7 +13,12 @@ import {
   relayV2,
   serialize,
 } from '@remi/shared';
+import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  encodeRelayChatAuthority,
+} from '../auth/relay-chat-authority';
 import { capabilityWsOptions } from '../cli/capability-client.ts';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 
 export class ChildProxy {
@@ -25,9 +30,18 @@ export class ChildProxy {
       generation: string;
       ready: Promise<void>;
       hello: HelloAckMessage | undefined;
+      chatOwner: boolean;
     }
   >();
   private closed = false;
+  /** A consumed child sequence must never move to a replacement socket on this channel. */
+  private retireChatOwner(sessionId: string, ws?: WebSocket): boolean {
+    const child = this.children.get(sessionId);
+    if (!child?.chatOwner || (ws && child.ws !== ws)) return false;
+    this.close();
+    this.failed(sessionId, true);
+    return true;
+  }
   private readonly lists = new Map<
     string,
     {
@@ -141,8 +155,9 @@ export class ChildProxy {
     private readonly registry: SessionRegistryFile,
     private readonly deviceId: string,
     private readonly receive: (message: ProtocolMessage) => void,
-    private readonly failed: (sessionId: string) => void,
+    private readonly failed: (sessionId: string, chatOwnerLost?: boolean) => void,
     private readonly authorized: () => boolean,
+    private readonly relayAuthority?: SecurePushAuthority,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
@@ -153,8 +168,10 @@ export class ChildProxy {
       !Number.isInteger(live.wsPort) ||
       live.wsPort < 1 ||
       live.wsPort > 65535
-    )
+    ) {
+      this.retireChatOwner(sessionId);
       throw new Error('SESSION_NOT_FOUND');
+    }
     const generation = JSON.stringify([live.pid, live.wsPort, live.startedAt]);
     const matches = () => {
       const entry = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
@@ -162,6 +179,7 @@ export class ChildProxy {
     };
     let child = this.children.get(sessionId);
     if (child && child.generation !== generation) {
+      if (this.retireChatOwner(sessionId, child.ws)) throw new Error('CHILD_OWNER_RETIRED');
       child.ws.close();
       this.children.delete(sessionId);
       child = undefined;
@@ -170,6 +188,10 @@ export class ChildProxy {
       if (this.children.size >= 32) throw new Error('CHILD_CAPACITY');
       const options = capabilityWsOptions();
       if (!options) throw new Error('LOCAL_CAPABILITY_REQUIRED');
+      if (this.relayAuthority)
+        options.headers[RELAY_CHAT_AUTHORITY_HEADER] = encodeRelayChatAuthority(
+          this.relayAuthority,
+        );
       const ws = new WebSocket(`ws://127.0.0.1:${live.wsPort}/ws`, options as never);
       let verified = false;
       const ready = new Promise<void>((resolve, reject) => {
@@ -198,12 +220,14 @@ export class ChildProxy {
             !matches() ||
             this.children.get(sessionId)?.ws !== ws
           ) {
+            this.retireChatOwner(sessionId, ws);
             reject(new Error('CHILD_UNAVAILABLE'));
             ws.close();
             return;
           }
           const incoming = typeof event.data === 'string' ? deserialize(event.data) : null;
           if (!incoming || incoming.type === 'auth_challenge' || incoming.type === 'auth_result') {
+            this.retireChatOwner(sessionId, ws);
             reject(new Error('CHILD_UNVERIFIED'));
             ws.close();
             return;
@@ -268,10 +292,12 @@ export class ChildProxy {
         };
         ws.onerror = () => {
           clearTimeout(timer);
+          this.retireChatOwner(sessionId, ws);
           reject(new Error('CHILD_UNAVAILABLE'));
         };
         ws.onclose = () => {
           clearTimeout(timer);
+          this.retireChatOwner(sessionId, ws);
           reject(new Error('CHILD_UNAVAILABLE'));
           const current = this.children.get(sessionId)?.ws === ws;
           if (current) this.children.delete(sessionId);
@@ -282,7 +308,7 @@ export class ChildProxy {
           if (!this.closed && current) this.failed(sessionId);
         };
       });
-      child = { ws, port: live.wsPort, generation, ready, hello: undefined };
+      child = { ws, port: live.wsPort, generation, ready, hello: undefined, chatOwner: false };
       this.children.set(sessionId, child);
     }
     await child.ready;
@@ -292,8 +318,10 @@ export class ChildProxy {
       !matches() ||
       this.children.get(sessionId)?.ws !== child.ws ||
       child.ws.readyState !== WebSocket.OPEN
-    )
+    ) {
+      this.retireChatOwner(sessionId, child.ws);
       throw new Error('CHILD_UNAVAILABLE');
+    }
     const pendingAnswer = this.answers.get(message.id);
     if (pendingAnswer) pendingAnswer.ws = child.ws;
     const pendingList = this.lists.get(message.id);
@@ -303,7 +331,15 @@ export class ChildProxy {
     } else {
       if (message.type === 'native_answer' && Date.now() >= message.expiresAt * 1000)
         throw new Error('CHILD_PROOF_EXPIRED');
-      child.ws.send(serialize(message));
+      // Mark before the possible send, including a refused/unavailable writer.
+      // A failed send cannot establish non-delivery or grant a replacement counter.
+      if (message.type === 'chat_submit_request') child.chatOwner = true;
+      try {
+        child.ws.send(serialize(message));
+      } catch (error) {
+        this.retireChatOwner(sessionId, child.ws);
+        throw error;
+      }
     }
   }
   close(): void {

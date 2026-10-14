@@ -85,6 +85,7 @@ import {
   createSecurePushUnregisterRequest,
   createSecurePushUnregisterResponse,
 } from '../../../src/secure-push-messages.ts';
+import { decodeStructuredChatFrame } from '../../../src/structured-chat.ts';
 import type {
   Acknowledgment,
   Bullet,
@@ -290,6 +291,8 @@ function insertionVector<K extends 'image_insert_request' | 'image_insert_result
 }
 
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  chat_submit_request: () => chatVector('chat_submit_request'),
+  chat_submit_result: () => chatVector('chat_submit_result'),
   image_insert_request: () => insertionVector('image_insert_request'),
   image_insert_result: () => insertionVector('image_insert_result'),
   image_upload_begin: () => imageVector('image_upload_begin'),
@@ -495,6 +498,18 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   remi_status: () => createRemiStatus(SESSION_ID, FIXED_REMI_STATUS),
   question_snapshot: () => createQuestionSnapshot(SESSION_ID, [QUESTION_ID]),
 };
+
+function chatVector<K extends 'chat_submit_request' | 'chat_submit_result'>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../structured-chat/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeStructuredChatFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict chat fixture');
+  return message as ProtocolMessageMap[K];
+}
 
 /**
  * A second golden for a message type whose wire shape grew: the shape an older peer still sends

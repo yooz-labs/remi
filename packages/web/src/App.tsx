@@ -23,6 +23,7 @@ import {
   validateNativePushRegistration,
 } from '@/lib/native-push-registration';
 import { SecurePushSubscriptions } from '@/lib/secure-push-subscriptions';
+import { chatSubmissionLabel } from '@/lib/structured-chat';
 import type { RelayAnswerStatus } from '@/lib/relay-requests';
 import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
@@ -33,7 +34,7 @@ import {
   sweepTimeouts,
   trackSend,
 } from '@/lib/message-ack-tracker';
-import { deduplicateMessage } from '@/lib/message-dedup';
+import { deduplicateMessage, replaceTranscriptMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resync';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
@@ -603,6 +604,7 @@ function App() {
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
                     ...(message.harness !== undefined && { harness: message.harness }),
+                    ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -628,6 +630,7 @@ function App() {
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
               ...(message.harness !== undefined && { harness: message.harness }),
+                    ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -768,7 +771,7 @@ function App() {
           if (dedup.action === 'replace') {
             // Replace the optimistic/PTY duplicate with the transcript version,
             // preserving the original id as React key to prevent remount flicker
-            const replaced = dedup.preserveId ? { ...uiMessage, id: dedup.preserveId } : uiMessage;
+            const replaced = replaceTranscriptMessage(prev[dedup.replaceIndex], uiMessage);
             return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
@@ -1064,6 +1067,7 @@ function App() {
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
               ...(ds.harness !== undefined && { harness: ds.harness }),
+              ...(ds.harnessSessionId !== undefined && { harnessSessionId: ds.harnessSessionId }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.
@@ -1856,6 +1860,8 @@ function App() {
 
       // The insertion client action is a separate gate; its frames never become chat bubbles.
       case 'image_insert_request':
+      case 'chat_submit_request':
+      case 'chat_submit_result':
       case 'image_insert_result':
         break;
 
@@ -1990,8 +1996,10 @@ function App() {
     unregisterRelayPush,
     disconnect: disconnectConnection,
     reconnect: reconnectConnection,
+    reconnectChat: reconnectChatConnection,
     disconnectAll,
     sendInput,
+    submitStructuredChat,
     sendEscape,
     sendAnswer,
     sendAuqAnswer,
@@ -2778,6 +2786,30 @@ function App() {
         return;
       }
 
+      if (sessionsRef.current.find((s) => s.id === activeSessionId)?.harness === 'codex') {
+        const selected = sessionsRef.current.find((s) => s.id === activeSessionId);
+        const messageId = generateId();
+        const reply = replyContextsRef.current.get(activeSessionId);
+        const wireContent = reply && content ? formatReplyMessage(reply, content) : content;
+        setMessages((prev) => [...prev, {
+          id: messageId, sessionId: activeSessionId, connectionId: connId, sender: 'user',
+          content: wireContent, timestamp: new Date().toISOString(), state: 'sending',
+          isEditing: false, source: 'optimistic',
+          chatSubmission: {outcome: 'pending', label: 'Sending to Codex…'},
+        }]);
+        void submitStructuredChat(connId, activeSessionId, selected?.harnessSessionId ?? '', wireContent, messageId)
+          .then((outcome) => {
+            setMessages((prev) => prev.map((message) => message.id === messageId ? {...message,
+              state: outcome.outcome === 'accepted' ? 'delivered' : 'failed',
+              chatSubmission: {outcome: outcome.outcome, label: chatSubmissionLabel(outcome)},
+            } : message));
+          });
+        if (reply) setReplyContexts((prev) => {
+          const next = new Map(prev); next.delete(activeSessionId); return next;
+        });
+        return;
+      }
+
       // Claim the confirmed image Send once before queuing ordinary input (including an empty image-only turn).
       const messageId = generateId();
       const hasImageDraft = takeImageDraftForSend(connId, activeSessionId, messageId);
@@ -2850,7 +2882,7 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput, sessions, takeImageDraftForSend],
+    [activeSessionId, getActiveConnectionId, sendInput, submitStructuredChat, sessions, takeImageDraftForSend],
   );
 
   // Tap-to-retry a 'failed' bubble (#663). Reuses the SAME message id so the
@@ -2859,7 +2891,7 @@ function App() {
   // resumes watching it.
   const handleRetryMessage = useCallback(
     (message: UIMessage) => {
-      if (message.inputMayBePartial) return;
+      if (message.inputMayBePartial || message.chatSubmission) return;
       const sid = message.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
@@ -3394,6 +3426,11 @@ function App() {
       questions={sessionQuestions}
       error={chatError}
       onSend={handleSend}
+      chatUnavailable={activeSession.harness === 'codex' && !activeConnection?.structuredChatEnabled &&
+        !activeConnection?.structuredChatSessions?.includes(activeSession.id)
+        ? 'Codex chat is waiting for the connection or submission. After an unknown delivery, check the session and reconnect.' : null}
+      onReconnectChat={activeSession.harness === 'codex' && activeConnection?.structuredChatNeedsReconnect
+        ? () => reconnectChatConnection(activeConnection.connectionId) : undefined}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
       onCancelQuestion={handleCancelQuestion}

@@ -26,10 +26,12 @@ import {
   createSecurePushUnregisterResponse,
   decodeImageInsertionIngress,
   decodeImageStagingIngress,
+  decodeStructuredChatFrame,
   deserialize,
   generateId,
   isImageInsertionCandidate,
   isImageStagingCandidate,
+  isStructuredChatCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -58,6 +60,7 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
@@ -144,6 +147,7 @@ export class Connection {
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
   private readonly _peerAddress: string | null;
+  private readonly relayChatAuthority: SecurePushAuthority | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
    *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
    *  lifetime of the connection when no authenticator is configured (auth
@@ -181,10 +185,12 @@ export class Connection {
     config: Partial<ConnectionConfig> = {},
     id?: UUID,
     peerAddress?: string | null,
+    relayChatAuthority?: SecurePushAuthority,
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
     this._peerAddress = peerAddress ?? null;
+    this.relayChatAuthority = relayChatAuthority ? Object.freeze({ ...relayChatAuthority }) : null;
     this.events = events;
     this.messageTracker = new MessageIdTracker();
 
@@ -254,6 +260,11 @@ export class Connection {
     return this.authenticatedPublicKey;
   }
 
+  /** Machine-asserted relay context, proved locally at upgrade; never a direct signature. */
+  get structuredChatProxyAuthority(): SecurePushAuthority | null {
+    return this.relayChatAuthority;
+  }
+
   /** TCP peer address captured at upgrade time (server.requestIP), for
    *  local-vs-remote client classification (#650). Null when the transport
    *  did not provide one. */
@@ -271,6 +282,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isStructuredChatCandidate(data)) {
+      this.handleStructuredChatFrame(data);
+      return;
+    }
     if (isImageInsertionCandidate(data)) {
       this.handleImageInsertionFrame(data);
       return;
@@ -333,6 +348,7 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
         image_upload_begin: () => this.close('Invalid image staging route'),
@@ -414,6 +430,39 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Strict original input bypasses legacy ACK/deduplication; the host owns sequencing. */
+  handleStructuredChatFrame(data: string | Uint8Array): void {
+    const request = decodeStructuredChatFrame(data);
+    if (request?.type !== 'chat_submit_request' || !this.isConnected) {
+      this.close('Invalid structured chat frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const reply = (outcome: import('@remi/shared').ChatSubmitOutcome) =>
+      this.send({
+        ...outcome,
+        type: 'chat_submit_result',
+        id: generateId(),
+        timestamp: now(),
+        requestId: request.id,
+        sessionId: request.sessionId,
+        seq: request.seq,
+      });
+    const failed = () => {
+      try {
+        reply({ outcome: 'uncertain', code: 'delivery_unknown' });
+      } catch {
+        this.close('Structured chat unavailable');
+      }
+    };
+    try {
+      if (!this.events.onStructuredChat) reply({ outcome: 'refused', code: 'unavailable' });
+      else void Promise.resolve(this.events.onStructuredChat(request)).catch(failed);
+    } catch {
+      failed();
     }
   }
 

@@ -10,6 +10,7 @@ export interface ConnectionTransport {
   readonly isConnected: boolean;
   readonly isTransportOpen: boolean;
   readonly isHealthy: boolean;
+  readonly structuredChatGeneration?: object | null;
   send(message: ProtocolMessage): boolean;
   disconnect(): void;
   setConnected(): void;
@@ -21,10 +22,12 @@ export interface ConnectionTransport {
 export class RelayTransport implements ConnectionTransport {
   private channel: RelayMachineChannel | null = null;
   private generation = 0;
+  private chatGeneration: object | null = null;
   private stopped = false;
   private attempts = 0;
   private enrolled = false;
   private resumeSuspended = false;
+  private forcingReconnect = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly makeChannel: (
     events: RelayMachineEvents,
@@ -56,6 +59,9 @@ export class RelayTransport implements ConnectionTransport {
   get isHealthy(): boolean {
     return this.isConnected;
   }
+  get structuredChatGeneration(): object | null {
+    return this.isConnected ? this.chatGeneration : null;
+  }
   send(message: ProtocolMessage): boolean {
     return this.channel?.send(message) ?? false;
   }
@@ -77,7 +83,10 @@ export class RelayTransport implements ConnectionTransport {
             if (generation !== this.generation || this.stopped) return;
             if (phase === 'handshake' || phase === 'confirmation')
               this.events.onStatus('authenticating');
-            if (phase === 'connected') this.events.onStatus('connected');
+            if (phase === 'connected') {
+              this.chatGeneration = {};
+              this.events.onStatus('connected');
+            }
             this.events.onPhase?.(phase, fingerprint);
           },
           onReady: async (pin: RelayMachinePin) => {
@@ -106,6 +115,7 @@ export class RelayTransport implements ConnectionTransport {
           },
           onClose: (end) => {
             if (generation !== this.generation || this.stopped) return;
+            this.chatGeneration = null;
             this.events.onClose?.(end);
             this.events.onStatus('disconnected');
             if (
@@ -143,19 +153,36 @@ export class RelayTransport implements ConnectionTransport {
     this.resumeSuspended = true;
   }
   forceReconnect(): void {
-    if (this.stopped || !this.enrolled) return;
-    ++this.generation;
+    if (this.stopped || !this.enrolled || this.forcingReconnect) return;
+    // close() may await the authenticated BYE. Serialize this entire handoff so
+    // a second explicit recovery cannot open a channel the first later replaces.
+    this.forcingReconnect = true;
+    this.chatGeneration = null;
+    const generation = ++this.generation;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const prior = this.channel;
     this.channel = null;
+    this.events.onStatus('reconnecting');
     void (async () => {
-      await prior?.close();
-      await this.connect();
+      try {
+        await prior?.close();
+        if (generation !== this.generation || this.stopped || !this.identityCurrent()) return;
+        await this.connect();
+      } catch (error) {
+        if (generation !== this.generation || this.stopped) return;
+        this.events.onError?.(
+          error instanceof Error ? error : new Error('Relay reconnect failed.'),
+        );
+        this.events.onStatus('error');
+      } finally {
+        this.forcingReconnect = false;
+      }
     })();
   }
   disconnect(): void {
     this.stopped = true;
+    this.chatGeneration = null;
     ++this.generation;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;

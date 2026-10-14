@@ -15,6 +15,28 @@ type RunOptions = {
 
 type RunResult = { exitCode: number; lastTestFile: string | null };
 type HeaderState = { last: string | null };
+type StreamForwardState = {
+  bytesRead: number;
+  // Bytes whose destination write callback and any required drain both completed.
+  bytesForwarded: number;
+  pendingWriteBytes: number;
+  pendingWriteStartedAt: number | null;
+  callbackPending: boolean;
+  callbackStartedAt: number | null;
+  drainPending: boolean;
+  drainStartedAt: number | null;
+};
+type StreamForwardSnapshot = {
+  bytesRead: number;
+  bytesForwarded: number;
+  pendingWriteBytes: number;
+  pendingWriteAgeMs: number | null;
+  callbackPending: boolean;
+  callbackWaitMs: number | null;
+  drainPending: boolean;
+  drainWaitMs: number | null;
+};
+type ForwardSnapshot = { stdout: StreamForwardSnapshot; stderr: StreamForwardSnapshot };
 
 const TEST_HEADER = /(?:^|\s)((?:packages|tests)\/[^\s:]+\.test\.[cm]?[jt]sx?):/;
 const PROC_STATE = /^[RSDZTWtXxKWPPI]$/;
@@ -53,12 +75,75 @@ class HeaderTracker {
   }
 }
 
-async function writeChunk(stream: Writable, chunk: Uint8Array): Promise<void> {
+function createStreamForwardState(): StreamForwardState {
+  return {
+    bytesRead: 0,
+    bytesForwarded: 0,
+    pendingWriteBytes: 0,
+    pendingWriteStartedAt: null,
+    callbackPending: false,
+    callbackStartedAt: null,
+    drainPending: false,
+    drainStartedAt: null,
+  };
+}
+
+function elapsedSince(startedAt: number | null): number | null {
+  return startedAt === null ? null : Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function snapshotStreamForward(state: StreamForwardState): StreamForwardSnapshot {
+  return {
+    bytesRead: state.bytesRead,
+    bytesForwarded: state.bytesForwarded,
+    pendingWriteBytes: state.pendingWriteBytes,
+    pendingWriteAgeMs: elapsedSince(state.pendingWriteStartedAt),
+    callbackPending: state.callbackPending,
+    callbackWaitMs: elapsedSince(state.callbackStartedAt),
+    drainPending: state.drainPending,
+    drainWaitMs: elapsedSince(state.drainStartedAt),
+  };
+}
+
+function snapshotForward(state: {
+  stdout: StreamForwardState;
+  stderr: StreamForwardState;
+}): ForwardSnapshot {
+  return {
+    stdout: snapshotStreamForward(state.stdout),
+    stderr: snapshotStreamForward(state.stderr),
+  };
+}
+
+async function writeChunk(
+  stream: Writable,
+  chunk: Uint8Array,
+  forwardState?: StreamForwardState,
+): Promise<void> {
+  const startedAt = performance.now();
+  if (forwardState) {
+    forwardState.pendingWriteBytes = chunk.byteLength;
+    forwardState.pendingWriteStartedAt = startedAt;
+    forwardState.callbackPending = true;
+    forwardState.callbackStartedAt = startedAt;
+    forwardState.drainPending = false;
+    forwardState.drainStartedAt = null;
+  }
+
   await new Promise<void>((resolve, reject) => {
     let callReturned = false;
     let writeDone = false;
     let drainDone = true;
     let settled = false;
+    const clearForwardState = () => {
+      if (!forwardState) return;
+      forwardState.pendingWriteBytes = 0;
+      forwardState.pendingWriteStartedAt = null;
+      forwardState.callbackPending = false;
+      forwardState.callbackStartedAt = null;
+      forwardState.drainPending = false;
+      forwardState.drainStartedAt = null;
+    };
 
     const cleanup = () => {
       stream.off('error', onError);
@@ -72,6 +157,7 @@ async function writeChunk(stream: Writable, chunk: Uint8Array): Promise<void> {
         // error turn; callback errors can be followed by an `error` event.
         setTimeout(() => {
           cleanup();
+          clearForwardState();
           reject(error);
         }, 0);
         return;
@@ -79,12 +165,17 @@ async function writeChunk(stream: Writable, chunk: Uint8Array): Promise<void> {
       if (callReturned && writeDone && drainDone) {
         settled = true;
         cleanup();
+        clearForwardState();
         resolve();
       }
     };
     const onError = (error: Error) => finish(error);
     const onDrain = () => {
       drainDone = true;
+      if (forwardState) {
+        forwardState.drainPending = false;
+        forwardState.drainStartedAt = null;
+      }
       finish();
     };
 
@@ -92,14 +183,26 @@ async function writeChunk(stream: Writable, chunk: Uint8Array): Promise<void> {
     try {
       const accepted = stream.write(chunk, (error?: Error | null) => {
         if (error) {
+          if (forwardState) {
+            forwardState.callbackPending = false;
+            forwardState.callbackStartedAt = null;
+          }
           finish(error);
           return;
         }
         writeDone = true;
+        if (forwardState) {
+          forwardState.callbackPending = false;
+          forwardState.callbackStartedAt = null;
+        }
         finish();
       });
       if (!accepted) {
         drainDone = false;
+        if (forwardState) {
+          forwardState.drainPending = true;
+          forwardState.drainStartedAt = performance.now();
+        }
         stream.once('drain', onDrain);
       }
       callReturned = true;
@@ -114,6 +217,7 @@ async function forward(
   source: ReadableStream<Uint8Array>,
   destination: Writable,
   tracker: HeaderTracker,
+  forwardState: StreamForwardState,
   onOutput: () => void,
 ): Promise<void> {
   const reader = source.getReader();
@@ -122,8 +226,10 @@ async function forward(
       const { done, value } = await reader.read();
       if (done) break;
       tracker.add(value);
+      forwardState.bytesRead += value.byteLength;
       onOutput();
-      await writeChunk(destination, value);
+      await writeChunk(destination, value, forwardState);
+      forwardState.bytesForwarded += value.byteLength;
     }
     tracker.flush();
   } finally {
@@ -184,16 +290,25 @@ function diagnosticLine(
   header: string | null,
   sample: ProcSample,
   cpuDeltaTicks: number | null,
+  wrapperSample: ProcSample,
+  wrapperCpuDeltaTicks: number | null,
+  streams: ForwardSnapshot,
 ): string {
   const processData = sample.available
     ? { ...sample, cpuDeltaTicks }
     : { ...sample, cpuDeltaTicks: null };
+  const wrapperProcessData = wrapperSample.available
+    ? { ...wrapperSample, cpuDeltaTicks: wrapperCpuDeltaTicks }
+    : { ...wrapperSample, cpuDeltaTicks: null };
   return `[ci-test-diagnostic] ${JSON.stringify({
     childPid: pid,
+    wrapperPid: process.pid,
     elapsedMs,
     quietMs,
     lastTestFile: header,
     process: processData,
+    wrapperProcess: wrapperProcessData,
+    streams,
   })}\n`;
 }
 
@@ -211,10 +326,15 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
   const headerState: HeaderState = { last: null };
   const stdoutTracker = new HeaderTracker(headerState);
   const stderrTracker = new HeaderTracker(headerState);
+  const streamForwardState = {
+    stdout: createStreamForwardState(),
+    stderr: createStreamForwardState(),
+  };
   const startedAt = Date.now();
   let lastOutputAt = startedAt;
   let lastDiagnosticAt = 0;
   let previousCpuTicks: number | null = null;
+  let previousWrapperCpuTicks: number | null = null;
   let interruptedBy: NodeJS.Signals | null = null;
   let cleanupPromise: Promise<void> | null = null;
   let diagnosticWriteError: unknown = null;
@@ -223,8 +343,20 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
   const onOutput = () => {
     lastOutputAt = Date.now();
   };
-  const forwardStdout = forward(child.stdout, stdout, stdoutTracker, onOutput);
-  const forwardStderr = forward(child.stderr, stderr, stderrTracker, onOutput);
+  const forwardStdout = forward(
+    child.stdout,
+    stdout,
+    stdoutTracker,
+    streamForwardState.stdout,
+    onOutput,
+  );
+  const forwardStderr = forward(
+    child.stderr,
+    stderr,
+    stderrTracker,
+    streamForwardState.stderr,
+    onOutput,
+  );
   let childWorkFinished = false;
   const workSettled = Promise.allSettled([child.exited, forwardStdout, forwardStderr]).then(() => {
     childWorkFinished = true;
@@ -273,15 +405,21 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
       const quietMs = now - lastOutputAt;
       if (quietMs < afterMs || now - lastDiagnosticAt < everyMs) return;
       lastDiagnosticAt = now;
+      const streams = snapshotForward(streamForwardState);
       diagnosticTask = (async () => {
         try {
           const sampler = options.procSampler ?? sampleProc;
-          let sample: ProcSample;
-          try {
-            sample = await sampler(child.pid);
-          } catch {
-            sample = { available: false, reason: 'unavailable' };
-          }
+          const safeSample = async (pid: number): Promise<ProcSample> => {
+            try {
+              return await sampler(pid);
+            } catch {
+              return { available: false, reason: 'unavailable' };
+            }
+          };
+          const [sample, wrapperSample] = await Promise.all([
+            safeSample(child.pid),
+            safeSample(process.pid),
+          ]);
           let cpuDeltaTicks: number | null = null;
           if (sample.available) {
             if (previousCpuTicks !== null && sample.cpuTicks >= previousCpuTicks) {
@@ -292,6 +430,18 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
             // The next valid sample starts a new baseline after proc was unavailable.
             previousCpuTicks = null;
           }
+          let wrapperCpuDeltaTicks: number | null = null;
+          if (wrapperSample.available) {
+            if (
+              previousWrapperCpuTicks !== null &&
+              wrapperSample.cpuTicks >= previousWrapperCpuTicks
+            ) {
+              wrapperCpuDeltaTicks = wrapperSample.cpuTicks - previousWrapperCpuTicks;
+            }
+            previousWrapperCpuTicks = wrapperSample.cpuTicks;
+          } else {
+            previousWrapperCpuTicks = null;
+          }
           const line = diagnosticLine(
             child.pid,
             Date.now() - startedAt,
@@ -299,6 +449,9 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
             headerState.last,
             sample,
             cpuDeltaTicks,
+            wrapperSample,
+            wrapperCpuDeltaTicks,
+            streams,
           );
           await writeChunk(stderr, new TextEncoder().encode(line));
         } catch (error) {

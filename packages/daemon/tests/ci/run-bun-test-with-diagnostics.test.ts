@@ -51,7 +51,9 @@ test('preserves a nonzero child exit code', async () => {
 test('reports bounded proc metadata while a child is quiet', async () => {
   const out = sink();
   const err = sink();
-  const code = "console.error('packages/daemon/tests/cli/quiet.test.ts:'); await Bun.sleep(280);";
+  const stdoutPayload = 'quiet-child-stdout\n';
+  const stderrPayload = 'packages/daemon/tests/cli/quiet.test.ts:\nquiet-child-stderr\n';
+  const code = `process.stdout.write(${JSON.stringify(stdoutPayload)}); process.stderr.write(${JSON.stringify(stderrPayload)}); await Bun.sleep(280);`;
   const result = await runChild(bun(code), {
     stdout: out.stream,
     stderr: err.stream,
@@ -60,27 +62,63 @@ test('reports bounded proc metadata while a child is quiet', async () => {
   });
   // Slow startup can produce earlier samples before the controlled header.
   // Require a genuine quiet-period sample after that header was observed.
-  const record = err
+  const diagnosticLines = err
     .text()
     .split('\n')
-    .filter((line) => line.startsWith('[ci-test-diagnostic] '))
+    .filter((line) => line.startsWith('[ci-test-diagnostic] '));
+  const record = diagnosticLines
     .map((line) => JSON.parse(line.slice('[ci-test-diagnostic] '.length)))
     .find((sample) => sample.lastTestFile === 'packages/daemon/tests/cli/quiet.test.ts');
 
   expect(result.exitCode).toBe(0);
+  expect(out.text()).toBe(stdoutPayload);
+  expect(err.text()).toContain(stderrPayload);
   expect(record).toBeDefined();
   if (!record) throw new Error('quiet child emitted no diagnostic after its controlled header');
   expect(record.childPid).toEqual(expect.any(Number));
+  expect(record.wrapperPid).toEqual(process.pid);
   expect(record.lastTestFile).toBe('packages/daemon/tests/cli/quiet.test.ts');
   expect(record.quietMs).toBeGreaterThanOrEqual(40);
+  expect(record.streams.stdout).toEqual({
+    bytesRead: Buffer.byteLength(stdoutPayload),
+    bytesForwarded: Buffer.byteLength(stdoutPayload),
+    pendingWriteBytes: 0,
+    pendingWriteAgeMs: null,
+    callbackPending: false,
+    callbackWaitMs: null,
+    drainPending: false,
+    drainWaitMs: null,
+  });
+  expect(record.streams.stderr).toEqual({
+    bytesRead: Buffer.byteLength(stderrPayload),
+    bytesForwarded: Buffer.byteLength(stderrPayload),
+    pendingWriteBytes: 0,
+    pendingWriteAgeMs: null,
+    callbackPending: false,
+    callbackWaitMs: null,
+    drainPending: false,
+    drainWaitMs: null,
+  });
+  expect(diagnosticLines[0]).not.toContain(stdoutPayload);
+  expect(diagnosticLines[0]).not.toContain('quiet-child-stderr');
   if (process.platform === 'linux') {
     expect(record.process.available).toBe(true);
     expect(record.process.state).toMatch(/^[RSDZTWtXxKWPPI]$/);
     expect(record.process.cpuTicks).toEqual(expect.any(Number));
     expect(record.process.threads).toBeGreaterThanOrEqual(1);
     expect(record.process.rssPages).toBeGreaterThanOrEqual(0);
+    expect(record.wrapperProcess.available).toBe(true);
+    expect(record.wrapperProcess.state).toMatch(/^[RSDZTWtXxKWPPI]$/);
+    expect(record.wrapperProcess.cpuTicks).toEqual(expect.any(Number));
+    expect(record.wrapperProcess.threads).toBeGreaterThanOrEqual(1);
+    expect(record.wrapperProcess.rssPages).toBeGreaterThanOrEqual(0);
   } else {
     expect(record.process).toEqual({
+      available: false,
+      reason: 'unsupported',
+      cpuDeltaTicks: null,
+    });
+    expect(record.wrapperProcess).toEqual({
       available: false,
       reason: 'unsupported',
       cpuDeltaTicks: null,

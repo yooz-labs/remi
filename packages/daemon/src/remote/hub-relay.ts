@@ -640,7 +640,13 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       (message) => {
         this.sendRaw(peer.cid, message);
       },
-      (sessionId) => {
+      (sessionId, chatOwnerLost) => {
+        if (chatOwnerLost) {
+          // Child receipt state belongs to this exact logical channel. Reconnect
+          // the machine before opening any replacement; never replay old input.
+          void this.closePeer(peer, true);
+          return;
+        }
         this.sendRaw(
           peer.cid,
           createError('SESSION_NOT_FOUND', 'Child connection closed; pending delivery uncertain', {
@@ -649,6 +655,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         );
       },
       () => this.current(peer),
+      peer.pushAuthority,
     );
     peer.connection = new Connection(
       {
