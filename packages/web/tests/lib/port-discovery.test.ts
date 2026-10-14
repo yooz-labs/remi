@@ -5,6 +5,9 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
@@ -85,6 +88,187 @@ describe('bindNear (test helper)', () => {
       server.stop();
     }
   });
+});
+
+describe('secure discovery never selects a plaintext responder', () => {
+  test('WSS hint and range use HTTPS exclusively; WS keeps its existing HTTP behavior', async () => {
+    let calls = 0;
+    const server = requirePort(
+      Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch() {
+          calls++;
+          return Response.json({ authRequired: true });
+        },
+      }),
+    );
+    try {
+      expect(
+        await resolveDaemonPort('127.0.0.1', server.port, {
+          protocol: 'wss',
+          basePort: server.port,
+          portRange: 1,
+          timeoutMs: 500,
+        }),
+      ).toBeNull();
+      expect(calls).toBe(0);
+      expect(
+        await discoverDaemonPort('127.0.0.1', {
+          protocol: 'wss',
+          basePort: server.port,
+          portRange: 1,
+          timeoutMs: 500,
+        }),
+      ).toBeNull();
+      expect(calls).toBe(0);
+      expect(await resolveDaemonPort('127.0.0.1', server.port, { portRange: 0 })).toBe(server.port);
+      expect(calls).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('real HTTPS discovery retains CA and hostname validation in isolated processes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'remi-discovery-tls-'));
+    const environment: Record<string, string> = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      TMPDIR: tmpdir(),
+      NO_COLOR: '1',
+    };
+    const run = async (command: string[], env = environment): Promise<string> => {
+      const child = Bun.spawn(command, { env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+      try {
+        const [exit, output] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        if (exit !== 0) throw new Error('Owned TLS discovery fixture process failed');
+        return output;
+      } finally {
+        clearTimeout(timer);
+        if (child.exitCode === null) {
+          child.kill('SIGKILL');
+          await child.exited;
+        }
+      }
+    };
+    const file = (name: string) => join(directory, name);
+    try {
+      await run([
+        'openssl',
+        'ecparam',
+        '-name',
+        'prime256v1',
+        '-genkey',
+        '-noout',
+        '-out',
+        file('ca.key'),
+      ]);
+      chmodSync(file('ca.key'), 0o600);
+      await run([
+        'openssl',
+        'req',
+        '-new',
+        '-x509',
+        '-key',
+        file('ca.key'),
+        '-subj',
+        '/CN=Remi discovery fixture CA',
+        '-days',
+        '1',
+        '-out',
+        file('ca.pem'),
+      ]);
+      await run([
+        'openssl',
+        'ecparam',
+        '-name',
+        'prime256v1',
+        '-genkey',
+        '-noout',
+        '-out',
+        file('leaf.key'),
+      ]);
+      chmodSync(file('leaf.key'), 0o600);
+      await run([
+        'openssl',
+        'req',
+        '-new',
+        '-key',
+        file('leaf.key'),
+        '-subj',
+        '/CN=tls-fixture.invalid',
+        '-out',
+        file('leaf.csr'),
+      ]);
+      for (const [name, san] of [
+        ['ip', 'IP:127.0.0.1'],
+        ['dns', 'DNS:tls-fixture.invalid'],
+      ]) {
+        writeFileSync(
+          file(`${name}.ext`),
+          `subjectAltName=${san}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n`,
+        );
+        await run([
+          'openssl',
+          'x509',
+          '-req',
+          '-in',
+          file('leaf.csr'),
+          '-CA',
+          file('ca.pem'),
+          '-CAkey',
+          file('ca.key'),
+          '-CAcreateserial',
+          '-days',
+          '1',
+          '-extfile',
+          file(`${name}.ext`),
+          '-out',
+          file(`${name}.pem`),
+        ]);
+      }
+      const module = JSON.stringify(resolve(import.meta.dir, '../../src/lib/port-discovery.ts'));
+      const script = `
+        import {resolveDaemonPort, discoverDaemonPort} from ${module};
+        const directory = ${JSON.stringify(directory)};
+        const trusted = process.argv[1] === 'trusted';
+        const rows = [];
+        for (const certificate of ['ip', 'dns']) {
+          let effects = 0;
+          const server = Bun.serve({hostname:'127.0.0.1',port:0,
+            tls:{key:Bun.file(directory+'/leaf.key'),cert:Bun.file(directory+'/'+certificate+'.pem')},
+            fetch(request){effects++; if(new URL(request.url).protocol!=='https:') throw new Error('PLAINTEXT'); return Response.json({authRequired:true});}});
+          try {
+            const hint = await resolveDaemonPort('127.0.0.1',server.port,{protocol:'wss',portRange:0,timeoutMs:1000});
+            const scan = await discoverDaemonPort('127.0.0.1',{protocol:'wss',basePort:server.port,portRange:1,timeoutMs:1000});
+            const success = trusted && certificate==='ip';
+            if(hint!==(success?server.port:null) || scan!==(success?server.port:null) || effects!==(success?2:0)) throw new Error('TLS_CONTROL_FAILED');
+            rows.push({certificate,success,effects});
+          } finally {server.stop(true);}
+        }
+        console.log(JSON.stringify(rows));
+      `;
+      for (const trusted of [false, true]) {
+        // Trust only our generated CA in this disposable child. Verification stays
+        // enabled; neither the test runner nor the OS/browser trust store changes.
+        const env = trusted ? { ...environment, NODE_EXTRA_CA_CERTS: file('ca.pem') } : environment;
+        const result = await run(
+          [process.execPath, '--no-env-file', '--eval', script, trusted ? 'trusted' : 'untrusted'],
+          env,
+        );
+        expect(JSON.parse(result)).toEqual([
+          { certificate: 'ip', success: trusted, effects: trusted ? 2 : 0 },
+          { certificate: 'dns', success: false, effects: 0 },
+        ]);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe('discoverDaemonPort from the top of the port range (#1228)', () => {
