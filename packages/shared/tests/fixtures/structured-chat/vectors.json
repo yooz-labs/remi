@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "proposal-not-registered",
+  "status": "direct-integration-under-validation",
   "positive": [
     {
       "name": "plain-request",

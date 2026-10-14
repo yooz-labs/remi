@@ -58,7 +58,7 @@ add a row below.
 | [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
 | [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; direct staging and web caller validated; native conformance remains separate |
 | [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; guarded one-write lease/coordinator, strict signed-direct dispatch and explicit expiring web draft caller validated; native conformance remains separate |
-| [0043](0043-structured-chat-submission.md) | Proposed structured Codex submission shapes and bounded per-connection/session sequencing; standalone codec/receipts only, no registry/capability/caller or contract freeze |
+| [0043](0043-structured-chat-submission.md) | Proposed structured Codex submission contract with bounded connection/session sequencing, signed direct host/web caller and distinct uncertainty; review, relay, fresh native startup and native UI remain separate gates |
 
 ## By area
 

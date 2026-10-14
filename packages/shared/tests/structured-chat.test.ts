@@ -9,7 +9,7 @@ import {
 } from '../src/structured-chat.ts';
 import vectors from './fixtures/structured-chat/vectors.json';
 
-describe('proposed structured chat codec (no runtime dispatch)', () => {
+describe('structured chat strict codec corpus', () => {
   for (const vector of vectors.positive)
     test(vector.name, () => {
       const expected = vector.expected as StructuredChatMessage;

@@ -17,6 +17,7 @@
  */
 
 import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } from '@remi/shared';
+import type { ChatSubmitOutcome, ChatSubmitRequest } from '@remi/shared/structured-chat.ts';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/index.ts';
@@ -103,6 +104,18 @@ export interface HarnessChat {
   readHistory(emit: (message: TranscriptContentMessage) => void): Promise<number>;
 }
 
+/** Structured input never types an Enter into an unreadable harness modal (#1207). */
+export interface HarnessStructuredChat {
+  /** Replaced on runtime/link/main-thread change; null while the writer is unavailable. */
+  context(): object | null;
+  /** The host owns the final synchronous authorization check and actual send together. */
+  submit(
+    request: ChatSubmitRequest,
+    guard: () => boolean,
+    commit: (send: () => void) => boolean,
+  ): Promise<ChatSubmitOutcome>;
+}
+
 /**
  * One launched session: the PTY (built, not yet started), how its pending
  * decisions are answered, and how to start and end it. `cli.ts` registers the
@@ -129,6 +142,7 @@ export interface HarnessSession {
    * it through `chatFor` when a client sends `transcript_load_request`.
    */
   readonly chat?: HarnessChat | undefined;
+  readonly structuredChat?: HarnessStructuredChat | undefined;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
   /**

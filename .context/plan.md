@@ -644,3 +644,20 @@ The standalone codec and internal sequencer have no registry, capability adverti
 Both-Bun codec/sequence controls and actual accountless installed-server duplicate/eviction/uncertainty probes pass; these do not prove a Remi authenticated route or model completion.
 Next connect the harness-neutral submission member with its CLI/adapter caller, then actual web UI and direct/relay conformance.
 Fresh hub first-turn identity and separately approved model acceptance remain explicit gates.
+
+
+## Codex signed direct chat integration (#1207)
+
+The connected phase reuses the reviewed writer/codec/receipt components from PRs1501/1502 and normally merges current develop, including the image caller, into one integration branch.
+It adds the actual CodexSession neutral submission member, current runtime epochs and pending-main-request guard; a signed direct service owns grant/attachment/binding checks and atomic grant-locked RPC sends.
+Strict original text/binary ingress and a dedicated client callback bypass legacy ACK/deduplication; per-connection/session watermarks survive context changes.
+Web Send reports pending/accepted/refused/uncertain and never uses the legacy automatic retry tracker; unknown delivery requires checking the session and reconnecting.
+Actual rendered App checks found transcript replacement erasing delivery status; it now retains that independent status, with one rendered row for the live echo and no blind retry.
+The installed0.162.1 history method removal is handled by a first-page method-not-found-only full-turn fallback, with empty-first-thread and materialized-history controls against that actual server.
+
+The accountless signed control constructs the real stores, adapter, CodexHarness, native server and shipping web client/controller and observes the real grant lock at each RPC send.
+The actual compiled hub/child plus rendered App are checked at390x844,1024x768 and1440x1000, including paused-daemon uncertainty and no replay.
+This fixture uses inert cat and no account; it complements the earlier three approved model starts/two steers without claiming further model completion.
+Original failures, cleanup and source/test receipts remain on S1.
+Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
+Keep1207 open; no phone or additional account quota is used for this direct phase.

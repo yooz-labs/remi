@@ -52,6 +52,7 @@ export function deduplicateMessage(
     const dupIdx = existingMessages.findIndex(
       (m) =>
         !m.inputMayBePartial &&
+        m.chatSubmission?.outcome !== 'refused' &&
         !m.entryUuid &&
         m.source !== 'transcript' &&
         m.sessionId === incoming.sessionId &&
@@ -101,4 +102,11 @@ export function deduplicateMessage(
 
   // Optimistic or unknown source: just add
   return { action: 'add' };
+}
+
+/** A transcript item cannot erase the separately correlated submission verdict. */
+export function replaceTranscriptMessage(previous: UIMessage, incoming: UIMessage): UIMessage {
+  return { ...incoming, id: previous.id, ...(previous.chatSubmission ? {
+    chatSubmission: previous.chatSubmission, state: previous.state,
+  } : {}) };
 }

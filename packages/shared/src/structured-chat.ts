@@ -1,5 +1,5 @@
 /**
- * Proposed #1207 shapes only. No registry, capability advertisement or caller.
+ * #1207 structured submission shapes, used by the dedicated direct ingress.
  * Shape validity grants no session/device authority and performs no RPC.
  */
 import { fromUtf8, utf8 } from './relay/bytes.ts';

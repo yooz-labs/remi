@@ -8,8 +8,9 @@ An explicit read-only session remains read-only.
 The host's existing launch policy and remote argument allowlist still apply.
 See [ADR 0033](../.context/decisions/0033-codex-adapter-app-server.md#structured-remote-chat-decision-1207-2026-10-13).
 
-This first step adds an internal `CodexTextWriter` only.
-There is no production caller, public chat contract or advertised capability yet.
+The connected direct implementation reuses the reviewed `CodexTextWriter`, strict submit/result codec and bounded sequence receipts.
+The actual Codex session exposes its neutral structured-input member to the signed direct service.
+An attached signed direct client sees `structured_chat` only where that handler/writer exists; first-thread binding is still required for admission.
 Codex's existing `acceptsTypedChat: false` is unchanged.
 Nothing in this module types text or Enter into a PTY.
 
@@ -65,7 +66,7 @@ account absence, measured checks and process cleanup without message bodies.
 These checks establish local RPC admission and omission of policy overrides.
 They do not establish model completion, model-side steering or sandbox enforcement.
 An account-backed model check needs separate bounded owner approval.
-Native device UI and the connected daemon/client path remain later steps.
+Native device UI and relay routing remain later steps; the connected direct path is described below.
 
 
 ## Bounded installed-model observation (2026-10-13)
@@ -88,5 +89,40 @@ The exported schema alone had omitted that field; it was not sufficient evidence
 The observer was connected first, so genuine hub-created first-turn startup remains a connected-path gate.
 
 The owned server and TUI were reaped, the private profile removed, and the owner's credential file remained byte-identical.
-These observations do not establish the pending authenticated Remi route, relay/native UI or broader sandbox qualification.
+These model observations do not establish a Remi route, relay/native UI or broader sandbox qualification; the direct route has separate accountless evidence below.
 Local receipts and the bounded plan are retained under the S1 Codex remote-chat artifacts.
+
+## Signed direct delivery and web caller
+
+`chat_submit_request` names the exact Remi session, Codex binding, UUID, monotonic connection/session sequence and text.
+The strict codec owns original text and binary frames before legacy parsing or generic ACK/deduplication.
+The host checks the original signed device grant, actual attached connection/session, PTY, binding and live writer context.
+The final grant lock covers the synchronous app-server send; metadata reads happen outside it.
+Tracked pending main requests block structured chat, including answered requests until Codex resolves them.
+Legacy typed chat stays refused; no PTY or policy-override fallback is enabled.
+
+The host retains32 recent receipts per pair, at most64 pairs per connection and128 concrete connections.
+It never evicts a pair's sequence watermark to make room.
+Context changes clear receipts without resetting that watermark or making old input executable.
+The caller sends once and receives accepted/refused/uncertain separately from transport delivery.
+Unknown delivery is retained and requires checking the session and reconnecting before another explicit intent; no automatic resend or blind Retry is offered.
+Live transcript replacement preserves the submission status; matching text alone does not turn uncertainty into acceptance.
+
+Installed0.162.1 no longer has `thread/items/list`.
+On first-page method-not-found only, history uses `thread/turns/list` with full items, one turn per page, preserving the raw-item/page/time bounds.
+Its exact not-materialized first-thread response is empty history, not a chat startup failure.
+Both empty and materialized text history are measured against that installed server, alongside legacy-source controls.
+
+The optional accountless connected control is:
+
+```sh
+TMPDIR=/Volumes/S1/yooz/remi/tmp \
+REMI_CODEX_ACCOUNTLESS_CLI=/absolute/path/to/native/codex \
+bun test packages/web/tests/integration/structured-chat-direct.test.ts
+```
+
+It constructs the real signed WebSocketAdapter, identity/session stores, CodexHarness, installed server and shipping WebSocketClient/controller.
+It measures original-grant commit locking, duplicate input, detach/revoke/restoration, strict bad frames and closed service.
+Its PTY is inert cat and account is null, so it proves routing/admission, not model completion, OS sandbox enforcement or fresh native startup.
+The actual App is also checked against an owned compiled hub/child at phone, tablet and desktop widths, including paused-daemon uncertainty with no replay.
+Relay routing, genuine hub-created native first-thread startup, hosted review/checks and native UI remain open; #1207 remains open.

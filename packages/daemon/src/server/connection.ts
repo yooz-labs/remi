@@ -26,10 +26,12 @@ import {
   createSecurePushUnregisterResponse,
   decodeImageInsertionIngress,
   decodeImageStagingIngress,
+  decodeStructuredChatFrame,
   deserialize,
   generateId,
   isImageInsertionCandidate,
   isImageStagingCandidate,
+  isStructuredChatCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -271,6 +273,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isStructuredChatCandidate(data)) {
+      this.handleStructuredChatFrame(data);
+      return;
+    }
     if (isImageInsertionCandidate(data)) {
       this.handleImageInsertionFrame(data);
       return;
@@ -333,6 +339,7 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
         image_upload_begin: () => this.close('Invalid image staging route'),
@@ -414,6 +421,39 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Strict original input bypasses legacy ACK/deduplication; the host owns sequencing. */
+  handleStructuredChatFrame(data: string | Uint8Array): void {
+    const request = decodeStructuredChatFrame(data);
+    if (request?.type !== 'chat_submit_request' || !this.isConnected) {
+      this.close('Invalid structured chat frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const reply = (outcome: import('@remi/shared').ChatSubmitOutcome) =>
+      this.send({
+        ...outcome,
+        type: 'chat_submit_result',
+        id: generateId(),
+        timestamp: now(),
+        requestId: request.id,
+        sessionId: request.sessionId,
+        seq: request.seq,
+      });
+    const failed = () => {
+      try {
+        reply({ outcome: 'uncertain', code: 'delivery_unknown' });
+      } catch {
+        this.close('Structured chat unavailable');
+      }
+    };
+    try {
+      if (!this.events.onStructuredChat) reply({ outcome: 'refused', code: 'unavailable' });
+      else void Promise.resolve(this.events.onStructuredChat(request)).catch(failed);
+    } catch {
+      failed();
     }
   }
 

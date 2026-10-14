@@ -17,7 +17,11 @@ import {
   decodeImageInsertionFrame,
   encodeImageInsertionFrame,
 } from './image-insertion.ts';
-import { isImageInsertionCandidate, isImageStagingCandidate } from './image-staging-ingress.ts';
+import {
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+  isStructuredChatCandidate,
+} from './image-staging-ingress.ts';
 import {
   type ImageUploadAccepted,
   type ImageUploadBegin,
@@ -51,6 +55,12 @@ import {
   type SecurePushUnregisterResponseMessage,
   isValidSecurePushResponse,
 } from './secure-push-messages.ts';
+import {
+  type ChatSubmitRequest,
+  type ChatSubmitResult,
+  decodeStructuredChatFrame,
+  encodeStructuredChatFrame,
+} from './structured-chat.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -114,6 +124,8 @@ export function now(): Timestamp {
  */
 export interface ProtocolMessageMap {
   image_insert_request: ImageInsertRequest;
+  chat_submit_request: ChatSubmitRequest;
+  chat_submit_result: ChatSubmitResult;
   image_insert_result: ImageInsertResult;
   image_upload_begin: ImageUploadBegin;
   image_upload_accepted: ImageUploadAccepted;
@@ -247,6 +259,8 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  */
 export const MESSAGE_DIRECTION = {
   image_insert_request: 'c2d',
+  chat_submit_request: 'c2d',
+  chat_submit_result: 'd2c',
   image_insert_result: 'd2c',
   image_upload_begin: 'c2d',
   image_upload_accepted: 'd2c',
@@ -1544,6 +1558,8 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type === 'chat_submit_request' || message.type === 'chat_submit_result')
+    return encodeStructuredChatFrame(message);
   if (message.type === 'image_insert_request' || message.type === 'image_insert_result')
     return encodeImageInsertionFrame(message);
   if (message.type.startsWith('image_upload_'))
@@ -1556,6 +1572,7 @@ export function serialize(message: ProtocolMessage): string {
  * Returns null if parsing fails or message is invalid.
  */
 export function deserialize(data: string): ProtocolMessage | null {
+  if (isStructuredChatCandidate(data)) return decodeStructuredChatFrame(data);
   // Stage frames never pass through the permissive legacy parser (#1170).
   if (isImageStagingCandidate(data)) return decodeImageStagingFrame(data);
   if (isImageInsertionCandidate(data)) return decodeImageInsertionFrame(data);

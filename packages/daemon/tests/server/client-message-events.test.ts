@@ -24,6 +24,7 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onStructuredChat',
   'onImageInsert',
   // Explicit R6 signed-proof event, added to the original 13 (#1201).
   'onImageUpload',
@@ -45,9 +46,9 @@ const GOLDEN_KEYS = [
 ];
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 17 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(17);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(17);
+  test('has exactly 18 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(18);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(18);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

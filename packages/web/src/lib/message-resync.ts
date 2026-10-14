@@ -145,7 +145,7 @@ export function mergeResyncSurvivors(
 
   for (const m of survivors) {
     if (m.sender !== 'user') continue;
-    if (m.inputMayBePartial) {
+    if (m.inputMayBePartial || (m.chatSubmission && m.chatSubmission.outcome !== 'accepted')) {
       survivingUserIds.add(m.id);
       continue;
     }

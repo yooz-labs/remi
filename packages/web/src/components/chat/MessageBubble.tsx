@@ -395,7 +395,13 @@ export function MessageBubble({
           {/* Delivery status (only for user messages). A failed send with a
               retry handler renders as a tappable "Retry" affordance instead
               of a bare icon (#663). */}
-          {isUser && message.inputMayBePartial ? (
+          {isUser && message.chatSubmission ? (
+            <span role="status" className="text-[10px] font-medium">
+              {message.chatSubmission.outcome === 'pending' ? 'Sending…' :
+                message.chatSubmission.outcome === 'accepted' ? message.chatSubmission.label :
+                  message.chatSubmission.outcome === 'refused' ? 'Not sent' : 'Delivery unknown'}
+            </span>
+          ) : isUser && message.inputMayBePartial ? (
             <span role="status" className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-error)]">
               <AlertCircle className="size-3" />
               Not submitted
@@ -414,6 +420,9 @@ export function MessageBubble({
             isUser && <StatusIcon state={message.state} />
           )}
         </div>
+        {isUser && message.chatSubmission && ['refused', 'uncertain'].includes(message.chatSubmission.outcome) && (
+          <p role="alert" className="mt-2 max-w-full text-xs leading-4">{message.chatSubmission.label}</p>
+        )}
         {isUser && message.inputMayBePartial && (
           <p role="alert" className="mt-2 max-w-full text-xs leading-4 text-[var(--color-error)]">
             Some text may remain in the terminal. Check it before sending again.

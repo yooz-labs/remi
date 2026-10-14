@@ -7,9 +7,13 @@ export function isImageInsertionCandidate(input: string | Uint8Array): boolean {
   return imageOperationCandidate(input, 'image_insert_');
 }
 
+export function isStructuredChatCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'chat_submit_');
+}
+
 function imageOperationCandidate(
   input: string | Uint8Array,
-  prefix: 'image_upload_' | 'image_insert_',
+  prefix: 'image_upload_' | 'image_insert_' | 'chat_submit_',
 ): boolean {
   if (typeof input !== 'string' && !(input instanceof Uint8Array)) return false;
   // Read the received units directly: no input-sized copy, UTF-8/JSON/base64 conversion or cutoff.

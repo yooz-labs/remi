@@ -139,6 +139,25 @@ test('receipt eviction keeps a high-water mark and refuses re-execution of old r
   }
 });
 
+test('context invalidation forgets receipts but preserves consumed sequences and pending serialization', async () => {
+  const f = fixture();
+  try {
+    const first = request(1);
+    const pending = f.submit(first);
+    f.sequence.invalidateReceipts();
+    expect(await f.submit(first)).toMatchObject({ outcome: 'uncertain', code: 'receipt_expired' });
+    expect(await f.submit(request(2))).toMatchObject({ outcome: 'refused', code: 'busy' });
+    await pending;
+    f.sequence.invalidateReceipts();
+    expect(await f.submit(first)).toMatchObject({ outcome: 'uncertain', code: 'receipt_expired' });
+    expect(f.calls).toHaveLength(1);
+    await f.submit(request(3));
+    expect(f.calls).toHaveLength(2);
+  } finally {
+    f.close();
+  }
+});
+
 test('a pending record remains pinned while later busy receipts fill the bounded cache', async () => {
   const f = fixture();
   try {

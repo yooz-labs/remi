@@ -1,6 +1,6 @@
 # ADR 0043: Structured chat submissions
 
-Status: proposed, not registered, advertised or frozen.
+Status: proposed contract; connected direct implementation under validation.
 Date: 2026-10-13 Pacific.
 Issue: #1207.
 
@@ -32,7 +32,8 @@ Timestamps are canonical millisecond UTC strings, used for display/correlation r
 Sequence is an integer from1 through4294967295.
 The raw frame limit is128 KiB so every valid16-KiB text, including six-byte JSON escapes, fits.
 Unknown/duplicate members, invalid Unicode/UTF-8, wrong field types and extra policy/cwd/model/raw fields are refused by the standalone codec.
-The proposed capability name is structured_chat; no capability is currently advertised.
+The capability name is structured_chat. This branch conditionally advertises it on a signed direct connection attached to the actual Codex harness writer; no hub, relay, capability-only or Claude connection qualifies.
+Availability describes the connected handler; a first thread may bind after hello, and submission still requires its exact current identity.
 
 ## Bounded sequencing
 
@@ -50,8 +51,13 @@ Request UUIDs correlate intent and must be fresh for new sequences; the high-wat
 
 Closing before the scheduled effect prevents that call.
 Closing or an exception after the possible effect returns uncertainty and never retries.
-The future handler still owns actual device grant, concrete attachment, binding and runtime checks before invoking this component and before sending any result, including a cached result.
+The connected handler owns actual device grant, concrete attachment, binding and runtime checks before invoking this component and before sending any result, including a cached result.
 Shape validity, receipt replay and a sequence counter grant no authority by themselves.
+
+The direct service retains at most128 concrete connections and64 session pairs per connection, refusing new pairs at capacity rather than evicting their consumed sequence marks.
+A grant/attachment/binding/runtime change invalidates cached receipts without resetting the sequence watermark or pending serialization.
+The original authorization epoch lock covers the actual synchronous RPC send and current-owner result delivery.
+The web controller sends once, retains uncertainty, and requires reconnection after unknown delivery before another explicit intent; it never resends across a socket generation.
 
 ## Evidence and remaining gates
 
@@ -63,8 +69,25 @@ Post-admission close and controlled delivery exceptions remain uncertain without
 Its private account is null, its owned process is reaped, and its private profile is removed.
 This is local admission evidence, not model completion, a Remi authenticated route or permission enforcement.
 
-Before advertisement or closure of1207: independent contract/component review, strict runtime routing and total conformance, actual harness caller, authenticated direct and separately relay paths, rendered App UI, fresh hub first-turn binding and separately approved model acceptance.
+Completion of1207 requires independent contract/component review, strict runtime routing and total conformance, actual harness caller, authenticated direct and separately relay paths, rendered App UI, fresh hub first-turn binding and separately approved model acceptance.
 Native contract conformance/UI remain with the Xcode developer.
 The exported installed Thread schema omitted environments, but the later actual native TUI frame included one environment and the existing production parser/tracker bound that exact thread.
 No discovery guard was relaxed from the schema-only concern.
 That probe had an observer connected before the TUI, so it does not replace genuine hub-created startup acceptance.
+
+## Connected direct evidence
+
+The implementation uses CodexSession's actual writer, a strict ingress before legacy ID/ACK handling, and a dedicated web result callback before ordinary message delivery.
+Installed accountless0.162.1 controls run the real signed direct WebSocketAdapter, IdentityStore, SessionRegistry, CodexHarness and native server.
+They observe the real grant lock at each RPC send, one effect for duplicate input, no queued effect after detach/revoke, old-sequence retirement after restoration, and the shipping WebSocketClient/controller.
+Their PTY is inert cat; they are admission and routing controls, not model completion or fresh native TUI startup.
+
+The actual rendered App check found transcript replacement erasing submission status; replacement now retains that separately correlated status and refused input is not merged by matching content alone.
+Pending/accepted/refused/uncertain stay distinct from transport ACK and model completion; uncertainty has no blind Retry action.
+Native upload UI remains with the Xcode developer and is not changed here.
+
+Installed0.162.1 also returned method-not-found for thread/items/list.
+History selects thread/turns/list with full items only on first-page method absence, never after a cursor or another error, preserving bounded raw-item/page/deadline limits.
+Its exact first-thread not-materialized response means empty history; malformed or other failures remain errors.
+The earlier112 legacy history/session controls pass, and the actual installed first-thread and materialized-user-history controls pass.
+Relay routing, genuine fresh hub native identity, final review/hosted checks and native UI remain open gates; #1207 is not closed by this direct phase.

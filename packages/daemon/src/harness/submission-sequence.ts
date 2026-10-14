@@ -1,6 +1,6 @@
 /**
  * Internal connection-lifetime sequencing for the proposed #1207 contract.
- * No production caller. The future handler owns device/session/binding authority
+ * The host handler owns device/session/binding authority
  * before calling and before returning a receipt, including cached receipts.
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -63,6 +63,11 @@ export class SubmissionSequence {
   private closed = false;
   private active: number | null = null;
   private readonly receipts = new Map<number, Receipt>();
+
+  /** Drop stale results without giving old input another sequence/effect window. */
+  invalidateReceipts(): void {
+    this.receipts.clear();
+  }
 
   close(): void {
     this.closed = true;
