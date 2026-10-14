@@ -110,7 +110,8 @@ Still open:
 - Each part of a fix is mutation-checked: revert it and a test fails.
 - No mocks that replace business logic.
 - Gates on every PR:
-  - the full `bun test` on Bun 1.4.2 and on the CI-pinned Bun 1.3.11;
+  - the full `bun test` on CI-pinned Bun 1.4.2 when the established scope policy selects runtime checks;
+  - historical two-version standalone proofs retain their original Bun 1.3.11 baseline;
   - `bun run typecheck`, `bunx biome check`, `typos`;
   - the macOS `RemiTests` for Swift changes;
   - the integration scripts and browser tests when the daemon wire or the web client changes.
@@ -663,3 +664,21 @@ This fixture uses inert cat and no account; it complements the earlier three app
 Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Bun pin migration preparation (#1273)
+
+Continue the existing validation worktree on `chore/issue-1273-bun142-pins`.
+Six actual full CLI binaries (two Buns, three supported hosts) passed version/help
+and isolated signed-client hub authorization/revocation/stop controls at frozen
+`3826d1e0`. The full Mac Bun 1.4.2 suite passed 9,809 tests with 29 skips and no failures.
+The corrected local Linux run retained all 9,838 tests but failed three mDNS
+checks; its network-routing explanation remains a hypothesis, not a pass.
+
+The source PR moves all six executing pins and the strict relay producer runtime
+contract together. Preserve all 2,381 classifier controls and nine focused status
+controls; report new old-runtime/no-op-mutation controls separately. Remove only
+old-runtime test allowances, retaining production close/drain/grace behavior and
+historical receipts. Review before publication avoids unnecessary repeated soak
+runs. Fresh hosted full checks and one actual 1.4.2 producer must pass. The final
+merge also waits for the existing physical-phone gate; the phone is unavailable.

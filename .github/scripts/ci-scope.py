@@ -28,9 +28,9 @@ CI_BUN_DIAGNOSTIC_INPUTS = (
     "packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts",
 )
 CI_BUN_DIAGNOSTIC_CALLERS = {
-    ".github/workflows/ci.yml": ("100644", "0e73aeb9b57b0645311076f5a7743bd4e149364f"),
+    ".github/workflows/ci.yml": ("100644", "847092afc0cf122952bf5697ae8daf85a30e285d"),
     ".github/scripts/workflow-scope.py": ("100644", "bb1a012124eb49d5a9a914cac6930c071b3a40a0"),
-    ".github/scripts/workflow-contracts.json": ("100644", "c3425e31119003f1bd4e9f69d0c8b2557834f968"),
+    ".github/scripts/workflow-contracts.json": ("100644", "806c49542bd20d3eaee371ed43285af603fc5a1c"),
     "packages/daemon/tests/ci-coverage-threshold.test.ts": (
         "100644", "0187211bf0bbcd35937b7fe9d57cfebbba551a78",
     ),

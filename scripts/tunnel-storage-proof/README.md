@@ -66,7 +66,7 @@ No helper or decoder is selected for production by this spike.
 
 ## Run
 
-Use the project's Bun 1.3.11 pin and the installed current Bun.
+Use the original Bun 1.3.11 baseline and the installed current Bun.
 The owner's supported hosts are Apple Silicon Macs and Linux ARM64/x64.
 These three targets on two Bun versions require six runtime executions.
 Supply existing Docker image references with suitable Linux runtimes; the

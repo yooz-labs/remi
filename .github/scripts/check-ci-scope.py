@@ -1214,7 +1214,7 @@ def reuse_controls():
                "base": protected, "head": consumer, "checkout": consumer,
                "tree": git("rev-parse", f"{consumer}^{{tree}}"), "parents": [producer], "kind": "head",
                "policy": REUSE["digest"](module["validation_inventory"](protected)),
-               "environment": {"bun": "1.3.11", "ImageVersion": "owned-control"},
+               "environment": {"bun": "1.4.2", "ImageVersion": "owned-control"},
                "run": 15, "attempt": 1, "workflow_id": 16}
     receipt = {**current, "head": producer, "checkout": producer, "parents": [protected],
                "tree": git("rev-parse", f"{producer}^{{tree}}"), "run": 14, "schema": 1, "producer": "actual-soak"}
@@ -1231,6 +1231,16 @@ def reuse_controls():
     def evaluate(values):
         return REUSE["eligible"](*values, classify)
     original_values = [current, receipt, run, job, artifact, commit_data]
+    focused_bun_runtime_controls = 0
+    for index in (0, 1):
+        old_runtime = copy.deepcopy(original_values)
+        old_runtime[index]["environment"] = {**old_runtime[index]["environment"], "bun": "1.3.11"}
+        try:
+            evaluate(old_runtime)
+        except ValueError:
+            focused_bun_runtime_controls += 1
+        else:
+            raise AssertionError("reuse accepted a different Bun runtime")
     assert evaluate(original_values)["verified"] is True  # Offline shape, no real successful run.
     count += 1
     git("reset", "--hard", producer)
@@ -1444,6 +1454,8 @@ def reuse_controls():
         else:
             raise AssertionError(("reuse workflow refusal", mutation))
 
+    return focused_bun_runtime_controls
+
 
 original = Path.cwd()
 # An inherited GIT_DIR/GIT_WORK_TREE must never redirect owned controls to a real repo.
@@ -1532,6 +1544,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             ("new-package/source.ts", "export {};", gates),
         ]
         count = 0
+        focused_bun_runtime_controls = 0
         for path, content, expected in cases:
             git("reset", "--hard", base)
             git("clean", "-fdq")  # Only this newly created, owned temporary repository.
@@ -3210,17 +3223,26 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             global count
             git("reset", "--hard", base); git("clean", "-fdq")
             value = WORKFLOW_TOOLS["load"](WORKFLOWS[name])
+            before = json.dumps(value, sort_keys=True)
             mutate(value)
+            assert json.dumps(value, sort_keys=True) != before, "workflow mutation has no effect"
             write(f".github/workflows/{name}", yaml.safe_dump(value, sort_keys=False))
             result = classify(base, commit())
             assert selected(result) == expected, (name, expected, result)
             count += 1
+        try:
+            workflow_case("ci.yml", lambda w: None, set())
+        except AssertionError as error:
+            assert str(error) == "workflow mutation has no effect", error
+            focused_bun_runtime_controls += 1
+        else:
+            raise AssertionError("no-op workflow control was accepted")
         workflow_case("ci.yml", lambda w: w.update(concurrency={"group": "owned"}), set())
         workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(needs=["scope", "owned"]), set())
         workflow_case("relay-r7.yml", lambda w: w["on"]["pull_request"].update(paths=["owned/**"]), set())
         workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(**{"timeout-minutes": "81"}), {"relay"})
         workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"].update(**{"runs-on": "ubuntu-24.04"}), {"relay"})
-        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"]["env"].update(BUN_VERSION="1.4.2"), {"relay"})
+        workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"]["env"].update(BUN_VERSION="1.3.11"), {"relay"})
         workflow_case("relay-r7.yml", lambda w: w["jobs"]["local-relay"]["steps"][0].update(uses="actions/checkout@v4"), {"relay"})
         workflow_case("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"] if "run" in s).update(run="true"), {"relay"})
         workflow_case("relay-r7.yml", lambda w: next(s for s in w["jobs"]["local-relay"]["steps"] if s.get("name") == "Existing actual wire and authority controls").update(run="bun test tests/integration/relay-r7*.test.ts"), {"relay"})
@@ -3232,7 +3254,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         workflow_case("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"] if s.get("run") == "bun install --frozen-lockfile").update(run="bun install"), {"test"})
         workflow_case("ci.yml", lambda w: w["jobs"]["lint"].update(**{"runs-on": "ubuntu-24.04"}), {"lint"})
         workflow_case("ci.yml", lambda w: w["jobs"]["typecheck"].update(**{"runs-on": "ubuntu-24.04"}), {"root", "web", "signaling", "integration", "notices"})
-        workflow_case("ci.yml", lambda w: w["env"].update(BUN_VERSION="1.4.2"), gates)
+        workflow_case("ci.yml", lambda w: w["env"].update(BUN_VERSION="1.3.11"), gates)
         workflow_case("ci.yml", lambda w: w["jobs"].update(unknown={"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}), gates)
         workflow_case("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}), METADATA)
         workflow_case("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]), METADATA)
@@ -3845,7 +3867,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         # The registered helper adds two existing generic inventory controls; old bodies/order stay fixed.
         assert count == 2293, count
         reuse_start = count
-        reuse_controls()
+        focused_bun_runtime_controls += reuse_controls()
         assert count - reuse_start == 74, count - reuse_start
         # Exact CI-only Bun diagnostics runner/test pair: all normal checks stay selected,
         # while only the unrelated relay workflow is omitted. Keep caller pins literal.
@@ -3984,6 +4006,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         focused_status_controls += 1
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
+                          "focused_bun_runtime_controls": focused_bun_runtime_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)
