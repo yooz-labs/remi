@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { resumed } from '../../../../tests/integration/relay-r3-fixture.ts';
 import { encodeBrowserLinkFrame } from '../../../shared/src/browser-links.ts';
 import {
   type BrowserFixture,
+  type BrowserFixtureResources,
   browserFixture,
   until,
 } from '../helpers/browser-link-service-fixture.ts';
@@ -16,6 +19,122 @@ async function fixture(options: Parameters<typeof browserFixture>[0] = {}) {
 afterEach(async () => {
   for (const f of fixtures.splice(0)) await f.close();
 });
+
+// Independent drain keeps the original failing cleanup witnesses from leaking their real resources.
+async function drainObserved(owned: BrowserFixtureResources | undefined) {
+  if (!owned) return;
+  owned.producer.retire();
+  owned.service.close();
+  try {
+    await owned.adapter.stop();
+  } finally {
+    for (const pty of owned.ptys) await pty.close();
+    await Promise.all(owned.consumerExits);
+    await owned.producer.close();
+    owned.files.cleanup();
+  }
+}
+
+test('fixture occupied-port startup rejection owns the actual consumer/producer/files unwind', async () => {
+  const blocker = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response('owned occupied port'),
+  });
+  const observed: { value?: BrowserFixtureResources } = {};
+  const launcherAtExit: boolean[] = [];
+  let browserPath = '';
+  let startupFailure: unknown;
+  try {
+    await expect(
+      browserFixture({
+        port: blocker.port as number,
+        observe(owned) {
+          observed.value = owned;
+          browserPath = owned.producer.browserPath;
+          for (const exited of owned.consumerExits)
+            void exited.then(() => launcherAtExit.push(existsSync(browserPath)));
+        },
+      }).catch((error) => {
+        startupFailure = error;
+        throw error;
+      }),
+    ).rejects.toThrow();
+    expect(startupFailure).toHaveProperty('code', 'EADDRINUSE');
+    const owned = observed.value;
+    if (!owned) throw new Error('Owned construction did not reach the actual Adapter');
+    expect(owned.ptys.every((pty) => pty.sessionState === 'exited')).toBe(true);
+    expect(launcherAtExit).toEqual([true]);
+    expect(existsSync(dirname(browserPath))).toBe(false);
+    expect(existsSync(owned.files.directory)).toBe(false);
+    expect(await (await fetch(`http://127.0.0.1:${blocker.port}/health`)).text()).toBe(
+      'owned occupied port',
+    );
+  } finally {
+    try {
+      await drainObserved(observed.value);
+    } finally {
+      blocker.stop(true);
+    }
+  }
+}, 15000);
+
+test('fixture teardown aggregates a real record fault and still drains all later owned resources', async () => {
+  const observed: { value?: BrowserFixtureResources } = {};
+  const launcherAtExit: boolean[] = [];
+  const f = await browserFixture({
+    observe(owned) {
+      observed.value = owned;
+      const browserPath = owned.producer.browserPath;
+      for (const exited of owned.consumerExits)
+        void exited.then(() => launcherAtExit.push(existsSync(browserPath)));
+    },
+  });
+  const file = join(f.files.home, 'local-endpoints', `${f.port}.json`);
+  let original: string | undefined;
+  try {
+    original = readFileSync(file, 'utf8');
+    const endpoint = JSON.parse(original) as { privatePort: number };
+    const browserPath = f.producer.browserPath;
+    writeFileSync(file, '{ corrupt owned fixture record');
+    let failure: unknown;
+    try {
+      await f.close();
+    } catch (error) {
+      failure = error;
+    }
+    expect({
+      aggregate: failure instanceof AggregateError,
+      consumerEnded: f.pty.sessionState === 'exited',
+      producerRemoved: !existsSync(dirname(browserPath)),
+      filesRemoved: !existsSync(f.files.directory),
+    }).toEqual({ aggregate: true, consumerEnded: true, producerRemoved: true, filesRemoved: true });
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(
+      failure instanceof AggregateError &&
+        failure.errors.some(
+          (error) =>
+            error instanceof Error &&
+            error.message === 'Local daemon endpoint record operation failed',
+        ),
+    ).toBe(true);
+    expect(f.pty.sessionState).toBe('exited');
+    expect(launcherAtExit).toEqual([true]);
+    expect(existsSync(dirname(browserPath))).toBe(false);
+    expect(existsSync(f.files.directory)).toBe(false);
+    await expect(
+      fetch(`https://127.0.0.1:${f.port}/health`, { tls: { ca: f.files.ca } }),
+    ).rejects.toThrow();
+    await expect(fetch(`http://127.0.0.1:${endpoint.privatePort}/health`)).rejects.toThrow();
+    await f.close();
+  } finally {
+    try {
+      if (original !== undefined && existsSync(file)) writeFileSync(file, original);
+    } finally {
+      await drainObserved(observed.value);
+    }
+  }
+}, 15000);
 
 test('actual listener closure stamps TLS/plain/private regardless of spoofed request headers', async () => {
   const tls = await fixture();
