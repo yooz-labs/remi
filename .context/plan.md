@@ -542,3 +542,27 @@ hash on Apple Silicon Mac and Linux ARM64/x64 with Bun 1.3.11 and 1.4.2.
 The outer corpus loads in Foundation; this is fixture interchange, not native
 decoder conformance. The correlated outcome coordinator, actual queued caller,
 public dispatch/client action and native conformance remain subsequent gates.
+
+## Image insertion: internal outcome coordinator
+
+The coordinator captures request fields and retains at most 128 process-local
+attempts. Exact concurrent/repeated requests share one immutable recorded result;
+changed fields conflict only while the original signed owner remains current.
+A pre-write refusal stays recorded for that ID; a fresh explicit ID can try again.
+The artifact's separate retirement still permits only one possible write.
+Cache validation after retirement grants no new write authority. Lost authority,
+file validity or deadline prevents cached delivery; busy never discards a receipt.
+At capacity, unusable receipts are pruned before returning busy. Close cancels
+queued effects and drops correlations; no file, quota or lifetime is added.
+
+Actual signed/decoded/PTY controls cover both formats, concurrent/lost response
+replay, caller mutation, held-hook refusal then a fresh explicit attempt, queued
+grant/reattach/binding/exit/file/close changes and foreign/revoked cached access.
+Closing the actual terminal at the retirement boundary records an uncertain
+effect and prevents replay; session exit may separately end delivery authority.
+The first 128-request bound control timed out because each request revalidated
+all retained files. Sweeping only at capacity makes that same unchanged control
+pass in 2.1 seconds, without relaxing its 15-second limit.
+
+This remains an internal coordinator, without public dispatch/capability or a
+client action. Compiled public caller and native conformance gates remain.

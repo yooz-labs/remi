@@ -393,7 +393,7 @@ export class ImageStagingService {
     const refuse = (code: ImageInsertionError['code']): never => {
       throw new ImageInsertionError(code);
     };
-    const current = <T>(operation: (reader: JournalRead) => T): T => {
+    const current = <T>(operation: (reader: JournalRead) => T, allowRetired = false): T => {
       try {
         if (
           this.closed ||
@@ -411,7 +411,7 @@ export class ImageStagingService {
             requested.harnessSessionId !== record.authority.binding.harnessSessionId
           )
             return refuse('binding_changed');
-          if (record.insertionRetired) return refuse('conflict');
+          if (record.insertionRetired && !allowRetired) return refuse('conflict');
           return operation(record.reader);
         });
       } catch (error) {
@@ -440,6 +440,9 @@ export class ImageStagingService {
         expiresAt: captured.artifact.expiresAt,
         get possibleWrite() {
           return possibleWrite;
+        },
+        assertCurrent() {
+          current(reference, true);
         },
         referencePath() {
           return current(reference);
