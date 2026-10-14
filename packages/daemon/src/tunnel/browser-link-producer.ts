@@ -73,7 +73,8 @@ export class BrowserLinkProducerRuntime {
     try {
       // macOS /tmp is a symlink; the helper checks its actual owned cwd.
       this.temporaryRoot = realpathSync(temporaryRoot);
-      if (/\s/u.test(this.temporaryRoot)) throw new Error(FAILURE);
+      // BROWSER consumers parse ':' as a list and '%s' as URL operand syntax.
+      if (/[\s:]|%s/u.test(this.temporaryRoot)) throw new Error(FAILURE);
     } catch {
       throw new Error(FAILURE);
     }

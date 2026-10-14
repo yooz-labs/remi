@@ -390,6 +390,49 @@ describe('dormant browser producer: real Unix framing, owned launcher and actual
     expect(() => runtime.rotate(context())).toThrow('Browser link producer unavailable');
   });
 
+  test('BROWSER root grammar refuses unsafe canonical roots before allocation and safe alias uses only owned launcher', async () => {
+    let effects = 0;
+    for (const [index, syntax] of [':part', '%s', ' whitespace'].entries()) {
+      const root = join(home, `unsafe-root-${index}${syntax}`);
+      fs.mkdirSync(root, { mode: 0o700 });
+      const alias = join(home, `safe-alias-${index}`);
+      fs.symlinkSync(root, alias);
+      for (const temporaryRoot of [root, alias]) {
+        expect(
+          () =>
+            new BrowserLinkProducerRuntime({
+              context: context(),
+              offer: () => {
+                effects++;
+                return true;
+              },
+              temporaryRoot,
+            }),
+        ).toThrow('Browser link producer unavailable');
+        expect(fs.readdirSync(root)).toEqual([]);
+      }
+    }
+    expect(effects).toBe(0);
+    const root = join(home, 'safe-root');
+    fs.mkdirSync(root, { mode: 0o700 });
+    const alias = join(home, 'safe-alias');
+    fs.symlinkSync(root, alias);
+    const runtime = new BrowserLinkProducerRuntime({
+      context: context(),
+      offer: () => {
+        effects++;
+        return true;
+      },
+      temporaryRoot: alias,
+    });
+    runtimes.push(runtime);
+    await runtime.start();
+    expect((await consumer(runtime.browserPath)).includes('Browser link unavailable')).toBe(false);
+    expect(effects).toBe(1);
+    await runtime.close();
+    expect(fs.readdirSync(root)).toEqual([]);
+  });
+
   test('startup publishes only after listening and owned publication failure rolls back resources', async () => {
     const runtime = new BrowserLinkProducerRuntime({
       context: context(),
