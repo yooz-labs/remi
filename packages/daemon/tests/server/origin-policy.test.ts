@@ -133,6 +133,15 @@ describe('WebSocketServer enforces the origin policy', () => {
     });
   }
 
+  test('the origin fixture holds an OS-assigned port rather than probing and releasing one', async () => {
+    await startServer();
+    expect(server?.running).toBe(true);
+    expect(port).toBeGreaterThan(0);
+    await server?.stop();
+    // The stopped server reports its configured port, not its former live port.
+    expect(server?.port).toBe(0);
+  });
+
   test('a hostile page cannot open a WebSocket', async () => {
     await startServer();
     expect(await tryUpgrade('https://evil.example')).toBe('refused');

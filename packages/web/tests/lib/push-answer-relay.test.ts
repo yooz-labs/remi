@@ -64,6 +64,16 @@ describe('relayAnswerDirect (#575 P4a)', () => {
     return Bun.serve({ port: 0, fetch: handler });
   }
 
+  test('the answer fixture binds the same loopback address its clients dial', async () => {
+    const server = startServer(() => new Response('fixture'));
+    try {
+      expect(server.port).toBeGreaterThan(0);
+      expect(server.hostname).toBe('127.0.0.1');
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test('no-auth daemon: posts the answer and returns delivered', async () => {
     type ReceivedBody = { sessionId: string; questionId: string; answer: string } | null;
     // `= null as ReceivedBody`, not `= null`: a bare `null` initializer keeps
