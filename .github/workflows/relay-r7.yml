@@ -34,6 +34,9 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 80
+    permissions:
+      contents: read
+      actions: read
     env:
       BUN_VERSION: 1.3.11
       E2E_BUNDLER: esbuild
@@ -45,6 +48,8 @@ jobs:
           exit 1
       - uses: actions/checkout@v5
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         with:
@@ -52,6 +57,7 @@ jobs:
       - run: bun install --frozen-lockfile
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
       - name: Existing actual wire and authority controls
+        id: wire
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         shell: bash
         run: |
@@ -65,18 +71,32 @@ jobs:
             tests/integration/relay-r3*.test.ts \
             tests/integration/relay-r6-ingress.test.ts \
             tests/integration/relay-r7*.test.ts 2>&1 | tee r7-receipts/controls.log
-      - name: Same attached session for 61 actual minutes
+      - name: Check completed soak evidence
+        id: reuse
         if: needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/relay-soak-reuse.py
+      - name: Same attached session for 61 actual minutes
+        id: soak
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false' && steps.reuse.outputs.verified != 'true'
         shell: bash
         env:
           REMI_RELAY_R7_SOAK: '1'
         run: |
           set -o pipefail
           bun test --timeout 4500000 packages/web/tests/relay-r7-soak.test.ts 2>&1 | tee r7-receipts/soak.log
+      - name: Record actual soak producer
+        if: needs.scope.result == 'success' && steps.wire.conclusion == 'success' && steps.soak.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHORT_CONCLUSION: ${{ steps.wire.conclusion }}
+          SOAK_CONCLUSION: ${{ steps.soak.conclusion }}
+        run: python3 .github/scripts/relay-soak-reuse.py --write-receipt
       - uses: actions/upload-artifact@v4
         if: always() && (needs.scope.result == 'success' && needs.scope.outputs.relay != 'false')
         with:
-          name: relay-r7-local-${{ github.run_id }}
+          name: relay-r7-local-${{ github.run_id }}-${{ github.run_attempt }}
           path: r7-receipts/
       - name: Report scoped skip
         if: needs.scope.result == 'success' && needs.scope.outputs.relay == 'false'

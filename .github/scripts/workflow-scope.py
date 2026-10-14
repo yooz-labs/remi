@@ -194,6 +194,7 @@ def validate():
         assert job["steps"][0] == FAIL_SCOPE
         if job_name == "local-relay":
             assert job["steps"].count(SOAK_SKIP) == 1
+            assert job == CONTRACTS["relay_reuse_job"], "relay reuse order/commands/conditions/permissions changed"
         for step in job["steps"]:
             condition = step.get("if", "")
             if step.get("name") == "Fail unvalidated scope":
@@ -202,6 +203,8 @@ def validate():
                 assert job_name == "local-relay" and step == SOAK_SKIP
             elif step.get("name") == "Report scoped skip":
                 assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
+            elif step.get("name") in {"Check completed soak evidence", "Record actual soak producer"}:
+                assert job_name == "local-relay" and step in CONTRACTS["relay_reuse_job"]["steps"]
             else:
                 step_flag = flag
                 if job_name == "local-relay" and step.get("name") == "Same attached session for 61 actual minutes":
@@ -214,6 +217,8 @@ def validate():
                 expected = f"needs.scope.result == 'success' && needs.scope.outputs.{step_flag} != 'false'"
                 if step.get("uses") == "actions/upload-artifact@v4":
                     expected = f"always() && ({expected})"
+                if job_name == "local-relay" and step.get("id") == "soak":
+                    expected += " && steps.reuse.outputs.verified != 'true'"
                 assert condition == expected, (job_name, step)
         scope = workflow["jobs"]["scope"]
         assert set(scope) == {"name", "runs-on", "permissions", "outputs", "steps"}

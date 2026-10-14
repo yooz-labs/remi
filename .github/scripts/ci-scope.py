@@ -672,6 +672,7 @@ NON_RELAY_WORKFLOWS = {
     ".github/scripts/close-on-develop.ts",
 }
 CI_TOOLS = {
+    ".github/scripts/relay-soak-reuse.py",
     ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
     ".github/scripts/workflow-scope.py", ".github/actions/ci-scope/action.yml",
     ".github/scripts/workflow-contracts.json",
