@@ -1,5 +1,17 @@
 # Codex structured remote chat (#1207)
 
+## Availability on develop
+
+The direct and encrypted relay text paths landed in [#1507](https://github.com/yooz-labs/remi/pull/1507)
+at merge `49094b025b18e4156bd834c7a4b607504cbb1a91` (develop build 169).
+The [actual CI run](https://github.com/yooz-labs/remi/actions/runs/38529063958)
+passed 9,808 tests with 30 skips and zero failures, and 91.79% line coverage;
+the [relay run](https://github.com/yooz-labs/remi/actions/runs/38529063934)
+passed 280 short controls with four existing skips and the actual 61-minute soak.
+The earlier direct-head timeouts remain separate unresolved observations.
+This source landing makes the contracts available for native integration;
+native app conformance, rendered UI and device acceptance are not established.
+
 ## Decision and current scope
 
 The owner chose structured `turn/start` and `turn/steer` on 2026-10-13,
@@ -37,8 +49,8 @@ Results mean:
 - `uncertain`: a turn RPC may have taken effect, but its outcome cannot be established.
   The writer never automatically retries, falls back from steer to start, or writes PTY input.
 
-The later production caller must own authenticated device/session authority,
-request-ID replay/conflict handling and uncertain-result retention.
+The connected production service described below owns authenticated device/session
+authority, bounded sequence replay/conflict handling and uncertain-result retention.
 `clientUserMessageId` provides correlation; this implementation does not claim server deduplication.
 The ordinary Remi input ACK is receipt before its handler and cannot serve as a submission result.
 
@@ -127,7 +139,7 @@ It measures original-grant commit locking, duplicate input, detach/revoke/restor
 Its PTY is inert cat and account is null, so it proves routing/admission, not model completion, OS sandbox enforcement or fresh native startup.
 The actual App is also checked against an owned compiled hub/child at phone, tablet and desktop widths, including paused-daemon uncertainty with no replay.
 Prompt-free warm and cold native startup controls also bound genuine hub-created first threads, without an observer connected before the child. These used zero model turns and do not establish another model completion.
-Hosted review/checks and native UI remain separate gates; #1207 remains open.
+The reviewed combined implementation landed through #1507 with actual full-suite, coverage and relay acceptance. Native conformance/UI and device acceptance remain separate; #1207 stays open.
 
 ## Encrypted relay child delivery
 
@@ -157,3 +169,40 @@ bun test packages/web/tests/integration/structured-chat-direct.test.ts
 It runs the actual Worker, hub, capability child, Codex harness and native server, checks account absence and original-grant RPC locking, and retains duplicate/conflict, revoke/restore, enrollment and child-owner loss controls.
 The rendered App check additionally pauses its owned hub courier: delivery becomes unknown after 15 seconds, reconnect sends no old input, and a new explicit message is accepted after a real native failure state.
 These are admission/UI controls, not model completion, deployment acceptance or native app conformance.
+
+
+## Native integration handoff
+
+Consume the existing [strict codec](../packages/shared/src/structured-chat.ts),
+[17 positive/213 negative vectors](../packages/shared/tests/fixtures/structured-chat/vectors.json)
+and [ADR 0043](../.context/decisions/0043-structured-chat-submission.md).
+Web reference callers are `packages/web/src/lib/structured-chat.ts`,
+`relay-transport.ts` and `hooks/useConnectionManager.ts`.
+The native developer owns RemiKit/SwiftUI integration; this handoff changes no native files.
+
+### Client behavior
+
+1. Require structured_chat on the actual attached Codex child and a non-null exact harnessSessionId. The sessionless hub has no writer. Retain existing protocol/capability checks; version strings are not feature tests.
+2. Send chat_submit_request with fresh version4 envelope id, timestamp, sessionId, seq, binding{harness:codex,harnessSessionId},content. At most 16 KiB of nonblank scalar UTF-8 text, no NUL, frame at most 128 KiB. Preserve original text bytes without Unicode normalization. Never add model/cwd/sandbox/policy/raw fields. No legacy user_input or typed Enter fallback.
+3. Sequence starts at 1 for each concrete connection/session pair and advances when an explicit request is handed to the transport, even if sending throws or reports failure. Preserve the watermark through rebind, session switching and detach/reattach. Use independent per-session counters on a machine relay; retain at most 64 pairs without evicting consumed marks. A fresh verified transport generation resets its counters, with no old input replay.
+4. Match result requestId+sessionId+seq and the captured current binding/generation. A generic transport ACK is not submission acceptance; results need a dedicated strict path outside automatic input retry.
+5. Show pending, accepted, refused and uncertain separately. accepted includes turn/start or turn/steer plus turnId; it is not model completion or proof that start created a new turn. Refused means the writer attempted no turn RPC. Unknown delivery, receipt_expired and conflict uncertainty do not authorize retry.
+6. Keep the uncertain row through transcript replacement. The reference web controller waits 15 seconds, then blocks that generation until explicit reconnect. Never auto resend, including after an apparently healthy socket reconnect. Reattach selection with hello metadata only, then permit a new explicit message with a new id.
+7. Serialize reconnect through the old authenticated close and replacement handshake. Two rapid actions must produce one replacement, not an orphan channel. Cancel stale continuations by generation. This exact race was found/fixed in web R1/R2.
+8. Relay child-owner loss can close the entire machine channel to preserve its sole sequence owner. Treat outstanding deliveries as uncertain. No public internal-proxy descriptor is sent by native clients.
+9. Preserve the owner-selected existing full-access default and explicit narrower thread settings. The host writer sends no per-turn policy overrides. A new explicit message can start after native systemError; never automatically replay the failed turn.
+10. Reuse existing app foreground/background lifecycle. This contract needs no extra background polling, permanent socket wake-up or push transmission of chat text. Codex image input is outside this text-only contract; keep its image insertion UI unavailable.
+
+### Native acceptance still required
+
+Run the strict corpus, first bound turn, start/steer, held-prompt refusal, direct
+and relay routes, uncertainty/no replay/transcript retention, two rapid reconnect
+actions, child switching without counter mixing, revoke/regrant, detach/rebind and
+child-owner loss. Check rendered Mac/iPhone UI and lifecycle power separately.
+
+Installed accountless server admission and rendered web at 390/1024/1440-pixel widths are
+existing evidence, not native app/device acceptance. The bounded model check
+verified the full-access marker and steering; read-only made no command attempt,
+so it does not establish OS write denial. Its approved three-start/two-steer
+budget is exhausted; further model calls need new approval. No additional
+background polling or push transmission of chat text is required by this contract.
