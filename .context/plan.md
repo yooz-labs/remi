@@ -69,6 +69,17 @@ The existing native caller needs no new Swift model or wire field for this persi
 
 ## Tracks (work outside the milestones)
 
+The #1190 fixture cleanup continuation records actual ownership assertions for
+attachment output directories and Claude-session directories.
+The original whole two-file population passed 75 cases but left 18 attachment
+directories and one Claude directory on each Mac Bun runtime.
+The cleanup closes output before removing its owned directory and awaits the
+existing PTY exit before removing the session store directory.
+All 75 cases now pass on both runtimes with zero new fixture directories;
+removing either cleanup fails its specific assertion on both runtimes.
+Historical temporary directories are untouched. Independent review and fresh
+hosted acceptance remain separate; no product behavior or timeout changes.
+
 Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 
@@ -691,6 +702,17 @@ Root types and format checks passed; independent review and fresh exact-head
 hosted checks remain before landing. These focused controls are not a full-suite,
 native-device or actual R7 acceptance result.
 Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-workspace-change-push/`.
+
+Pre-merge caller tracing found that the hub dropped unsolicited child lists,
+so the first daemon-only change did not update enrolled relay clients. The same
+PR now adds a payload-free invalidation from a verified current child to the
+existing filtered hub aggregate. Updates coalesce behind one active list, keep
+the last accepted external-session preference, and preserve BUSY and answer
+responsiveness. Duplicate recent replies do not invalidate; revoked, unverified,
+retired or replaced child sockets cannot notify. Background refresh failures
+are logged without payloads and retire the channel. No new polling or wire shape.
+The original head's full suite and actual R7 soak remain evidence for that head;
+the corrected relay source needs fix-delta review and fresh hosted validation.
 
 ## Remaining named loopback fixtures (#1232)
 

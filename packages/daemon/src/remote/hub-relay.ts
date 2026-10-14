@@ -16,6 +16,7 @@ import {
   createError,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  createSessionListRequest,
   createSessionListResponse,
   createSessionUpdate,
   deserialize,
@@ -94,6 +95,9 @@ type Peer = {
   sendNotice: 'PAYLOAD_TOO_LARGE' | 'SEND_QUEUE_FULL' | undefined;
   historyOverflow: boolean;
   listing: boolean;
+  listDirty: boolean;
+  listRefreshQueued: boolean;
+  listIncludeExternal: boolean;
   cid: string;
   ws: WebSocket;
   cancelled: boolean;
@@ -352,6 +356,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       sendNotice: undefined,
       historyOverflow: false,
       listing: false,
+      listDirty: false,
+      listRefreshQueued: false,
+      listIncludeExternal: false,
       stage: 'admit',
       timer: setTimeout(() => {
         void this.closePeer(peer);
@@ -656,6 +663,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       },
       () => this.current(peer),
       peer.pushAuthority,
+      () => {
+        peer.listDirty = true;
+        this.refreshSessionList(peer);
+      },
     );
     peer.connection = new Connection(
       {
@@ -684,6 +695,29 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.cid,
     );
   }
+  /** One aggregate at a time, with at most one trailing refresh and no polling (#1285). */
+  private refreshSessionList(peer: Peer): void {
+    if (!peer.listDirty || peer.listing || peer.listRefreshQueued || !this.current(peer)) return;
+    peer.listRefreshQueued = true;
+    queueMicrotask(() => {
+      peer.listRefreshQueued = false;
+      if (!peer.listDirty || peer.listing || !this.current(peer) || !peer.proxy) return;
+      peer.listDirty = false;
+      peer.listing = true;
+      void this.sessionList(peer, createSessionListRequest(peer.listIncludeExternal))
+        .catch(async () => {
+          this.log('Relay session list refresh failed; reconnect required');
+          await this.closePeer(peer, true);
+        })
+        .finally(() => {
+          peer.listing = false;
+          this.refreshSessionList(peer);
+        })
+        .catch(() => {
+          this.log('Relay session list refresh cleanup failed');
+        });
+    });
+  }
   private async sessionList(peer: Peer, request: SessionListRequestMessage): Promise<void> {
     const deadline = Date.now() + 5000;
     let localTimedOut = false;
@@ -695,10 +729,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         resolve(createSessionListResponse([], request.id, undefined, this.cfg.machine?.()));
       }, 5000);
     });
-    this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
-    const localResponse = await local;
-    if (timer) clearTimeout(timer);
-    peer.hubLists.delete(request.id);
+    let localResponse: SessionListResponseMessage;
+    try {
+      this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
+      localResponse = await local;
+    } finally {
+      if (timer) clearTimeout(timer);
+      peer.hubLists.delete(request.id);
+    }
     if (!this.current(peer) || !peer.proxy) return;
     const all = this.cfg.registry.listLive();
     const live = all.slice(0, 32);
@@ -869,10 +907,13 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         return;
       }
       peer.listing = true;
+      peer.listDirty = false;
+      peer.listIncludeExternal = message.includeExternal ?? false;
       try {
         await this.sessionList(peer, message);
       } finally {
         peer.listing = false;
+        this.refreshSessionList(peer);
       }
       return;
     }
