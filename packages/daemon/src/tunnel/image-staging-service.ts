@@ -477,6 +477,7 @@ export class ImageStagingService {
             this.scratch,
             this.metadata,
             this.native.ops,
+            request.mediaType === 'image/png' ? 'png' : 'jpg',
           );
         });
         const now = performance.now();

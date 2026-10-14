@@ -875,6 +875,10 @@ export async function settlementProbe() {
           const records = f.store.inspect();
           assert(records.length <= 128, 'exact terminal history bound');
           assert(
+            records.filter((record) => record.device === cycleOwner.device).length <= 32,
+            'exact per-device terminal history bound',
+          );
+          assert(
             records.some((record) => record.id === pending),
             'exact pending record never evicted',
           );
@@ -894,10 +898,46 @@ export async function settlementProbe() {
           () => settleJournal(f.store, evicted, f.scratch, f.metadata, native.ops),
           'evicted receipt is unknown',
         );
+        // #1487 applies the accepted 32-slot device bound to completed receipts.
+        // One owner cannot fill the separate 128-slot home bound; exercise both.
+        assert.equal(f.store.inspect().length, 33);
+        assert.equal(
+          f.store.inspect().filter((record) => record.device === cycleOwner.device).length,
+          32,
+        );
+        const distinctLeases: JournalLease[] = [];
+        for (let cycle = 0; cycle < 130; cycle++) {
+          distinctLeases.push(f.begin(1, owner()));
+          assert.equal(f.settle(), 'settled');
+          f.empty();
+          const records = f.store.inspect();
+          assert(records.length <= 128, 'distinct owners retain the home history bound');
+          assert(
+            records.some((record) => record.id === pending),
+            'pending row survives home pressure',
+          );
+          assert.equal(
+            records.reduce((sum, item) => sum + item.charge, 0),
+            4096,
+          );
+        }
+        const latestDistinct = distinctLeases.at(-1);
+        const oldestDistinct = distinctLeases[0];
+        assert(latestDistinct && oldestDistinct);
+        assert.equal(
+          settleJournal(f.store, latestDistinct, f.scratch, f.metadata, native.ops),
+          'already_settled',
+        );
+        refused(
+          () => settleJournal(f.store, oldestDistinct, f.scratch, f.metadata, native.ops),
+          'home-evicted receipt is unknown',
+        );
         assert.equal(f.store.inspect().length, 128);
         measurements.push({
-          completedCycles: 130,
+          completedCycles: 260,
           sameOwnerCycles: 130,
+          distinctOwnerCycles: 130,
+          deviceBoundedRows: 32,
           boundedRows: 128,
           pendingCharge: 4096,
           ledgerBytes: fs.statSync(path.join(f.home, 'ledger', 'reservations.json')).size,
@@ -908,7 +948,7 @@ export async function settlementProbe() {
         f.close();
       }
       checks.push(
-        '130 actual complete cycles bound 128 rows preserve pending and refuse evicted retries',
+        '260 actual complete cycles bound device and home rows preserve pending and refuse evicted retries',
       );
     }
   } finally {

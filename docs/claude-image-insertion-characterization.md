@@ -54,6 +54,34 @@ The follow-up colors could also be deduced from earlier text answers, so this is
 Compaction, future CLI versions, long-term retention and later agent file reads were not measured.
 Paths containing literal quotes, backslashes or controls were not accepted by this check; spaces in a quoted absolute path were.
 
+## Additional exact managed-path check
+
+The owner separately authorized one additional generated-image turn on 2026-10-13.
+The same executable and model received two quoted real JournalRead `.artifact`
+paths in a private home with spaces outside an otherwise empty Claude project.
+Typing wrote 486 bytes with zero CR/LF; five seconds later the transcript had
+no user message. One separate Enter submitted the turn.
+
+**This exact route failed.** Neither PNG nor JPEG became an embedded image.
+Both references were read as raw bytes, and the model declined to name colors.
+The observation does not isolate the suffix from the outside-project location;
+it disproves availability for these exact paths. The earlier `.png` / `.jpg`
+and extensionless-PNG observations remain valid for their measured paths.
+
+The child was reaped with no second turn. Both journals settled with zero
+retained charge. Driver, events, transcript and cleanup evidence are under
+`exact-route-check/` in the artifact directory above. Exactly five approved
+user turns have now been used in total. CI runs none of these model checks.
+
+New image journals use a host-selected `.png` / `.jpg` name from creation,
+persisted in their lease and immutable version2 ownership markers. Legacy
+`.artifact` journals retain their original version1 name and cleanup route.
+No completed file is renamed, linked or copied; quotas and lifetime stay the
+same. An older binary rejects the new ledger fields and cannot recover those
+rows; use the matching current daemon to retain and settle their charge.
+The corrected exact-path model check is still pending separate authorization.
+Insertion remains unavailable.
+
 ## Queue prerequisite
 
 `PTYSession.insertText` uses the existing serialized queue, requires a synchronous guard at the actual effect and rejects empty/control-containing text.

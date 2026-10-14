@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -253,6 +253,13 @@ test('actual signed direct clients stage exact PNG/JPEG once and retain the orig
     expect(result.byteLength).toBe(bytes.length);
     expect(result.digest).toBe(request.digest);
     expect(result.artifactId).not.toBe(result.transferId);
+    const extension = file.endsWith('.png') ? 'png' : 'jpg';
+    const retained = f.ledger().find((row) => row.journal?.artifactExtension === extension);
+    expect(retained?.state).toBe('staged');
+    if (!retained) throw new Error('Named image journal not retained');
+    const named = join(f.home, 'image-staging', 'scratch', `${retained.id}.${extension}`);
+    expect(Buffer.from(readFileSync(named))).toEqual(Buffer.from(bytes));
+    expect(statSync(named).nlink).toBe(1);
     const repeated = await invoke(
       f.service,
       f.owner.id,
