@@ -65,4 +65,6 @@ This is local admission evidence, not model completion, a Remi authenticated rou
 
 Before advertisement or closure of1207: independent contract/component review, strict runtime routing and total conformance, actual harness caller, authenticated direct and separately relay paths, rendered App UI, fresh hub first-turn binding and separately approved model acceptance.
 Native contract conformance/UI remain with the Xcode developer.
-The current installed Thread schema has no environments field, while older fresh-thread discovery requires one; actual current TUI evidence must settle that compatibility concern before changing discovery.
+The exported installed Thread schema omitted environments, but the later actual native TUI frame included one environment and the existing production parser/tracker bound that exact thread.
+No discovery guard was relaxed from the schema-only concern.
+That probe had an observer connected before the TUI, so it does not replace genuine hub-created startup acceptance.

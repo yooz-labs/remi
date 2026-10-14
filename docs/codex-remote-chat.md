@@ -66,3 +66,27 @@ These checks establish local RPC admission and omission of policy overrides.
 They do not establish model completion, model-side steering or sandbox enforcement.
 An account-backed model check needs separate bounded owner approval.
 Native device UI and the connected daemon/client path remain later steps.
+
+
+## Bounded installed-model observation (2026-10-13)
+
+The owner approved three short starts and two steer messages using only a generated private project.
+The actual Codex0.162.1 server used a private file-only copy of the approved account, gpt-6.1-sol at low reasoning effort, and the production internal writer.
+A durable counter bounded transmissions across attempts.
+The default thread retained dangerFullAccess/on-request/auto_review and completed its requested private marker write with the expected bytes.
+Both steer messages were accepted on the same active turn, and its completed final response was REMI_STEER_C, reflecting the second message.
+
+The read-only fixture selected readOnly/on-request/user at creation, preserving that narrower posture through the writer.
+It returned REMI_READONLY_BLOCKED and created no marker.
+No command or permission request was emitted, so the stricter command-attempt control did not pass; this is model refusal and file-absence evidence, not a measured OS write denial.
+The original receipt retains completed-with-case-failure for that control.
+No additional model turn was run; the three-start/two-steer budget is exhausted.
+
+A separate prompt-free native TUI startup in the same private server emitted an actual user thread with one environment.
+The existing production parser and ThreadTracker bound that exact thread without a guard change.
+The exported schema alone had omitted that field; it was not sufficient evidence of an actual TUI regression.
+The observer was connected first, so genuine hub-created first-turn startup remains a connected-path gate.
+
+The owned server and TUI were reaped, the private profile removed, and the owner's credential file remained byte-identical.
+These observations do not establish the pending authenticated Remi route, relay/native UI or broader sandbox qualification.
+Local receipts and the bounded plan are retained under the S1 Codex remote-chat artifacts.
