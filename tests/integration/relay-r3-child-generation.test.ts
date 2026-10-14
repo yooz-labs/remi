@@ -80,6 +80,7 @@ async function fixture() {
     () => authority,
     undefined,
     () => invalidations.push(1),
+    dir,
   );
   const ack = () => createHelloAck('2.0.0', entry.sessionId, { attachState: 'attached' });
   const cleanup = () => {

@@ -20,7 +20,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 import { DetachScanner } from './detach-scanner.ts';
 import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
@@ -74,7 +74,6 @@ export function formatQuestionBanner(question: Question): string {
 
 export async function runAttachClient(opts: AttachClientOptions): Promise<AttachClientResult> {
   const { host, port, sessionId, timeout = 5000, outputFd = 1 } = opts;
-  const url = `ws://${host}:${port}/ws`;
 
   let ws: WebSocket;
   let attachedSessionId: UUID | null = null;
@@ -478,7 +477,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       resolve(result);
     }
 
-    ws = new WebSocket(url, capabilityWsOptions() as never);
+    const target = resolveDaemonWsTarget(host, port);
+    ws = new WebSocket(target.url, target.options as never);
 
     const connectionTimer = setTimeout(() => {
       writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);

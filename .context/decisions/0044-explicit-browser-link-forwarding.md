@@ -17,9 +17,11 @@ Selection permits candidate delivery, never automatic opening or a standing gran
 The host never fetches the URL or opens a browser for this operation.
 
 Initial release requires direct HTTPS/WSS with normal certificate/hostname validation
-and existing signed device authentication; it is Claude only. The current daemon
-has no TLS listener. Existing signed `ws://` operation alone does not satisfy this
-release prerequisite, and the feature must not fall back to plaintext.
+and existing signed device authentication; it is Claude only. The daemon's
+optional `[daemon.tls]` listener supplies the host transport; actual producer,
+receiver and client integration remain required. Existing signed `ws://` operation
+alone does not satisfy this release prerequisite, and the feature must not fall
+back to plaintext.
 Codex commands run in its shared app-server, so changing its TUI environment alone would not establish tool-process forwarding.
 Relay and native callers adopt this capability only after their own actual route/conformance controls.
 There is no port forwarding or localhost rewriting: the stated URL opens on the receiving device, where localhost names that device.

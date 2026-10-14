@@ -16,7 +16,7 @@ import {
   unlockStoredIdentity,
 } from '@/lib/identity-client';
 import { ConnectionApproval } from '@/lib/connection-approval';
-import { DAEMON_BASE_PORT, errorToString, hubSupport, type relayV2 } from '@remi/shared';
+import { errorToString, hubSupport, type relayV2 } from '@remi/shared';
 import type {
   RelayDevicesResponseMessage,
   RelayDeviceRevokeResponseMessage,
@@ -45,8 +45,9 @@ import {
   isConnectionReplaceable,
   planForceReconnect,
 } from './connection-manager-helpers';
-import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
-import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
+import { childDaemonUrl, parseConnectionId } from '@/lib/connection-id';
+import { resolveDaemonPort } from '@/lib/port-discovery';
+export { parseConnectionId } from '@/lib/connection-id';
 import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, toBase64, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
@@ -250,6 +251,8 @@ export interface UseConnectionManagerReturn {
   /** Get the hello_ack session ID for a connection (reads from live state, not React state) */
   getOwnFingerprint: () => string | null;
   getConnectionMode: (connectionId: ConnectionId) => 'direct' | 'relay' | null;
+  /** Current connected direct URL from live state, preserving its TLS hostname. */
+  getDirectConnectionUrl: (connectionId: ConnectionId) => string | null;
   getSessionId: (connectionId: ConnectionId) => string | null;
   uploadImage: (connectionId: ConnectionId, sessionId: UUID, file: File) => Promise<void>;
   cancelImageUpload: (connectionId: ConnectionId, sessionId: UUID) => Promise<void>;
@@ -262,20 +265,6 @@ export interface UseConnectionManagerReturn {
   passphraseConnectionId: ConnectionId | null;
   /** Server fingerprint for the connection needing passphrase */
   passphraseServerFingerprint: string | null;
-}
-
-/** Derive connectionId (host:port) from a WebSocket URL. Falls back to the
- * default daemon port if not specified. */
-export function parseConnectionId(url: string): ConnectionId {
-  try {
-    const parsed = new URL(url);
-    const host = normalizeConnectionHost(parsed.hostname || 'localhost');
-    const port = parsed.port || String(DAEMON_BASE_PORT);
-    return makeConnectionId(`${host}:${port}`);
-  } catch (err) {
-    console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
-    return makeConnectionId(normalizeConnectionHost(url));
-  }
 }
 
 /** Sign an auth challenge with the given identity */
@@ -817,17 +806,21 @@ export function useConnectionManager(
       if (mc.escalating) return;
       mc.escalating = true;
 
-      const { host, port } = splitConnectionId(mc.connectionId);
       // Set 'reconnecting' directly (the client emits onReconnectExhausted,
       // not a status). The client's own keep-alive already stopped itself
       // when the transport closed (WebSocketClient#handleClose).
       mc.status = 'reconnecting';
       mc.error = null;
       syncState();
-      console.debug(`[ConnectionManager] escalate ${mc.connectionId}: probing ${host}`);
 
       try {
-        const resolved = await resolveDaemonPort(host, port);
+        const source = new URL(mc.url);
+        if (source.protocol !== 'ws:' && source.protocol !== 'wss:')
+          throw new Error('Invalid direct WebSocket transport');
+        const protocol = source.protocol === 'wss:' ? 'wss' : 'ws';
+        const host = source.hostname;
+        const port = Number(source.port || (protocol === 'wss' ? 443 : 80));
+        const resolved = await resolveDaemonPort(host, port, { protocol });
         // Bail if the connection was torn down (or replaced) while probing.
         if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
 
@@ -839,7 +832,8 @@ export function useConnectionManager(
           return;
         }
 
-        const newUrl = buildWsUrl(parseHostInput(host), resolved);
+        const newUrl = childDaemonUrl(source.href, resolved);
+        if (!newUrl) throw new Error('Invalid resolved direct endpoint');
         if (mc.url !== newUrl) {
           mc.imageUploadAuthenticated = false;
           mc.approval.reset();
@@ -1733,6 +1727,11 @@ export function useConnectionManager(
     takeImageDraftForSend,
     getOwnFingerprint: () => identityRef.current?.fingerprint ?? null,
     getConnectionMode: connectionId => connectionsMapRef.current.get(connectionId)?.mode ?? null,
+    getDirectConnectionUrl: connectionId => {
+      const connection = connectionsMapRef.current.get(connectionId);
+      return connection?.mode === 'direct' && connection.status === 'connected'
+        ? connection.url : null;
+    },
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,

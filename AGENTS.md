@@ -83,7 +83,7 @@ bun run build && npx cap sync android && npx cap open android
 │  React + Capacitor (iOS / Android / Web / Desktop)               │
 │  Chat View (xterm.js) | Session List | Notifications             │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ WebSocket (direct; remi adds no encryption, ADR 0009)
+                           │ WebSocket (direct; WS or optional WSS, ADR 0009)
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                 REMI DAEMON (server / dev machine)               │
 │  PTY Manager | Session Registry | Event Parser | WebSocket:8765  │
@@ -194,15 +194,27 @@ registers itself in live-sessions.
 
 | Method | When to use |
 |---|---|
-| Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
+| Direct connection | Default WS over a private network/tunnel, or optional HTTPS/WSS ([setup](docs/DIRECT-TLS.md)) |
 | Signaling relay | V2 hub daemon and web client in source, off by default; deployed/signed R7 acceptance pending |
 
 **Direct connection now requires setting `daemon.bind` (#880).** The default is
-`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels still work
-untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
+`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels work with
+the default WS listener, but **LAN direct, Tailscale direct (100.x) and mDNS
 discovery all stop** until the user opts in. mDNS does not even advertise on a
 loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
 disappears, which is the confusing half.
+
+Optional `[daemon.tls]` configures the public listener with certificate/key PEM
+files, resolved relative to the config file. Startup fails without plaintext
+fallback if the configured material or required local capability is unavailable.
+All three adapter construction paths share that loaded TLS policy. Local CLI and
+relay-child clients resolve the same home's capability-protected loopback control
+endpoint; public status/list/registry ports stay public. Off-machine CLI targets
+receive no local capability. Legacy mDNS is suppressed and direct v1 pairing
+refuses a verified same-PID TLS endpoint; native endpoint/secure QR and remote CLI WSS
+adoption remain pending. A tunnel to the TLS public port still needs a WSS-capable
+client. Browser discovery/reconnect preserves an existing WSS URL and its actual
+certificate hostname; it never changes that connection to WS.
 
 Do NOT recommend `tailscale serve` as the workaround. It is a same-host reverse
 proxy, so every tailnet peer arrives as `127.0.0.1` and loses its actual
