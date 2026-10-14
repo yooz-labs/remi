@@ -157,7 +157,7 @@ jobs:
         # pipefail keeps a failing `bun test` failing the step through `tee`.
         run: |
           set -o pipefail
-          bun test --coverage --coverage-reporter=text --coverage-reporter=lcov 2>&1 | tee test-output.txt
+          bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov 2>&1 | tee test-output.txt
       - name: Check coverage threshold
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         run: |
