@@ -27,6 +27,7 @@ export class RelayTransport implements ConnectionTransport {
   private attempts = 0;
   private enrolled = false;
   private resumeSuspended = false;
+  private forcingReconnect = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly makeChannel: (
     events: RelayMachineEvents,
@@ -152,16 +153,31 @@ export class RelayTransport implements ConnectionTransport {
     this.resumeSuspended = true;
   }
   forceReconnect(): void {
-    if (this.stopped || !this.enrolled) return;
+    if (this.stopped || !this.enrolled || this.forcingReconnect) return;
+    // close() may await the authenticated BYE. Serialize this entire handoff so
+    // a second explicit recovery cannot open a channel the first later replaces.
+    this.forcingReconnect = true;
     this.chatGeneration = null;
-    ++this.generation;
+    const generation = ++this.generation;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const prior = this.channel;
     this.channel = null;
+    this.events.onStatus('reconnecting');
     void (async () => {
-      await prior?.close();
-      await this.connect();
+      try {
+        await prior?.close();
+        if (generation !== this.generation || this.stopped || !this.identityCurrent()) return;
+        await this.connect();
+      } catch (error) {
+        if (generation !== this.generation || this.stopped) return;
+        this.events.onError?.(
+          error instanceof Error ? error : new Error('Relay reconnect failed.'),
+        );
+        this.events.onStatus('error');
+      } finally {
+        this.forcingReconnect = false;
+      }
     })();
   }
   disconnect(): void {
