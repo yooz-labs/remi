@@ -37,15 +37,19 @@ async function clientWithOwnedHost() {
   cleanup.push(hub.cleanup);
   // Wire fault injection uses the actual READY host Channel. It replaces no
   // gateway, crypto, parser or authentication logic and grants no new authority.
-  const peers = (hub.relay as unknown as {
-    peers: Map<string, { channel?: relayV2.Channel }>;
-  }).peers;
+  const peers = (
+    hub.relay as unknown as {
+      peers: Map<string, { channel?: relayV2.Channel }>;
+    }
+  ).peers;
   const previous = new Set(peers.keys());
   const ready = new Mailbox<boolean>();
   const messages = new Mailbox<ProtocolMessage>();
   const endings = new Mailbox<relayV2.StreamEnd>();
   const client = RelayMachineChannel.resume(hub.pin, hub.signer, () => true, {
-    onPhase: (phase) => { if (phase === 'connected') ready.push(true); },
+    onPhase: (phase) => {
+      if (phase === 'connected') ready.push(true);
+    },
     onMessage: (message) => messages.push(message),
     onClose: (end) => endings.push(end),
   });
@@ -68,8 +72,14 @@ test('canonical structured result crosses the actual encrypted client boundary',
 for (const [name, bytes] of [
   ['leading BOM', () => utf8(`\uFEFF${JSON.stringify(result())}`)],
   ['reversed request direction', () => utf8(JSON.stringify(request()))],
-  ['duplicate result member', () => utf8(JSON.stringify(result()).replace('"seq":1', '"seq":1,"seq":1'))],
-  ['extra result member', () => utf8(JSON.stringify({ ...result(), sandbox: 'danger-full-access' }))],
+  [
+    'duplicate result member',
+    () => utf8(JSON.stringify(result()).replace('"seq":1', '"seq":1,"seq":1')),
+  ],
+  [
+    'extra result member',
+    () => utf8(JSON.stringify({ ...result(), sandbox: 'danger-full-access' })),
+  ],
   ['invalid UTF-8', () => new Uint8Array([...utf8(JSON.stringify(result())), 0xff])],
 ] as const) {
   test(`client closes ${name} before an application callback`, async () => {
@@ -89,7 +99,9 @@ test('existing hub strict codec rejects duplicate original members before routin
   try {
     const closed = await Promise.race([
       hub.closed,
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2000); }),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 2000);
+      }),
     ]);
     expect(closed).not.toBeNull();
   } finally {

@@ -90,4 +90,15 @@ Installed0.162.1 also returned method-not-found for thread/items/list.
 History selects thread/turns/list with full items only on first-page method absence, never after a cursor or another error, preserving bounded raw-item/page/deadline limits.
 Its exact first-thread not-materialized response means empty history; malformed or other failures remain errors.
 The earlier112 legacy history/session controls pass, and the actual installed first-thread and materialized-user-history controls pass.
-Relay routing, genuine fresh hub native identity, final review/hosted checks and native UI remain open gates; #1207 is not closed by this direct phase.
+Prompt-free warm and cold native0.162.1 startup checks also bound genuine hub-created first threads without an observer connected before the child.
+The cold case began without a private control link or prestarted server; the TUI bootstrapped its own managed daemon, whose executable hash matched the standalone CLI.
+These checks used a private file-only copy of the previously approved account, sent zero prompt/input/model-turn requests and preserved the exhausted three-start/two-steer budget and owner authentication bytes.
+Initial ownership-matcher and cleanup-grace failures are retained; every owned child/hub/native/update-loop process subsequently exited and the private profile was removed.
+This is startup/binding evidence, not another model-completion or OS sandbox-enforcement result.
+
+Relay frame controls reuse the existing strict protocol codec and encoder; the hub already preserves the original BOM and rejects reversed directions.
+The web relay receiver now preserves that BOM too and rejects a host-to-client chat request before application delivery.
+Actual Worker/HubRelay/RelayMachineChannel controls reproduce those two original failures; both corrections pass on both Buns and removing either correction fails its original control.
+No relay writer authority or capability is enabled by these frame checks.
+
+Final hosted checks, relay writer routing and native conformance/UI remain open gates; #1207 is not closed by this direct phase.
