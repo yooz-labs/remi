@@ -566,3 +566,9 @@ pass in 2.1 seconds, without relaxing its 15-second limit.
 
 This remains an internal coordinator, without public dispatch/capability or a
 client action. Compiled public caller and native conformance gates remain.
+
+The coordinator's R1 found that spreading binding members preserved their JSON
+order in the retry signature. Copying the two binding fields in a fixed order
+now makes equivalent reordered retries share the recorded outcome. The actual
+signed-wire regression failed before this fix; the coordinator source controls
+pass 169 tests and 1,508 assertions on both supported Bun versions afterward.

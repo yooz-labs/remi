@@ -38,7 +38,7 @@ const captured = (request: ImageInsertRequest): ImageInsertRequest => ({
   id: request.id,
   timestamp: request.timestamp,
   sessionId: request.sessionId,
-  binding: { ...request.binding },
+  binding: { harness: request.binding.harness, harnessSessionId: request.binding.harnessSessionId },
   artifactId: request.artifactId,
 });
 

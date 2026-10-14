@@ -1256,3 +1256,20 @@ test('late type on oversized binary staging closes, while a large ordinary frame
     'oversized staging close',
   );
 });
+
+test('equivalent reordered binding members replay the actual coordinator outcome', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  const first = await coordinator.handle(f.owner.id, request);
+  expect(first.outcome).toBe('inserted');
+  const reordered = {
+    ...request,
+    binding: {
+      harnessSessionId: request.binding.harnessSessionId,
+      harness: request.binding.harness,
+    },
+  };
+  expect(await coordinator.handle(f.owner.id, reordered)).toBe(first);
+});
