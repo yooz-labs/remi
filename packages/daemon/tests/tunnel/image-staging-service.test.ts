@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -23,6 +31,8 @@ import { WebSocketAdapter } from '../../src/adapters/websocket-adapter';
 import { MessageAPI } from '../../src/api/message-api';
 import { Authenticator } from '../../src/auth/authenticator';
 import { IdentityStore } from '../../src/auth/identity-store';
+import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate';
+import { promptUpFor } from '../../src/cli/handlers/prompt-up';
 import { PTYSession } from '../../src/pty/pty-session';
 import { SessionBindingStore } from '../../src/session/session-binding-store';
 import { SessionRegistry } from '../../src/session/session-registry';
@@ -42,14 +52,22 @@ afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 
-async function fixture() {
-  const home = mkdtempSync(join(tmpdir(), 'remi-staging-service-'));
+async function fixture(parent = tmpdir()) {
+  const home = mkdtempSync(join(parent, 'remi-staging-service-'));
   const store = new IdentityStore(join(home, 'auth'));
   const registry = new SessionRegistry();
   const binding = new SessionBindingStore(new SessionStore(join(home, 'sessions.json')));
   const sessionId = generateId();
   const harnessSessionId = generateId();
-  const pty = new PTYSession({ command: '/bin/cat', cwd: home });
+  let output = '';
+  const pty = new PTYSession(
+    { command: '/bin/cat', cwd: home, size: { cols: 500, rows: 40 } },
+    {
+      onData: (data) => {
+        output += data;
+      },
+    },
+  );
   const sockets: WebSocket[] = [];
   const resources: { adapter?: WebSocketAdapter; service?: ImageStagingService } = {};
   cleanup.push(async () => {
@@ -165,6 +183,7 @@ async function fixture() {
     };
   };
   return {
+    output: () => output,
     home,
     store,
     registry,
@@ -281,6 +300,274 @@ test('actual signed direct clients stage exact PNG/JPEG once and retain the orig
   expect(f.ledger()[0]?.device).toBe(
     createHash('sha256').update(Buffer.from(f.owner.identity.publicKey, 'base64')).digest('hex'),
   );
+});
+
+async function stagedForInsertion(file = 'fixture.png', parent = tmpdir()) {
+  const f = await fixture(parent);
+  const { bytes, accepted } = await start(f, file);
+  await chunks(f, accepted.transferId, bytes);
+  const result = await invoke(
+    f.service,
+    f.owner.id,
+    operation(f, accepted.transferId, 'image_upload_complete'),
+  );
+  if (result.type !== 'image_upload_result') throw new Error('Actual image not staged');
+  const prepare = () =>
+    f.service.prepareInsertion(
+      f.owner.id,
+      f.sessionId,
+      { harness: 'claude', harnessSessionId: f.harnessSessionId },
+      result.artifactId,
+    );
+  return { f, result, prepare };
+}
+
+const noPrompt = () => promptUpFor(undefined, undefined) !== null;
+
+test('actual detach and same-socket reattach cannot revive a captured insertion lease', async () => {
+  const { f, prepare } = await stagedForInsertion();
+  const lease = prepare();
+  const reference = lease.referencePath();
+  f.registry.detachConnection(f.owner.id);
+  expect(f.registry.attachConnection(f.sessionId, f.owner.id).success).toBe(true);
+  expect(() => lease.retire(reference, noPrompt)).toThrow('Image insertion refused');
+  expect(lease.possibleWrite).toBe(false);
+  expect(f.output()).toBe('');
+});
+
+test('actual duplicate attach preserves a live token but reattach ends the original upload authority', async () => {
+  const f = await fixture();
+  const token = f.registry.getAttachmentToken(f.owner.id);
+  expect(token).toBeDefined();
+  expect(f.registry.attachConnection(f.sessionId, f.owner.id).success).toBe(true);
+  expect(f.registry.getAttachmentToken(f.owner.id)).toBe(token);
+  const { bytes, accepted } = await start(f);
+  f.registry.detachConnection(f.owner.id);
+  expect(f.registry.getAttachmentToken(f.owner.id)).toBeUndefined();
+  expect(f.registry.attachConnection(f.sessionId, f.owner.id).success).toBe(true);
+  expect(f.registry.getAttachmentToken(f.owner.id)).not.toBe(token);
+  const refused = await invoke(f.service, f.owner.id, {
+    type: 'image_upload_chunk',
+    id: generateId(),
+    timestamp: new Date().toISOString(),
+    sessionId: f.sessionId,
+    transferId: accepted.transferId,
+    seq: 0,
+    data: bytes.subarray(0, 32768).toString('base64url'),
+  });
+  expect(refused.type === 'image_upload_refused' && refused.code).toBe('unavailable');
+  await f.service.maintain();
+  expect(f.ledger()[0]?.state).toBe('settled');
+  expect(f.ledger()[0]?.charge).toBe(0);
+});
+
+for (const clock of ['wall', 'monotonic'] as const) {
+  test(`actual retained artifact ${clock} deadline aging refuses an insertion lease`, async () => {
+    const { f, result, prepare } = await stagedForInsertion();
+    const lease = prepare();
+    const reference = lease.referencePath();
+    // Explicitly age this actual fixture's stored deadline; no fake clock or 24-hour qualification.
+    const records = Reflect.get(f.service, 'transfers') as Map<
+      string,
+      {
+        artifact?: { id: string; expiresAt: string; until: number };
+      }
+    >;
+    const artifact = [...records.values()].find(
+      (row) => row.artifact?.id === result.artifactId,
+    )?.artifact;
+    if (!artifact) throw new Error('Actual retained artifact missing');
+    if (clock === 'wall') artifact.expiresAt = new Date(Date.now() - 1).toISOString();
+    else artifact.until = performance.now() - 1;
+    expect(() => lease.retire(reference, noPrompt)).toThrow('Image insertion refused');
+    expect(lease.possibleWrite).toBe(false);
+    expect(f.output()).toBe('');
+  });
+}
+
+for (const file of ['fixture.png', 'fixture.jpg']) {
+  test(`actual ${file} insertion lease writes once without Enter and keeps original storage`, async () => {
+    const { f, result, prepare } = await stagedForInsertion(file);
+    const before = f.ledger();
+    const names = readdirSync(join(f.home, 'image-staging/scratch'));
+    const lease = prepare();
+    const competing = prepare();
+    const reference = lease.referencePath();
+    expect(lease.pty).toBe(f.pty);
+    expect(lease.expiresAt).toBe(result.artifactExpiresAt);
+    expect(lease.possibleWrite).toBe(false);
+    await Bun.sleep(30);
+    expect(f.output()).toBe('');
+    const text = ` @"${reference}" `;
+    expect(
+      await lease.pty.insertText(text, () => {
+        lease.retire(reference, noPrompt);
+        return true;
+      }),
+    ).toBe(true);
+    await pollUntil(() => f.output() === text, 1000, 'Actual cat echoed one reference');
+    expect(f.output()).not.toMatch(/[\r\n]/u);
+    expect(lease.possibleWrite).toBe(true);
+    expect(competing.possibleWrite).toBe(false);
+    await expect(
+      competing.pty.insertText(text, () => {
+        competing.retire(reference, noPrompt);
+        return true;
+      }),
+    ).rejects.toThrow('Image insertion refused');
+    expect(() => prepare()).toThrow('Image insertion refused');
+    expect(() => lease.referencePath()).toThrow('Image insertion refused');
+    expect(f.output()).toBe(text);
+    expect(f.ledger()).toEqual(before);
+    expect(readdirSync(join(f.home, 'image-staging/scratch'))).toEqual(names);
+    expect(readFileSync(reference).length).toBe(result.byteLength);
+  });
+}
+
+test('actual insertion lease retirement stays consumed even without a terminal write', async () => {
+  const { f, prepare } = await stagedForInsertion();
+  const lease = prepare();
+  lease.retire(lease.referencePath(), noPrompt);
+  expect(lease.possibleWrite).toBe(true);
+  expect(f.output()).toBe('');
+  expect(() => prepare()).toThrow('Image insertion refused');
+  expect(f.ledger()[0]?.state).toBe('staged');
+  expect(f.ledger()[0]?.charge).toBeGreaterThan(0);
+});
+
+test('actual signed foreign or reconnected clients never acquire the original insertion lease', async () => {
+  const { f, result, prepare } = await stagedForInsertion();
+  const binding = { harness: 'claude', harnessSessionId: f.harnessSessionId } as const;
+  const other = await f.client();
+  expect(() =>
+    f.service.prepareInsertion(other.id, f.sessionId, binding, result.artifactId),
+  ).toThrow('Image insertion refused');
+  expect(() =>
+    f.service.prepareInsertion(f.owner.id, f.sessionId, binding, 'A'.repeat(22)),
+  ).toThrow('Image insertion refused');
+  const lease = prepare();
+  f.registry.detachConnection(f.owner.id);
+  expect(() => lease.retire(lease.referencePath(), noPrompt)).toThrow('Image insertion refused');
+  expect(lease.possibleWrite).toBe(false);
+  expect(f.output()).toBe('');
+  // Even reattachment of the original socket to another runtime supplies no artifact authority.
+  expect(f.registry.attachConnection(f.sessionId, f.owner.id).success).toBe(true);
+  expect(() =>
+    f.service.prepareInsertion(f.owner.id, generateId(), binding, result.artifactId),
+  ).toThrow('Image insertion refused');
+});
+
+for (const change of ['grant', 'binding', 'exit', 'file'] as const) {
+  test(`queued actual ${change} change refuses insertion before this lease retirement`, async () => {
+    const { f, prepare } = await stagedForInsertion();
+    const lease = prepare();
+    const reference = lease.referencePath();
+    const first = f.pty.submitInput('EARLIER');
+    const pending = lease.pty.insertText(` @"${reference}" `, () => {
+      lease.retire(reference, noPrompt);
+      return true;
+    });
+    const observed = Promise.allSettled([first, pending]);
+    if (change === 'grant') {
+      expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
+      await f.store.addAuthorizedKey(f.owner.identity.publicKey, 'regranted');
+    } else if (change === 'binding') f.binding.update(f.sessionId, generateId());
+    else if (change === 'exit') await f.pty.close();
+    else {
+      renameSync(reference, `${reference}.original`);
+      writeFileSync(reference, 'actual replacement', { mode: 0o600 });
+      cleanup.push(async () => {
+        rmSync(reference);
+        renameSync(`${reference}.original`, reference);
+      });
+    }
+    const settled = await observed;
+    expect(settled[1]?.status).toBe('rejected');
+    expect(lease.possibleWrite).toBe(false);
+    expect(f.output()).not.toContain(reference);
+  });
+}
+
+test('an actual held hook appearing behind queued input refuses retirement and allows a later lease', async () => {
+  const { f, prepare } = await stagedForInsertion();
+  const lease = prepare();
+  const reference = lease.referencePath();
+  const gate = new AutoApproveGate(
+    {
+      sessionRegistry: f.registry,
+      isInSubagentContext: () => false,
+      holdMs: 60000,
+      hasLocalTerminal: false,
+      escalate: () => generateId(),
+    },
+    f.sessionId,
+  );
+  const first = f.pty.submitInput('EARLIER');
+  const pending = lease.pty.insertText(` @"${reference}" `, () => {
+    lease.retire(reference, () => promptUpFor(gate, undefined) !== null);
+    return true;
+  });
+  const hook = gate.resolvePermission({
+    session_id: f.harnessSessionId,
+    transcript_path: join(f.home, 'transcript.jsonl'),
+    cwd: f.home,
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'echo insertion-lease-control' },
+  });
+  try {
+    expect(promptUpFor(gate, undefined)).toBe('held');
+    await first;
+    await expect(pending).rejects.toThrow('Image insertion refused');
+    expect(lease.possibleWrite).toBe(false);
+    expect(f.output()).not.toContain(reference);
+  } finally {
+    gate.forceRelease('test cleanup');
+    await hook;
+    gate.noteTerminalEscape();
+  }
+  expect(promptUpFor(gate, undefined)).toBeNull();
+  const later = prepare();
+  later.retire(later.referencePath(), () => promptUpFor(gate, undefined) !== null);
+  expect(later.possibleWrite).toBe(true);
+});
+
+test('new service recovery cannot recreate a retired insertion lease', async () => {
+  const { f, result, prepare } = await stagedForInsertion();
+  const lease = prepare();
+  lease.retire(lease.referencePath(), noPrompt);
+  const other = await ImageStagingService.open({
+    home: f.home,
+    identityStore: f.store,
+    sessionRegistry: f.registry,
+    bindingStore: f.binding,
+    directAdapter: f.directAdapter,
+  });
+  try {
+    expect(() =>
+      other.prepareInsertion(
+        f.owner.id,
+        f.sessionId,
+        { harness: 'claude', harnessSessionId: f.harnessSessionId },
+        result.artifactId,
+      ),
+    ).toThrow('Image insertion refused');
+    expect(lease.possibleWrite).toBe(true);
+    expect(f.ledger()[0]?.charge).toBeGreaterThan(0);
+  } finally {
+    expect(await other.close()).toBe(true);
+  }
+});
+
+test('literal quote in an actual private home refuses reference preparation without changing storage', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'remi-quote"-'));
+  cleanup.push(async () => rmSync(parent, { recursive: true, force: true }));
+  const { f, prepare } = await stagedForInsertion('fixture.png', parent);
+  const before = f.ledger();
+  expect(() => prepare()).toThrow('Image insertion refused');
+  expect(f.ledger()).toEqual(before);
+  expect(f.output()).toBe('');
 });
 
 test('a second authorized client cannot learn or retire another client transfer', async () => {

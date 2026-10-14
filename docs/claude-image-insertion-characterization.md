@@ -79,8 +79,16 @@ persisted in their lease and immutable version2 ownership markers. Legacy
 No completed file is renamed, linked or copied; quotas and lifetime stay the
 same. An older binary rejects the new ledger fields and cannot recover those
 rows; use the matching current daemon to retain and settle their charge.
-The corrected exact-path model check is still pending separate authorization.
-Insertion remains unavailable.
+The owner authorized one corrective turn, which passed on the same installed
+binary/model using two actual retained JournalRead paths outside an empty CLI
+project. Typing wrote 480 bytes with zero CR/LF; five seconds later there was
+no user message or attachment. One explicit Enter produced two image attachment
+rows with the exact original PNG (375 bytes) and JPEG (959 bytes), each 128×128.
+Both answers correctly named red, green, blue and yellow in quadrant order.
+The child was reaped and both journals settled with zero retained charge.
+Exact receipts are under `corrected-route-check/` in the same artifact directory.
+Exactly six authorized turns have now been consumed; no additional model turn
+is part of this check. Managed insertion and its production caller remain unavailable.
 
 ## Queue prerequisite
 
