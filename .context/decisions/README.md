@@ -58,6 +58,7 @@ add a row below.
 | [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
 | [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; `image_staging` availability waits for production handler/caller conformance |
 | [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; internal guarded no-Enter lease, one possible insertion per artifact and an expiring unsent draft; coordinator, shared wire, production handler/client and native conformance gates remain |
+| [0043](0043-structured-chat-submission.md) | Proposed structured Codex submission shapes and bounded per-connection/session sequencing; standalone codec/receipts only, no registry/capability/caller or contract freeze |
 
 ## By area
 
@@ -67,6 +68,6 @@ another one closed.
 
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
-- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0041, 0012, 0013, 0014, 0006
+- **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0041, 0043, 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034
 - **Process:** 0007, 0008, 0011, 0040

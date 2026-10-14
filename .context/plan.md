@@ -541,3 +541,12 @@ Next connect a harness-neutral submission seam and additive correlated wire resu
 Then add an actual web caller and capability only where that path exists; provide the same contract to the native developer.
 Run source controls on both supported Buns, actual daemon/client routing, and separately approved installed-model acceptance before claiming the complete feature.
 Keep #1207 open until the connected path lands.
+
+
+## Structured chat contract preparation
+
+Proposed [ADR0043](decisions/0043-structured-chat-submission.md) records a separate submit/result pair and bounded per-connection/session sequence receipts.
+The standalone codec and internal sequencer have no registry, capability advertisement or production caller.
+Both-Bun codec/sequence controls and actual accountless installed-server duplicate/eviction/uncertainty probes pass; these do not prove a Remi authenticated route or model completion.
+Next connect the harness-neutral submission member with its CLI/adapter caller, then actual web UI and direct/relay conformance.
+Fresh hub first-turn identity and separately approved model acceptance remain explicit gates.
