@@ -95,8 +95,9 @@ Do not alter Claude permission judgment, rewrite arbitrary tool commands or wide
 
 A bounded Mac probe used the actual PTYSession, Claude environment builder and installed Python 3.14.8 webbrowser module on both supported Buns.
 Exit zero passed one exact URL argument and returned success without a native browser-launch attempt.
-Exit one attempted an osascript fallback; the real subprocess audit event observed and refused it before execution, and no browser opened.
-Both owned profiles were removed.
+Exit one continued into the platform fallback path; the real subprocess audit event refused its next subprocess (sh) before execution.
+No browser opened, and the remainder of that fallback path was not exercised.
+All owned profiles were removed.
 This establishes that launcher profile and environment seam only, not installed Claude tool execution, Linux launchers, endpoint/client delivery or general interception of open/xdg-open.
 
 ## Implementation order and fixed gates
