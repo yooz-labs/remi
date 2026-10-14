@@ -217,9 +217,9 @@ export class WebSocketServer {
     return this.isRunning;
   }
 
-  /** Get server port */
+  /** The held OS-assigned port when running, including an ephemeral port request (#1232). */
   get port(): number {
-    return this.config.port;
+    return this.server?.port ?? this.config.port;
   }
 
   /**
@@ -445,7 +445,7 @@ export class WebSocketServer {
     });
 
     this.isRunning = true;
-    this.events.onStart?.(this.config.port);
+    this.events.onStart?.(this.port);
   }
 
   /**
