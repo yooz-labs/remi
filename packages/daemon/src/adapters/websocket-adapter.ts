@@ -31,6 +31,9 @@ export interface WebSocketAdapterConfig extends AdapterConfig {
   /** Host to bind to */
   readonly host?: string;
 
+  /** Optional PEM contents for HTTPS/WSS on the existing listener (#1170). */
+  readonly tls?: ServerConfig['tls'];
+
   /** Path for WebSocket connections */
   readonly path?: string;
 
@@ -67,6 +70,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       enabled: config.enabled ?? true,
       port: config.port ?? DEFAULT_PORT,
       ...(config.host && { host: config.host }),
+      ...(config.tls !== undefined && { tls: config.tls }),
       ...(config.path && { path: config.path }),
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
       ...(config.authenticator && { authenticator: config.authenticator }),
@@ -147,6 +151,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
     const serverConfig: Partial<ServerConfig> = {
       port: this.config.port,
       ...(this.config.host && { host: this.config.host }),
+      ...(this.config.tls !== undefined && { tls: this.config.tls }),
       ...(this.config.path && { path: this.config.path }),
       ...(this.config.maxConnections !== undefined && {
         maxConnections: this.config.maxConnections,

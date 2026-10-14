@@ -40,6 +40,12 @@ export interface ServerConfig {
   /** Host to bind to */
   readonly host?: string;
 
+  /** Optional PEM contents for HTTPS/WSS on this listener (#1170). */
+  readonly tls?: {
+    readonly key: string;
+    readonly cert: string;
+  };
+
   /** Path for WebSocket connections */
   readonly path?: string;
 
@@ -151,8 +157,8 @@ interface WSData {
  * ```
  */
 export class WebSocketServer {
-  private readonly config: Required<Omit<ServerConfig, 'relayControl'>> &
-    Pick<ServerConfig, 'relayControl'>;
+  private readonly config: Required<Omit<ServerConfig, 'relayControl' | 'tls'>> &
+    Pick<ServerConfig, 'relayControl' | 'tls'>;
   private readonly events: Partial<ServerEvents>;
   private readonly connections: Map<UUID, Connection> = new Map();
 
@@ -178,6 +184,7 @@ export class WebSocketServer {
       allowedOrigins: config.allowedOrigins ?? [],
       logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
       capabilityToken: config.capabilityToken ?? '',
+      ...(config.tls !== undefined && { tls: config.tls }),
       ...(config.relayControl && { relayControl: config.relayControl }),
     };
     this.events = events;
@@ -243,6 +250,7 @@ export class WebSocketServer {
     this.server = Bun.serve<WSData>({
       port: this.config.port,
       hostname: this.config.host,
+      ...(this.config.tls !== undefined && { tls: this.config.tls }),
 
       fetch(req, server) {
         const url = new URL(req.url);
@@ -373,7 +381,7 @@ export class WebSocketServer {
         }
 
         // Connection-independent answer relay (#575, P4a). Lets a cold-start
-        // push tap deliver an answer over plain HTTP before any WebSocket is
+        // push tap deliver an answer over HTTP(S) before any WebSocket is
         // warm. Authenticated with the SAME trust model as the WebSocket
         // (loopback bypass + Ed25519 signature over an authorized key); routes
         // through the SAME answer core as the WebSocket `onAnswer`.
