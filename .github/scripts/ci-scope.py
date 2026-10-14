@@ -23,6 +23,18 @@ WRAPPER_SUSPEND_INPUTS = (
     "packages/daemon/tests/cli/fixtures/wrapper-suspend-pty.py",
 )
 CI_COVERAGE_READER = "packages/daemon/tests/ci-coverage-threshold.test.ts"
+CI_BUN_DIAGNOSTIC_INPUTS = (
+    "scripts/ci/run-bun-test-with-diagnostics.ts",
+    "packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts",
+)
+CI_BUN_DIAGNOSTIC_CALLERS = {
+    ".github/workflows/ci.yml": ("100644", "0e73aeb9b57b0645311076f5a7743bd4e149364f"),
+    ".github/scripts/workflow-scope.py": ("100644", "bb1a012124eb49d5a9a914cac6930c071b3a40a0"),
+    ".github/scripts/workflow-contracts.json": ("100644", "c3425e31119003f1bd4e9f69d0c8b2557834f968"),
+    "packages/daemon/tests/ci-coverage-threshold.test.ts": (
+        "100644", "0187211bf0bbcd35937b7fe9d57cfebbba551a78",
+    ),
+}
 HOOK_SERVER_TEST = "packages/daemon/tests/hooks/hook-server.test.ts"
 # Reviewed commentary only; the whole blob and complete scan must still match (#1359).
 HOOK_TEST_COMMENTS = {
@@ -967,6 +979,80 @@ def hook_test_references_reviewed(base, head):
         return False
 
 
+def bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
+    """Allow only the exact CI runner/test pair with its reviewed callers unchanged."""
+    try:
+        allowed_self_edits = {
+            ".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
+            ".github/ci-scope.md",
+        }
+        ordinary_docs = {path for path in paths if path.startswith("docs/") or
+                         (path.endswith(".md") and not path.startswith(".github/"))}
+        if not set(CI_BUN_DIAGNOSTIC_INPUTS) <= set(paths) or not set(paths) <= (
+                set(CI_BUN_DIAGNOSTIC_INPUTS) | allowed_self_edits | ordinary_docs):
+            return False
+
+        status = git("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                     merge_base, head, "--", *CI_BUN_DIAGNOSTIC_INPUTS)
+        fields = status.decode().split("\0")
+        if fields[-1] != "":
+            return False
+        entries = list(zip(fields[:-1:2], fields[1:-1:2]))
+        if len(entries) != 2 or set(entries) != {("M", path) for path in CI_BUN_DIAGNOSTIC_INPUTS}:
+            return False
+
+        refs = tuple(dict.fromkeys((base, head, merge_base)))
+        for ref in refs:
+            for path in CI_BUN_DIAGNOSTIC_INPUTS:
+                raw = git("ls-tree", "-z", ref, "--", path)
+                if not raw.endswith(b"\0"):
+                    return False
+                entries = raw[:-1].split(b"\0")
+                if len(entries) != 1:
+                    return False
+                header, separator, encoded_path = entries[0].partition(b"\t")
+                if (not separator or encoded_path.decode("utf-8", "strict") != path or
+                        not re.fullmatch(rb"100644 blob [0-9a-f]{40}", header)):
+                    return False
+            for path, (expected_mode, expected_blob) in CI_BUN_DIAGNOSTIC_CALLERS.items():
+                raw = git("ls-tree", "-z", ref, "--", path)
+                if not raw.endswith(b"\0"):
+                    return False
+                entries = raw[:-1].split(b"\0")
+                if len(entries) != 1:
+                    return False
+                header, separator, encoded_path = entries[0].partition(b"\t")
+                if (not separator or encoded_path.decode("utf-8", "strict") != path or
+                        header.decode("ascii", "strict") != f"{expected_mode} blob {expected_blob}"):
+                    return False
+
+            tree = git("ls-tree", "-r", "-z", ref, "--", "packages", "tests", "scripts",
+                       ".github/workflows", ".github/actions", ".github/scripts")
+            if not tree or not tree.endswith(b"\0"):
+                return False
+            for entry in tree[:-1].split(b"\0"):
+                header, separator, encoded_path = entry.partition(b"\t")
+                path = encoded_path.decode("utf-8", "strict")
+                if (not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header) or
+                        any(part in ("", ".", "..") for part in path.split("/")) or
+                        any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                    return False
+
+            scan = subprocess.run(
+                ["git", "grep", "-n", "-F", "-e", "run-bun-test-with-diagnostics", ref, "--",
+                 "packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts",
+                 *(f":(exclude){path}" for path in CI_BUN_DIAGNOSTIC_INPUTS),
+                 *(f":(exclude){path}" for path in CI_BUN_DIAGNOSTIC_CALLERS),
+                 ":(exclude).github/scripts/ci-scope.py", ":(exclude).github/scripts/check-ci-scope.py"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            if scan.returncode != 1:
+                return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
 def staging_is_dormant(base, head, merge_base, paths):
     try:
         trees = {}
@@ -1842,6 +1928,9 @@ def classify(base, head):
                     merge_base, head, "--").decode().split("\0")[:-1]
         if not paths:
             return all_gates("Empty diff; scope cannot justify skipping")
+        bun_diagnostic_pair = bool(set(paths) & set(CI_BUN_DIAGNOSTIC_INPUTS))
+        if bun_diagnostic_pair and not bun_diagnostic_test_references_reviewed(base, head, merge_base, paths):
+            return all_gates("Bun diagnostic runner/test caller or transition changed; running all gates")
         transition = reviewed_launch_or_decode_only(base, head, merge_base, paths)
         if transition:
             return {**all_gates(f"Exact reviewed {transition} transition; ordinary and short relay controls retained"),
@@ -1867,6 +1956,9 @@ def classify(base, head):
                 if not package_transport_unchanged(merge_base, head):
                     return all_gates("Root package runtime, dependency or script inputs changed")
             elif path in cold_paths or path in STAGING_INPUTS or path in ACCOUNTING_HEAD:
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
+            elif path in CI_BUN_DIAGNOSTIC_INPUTS:
+                # This exact CI-only test producer retains every ordinary gate, not R7.
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(

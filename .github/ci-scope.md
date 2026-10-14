@@ -19,6 +19,7 @@ always select their existing full gates.
 | Daemon/shared/Worker inputs | All existing gates | Run |
 | Exact wrapper suspend test/PTY fixture producers | All normal gates | Skip without external references |
 | Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
+| Exact Bun test diagnostics runner and its test | All normal gates | Skip with pinned coverage/workflow callers |
 | Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
@@ -63,6 +64,23 @@ all packages, root tests/scripts and GitHub workflows/actions/scripts, excluding
 only the test itself and the exact classifier/corpus self-tools. Any other
 reference or scan error restores all gates. Source changes and unknown neighbors
 or renamed tests remain conservative; this is separate from the wrapper producers.
+
+The CI-only Bun test diagnostics runner at
+`scripts/ci/run-bun-test-with-diagnostics.ts` and its actual-process test at
+`packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts` form one exact
+two-file producer pair. Both must be regular-file modifications in the
+merge-base-to-head diff and regular files at base, head and merge-base. The
+complete changed path set may also contain only the classifier, its corpus,
+this scope document, and ordinary documentation. The `ci.yml` coverage job,
+workflow command contract/checker, and coverage-threshold test are pinned to
+their reviewed mode/blob at all three refs. Fixed-string scans at both endpoints
+reject any other runner reference in package, test, script, workflow, action or
+scope-tool trees; unreadable trees, non-regular entries, unexpected references
+or changed caller pins restore every gate. The pair keeps the full normal
+coverage, lint and root type checks and skips only relay. A partial pair,
+rename, deletion, mode change, extra non-documentation path or mixed runtime
+input runs all gates. This exception says only which workflow gates are needed;
+it does not claim that the diagnostics resolve the observed Bun stall.
 
 Only modifications of `packages/daemon/tests/hooks/hook-server.test.ts` may skip
 relay; this test is outside the R7 workflow's actual test list. Every normal
