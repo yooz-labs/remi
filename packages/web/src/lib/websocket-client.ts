@@ -5,6 +5,7 @@
  */
 
 import type { ConnectionStatus } from '@/types';
+import { type ChatSubmitRequest, type ChatSubmitResult, decodeStructuredChatFrame, encodeStructuredChatFrame } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
 import {
@@ -16,6 +17,7 @@ import {
 import {
   isImageInsertionCandidate,
   isImageStagingCandidate,
+  isStructuredChatCandidate,
 } from '../../../shared/src/image-staging-ingress.ts';
 import type {
   ImageStagingMessage,
@@ -74,6 +76,7 @@ export interface WebSocketClientConfig {
 
 /** WebSocket client events */
 export interface WebSocketClientEvents {
+  onStructuredChatResult?: (message: ChatSubmitResult) => void;
   /** Called when connection status changes */
   onStatusChange?: (status: ConnectionStatus) => void;
   /** Called when a message is received */
@@ -383,6 +386,13 @@ export class WebSocketClient {
     }
   }
 
+  sendStructuredChat(request: ChatSubmitRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+    try { ws.send(encodeStructuredChatFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send structured chat')); return false; }
+  }
+
   /** Handle WebSocket open */
   private handleOpen(source: WebSocket): void {
     if (this.ws !== source) return;
@@ -462,6 +472,16 @@ export class WebSocketClient {
           : event.data instanceof ArrayBuffer
             ? new Uint8Array(event.data)
             : null;
+      if (raw !== null && isStructuredChatCandidate(raw)) {
+        const message = decodeStructuredChatFrame(raw);
+        if (!message || message.type !== 'chat_submit_result') {
+          this.handleError(new Error('Invalid structured chat result'));
+          source.close(1002, 'Invalid structured chat result'); return;
+        }
+        try { this.events.onStructuredChatResult?.(message); }
+        catch { this.handleError(new Error('Structured chat result handler failed')); }
+        return;
+      }
       if (raw !== null && isImageStagingCandidate(raw)) {
         const message = decodeImageStagingFrame(raw);
         if (!message || isImageStagingRequest(message)) {

@@ -349,7 +349,15 @@ export class CodexDecisions implements DecisionChannel {
     return entry?.state === 'live' && entry.spec.actionable;
   }
 
-  // The chat guard and Stop read these two, and neither can reach a Codex session: phone chat is
+  /** A sent answer is still pending until Codex resolves it; retired main requests also block. */
+  blocksStructuredChat(): boolean {
+    return (
+      !this.disposed &&
+      [...this.byKey.values()].some((entry) => this.deps.threadRole(entry.spec.threadId) === 'main')
+    );
+  }
+
+  // The legacy typed-chat guard and Stop read these two, and neither can reach a Codex session: phone chat is
   // refused earlier (`acceptsTypedChat`) and a Stop force-closes (`gracefulExitInput` is null). A
   // typed chat path (phase 6) adds what it needs; nothing here pretends to know more.
   hasMainHold(): boolean {

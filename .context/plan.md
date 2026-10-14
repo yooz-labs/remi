@@ -1,10 +1,12 @@
 # Plan: the roadmap
 
-Updated 2026-10-11.
+Updated 2026-10-14.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
 ## Where things stand
+
+- **Codex remote chat (#1207):** #1507 is the reviewed combined direct/relay integration candidate, including #1504 and its reviewed prerequisites. The direct head passed its actual 61-minute relay gate, but two hosted Test attempts timed out before the remote-new-client module body; no complete suite or coverage verdict exists for that head. The combined candidate receives fresh required checks before landing. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless native controls and rendered phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md).
 
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
@@ -71,7 +73,7 @@ Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 
 - **claude** (the Claude Code harness): #375 (P1, suspend and resume loses input), then #808, #1147, #940, #1189 with #1211, #1137.
-- **codex:** #1192 (Guardian reviews), #1187; #1207 waits on an owner decision.
+- **codex:** #1192 (Guardian reviews), #1187; #1207 uses structured start/steer and retains the host default (owner decision, 2026-10-13).
 - **web:** #1146, then the P3 list.
 - **quality:**
   - #1232: one port helper; it supersedes #1150, #1159 and #1169.
@@ -100,7 +102,7 @@ Collected in #1233. Decided on 2026-10-06:
 Still open:
 - the push lease: how many days a phone can go without reconnecting before a machine stops pushing to it (#1254; proposed 30);
 - whether closing a session deletes its worktree (until decided, it does not);
-- Codex typed chat (#1207).
+- Codex typed chat (#1207) was decided on 2026-10-13: structured start/steer with the current full-access default; explicit read-only remains honored.
 
 ## How every step is tested
 
@@ -621,3 +623,43 @@ The existing six-cell compiled host proof checks conditional availability with o
 No additional model, phone or native action is used.
 The accepted two-message contract and storage deadline are unchanged; native runs the shared corpus independently.
 The reviewed host/codec/coordinator/dispatch slices can land with this final caller as one integration PR to avoid duplicate whole-stack CI runs.
+
+## Codex structured chat (#1207)
+
+The owner accepted structured app-server start/steer while retaining the current full-access default.
+The implementation reuses the existing app-server client, thread tracker and decision channel; no typed Codex PTY fallback is enabled.
+The internal writer is the first reviewable step, with a 16 KiB text bound, exact main-thread/runtime binding, final authority check, explicit accepted/refused/uncertain outcomes and no turn policy overrides.
+Its ordinary controls construct a real unstarted client; an optional installed Codex control uses an empty file-only account and actual native server to check start, steer, explicit read-only parameters and real response loss.
+The initial immediate-steer control exposed the server's delayed active-status publication; the retained original failure is followed by a bounded wait for actual active status.
+No account-backed model completion or permission enforcement is claimed.
+
+Next connect a harness-neutral submission seam and additive correlated wire result with expected binding, bounded replay/conflict handling and uncertain-outcome retention.
+Then add an actual web caller and capability only where that path exists; provide the same contract to the native developer.
+Run source controls on both supported Buns, actual daemon/client routing, and separately approved installed-model acceptance before claiming the complete feature.
+Keep #1207 open until the connected path lands.
+
+
+## Structured chat contract preparation
+
+Proposed [ADR0043](decisions/0043-structured-chat-submission.md) records a separate submit/result pair and bounded per-connection/session sequence receipts.
+The standalone codec and internal sequencer have no registry, capability advertisement or production caller.
+Both-Bun codec/sequence controls and actual accountless installed-server duplicate/eviction/uncertainty probes pass; these do not prove a Remi authenticated route or model completion.
+Next connect the harness-neutral submission member with its CLI/adapter caller, then actual web UI and direct/relay conformance.
+Fresh hub first-turn identity and separately approved model acceptance remain explicit gates.
+
+
+## Codex signed direct chat integration (#1207)
+
+The connected phase reuses the reviewed writer/codec/receipt components from PRs1501/1502 and normally merges current develop, including the image caller, into one integration branch.
+It adds the actual CodexSession neutral submission member, current runtime epochs and pending-main-request guard; a signed direct service owns grant/attachment/binding checks and atomic grant-locked RPC sends.
+Strict original text/binary ingress and a dedicated client callback bypass legacy ACK/deduplication; per-connection/session watermarks survive context changes.
+Web Send reports pending/accepted/refused/uncertain and never uses the legacy automatic retry tracker; unknown delivery requires checking the session and reconnecting.
+Actual rendered App checks found transcript replacement erasing delivery status; it now retains that independent status, with one rendered row for the live echo and no blind retry.
+The installed0.162.1 history method removal is handled by a first-page method-not-found-only full-turn fallback, with empty-first-thread and materialized-history controls against that actual server.
+
+The accountless signed control constructs the real stores, adapter, CodexHarness, native server and shipping web client/controller and observes the real grant lock at each RPC send.
+The actual compiled hub/child plus rendered App are checked at390x844,1024x768 and1440x1000, including paused-daemon uncertainty and no replay.
+This fixture uses inert cat and no account; it complements the earlier three approved model starts/two steers without claiming further model completion.
+Original failures, cleanup and source/test receipts remain on S1.
+Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
+Keep1207 open; no phone or additional account quota is used for this direct phase.

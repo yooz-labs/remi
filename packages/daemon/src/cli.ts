@@ -126,6 +126,7 @@ import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import {
   IMAGE_INSERTION_CAPABILITY,
   IMAGE_STAGING_CAPABILITY,
+  STRUCTURED_CHAT_CAPABILITY,
   boundedEscape,
   generateId,
   now,
@@ -177,6 +178,7 @@ import {
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import { buildSessionList } from './cli/handlers/session-list-entries.ts';
+import { StructuredChatService } from './cli/handlers/structured-chat-events.ts';
 import {
   type TranscriptHandlers,
   createTranscriptHandlers,
@@ -1149,14 +1151,14 @@ let securePushService: SecurePushService | undefined;
 let nativeAnswerLedger: NativeAnswerLedger | undefined;
 let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
-const capabilitiesForConnection = (id: UUID): readonly string[] =>
-  imageStagingService?.isAvailable(id)
-    ? [
-        ...DAEMON_CAPABILITIES,
-        IMAGE_STAGING_CAPABILITY,
-        ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : []),
-      ]
-    : DAEMON_CAPABILITIES;
+let structuredChatService: StructuredChatService | undefined;
+const capabilitiesForConnection = (id: UUID): readonly string[] => [
+  ...DAEMON_CAPABILITIES,
+  ...(imageStagingService?.isAvailable(id)
+    ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
+    : []),
+  ...(structuredChatService?.isAvailable(id) ? [STRUCTURED_CHAT_CAPABILITY] : []),
+];
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);
   return runtime ? securePushService?.forRuntime(runtime) : undefined;
@@ -2370,6 +2372,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
   onConnectionClosed: (id) => {
+    structuredChatService?.forgetConnection(id);
     forgetConnectionToken(id);
     void imageStagingService?.invalidateConnection(id);
     imageInsertionCoordinator?.invalidateConnection(id);
@@ -2384,6 +2387,27 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
 });
 
 const sharedEvents = {
+  onStructuredChat: async (
+    connectionId: UUID,
+    request: import('@remi/shared').ChatSubmitRequest,
+  ) => {
+    if (structuredChatService) {
+      await structuredChatService.handle(connectionId, request, (result) =>
+        sendToConnection(connectionId, result),
+      );
+      return;
+    }
+    sendToConnection(connectionId, {
+      type: 'chat_submit_result',
+      id: generateId(),
+      timestamp: now(),
+      requestId: request.id,
+      sessionId: request.sessionId,
+      seq: request.seq,
+      outcome: 'refused',
+      code: 'unavailable',
+    });
+  },
   ...createImageInsertionHandlers({
     service: () => imageStagingService,
     coordinator: () => imageInsertionCoordinator,
@@ -2651,6 +2675,20 @@ if (
   }
 }
 
+if (!serveMode && authEnabled && harnessId === 'codex') {
+  structuredChatService = new StructuredChatService({
+    identityStore: relayTrust,
+    relayAuthority: new SecurePushStore(REMI_DIR, relayTrust),
+    sessions: sessionRegistry,
+    bindings: bindingStore,
+    harnessFor: (id) => harnessSessions.get(id),
+    directAdapter: () => {
+      const adapter = registry.getAdapter('websocket');
+      return adapter instanceof WebSocketAdapter ? adapter : undefined;
+    },
+  });
+}
+
 if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   const telegramAdapter = new TelegramAdapter(
     {
@@ -2724,6 +2762,7 @@ async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
   imageInsertionCoordinator?.close();
+  structuredChatService?.close();
   if (imageStagingService && !(await imageStagingService.close()))
     logError('Image staging cleanup remains charged until process exit.');
   for (const sessionId of securePushRuntimes.keys()) retireSecurePushRuntime(sessionId);

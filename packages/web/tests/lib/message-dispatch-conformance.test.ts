@@ -126,6 +126,7 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
         onImageInsertionMessage: (msg) => {
           received.push(msg);
         },
+        onStructuredChatResult: (msg) => { received.push(msg); },
         onImageStagingMessage: (msg) => {
           received.push(msg);
         },

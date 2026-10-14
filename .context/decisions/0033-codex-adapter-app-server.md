@@ -857,3 +857,31 @@ The Claude black-box Stop test reaches the real CLI with an isolated executable 
 The `remi codex` help names the completion duration, final-answer and device gates; README and AGENTS describe the first 200 characters of an answer.
 The four exported structural types in public signatures and the session-lifetime growth of `MessageAPI.messages` are intentionally retained; the latter also exists in Claude's bridge and is outside this phase's duplicate-id bounds.
 Claude's device-list refresh (#1210) and push-body escaping (#1211) remain separate changes.
+
+## Structured remote chat decision (#1207, 2026-10-13)
+
+The owner chose structured app-server chat and retained the current full-access default.
+Remote session creation continues to inherit the host's settings when it supplies no tighter setting.
+An explicit read-only launch stays read-only; chat must not override sandbox, approval policy, working directory or model settings on a turn.
+The existing remote argument allowlist and the refusal of typed Codex PTY chat remain in force.
+
+The implementation proceeds in two steps:
+
+1. An internal writer reuses `AppServerClient`, checks the bound main thread and its current runtime epoch, then selects `turn/start` for an observed idle thread or `turn/steer` with `expectedTurnId` for an active turn.
+   It rechecks authority and blocking questions before the possible effect, makes one turn request, and reports accepted, refused or uncertain.
+   It has no PTY fallback or automatic retry.
+2. A later harness-neutral submission seam and correlated daemon/client result will carry expected binding, request identity, replay/conflict handling and uncertainty retention to an actual caller.
+   An ordinary `user_input` ACK precedes its handler and cannot prove submission.
+   Capability advertisement and native integration wait for that connected path.
+
+The installed Codex 0.162.1 generated schemas and an isolated native app-server established the local request shapes.
+An empty file-only profile returned `account: null` before any turn request.
+Its default thread returned `dangerFullAccess`; an explicit read-only thread returned `readOnly`.
+A first idle thread has readable metadata but no materialized turn history, so starting it must not require successful pagination.
+Start admission can precede publication of active status, and `turn/start` may append to a turn that became active meanwhile.
+The internal result names the RPC method and returned turn ID; it does not promise a newly created turn or model completion.
+The optional installed-server control waits for actual active status before requiring the steer path and withholds an actual turn response to check uncertainty without a retry.
+
+These accountless controls establish local RPC admission and omission of policy overrides, not successful model execution or sandbox enforcement.
+Account-backed model checks need separate bounded owner approval.
+At this phase there is no production caller or advertised remote-chat capability, and #1207 remains open.
