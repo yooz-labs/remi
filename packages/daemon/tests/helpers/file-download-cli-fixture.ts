@@ -258,9 +258,10 @@ export async function fileDownloadCliFixture(
       );
       if (failed) throw new Error('Owned signed download peer failed');
       const hello = () => {
-        const message = received.findLast(
-          (message): message is HelloAckMessage => message.type === 'hello_ack',
-        );
+        const message = received
+          .slice()
+          .reverse()
+          .find((message): message is HelloAckMessage => message.type === 'hello_ack');
         if (!message) throw new Error('Owned current hello absent');
         return message;
       };

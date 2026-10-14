@@ -1,6 +1,6 @@
 # ADR 0045: Explicit direct file downloads
 
-**Status:** accepted fields and limits; HTTPS/WSS required before direct release; runtime adoption pending
+**Status:** accepted; HTTPS/WSS direct source integration, qualification pending
 **Date:** 2026-10-14
 **Owner:** Yahya
 
@@ -21,7 +21,7 @@ selected: the managed path needs no additional hard-link factory or cleanup form
 The owner accepted the fields, limits, cleanup rules and `file_download` name on
 2026-10-14, then explicitly retained the 10 MiB ceiling and required HTTPS/WSS
 before the first direct link/download release. Full relay tunneling follows.
-This document adds no models, registry entries, capability or runtime caller.
+The accepted fields are now composed with the strict registry, authenticated direct handler and explicit web caller described below.
 Browser-link fields are separately accepted in ADR 0044 (#1508).
 
 ## Decision
@@ -42,7 +42,7 @@ Xcode track and does not become available through this document.
 Initial release requires an HTTPS/WSS direct connection with normal certificate
 and hostname validation, the existing signed device authentication, and a known
 live Claude or Codex binding. The daemon supplies an optional `[daemon.tls]`
-HTTPS/WSS listener; the download handler and client remain separate integration.
+HTTPS/WSS listener. The direct download handler and web caller use that listener.
 Its signed `ws://` transport alone does not satisfy this prerequisite. Tailscale,
 a VPN or an SSH tunnel does not waive the owner's HTTPS/WSS requirement for this
 release. This amends ADR 0009 for the new link/download features; it does not claim
@@ -138,7 +138,11 @@ Reuse the existing component policy: refuse dot-prefixed components, `.`/`..`,
 empty components, controls/bidirectional text, backslashes, drive/UNC/colon syntax,
 `node_modules`, credential names and `.key/.pem/.p12/.pfx/.keystore` files.
 Apply the captured Remi/Claude/Codex/configured protected roots, including root
-overlap and replacement. Refuse symlinks at every component, hard links,
+overlap and replacement. These are the known launch-environment, default and
+explicitly supplied roots. Remi does not discover arbitrary harness-internal
+settings overrides or other private locations. An active or explicitly supplied
+root must be capturable; an inactive default may be absent only until first seen.
+Refuse symlinks at every component, hard links,
 directories, devices, sockets and FIFOs; no listing, glob or recursive fetch.
 There is no general secret detector: ordinary allowed files can contain secrets.
 Beyond that existing denial policy, regular files of any content type are inert
@@ -174,6 +178,26 @@ Locally verified bytes may still be saved if host settlement fails; a host
 cleanup result is not a client-integrity or Save receipt. An explicit client
 cancel discards its bytes too. The final OS-chosen file then belongs to the user,
 outside host transfer retention. No preview, HTML/SVG render or archive extraction.
+
+## Current source integration
+
+[`FileDownloadSessionHost`](../../packages/daemon/src/tunnel/file-download-session-host.ts)
+composes the service with actual CLI session/runtime, attachment, grant and known
+Claude/Codex binding lifetimes. Availability is per authenticated WSS connection;
+`file_download` is not a global daemon capability. The original-byte strict ingress
+runs before generic ACK/dispatch. An unknown Codex binding remains unavailable;
+committing its identity can refresh metadata on the same attached socket.
+
+The web controller requests one file explicitly, verifies exact bytes and SHA-256,
+and offers Save. Save creates one bounded local Blob URL only from that click,
+requests the browser download and releases the URL on dismissal, context loss,
+unmount, page hiding or its scheduled 30-second timer. A running-page timer is not
+a suspended-browser wall-clock guarantee, and browser handoff is not durable OS
+storage. A verified file may remain saveable with an explicit host-cleanup warning.
+
+The composed source requires its coherent runtime, compiled Linux, independent
+review and fresh hosted gates before release. Native conformance/device Save,
+operator certificate setup and relay byte transport remain separately unverified.
 
 ## Verification and implementation order
 

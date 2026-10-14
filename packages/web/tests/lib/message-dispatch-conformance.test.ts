@@ -61,6 +61,7 @@ import { reserveRange } from '../../../daemon/tests/session/port-test-helpers.ts
 // "conformance-test placement decision").
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter.ts';
 import { WebSocketClient } from '../../src/lib/websocket-client.ts';
+import { decodeFileDownloadFrame } from '../../../shared/src/file-download.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(HERE, '../../../shared/tests/fixtures/protocol');
@@ -125,6 +126,10 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
         },
         onImageInsertionMessage: (msg) => {
           received.push(msg);
+        },
+        onFileDownloadMessage: (raw) => {
+          const message = decodeFileDownloadFrame(raw);
+          if (message) received.push(message);
         },
         onBrowserLinkMessage: (msg) => { received.push(msg); },
         onStructuredChatResult: (msg) => { received.push(msg); },

@@ -1871,8 +1871,17 @@ function App() {
       case 'image_insert_result':
         break;
 
-      // Direct staging is strictly decoded by WebSocketClient and owned by the
-      // connection manager's ImageUploadController; it never becomes a chat bubble.
+      // Direct tunnel frames are strictly decoded by WebSocketClient and owned by
+      // their connection controllers; they never become chat bubbles.
+      case 'file_fetch_begin':
+      case 'file_fetch_read':
+      case 'file_fetch_complete':
+      case 'file_fetch_cancel':
+      case 'file_fetch_accepted':
+      case 'file_fetch_chunk':
+      case 'file_fetch_result':
+      case 'file_fetch_cancel_result':
+      case 'file_fetch_refused':
       case 'browser_link_receiver_request':
       case 'browser_link_receiver_result':
       case 'browser_link_receiver_ended':
@@ -2027,6 +2036,8 @@ function App() {
     provideIdentity,
     getSessionId,
     receiveBrowserLinks, stopBrowserLinks, openBrowserLink,
+    downloadFile, cancelFileDownload, dismissFileDownload, saveDownloadedFile,
+    releaseFileDownloadSave,
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
@@ -3468,6 +3479,19 @@ function App() {
         onReceive: () => receiveBrowserLinks(activeSession.connectionId),
         onStop: () => stopBrowserLinks(activeSession.connectionId),
         onOpen: (id) => openBrowserLink(activeSession.connectionId, id),
+      }}
+      fileDownload={{
+        available: activeConnection?.mode === 'direct' && activeConnection.sessionId === activeSession.id &&
+          !!activeConnection.fileDownloadAvailable,
+        canCancel: activeConnection?.fileDownloadSessionId === activeSession.id && !!activeConnection.fileDownloadCanCancel,
+        state: activeConnection?.fileDownloadSessionId === activeSession.id
+          ? activeConnection.fileDownloadState ?? {phase: 'idle'} : {phase: 'idle'},
+        saveMessage: activeConnection?.fileDownloadSessionId === activeSession.id ? activeConnection.fileDownloadSaveMessage : null,
+        onDownload: (path) => downloadFile(activeSession.connectionId, activeSession.id, path),
+        onCancel: () => cancelFileDownload(activeSession.connectionId, activeSession.id),
+        onDismiss: () => dismissFileDownload(activeSession.connectionId, activeSession.id),
+        onSave: () => saveDownloadedFile(activeSession.connectionId, activeSession.id),
+        onReleaseSave: () => releaseFileDownloadSave(activeSession.connectionId),
       }}
       imageUpload={{
         enabled:

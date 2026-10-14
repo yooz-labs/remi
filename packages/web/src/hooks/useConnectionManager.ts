@@ -27,6 +27,9 @@ import type {
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import { ImageUploadController, type ImageUploadContext } from '@/lib/image-upload';
 import { BrowserLinkController } from '@/lib/browser-links';
+import { FileDownloadController } from '@/lib/file-download';
+import { FileDownloadSave } from '@/lib/file-download-save';
+import type { FileDownloadBinding } from '../../../shared/src/file-download.ts';
 import { StructuredChatController } from '@/lib/structured-chat';
 import type { ChatSubmitOutcome } from '@remi/shared';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
@@ -105,6 +108,11 @@ interface ManagedConnection {
   imageUploadController?: ImageUploadController;
   structuredChatController?: StructuredChatController;
   browserLinkController?: BrowserLinkController;
+  fileDownloadController?: FileDownloadController;
+  fileDownloadSave?: FileDownloadSave;
+  fileDownloadBinding?: FileDownloadBinding;
+  fileDownloadSessionId?: UUID | null;
+  fileDownloadSaveMessage?: string | null;
   browserAttachment?: object;
   browserStopRequests?: Map<string, { readonly sessionId: string; readonly attachment: object }>;
   browserStopSaturatedSession?: string;
@@ -149,9 +157,22 @@ interface ManagedConnection {
   staggerSlot: number;
 }
 
+/** Invalidate owned bytes and a pending browser handoff at every observed lifetime boundary. */
+function invalidateFileDownload(mc: ManagedConnection) {
+  mc.fileDownloadSave?.clear();
+  mc.fileDownloadSaveMessage = null;
+  mc.fileDownloadController?.disconnect();
+}
+
+function disposeFileDownload(mc: ManagedConnection | undefined) {
+  mc?.fileDownloadSave?.dispose();
+  mc?.fileDownloadController?.dispose();
+}
+
 /** Stop a captured identity context and publish that close synchronously. */
 function invalidateIdentityConnection(mc: ManagedConnection, message = 'Identity changed. Reconnect with the current identity.') {
   mc.imageUploadAuthenticated = false;
+  invalidateFileDownload(mc);
   mc.browserStopRequests?.clear();
   mc.browserStopSaturatedSession = undefined;
   mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
@@ -213,6 +234,11 @@ export interface UseConnectionManagerReturn {
     claudeSessionId?: UUID,
     id?: UUID,
   ) => boolean;
+  downloadFile: (connectionId: ConnectionId, sessionId: UUID, relativePath: string) => void;
+  cancelFileDownload: (connectionId: ConnectionId, sessionId: UUID) => void;
+  dismissFileDownload: (connectionId: ConnectionId, sessionId: UUID) => void;
+  saveDownloadedFile: (connectionId: ConnectionId, sessionId: UUID) => void;
+  releaseFileDownloadSave: (connectionId: ConnectionId) => void;
   receiveBrowserLinks: (connectionId: ConnectionId) => void;
   stopBrowserLinks: (connectionId: ConnectionId) => void;
   openBrowserLink: (connectionId: ConnectionId, id: string) => void;
@@ -304,6 +330,11 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     harness: mc.harness,
     harnessSessionId: mc.harnessSessionId,
     browserLinks: mc.browserLinkController?.state,
+    fileDownloadState: mc.fileDownloadController?.state,
+    fileDownloadSessionId: mc.fileDownloadSessionId,
+    fileDownloadAvailable: mc.fileDownloadController?.available ?? false,
+    fileDownloadCanCancel: mc.fileDownloadController?.canCancel ?? false,
+    fileDownloadSaveMessage: mc.fileDownloadSaveMessage,
     imageUploadState: mc.imageUploadState,
     imageUploadSessionId: mc.imageUploadSessionId,
     imageUploadEnabled: mc.imageUploadController?.canUpload ?? false,
@@ -367,7 +398,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
       }
     }
     if (unlockedIdentity) {
@@ -379,7 +410,7 @@ export function useConnectionManager(
           mc.imageUploadAuthenticated = false;
           mc.browserStopRequests?.clear();
           mc.browserStopSaturatedSession = undefined;
-          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
@@ -398,7 +429,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
         mc.approval.reset();
         mc.authAttempt = null;
         if (usesNativeIdentity() || mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -723,7 +754,7 @@ export function useConnectionManager(
               mc.browserStopRequests?.clear();
               mc.browserStopSaturatedSession = undefined;
             }
-            mc.browserLinkController?.disconnect();
+            mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
             mc.browserAttachment = message.sessionId && message.attachState === 'attached' &&
               mc.browserStopSaturatedSession !== message.sessionId ? {} : undefined;
             const nextHarness = message.harness ?? 'claude';
@@ -749,7 +780,7 @@ export function useConnectionManager(
               capabilitiesChanged ||
               !Object.is(mc.protocolVersion, nextProtocolVersion)
             ) {
-              mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+              mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
             }
             mc.sessionId = message.sessionId;
             mc.attachState = message.attachState;
@@ -757,6 +788,9 @@ export function useConnectionManager(
             mc.harnessSessionId = nextHarnessSessionId;
             mc.capabilities = nextCapabilities;
             mc.protocolVersion = nextProtocolVersion;
+            mc.fileDownloadBinding = message.sessionId && nextHarnessSessionId &&
+              (nextHarness === 'claude' || nextHarness === 'codex')
+              ? {harness: nextHarness, harnessSessionId: nextHarnessSessionId} : undefined;
           }
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
@@ -769,7 +803,7 @@ export function useConnectionManager(
           mc.mode === 'direct' &&
           mc.sessionId === message.sessionId
         ) {
-          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
           mc.harness = 'claude';
           mc.harnessSessionId = message.newClaudeSessionId;
           syncState();
@@ -784,7 +818,7 @@ export function useConnectionManager(
           (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId) ||
           (message.type === 'kill_session_response' && message.success && browserStop?.sessionId === mc.sessionId)) {
           mc.browserAttachment = undefined;
-          mc.browserLinkController?.disconnect();
+          mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
           if (message.type !== 'detach_session_ack') mc.browserStopRequests?.clear();
           syncState();
         }
@@ -824,7 +858,12 @@ export function useConnectionManager(
           if (mc.mode === 'direct' && own) {
             const harness = own.harness ?? 'claude';
             const thread = own.harnessSessionId ?? (harness === 'claude' ? own.claudeSessionId ?? null : null);
-            if (mc.harness !== harness || mc.harnessSessionId !== thread) mc.structuredChatController?.disconnect();
+            if (mc.harness !== harness || mc.harnessSessionId !== thread) {
+              mc.structuredChatController?.disconnect();
+              invalidateFileDownload(mc);
+              // A list can invalidate an owned hello, but cannot establish a download binding.
+              mc.fileDownloadBinding = undefined;
+            }
             mc.harness = harness; mc.harnessSessionId = thread;
             syncState();
           }
@@ -926,7 +965,7 @@ export function useConnectionManager(
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
-        existing.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose();
+        existing.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); disposeFileDownload(existing);
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
         // Free its stagger slot: this connection may be recreated repeatedly
@@ -1007,7 +1046,7 @@ export function useConnectionManager(
             mc.imageUploadAuthenticated = false;
             mc.browserStopRequests?.clear();
             mc.browserStopSaturatedSession = undefined;
-            mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+            mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
             mc.sessionId = null;
             mc.attachState = undefined;
             mc.harness = undefined;
@@ -1026,6 +1065,9 @@ export function useConnectionManager(
           syncState();
         },
         onMessage: messageHandler,
+        onFileDownloadMessage: (raw) => {
+          if (connectionsMapRef.current.get(connectionId) === mc) mc.fileDownloadController?.receive(raw);
+        },
         onBrowserLinkMessage: (message) => {
           if (connectionsMapRef.current.get(connectionId) === mc) mc.browserLinkController?.receive(message);
         },
@@ -1053,6 +1095,32 @@ export function useConnectionManager(
       });
 
       mc.client = client;
+      mc.fileDownloadSave = new FileDownloadSave();
+      mc.fileDownloadController = new FileDownloadController({
+        send: (request, generation) => connectionsMapRef.current.get(connectionId) === mc &&
+          mc.mode === 'direct' && client.sendFileDownload(request, generation),
+        context: () => {
+          const identity = mc.browserIdentity;
+          const binding = mc.fileDownloadBinding;
+          const generation = client.imageUploadGeneration;
+          if (connectionsMapRef.current.get(connectionId) !== mc || mc.mode !== 'direct' ||
+            new URL(mc.url).protocol !== 'wss:' || isNative() || usesNativeIdentity() ||
+            mc.status !== 'connected' || !mc.imageUploadAuthenticated || mc.attachState !== 'attached' ||
+            !mc.sessionId || !mc.browserAttachment || !identity || !generation || !binding ||
+            binding.harness !== mc.harness || binding.harnessSessionId !== mc.harnessSessionId ||
+            getIdentityRevision() !== identity.revision || identityRef.current?.publicKeyRaw !== identity.key)
+            return null;
+          return {connection: mc, generation, attachment: mc.browserAttachment,
+            identityRevision: identity.revision, identityKey: identity.key, authenticated: true,
+            webSocketUrl: mc.url, sessionId: mc.sessionId, binding,
+            protocolVersion: mc.protocolVersion, capabilities: mc.capabilities ?? []};
+        },
+      }, (state) => {
+        if (connectionsMapRef.current.get(connectionId) !== mc) return;
+        mc.fileDownloadSaveMessage = null;
+        if (state.phase !== 'ready') mc.fileDownloadSave?.clear();
+        syncState();
+      });
       mc.browserLinkController = new BrowserLinkController({
         send: (request, generation) => connectionsMapRef.current.get(connectionId) === mc &&
           client.sendBrowserLink(request, generation),
@@ -1177,7 +1245,7 @@ export function useConnectionManager(
     const connectionId = makeConnectionId(`relay:${pin.machinePublicKey}`);
     const existing = connectionsMapRef.current.get(connectionId);
     if (existing && !isConnectionReplaceable(existing.status)) { await first?.close(); return connectionId; }
-    existing?.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose();
+    existing?.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); disposeFileDownload(existing);
     existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
     const mc: ManagedConnection = {
       client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
@@ -1357,7 +1425,7 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
-      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose();
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1372,7 +1440,7 @@ export function useConnectionManager(
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
-      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose();
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1401,7 +1469,7 @@ export function useConnectionManager(
           pending.clear();
           mc.browserStopSaturatedSession = message.sessionId;
           mc.browserAttachment = undefined;
-          mc.browserLinkController?.disconnect();
+          mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
           syncState();
         } else {
           pending.set(message.id, { sessionId: message.sessionId, attachment: mc.browserAttachment });
@@ -1576,7 +1644,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
       }
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
@@ -1776,7 +1844,7 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
-        mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose();
+        mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
         mc.relayCancel?.();
         mc.relayRequests?.closed();
         mc.client.disconnect();
@@ -1805,6 +1873,35 @@ export function useConnectionManager(
     sendAuqAnswer,
     sendCancelQuestion,
     sendMessage,
+    downloadFile: (id, sessionId, relativePath) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (!mc || mc.sessionId !== sessionId || !mc.fileDownloadController?.canDownload) return;
+      mc.fileDownloadSave?.clear();
+      mc.fileDownloadSessionId = sessionId;
+      mc.fileDownloadController.start(relativePath);
+    },
+    cancelFileDownload: (id, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (!mc || mc.fileDownloadSessionId !== sessionId) return;
+      mc.fileDownloadSave?.clear();
+      mc.fileDownloadController?.cancel();
+    },
+    dismissFileDownload: (id, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (!mc || mc.fileDownloadSessionId !== sessionId) return;
+      mc.fileDownloadSave?.clear();
+      mc.fileDownloadController?.dismiss();
+    },
+    saveDownloadedFile: (id, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (!mc || mc.sessionId !== sessionId || mc.fileDownloadSessionId !== sessionId ||
+        !mc.fileDownloadController || !mc.fileDownloadSave) return;
+      mc.fileDownloadSaveMessage = mc.fileDownloadSave.request(mc.fileDownloadController)
+        ? 'Download requested. Check your browser’s downloads.'
+        : 'The browser download could not be requested. Check the connection and try Save again.';
+      syncState();
+    },
+    releaseFileDownloadSave: (id) => connectionsMapRef.current.get(id)?.fileDownloadSave?.clear(),
     receiveBrowserLinks: (id) => connectionsMapRef.current.get(id)?.browserLinkController?.receiveHere(),
     stopBrowserLinks: (id) => connectionsMapRef.current.get(id)?.browserLinkController?.stop(),
     openBrowserLink: (id, candidateId) => connectionsMapRef.current.get(id)?.browserLinkController?.open(candidateId),
