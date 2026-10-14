@@ -18,7 +18,7 @@ import { IdentityStore } from '../../src/auth/identity-store';
 import { until } from './browser-link-service-fixture';
 import { threadStartedFrame, threadStatusFrame } from './codex-threads';
 import { directTlsFixture } from './direct-tls-fixture';
-import { collect, installFakeAgents } from './fake-agent-clis';
+import { installFakeAgents } from './fake-agent-clis';
 import { FakeAppServer } from './fake-app-server';
 
 export async function fileDownloadCliFixture(
@@ -44,6 +44,25 @@ export async function fileDownloadCliFixture(
   let consumerPid: number | undefined;
   let forcedKill = false;
   const output = { text: '' };
+  const drains: Promise<void>[] = [];
+  let closed:
+    | {
+        stdin: Buffer;
+        consumerPid: number | null;
+        consumerState: 'reaped' | 'not-started';
+        consumerReaped: boolean;
+        daemonReaped: boolean;
+      }
+    | undefined;
+  let closeTask: Promise<NonNullable<typeof closed>> | undefined;
+  let neverStarted = false;
+  const rawInput = join(files.directory, 'consumer-input');
+  const readyFile = join(files.directory, 'consumer-ready');
+  const drain = async (stream: ReadableStream<Uint8Array>) => {
+    const decoder = new TextDecoder();
+    for await (const chunk of stream) output.text += decoder.decode(chunk, { stream: true });
+    output.text += decoder.decode();
+  };
   async function waitForExit(owned: Bun.Subprocess, milliseconds: number): Promise<boolean> {
     if (owned.exitCode !== null) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -64,7 +83,7 @@ export async function fileDownloadCliFixture(
       if (!/^[1-9][0-9]*\s*$/u.test(raw)) return false;
       consumerPid = Number(raw);
     }
-    if (consumerPid === undefined) return !forcedKill; // Forced termination cannot prove an unseen consumer ended.
+    if (consumerPid === undefined) return !proc || neverStarted; // Missing evidence is never a reaped consumer.
     try {
       process.kill(consumerPid, 0);
       return false;
@@ -72,7 +91,11 @@ export async function fileDownloadCliFixture(
       return (error as NodeJS.ErrnoException).code === 'ESRCH';
     }
   }
-  async function close() {
+  function close(): Promise<NonNullable<typeof closed>> {
+    closeTask ??= performClose();
+    return closeTask;
+  }
+  async function performClose(): Promise<NonNullable<typeof closed>> {
     const errors: unknown[] = [];
     const attempt = async (effect: () => unknown) => {
       try {
@@ -93,6 +116,7 @@ export async function fileDownloadCliFixture(
           errors.push(new Error('Owned download CLI did not reap'));
       }
     }
+    await attempt(() => Promise.all(drains));
     await attempt(() => server?.stop());
     // The actual owning daemon/consumer has ended before generated keys and state are removed.
     let ended = false;
@@ -104,9 +128,23 @@ export async function fileDownloadCliFixture(
         ended = consumerEnded();
       }
     });
-    if ((!proc || proc.exitCode !== null) && ended) await attempt(() => files.cleanup());
-    else errors.push(new Error('Owned download CLI/consumer death was not confirmed'));
+    const daemonReaped = !proc || proc.exitCode !== null;
+    // Snapshot actual raw bytes only after the owning daemon and recorded consumer ended.
+    const stdin = ended && fs.existsSync(rawInput) ? fs.readFileSync(rawInput) : Buffer.alloc(0);
+    if (daemonReaped && ended) await attempt(() => files.cleanup());
+    else
+      errors.push(
+        new Error('Owned download CLI/consumer death was not confirmed; fixture retained'),
+      );
     if (errors.length) throw new AggregateError(errors, 'Owned download CLI cleanup failed');
+    closed = {
+      stdin,
+      consumerPid: consumerPid ?? null,
+      consumerState: consumerPid === undefined ? 'not-started' : 'reaped',
+      consumerReaped: consumerPid !== undefined && ended,
+      daemonReaped,
+    };
+    return closed;
   }
   try {
     const harness = options.harness ?? 'claude';
@@ -116,21 +154,41 @@ export async function fileDownloadCliFixture(
     if (options.tls === false)
       fs.writeFileSync(files.configPath, files.config.replace(files.tlsTable, ''));
     const agents = installFakeAgents(files.directory, { [harness]: true });
-    if (harness === 'claude') {
-      // Resolve the helper's actual installed executable, not an installed user command.
-      const bin = agents.env['PATH']?.split(':')[0];
-      if (!bin) throw new Error('Owned agent path absent');
-      consumerPidFile = join(files.directory, 'consumer-pid');
-      fs.writeFileSync(
-        join(bin, 'claude'),
-        `#!/bin/sh\nprintf '%s' "$$" > '${consumerPidFile}'\nprintf 'ready' > '${join(files.directory, 'consumer-ready')}'\nwhile IFS= read -r line; do case "$line" in /exit*) exit 0;; *) printf '%s\\n' "$line" >> '${join(files.directory, 'consumer-input')}';; esac; done\n`,
-        { mode: 0o700 },
-      );
-    } else {
-      server = FakeAppServer.start();
-      release = join(agents.codexDir, 'release');
-      consumerPidFile = join(agents.codexDir, 'pid');
-    }
+    const bin = agents.env['PATH']?.split(':')[0];
+    if (!bin) throw new Error('Owned agent path absent');
+    consumerPidFile = join(files.directory, 'consumer-pid');
+    const consumer = join(files.directory, 'raw-consumer.ts');
+    fs.writeFileSync(
+      consumer,
+      `import * as fs from 'node:fs';
+const input=${JSON.stringify(rawInput)},pid=${JSON.stringify(consumerPidFile)},ready=${JSON.stringify(readyFile)};
+if(!process.stdin.isTTY)throw Error('Owned consumer needs actual PTY');
+fs.writeFileSync(input,'',{mode:0o600});
+process.stdin.setRawMode(true);
+process.stdin.on('data',(bytes)=>fs.appendFileSync(input,bytes));
+process.stdin.resume();
+fs.writeFileSync(pid+'.tmp',String(process.pid),{mode:0o600});fs.renameSync(pid+'.tmp',pid);
+${
+  harness === 'codex'
+    ? `const d=${JSON.stringify(agents.codexDir)};
+fs.writeFileSync(d+'/cwd',process.cwd(),{mode:0o600});fs.writeFileSync(d+'/pid',String(process.pid),{mode:0o600});
+fs.writeFileSync(d+'/argv.tmp',process.argv.slice(2).join('\\n')+'\\n',{mode:0o600});fs.renameSync(d+'/argv.tmp',d+'/argv');`
+    : ''
+}
+fs.writeFileSync(ready,'ready',{mode:0o600});
+await new Promise<void>((resolve)=>{
+ const stop=()=>{process.stdin.destroy();resolve();};
+ process.on('SIGTERM',stop);process.on('SIGHUP',stop);process.stdin.on('end',resolve);
+});
+`,
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(
+      join(bin, harness),
+      `#!/bin/sh\nexec '${process.execPath}' '${consumer}' "$@"\n`,
+      { mode: 0o700 },
+    );
+    if (harness === 'codex') server = FakeAppServer.start();
     const trust = new IdentityStore(files.home);
     await trust.generate();
     const identity = await createIdentity();
@@ -170,16 +228,31 @@ export async function fileDownloadCliFixture(
         stderr: 'pipe',
       },
     );
-    collect(proc.stdout, output);
-    collect(proc.stderr, output);
+    drains.push(drain(proc.stdout), drain(proc.stderr));
+    void Promise.all(drains).catch(() => {});
     options.observe?.({ files, proc });
     await until(
       () => {
-        if (proc?.exitCode !== null)
+        if (proc?.exitCode !== null) {
+          // cli.ts daemon TLS bind failure returns before createNewSession (3234 vs3451).
+          // This narrow observed disposition is not a general exit1/missing-PID shortcut.
+          neverStarted =
+            options.mode !== 'wrapper' &&
+            options.port !== undefined &&
+            proc?.exitCode === 1 &&
+            !forcedKill &&
+            output.text.includes(
+              'TLS_START_FAILED: cannot start the configured secure listener.',
+            ) &&
+            !fs.existsSync(consumerPidFile!) &&
+            !fs.existsSync(readyFile) &&
+            !fs.existsSync(join(agents.codexDir, 'argv'));
           throw new Error(`Owned download CLI startup failed (${proc?.exitCode})`);
+        }
         return harness === 'claude'
-          ? fs.existsSync(join(files.directory, 'consumer-ready'))
-          : fs.existsSync(join(agents.codexDir, 'argv')) &&
+          ? fs.existsSync(readyFile)
+          : fs.existsSync(readyFile) &&
+              fs.existsSync(join(agents.codexDir, 'argv')) &&
               !!server
                 ?.clientIds()
                 .some((id) =>

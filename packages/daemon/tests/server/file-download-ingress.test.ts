@@ -269,12 +269,11 @@ test('raw duplicates reach service sequence rules; pre-acceptance cancel names b
   expect(Buffer.concat(f.output)).toEqual(Buffer.alloc(0));
 }, 15000);
 
-test('recognized duplicate/ambiguous/host/UTF8/scalar/oversize frames close before callbacks or generic ACK', async () => {
+test('recognized duplicate/ambiguous/host/scalar/oversize frames close before callbacks or generic ACK', async () => {
   const f = await fixture();
   for (const variant of [
     'duplicate-first',
     'duplicate-last',
-    'invalid-utf8',
     'scalar',
     'oversize',
     'deep',
@@ -287,8 +286,6 @@ test('recognized duplicate/ambiguous/host/UTF8/scalar/oversize frames close befo
     let frame: string | Uint8Array = raw;
     if (variant === 'duplicate-first') frame = `{"type":"hello",${raw.slice(1)}`;
     if (variant === 'duplicate-last') frame = `${raw.slice(0, -1)},"t\\u0079pe":"hello"}`;
-    if (variant === 'invalid-utf8')
-      frame = new Uint8Array([...new TextEncoder().encode(raw.slice(0, -1)), 255, 125]);
     if (variant === 'scalar') frame = raw.replace(begin.id, '\\ud800');
     if (variant === 'oversize')
       frame = new TextEncoder().encode(JSON.stringify({ padding: 'x'.repeat(65536), ...begin }));
@@ -523,3 +520,59 @@ test('installed sync/async callback failures close with fixed content-free text 
     expect(f.ledger().inspect()).toEqual([]);
   }
 });
+
+test('original invalid UTF8 binary differs from correlatable replacement text before callbacks', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  f.write('ordinary source');
+  const begin = peer.begin();
+  accepted(await peer.send(begin));
+  const cancel = { ...peer.envelope(), type: 'file_fetch_cancel' as const, beginId: begin.id };
+  expect(await peer.send(cancel)).toMatchObject({ type: 'file_fetch_cancel_result' });
+  const marker = 'ORIGINAL_BYTE_MARKER';
+  const binaryRequest = { ...peer.begin(), probe: marker };
+  const encoded = Buffer.from(JSON.stringify(binaryRequest));
+  const at = encoded.indexOf(marker);
+  expect(at).toBeGreaterThan(0);
+  const binary = Buffer.concat([
+    encoded.subarray(0, at),
+    Buffer.from([255]),
+    encoded.subarray(at + marker.length),
+  ]);
+  expect(() => new TextDecoder('utf-8', { fatal: true }).decode(binary)).toThrow();
+  const replacement = JSON.parse(new TextDecoder().decode(binary));
+  replacement.id = randomUUID();
+  const ledgerBefore = JSON.stringify(f.ledger().inspect());
+  const ptyBefore = Buffer.concat(f.output);
+  peer.ws.send(JSON.stringify(replacement));
+  await until(
+    () =>
+      peer.frames.some(
+        (m) =>
+          m.type === 'file_fetch_refused' && 'requestId' in m && m.requestId === replacement.id,
+      ),
+    'actual replacement text refusal',
+  );
+  expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+  expect(peer.frames.find((m) => 'requestId' in m && m.requestId === replacement.id)).toMatchObject(
+    {
+      type: 'file_fetch_refused',
+      // No owned operation remains after cancellation: the short initial refusal is unavailable.
+      code: 'unavailable',
+    },
+  );
+  const before = f.invocations.length;
+  peer.ws.send(binary);
+  await until(
+    () =>
+      peer.ws.readyState === WebSocket.CLOSED ||
+      peer.frames.some((m) => 'requestId' in m && m.requestId === binaryRequest.id),
+    'actual invalid original binary closes',
+  );
+  expect(peer.ws.readyState).toBe(WebSocket.CLOSED);
+  expect(f.invocations.length).toBe(before);
+  expect(peer.frames.some((m) => 'requestId' in m && m.requestId === binaryRequest.id)).toBe(false);
+  expect(peer.received.some((m) => m.type === 'ack')).toBe(false);
+  expect(JSON.stringify(f.ledger().inspect())).toBe(ledgerBefore);
+  expect(Buffer.concat(f.output)).toEqual(ptyBefore);
+}, 15000);

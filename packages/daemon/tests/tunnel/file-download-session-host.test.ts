@@ -148,6 +148,8 @@ async function component(name: string) {
     sessions.registerSession(id, work, runtime.pty, messageApi, true);
     check(host.contextFor(id) === null);
     await runtime.start();
+    assert(runtime.pty.childPid);
+    fs.writeFileSync(join(home, '..', 'component-consumer-pid'), String(runtime.pty.childPid));
     host.started(id);
     const initial = host.contextFor(id);
     if (name === 'explicit-required') {
@@ -356,11 +358,7 @@ if (selected) {
         const bin = join(files.directory, 'bin');
         fs.mkdirSync(bin);
         fs.mkdirSync(join(files.userHome, '.claude'), { mode: 0o700 });
-        fs.writeFileSync(
-          join(bin, 'claude'),
-          `#!/bin/sh\nprintf '%s' "$$" > '${pidFile}'\nexec /bin/cat\n`,
-          { mode: 0o700 },
-        );
+        fs.writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexec /bin/cat\n', { mode: 0o700 });
         child = Bun.spawn(
           [
             process.execPath,

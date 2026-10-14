@@ -108,7 +108,10 @@ try{
         child.kill('SIGKILL');
         await child.exited;
       }
-      await f.close();
+      const reaped = await f.close();
+      expect(reaped.consumerReaped).toBe(true);
+      expect(reaped.daemonReaped).toBe(true);
+      expect(reaped.stdin).toEqual(Buffer.alloc(0));
     }
   }, 120000);
 }

@@ -749,50 +749,189 @@ describe('WebSocketClient reconnectStaggerMs (#685)', () => {
 
 describe('file download original-byte ingress over real sockets', () => {
   test('strict host frames bypass generic dispatch and ACK; malformed and client directions close', async () => {
-    const {decodeFileDownloadFrame} = await import('../../../shared/src/file-download.ts');
-    const {isFileDownloadCandidate} = await import('../../../shared/src/image-staging-ingress.ts');
-    const vectors = await Bun.file(new URL('../../../shared/tests/fixtures/file-download/vectors.json', import.meta.url)).json() as {
-      positive: {raw:string}[]; negative:{raw?:string;hex?:string}[];
+    const { decodeFileDownloadFrame } = await import('../../../shared/src/file-download.ts');
+    const { isFileDownloadCandidate } = await import(
+      '../../../shared/src/image-staging-ingress.ts'
+    );
+    const vectors = (await Bun.file(
+      new URL('../../../shared/tests/fixtures/file-download/vectors.json', import.meta.url),
+    ).json()) as {
+      positive: { raw: string }[];
+      negative: { raw?: string; hex?: string }[];
     };
-    const inputs = [...vectors.positive.map(v=>v.raw), ...vectors.negative.flatMap(v=>v.raw?[v.raw]:[])].filter(isFileDownloadCandidate);
+    const inputs = [
+      ...vectors.positive.map((v) => v.raw),
+      ...vectors.negative.flatMap((v) => (v.raw ? [v.raw] : [])),
+    ].filter(isFileDownloadCandidate);
     expect(inputs.length).toBeGreaterThan(9);
     for (const raw of inputs) {
-      let outbound=0,generic=0,dedicated=0,closed=false;
-      const decoded=decodeFileDownloadFrame(raw);
-      const expected=decoded&&'requestId' in decoded;
-      const server=Bun.serve({hostname:'127.0.0.1',port:0,
-        fetch(req,server){if(server.upgrade(req))return;return new Response('owned');},
-        websocket:{open(ws){ws.send(raw);},message(){outbound++;}},
+      let outbound = 0,
+        generic = 0,
+        dedicated = 0,
+        closed = false;
+      const decoded = decodeFileDownloadFrame(raw);
+      const expected = decoded && 'requestId' in decoded;
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response('owned');
+        },
+        websocket: {
+          open(ws) {
+            ws.send(raw);
+          },
+          message() {
+            outbound++;
+          },
+        },
       });
-      const client=new WebSocketClient({url:`ws://127.0.0.1:${server.port}/ws`,autoReconnect:false,heartbeatInterval:0},{
-        onMessage:()=>generic++,onFileDownloadMessage:received=>{expect(received).toEqual(raw);dedicated++;},
-        onStatusChange:s=>{if(s==='disconnected')closed=true;},
-      });
+      const client = new WebSocketClient(
+        { url: `ws://127.0.0.1:${server.port}/ws`, autoReconnect: false, heartbeatInterval: 0 },
+        {
+          onMessage: () => generic++,
+          onFileDownloadMessage: (received) => {
+            expect(received).toEqual(raw);
+            dedicated++;
+          },
+          onStatusChange: (s) => {
+            if (s === 'disconnected') closed = true;
+          },
+        },
+      );
       try {
-        client.connect();const end=performance.now()+3000;
-        while(!dedicated&&!closed&&performance.now()<end)await Bun.sleep(5);
-        if(expected)expect(dedicated).toBe(1);else expect(closed).toBe(true);
-        expect(generic).toBe(0);expect(outbound).toBe(0);
-      } finally {client.disconnect();server.stop(true);}
+        client.connect();
+        const end = performance.now() + 3000;
+        while (!dedicated && !closed && performance.now() < end) await Bun.sleep(5);
+        if (expected) expect(dedicated).toBe(1);
+        else expect(closed).toBe(true);
+        expect(generic).toBe(0);
+        expect(outbound).toBe(0);
+      } finally {
+        client.disconnect();
+        server.stop(true);
+      }
     }
-  },20000);
+  }, 20000);
 
-  test('original binary invalid UTF8 and oversize are rejected without permissive conversion',async()=>{
-    const prefix=new TextEncoder().encode('{"type":"file_fetch_chunk","data":"');
-    for(const raw of [new Uint8Array([...prefix,192,175]),`{"type":"file_fetch_chunk","extra":"${'a'.repeat(65536)}"}`]){
-      let generic=0,dedicated=0,outbound=0,closed=false;
-      const server=Bun.serve({hostname:'127.0.0.1',port:0,
-        fetch(req,server){if(server.upgrade(req))return;return new Response('owned');},
-        websocket:{open(ws){ws.send(raw);},message(){outbound++;}},
-      });
-      const client=new WebSocketClient({url:`ws://127.0.0.1:${server.port}/ws`,autoReconnect:false,heartbeatInterval:0},{
-        onMessage:()=>generic++,onFileDownloadMessage:()=>dedicated++,onStatusChange:s=>{if(s==='disconnected')closed=true;},
-      });
-      try {client.connect();const end=performance.now()+3000;while(!closed&&performance.now()<end)await Bun.sleep(5);
-        expect(closed).toBe(true);expect(generic).toBe(0);expect(dedicated).toBe(0);expect(outbound).toBe(0);
-      }finally{client.disconnect();server.stop(true);}
+  test('original binary invalid UTF8 and oversize are rejected without permissive conversion', async () => {
+    const { decodeFileDownloadFrame } = await import('../../../shared/src/file-download.ts');
+    const vectors = (await Bun.file(
+      new URL('../../../shared/tests/fixtures/file-download/vectors.json', import.meta.url),
+    ).json()) as { positive: { raw: string }[] };
+    const golden = vectors.positive.find((v) => JSON.parse(v.raw).type === 'file_fetch_accepted');
+    if (!golden) throw Error('Actual accepted golden absent');
+    const frame = JSON.parse(golden.raw);
+    const marker = 'ORIGINAL_BYTE_MARKER';
+    frame.fileName = marker + '.bin';
+    const encoded = Buffer.from(JSON.stringify(frame));
+    const at = encoded.indexOf(marker);
+    expect(at).toBeGreaterThan(0);
+    const binary = Buffer.concat([
+      encoded.subarray(0, at),
+      Buffer.from([255]),
+      encoded.subarray(at + marker.length),
+    ]);
+    expect(() => new TextDecoder('utf-8', { fatal: true }).decode(binary)).toThrow();
+    const replacement = new TextDecoder().decode(binary);
+    expect(decodeFileDownloadFrame(replacement)?.type).toBe('file_fetch_accepted');
+    let generic = 0,
+      dedicated = 0,
+      outbound = 0,
+      closed = false;
+    let socket: { send(data: string | Uint8Array): unknown } | undefined;
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req, server) {
+        if (server.upgrade(req)) return;
+        return new Response('owned');
+      },
+      websocket: {
+        open(ws) {
+          socket = ws;
+          ws.send(replacement);
+        },
+        message() {
+          outbound++;
+        },
+      },
+    });
+    const client = new WebSocketClient(
+      { url: `ws://127.0.0.1:${server.port}/ws`, autoReconnect: false, heartbeatInterval: 0 },
+      {
+        onMessage: () => generic++,
+        onFileDownloadMessage: (raw) => {
+          expect(raw).toBe(replacement);
+          dedicated++;
+        },
+        onStatusChange: (s) => {
+          if (s === 'disconnected') closed = true;
+        },
+      },
+    );
+    try {
+      client.connect();
+      let end = performance.now() + 3000;
+      while (!dedicated && !closed && performance.now() < end) await Bun.sleep(5);
+      expect(dedicated).toBe(1);
+      expect(closed).toBe(false);
+      expect(socket).toBeDefined();
+      socket!.send(binary);
+      end = performance.now() + 3000;
+      while (!closed && performance.now() < end) await Bun.sleep(5);
+      expect(closed).toBe(true);
+      expect(dedicated).toBe(1);
+      expect(generic).toBe(0);
+      expect(outbound).toBe(0);
+    } finally {
+      client.disconnect();
+      server.stop(true);
     }
-  },10000);
+    let oversizeClosed = false,
+      oversizeDedicated = 0,
+      oversizeGeneric = 0,
+      oversizeOutbound = 0;
+    const oversized = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req, server) {
+        if (server.upgrade(req)) return;
+        return new Response('owned');
+      },
+      websocket: {
+        open(ws) {
+          ws.send(`{"type":"file_fetch_chunk","extra":"${'a'.repeat(65536)}"}`);
+        },
+        message() {
+          oversizeOutbound++;
+        },
+      },
+    });
+    const oversizedClient = new WebSocketClient(
+      { url: `ws://127.0.0.1:${oversized.port}/ws`, autoReconnect: false, heartbeatInterval: 0 },
+      {
+        onMessage: () => oversizeGeneric++,
+        onFileDownloadMessage: () => oversizeDedicated++,
+        onStatusChange: (s) => {
+          if (s === 'disconnected') oversizeClosed = true;
+        },
+      },
+    );
+    try {
+      oversizedClient.connect();
+      const end = performance.now() + 3000;
+      while (!oversizeClosed && performance.now() < end) await Bun.sleep(5);
+      expect(oversizeClosed).toBe(true);
+      expect(oversizeDedicated).toBe(0);
+      expect(oversizeGeneric).toBe(0);
+      expect(oversizeOutbound).toBe(0);
+    } finally {
+      oversizedClient.disconnect();
+      oversized.stop(true);
+    }
+  }, 10000);
 });
 
 describe('browser link original-byte ingress over real sockets', () => {

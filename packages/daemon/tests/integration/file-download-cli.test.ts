@@ -8,6 +8,7 @@ import {
   createAnswer,
   createDetachSession,
   createResumeSessionRequest,
+  createUserInput,
   encodeFileDownloadFrame,
   serialize,
 } from '@remi/shared';
@@ -400,7 +401,10 @@ test('actual held No completes within1000ms while shipping TLS download work is 
     expect(elapsed).toBeLessThanOrEqual(1000);
     expect(result).toMatchObject({ hookSpecificOutput: { decision: { behavior: 'deny' } } });
     await transfer;
-    expect(fs.existsSync(join(f.files.directory, 'consumer-input'))).toBe(false);
+    const reaped = await f.close();
+    expect(reaped.consumerReaped).toBe(true);
+    expect(reaped.daemonReaped).toBe(true);
+    expect(reaped.stdin).toEqual(Buffer.alloc(0));
     console.info(
       'Owned shipping held-No receipt',
       JSON.stringify({
@@ -419,3 +423,23 @@ test('actual held No completes within1000ms while shipping TLS download work is 
     }
   }
 }, 45000);
+
+for (const harness of ['claude', 'codex'] as const)
+  test(`actual ${harness} raw recorder captures one byte without Enter through reap`, async () => {
+    const f = await fileDownloadCliFixture({ harness });
+    try {
+      const peer = await f.peer();
+      const sessionId = peer.hello().sessionId;
+      if (!sessionId) throw Error('Actual attached session absent');
+      peer.ws.send(serialize(createUserInput(sessionId, 'q', true)));
+      await until(
+        () => fs.readFileSync(join(f.files.directory, 'consumer-input')).length === 1,
+        'actual raw single byte',
+      );
+    } finally {
+      const reaped = await f.close();
+      expect(reaped.consumerReaped).toBe(true);
+      expect(reaped.daemonReaped).toBe(true);
+      expect(reaped.stdin).toEqual(Buffer.from('q'));
+    }
+  }, 30000);
