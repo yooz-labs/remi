@@ -294,6 +294,7 @@ export class Connection {
       this.handleImageStagingFrame(data);
       return;
     }
+    if (!this.checkAuthorization()) return;
     const message = deserialize(data);
     if (!message) {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
@@ -435,6 +436,7 @@ export class Connection {
 
   /** Strict original input bypasses legacy ACK/deduplication; the host owns sequencing. */
   handleStructuredChatFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const request = decodeStructuredChatFrame(data);
     if (request?.type !== 'chat_submit_request' || !this.isConnected) {
       this.close('Invalid structured chat frame');
@@ -468,6 +470,7 @@ export class Connection {
 
   /** Exact original insertion frames bypass ordinary deduplication; retries belong to the coordinator. */
   handleImageInsertionFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const ingress = decodeImageInsertionIngress(data);
     if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
       this.close('Invalid image insertion frame');
@@ -509,6 +512,7 @@ export class Connection {
 
   /** Staging bounds and duplicate-member checks run before JSON conversion or ID tracking. */
   handleImageStagingFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const ingress = decodeImageStagingIngress(data);
     if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
       this.close('Invalid image staging frame');
@@ -854,12 +858,40 @@ export class Connection {
     this.send(createError(code, message));
   }
 
+  /** Direct identities keep their grant only while it remains in the shared store (#1305). */
+  private checkAuthorization(): boolean {
+    if (this.state === 'disconnected') return false;
+    if (
+      !this.config.authenticator ||
+      !this.authenticatedPublicKey ||
+      !this.authenticatedFingerprint
+    )
+      return true;
+    let reason = 'Device authorization removed; local approval required';
+    try {
+      if (
+        this.config.authenticator.isConnectionAuthorized(
+          this.authenticatedPublicKey,
+          this.authenticatedFingerprint,
+        )
+      )
+        return true;
+    } catch {
+      reason = 'Device authorization unavailable; reconnect required';
+    }
+    // Reuse the ordinary visible close and idempotent detach/cleanup. Capability
+    // peers have no authenticator; relay peers retain HubRelay's authority gate.
+    this.close(reason);
+    return false;
+  }
+
   private startPingTimer(): void {
     this.missedPongs = 0;
     this.pingTimer = setInterval(() => {
       if (this.ws.readyState !== WebSocket.OPEN) {
         return;
       }
+      if (!this.checkAuthorization()) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
         // Peer stopped answering pings: force-close so the normal disconnect
         // path runs (registry detach + FIFO promotion of any queued
