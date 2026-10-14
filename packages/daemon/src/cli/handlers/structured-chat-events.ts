@@ -1,11 +1,7 @@
 /** Signed direct structured chat; transport receipts confer no model-write authority (#1207). */
 import { randomUUID } from 'node:crypto';
 import type { UUID } from '@remi/shared';
-import type {
-  ChatSubmitOutcome,
-  ChatSubmitRequest,
-  ChatSubmitResult,
-} from '@remi/shared/structured-chat.ts';
+import type { ChatSubmitOutcome, ChatSubmitRequest, ChatSubmitResult } from '@remi/shared';
 import { WebSocketAdapter } from '../../adapters/websocket-adapter';
 import type { IdentityStore } from '../../auth/identity-store';
 import { SubmissionSequence } from '../../harness/submission-sequence';

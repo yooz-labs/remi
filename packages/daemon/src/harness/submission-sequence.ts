@@ -4,15 +4,8 @@
  * before calling and before returning a receipt, including cached receipts.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type {
-  ChatSubmitOutcome,
-  ChatSubmitRequest,
-  ChatSubmitResult,
-} from '@remi/shared/structured-chat.ts';
-import {
-  decodeStructuredChatFrame,
-  encodeStructuredChatFrame,
-} from '@remi/shared/structured-chat.ts';
+import type { ChatSubmitOutcome, ChatSubmitRequest, ChatSubmitResult } from '@remi/shared';
+import { decodeStructuredChatFrame, encodeStructuredChatFrame } from '@remi/shared';
 
 const RECENT_RECEIPTS = 32;
 type Effect = (request: ChatSubmitRequest) => Promise<ChatSubmitOutcome>;
