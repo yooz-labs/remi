@@ -35,7 +35,7 @@ import {WebSocketClient} from ${JSON.stringify(join(root, 'packages/web/src/lib/
 import {BrowserLinkController} from ${JSON.stringify(join(root, 'packages/web/src/lib/browser-links.ts'))};
 import {getIdentityRevision} from ${JSON.stringify(join(root, 'packages/web/src/lib/identity-client.ts'))};
 const input=await Bun.file(process.argv[2]).json();const identity=await unlockIdentity(input.identity);
-const assert=(ok,label)=>{if(!ok)throw Error(label)};const until=async(fn,label)=>{const end=performance.now()+5000;while(!fn()){if(performance.now()>end)throw Error(label);await Bun.sleep(5)}};
+let assertions=0;const assert=(ok,label)=>{assertions++;if(!ok)throw Error(label)};const until=async(fn,label)=>{const end=performance.now()+5000;while(!fn()){if(performance.now()>end)throw Error(label);await Bun.sleep(5)}};
 let authenticated=false,hello=null, genericBrowser=0;const sent=[];
 const client=new WebSocketClient({url:input.url,autoReconnect:false,heartbeatInterval:0},{onMessage:async m=>{
  if(m.type.startsWith('browser_link_'))genericBrowser++;
@@ -55,7 +55,7 @@ try{
  controller.receiveHere();await until(()=>controller.state.phase==='receiving','new explicit selection');assert(sent[2].seq===3,'new explicit sequence');
  const old=client.imageUploadGeneration;client.disconnect();controller.disconnect();assert(controller.state.candidates.length===0,'disconnect clears');assert(controller.state.phase==='unavailable','disconnect unavailable');
  client.connect();await until(()=>client.isConnected,'reconnected signed TLS');assert(client.imageUploadGeneration!==old,'actual new socket generation');await Bun.sleep(20);assert(sent.length===3,'no automatic reselection');controller.receiveHere();await until(()=>controller.state.phase==='receiving','explicit new generation');assert(sent[3].seq===1,'new socket resets');
- console.log(JSON.stringify({passed:true,assertions:input.expiry?19:16,naturalExpiry:input.expiry}));
+ console.log(JSON.stringify({passed:true,assertions,naturalExpiry:input.expiry}));
 }finally{controller.dispose();client.disconnect();}
 `,
     );
@@ -83,6 +83,7 @@ try{
     ]);
     expect(code, err).toBe(0);
     expect(JSON.parse(out)).toMatchObject({ passed: true, naturalExpiry: expiry });
+    console.log('Owned controller child receipt', out.trim());
   } finally {
     if (child && child.exitCode === null) {
       child.kill('SIGTERM');
