@@ -71,7 +71,7 @@ Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 
 - **claude** (the Claude Code harness): #375 (P1, suspend and resume loses input), then #808, #1147, #940, #1189 with #1211, #1137.
-- **codex:** #1192 (Guardian reviews), #1187; #1207 waits on an owner decision.
+- **codex:** #1192 (Guardian reviews), #1187; #1207 uses structured start/steer and retains the host default (owner decision, 2026-10-13).
 - **web:** #1146, then the P3 list.
 - **quality:**
   - #1232: one port helper; it supersedes #1150, #1159 and #1169.
@@ -100,7 +100,7 @@ Collected in #1233. Decided on 2026-10-06:
 Still open:
 - the push lease: how many days a phone can go without reconnecting before a machine stops pushing to it (#1254; proposed 30);
 - whether closing a session deletes its worktree (until decided, it does not);
-- Codex typed chat (#1207).
+- Codex typed chat (#1207) was decided on 2026-10-13: structured start/steer with the current full-access default; explicit read-only remains honored.
 
 ## How every step is tested
 
@@ -526,3 +526,18 @@ failed before this fix and passes afterward; the old upload cannot revive either
 Correlated outcome/retry handling, strict shared vectors and dispatch, an explicit
 client action, capability availability and native conformance remain subsequent
 integration work. The internal lease is not a shipping Add to draft action.
+
+
+## Codex structured chat (#1207)
+
+The owner accepted structured app-server start/steer while retaining the current full-access default.
+The implementation reuses the existing app-server client, thread tracker and decision channel; no typed Codex PTY fallback is enabled.
+The internal writer is the first reviewable step, with a 16 KiB text bound, exact main-thread/runtime binding, final authority check, explicit accepted/refused/uncertain outcomes and no turn policy overrides.
+Its ordinary controls construct a real unstarted client; an optional installed Codex control uses an empty file-only account and actual native server to check start, steer, explicit read-only parameters and real response loss.
+The initial immediate-steer control exposed the server's delayed active-status publication; the retained original failure is followed by a bounded wait for actual active status.
+No account-backed model completion or permission enforcement is claimed.
+
+Next connect a harness-neutral submission seam and additive correlated wire result with expected binding, bounded replay/conflict handling and uncertain-outcome retention.
+Then add an actual web caller and capability only where that path exists; provide the same contract to the native developer.
+Run source controls on both supported Buns, actual daemon/client routing, and separately approved installed-model acceptance before claiming the complete feature.
+Keep #1207 open until the connected path lands.
