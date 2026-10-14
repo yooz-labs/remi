@@ -2118,10 +2118,10 @@ def classify(base, head):
                 continue
             else:
                 return all_gates("Unknown path or global/gate configuration changed")
-        soak_skip = soak_fixture_only(base, head, merge_base, paths, changed_statuses)
+        relay_soak = gates["relay"] and not soak_fixture_only(base, head, merge_base, paths, changed_statuses)
         if status_state["error"]:
             return all_gates("Diff status unavailable or malformed; running all gates")
-        return {**gates, "relay_soak": gates["relay"] and not soak_skip, "typecheck": any(gates[key] for key in
+        return {**gates, "relay_soak": relay_soak, "typecheck": any(gates[key] for key in
                 ("root", "web", "signaling", "integration", "notices")),
                 "reason": f"Classified complete PR diff ({len(paths)} paths)"}
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):

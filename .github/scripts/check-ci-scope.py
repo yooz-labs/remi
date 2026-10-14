@@ -3966,6 +3966,22 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             focused_status_controls += 1
         else:
             raise AssertionError("duplicate expected diff path accepted")
+        ordinary_doc = "docs/owned-relay-unrelated-note.md"
+        ordinary_doc_base = soak_tree(soak_base, [(ordinary_doc, "before\n", "100644")])
+        ordinary_doc_head = soak_tree(ordinary_doc_base, [(ordinary_doc, "after\n", "100644")])
+        classifier_globals = module["classify"].__globals__
+        original_soak_fixture_only = classifier_globals["soak_fixture_only"]
+        soak_fixture_calls = []
+        def delegate_soak_fixture_only(*args, **kwargs):
+            soak_fixture_calls.append(1)
+            return original_soak_fixture_only(*args, **kwargs)
+        classifier_globals["soak_fixture_only"] = delegate_soak_fixture_only
+        try:
+            doc_result = classify(ordinary_doc_base, ordinary_doc_head)
+        finally:
+            classifier_globals["soak_fixture_only"] = original_soak_fixture_only
+        assert not selected(doc_result) and not doc_result["relay_soak"] and not soak_fixture_calls, doc_result
+        focused_status_controls += 1
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
                           "scope": "owned real git diffs and event inputs"}))
