@@ -816,6 +816,11 @@ WORKFLOWS = {path.name: path.read_text() for path in Path(".github/workflows").g
 ACTION = Path(".github/actions/ci-scope/action.yml").read_text()
 WORKFLOW_TOOLS = runpy.run_path(str(SCRIPT.with_name("workflow-scope.py")))
 WORKFLOW_TOOLS["validate_action"](yaml.load(ACTION, Loader=WORKFLOW_TOOLS["UniqueLoader"]))
+REUSE = runpy.run_path(str(SCRIPT.with_name("relay-soak-reuse.py")))
+REUSE_POLICY_TEXT = {
+    path: Path(path).read_text() for path in subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+    if path and module["validation_input"](path)
+}
 
 
 def git(*args, input=None):
@@ -1185,6 +1190,259 @@ def validation_controls():
                 WORKFLOW_TOOLS["CONTRACTS"]["scope_action"] = saved_contract
         finally:
             os.chdir(previous)
+
+
+def reuse_controls():
+    # Constructed offline eligibility shapes on real Git/ZIP objects; never live acceptance.
+    global count
+    import ast
+    import copy
+    import hashlib
+    import io
+    import zipfile
+
+    git("reset", "--hard", base)
+    git("clean", "-fdq")
+    for path, text in REUSE_POLICY_TEXT.items():
+        write(path, text)
+    protected = commit()
+    write("packages/daemon/src/owned-reuse-runtime.ts", "export const source = true;\n")
+    producer = commit()
+    write("docs/owned-reuse-followup.md", "ordinary prose\n")
+    consumer = commit()
+    current = {"repository": "owned/controls", "repository_id": 11, "pr": 12, "branch": "owned-head",
+               "base": protected, "head": consumer, "checkout": consumer,
+               "tree": git("rev-parse", f"{consumer}^{{tree}}"), "parents": [producer], "kind": "head",
+               "policy": REUSE["digest"](module["validation_inventory"](protected)),
+               "environment": {"bun": "1.3.11", "ImageVersion": "owned-control"},
+               "run": 15, "attempt": 1, "workflow_id": 16}
+    receipt = {**current, "head": producer, "checkout": producer, "parents": [protected],
+               "tree": git("rev-parse", f"{producer}^{{tree}}"), "run": 14, "schema": 1, "producer": "actual-soak"}
+    run = {"status": "completed", "conclusion": "success", "event": "pull_request", "path": REUSE["WORKFLOW"],
+           "workflow_id": 16, "id": 14, "run_attempt": 1, "head_sha": producer, "head_branch": "owned-head",
+           "repository": {"id": 11}, "head_repository": {"id": 11},
+           "pull_requests": [{"number": 12, "base": {"sha": protected}, "head": {"sha": producer}}]}
+    job = {"name": "local-relay", "status": "completed", "conclusion": "success", "run_id": 14, "run_attempt": 1,
+           "steps": [{"name": name, "status": "completed", "conclusion": "success"}
+                     for name in (REUSE["SHORT"], REUSE["SOAK"])]}
+    artifact = {"name": "relay-r7-local-14-1", "expired": False, "id": 17, "digest": "sha256:" + "0" * 64,
+                "workflow_run": {"id": 14, "head_sha": producer, "repository_id": 11, "head_repository_id": 11}}
+    commit_data = {"sha": producer, "tree": {"sha": receipt["tree"]}, "parents": [{"sha": protected}]}
+    def evaluate(values):
+        return REUSE["eligible"](*values, classify)
+    original_values = [current, receipt, run, job, artifact, commit_data]
+    assert evaluate(original_values)["verified"] is True  # Offline shape, no real successful run.
+    count += 1
+    git("reset", "--hard", producer)
+    write(HOOK_SERVER_TEST, "export const qualified = true;\n")
+    qualified = commit()
+    values = copy.deepcopy(original_values)
+    values[0].update(head=qualified, checkout=qualified, tree=git("rev-parse", f"{qualified}^{{tree}}"))
+    assert evaluate(values)["verified"] is True  # Existing exact producer policy, not a new test exemption.
+    count += 1
+    mutations = [(1, (key,), None, "receipt " + key) for key in
+                 ("repository", "repository_id", "pr", "branch", "base", "kind", "policy", "environment", "workflow_id")]
+    mutations += [(1, (key,), value, "receipt " + key) for key, value in
+                  (("producer", "reused"), ("schema", 2), ("extra", True), ("attempt", True),
+                   ("head", "f" * 40), ("checkout", "f" * 40), ("parents", []))]
+    mutations += [(2, (key,), value, "run " + key) for key, value in
+                  (("status", "in_progress"), ("conclusion", "cancelled"), ("event", "workflow_dispatch"),
+                   ("path", "owned.yml"), ("workflow_id", 99), ("id", 99), ("run_attempt", 2),
+                   ("head_sha", "f" * 40), ("head_branch", "other"), ("pull_requests", []))]
+    mutations += [(2, ("repository", "id"), 99, "repository ID"),
+                  (2, ("head_repository", "id"), 99, "fork producer"),
+                  (2, ("pull_requests", 0, "base", "sha"), "f" * 40, "advanced base"),
+                  (3, ("conclusion",), "failure", "failed producer"), (3, ("run_attempt",), 2, "job attempt"),
+                  (3, ("steps", 0, "conclusion"), "skipped", "short skip"),
+                  (3, ("steps", 1, "conclusion"), "skipped", "scoped or reused soak"),
+                  (3, ("steps", 1, "conclusion"), "cancelled", "cancelled soak"),
+                  (4, ("expired",), True, "expired artifact"), (4, ("name",), "relay-r7-local-14-2", "artifact attempt"),
+                  (4, ("workflow_run", "id"), 99, "artifact run"),
+                  (4, ("workflow_run", "head_sha"), "f" * 40, "artifact head"),
+                  (4, ("workflow_run", "repository_id"), 99, "artifact repository"),
+                  (5, ("tree", "sha"), "f" * 40, "tested tree"), (5, ("parents",), [], "tested parents")]
+    for index, keys, value, label in mutations:
+        values = copy.deepcopy(original_values)
+        item = values[index]
+        for key in keys[:-1]:
+            item = item[key]
+        item[keys[-1]] = value
+        try:
+            evaluate(values)
+        except (ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            count += 1
+        else:
+            raise AssertionError(("reuse refusal", label))
+    for path in ("packages/daemon/tests/owned-new.test.ts", "packages/daemon/src/owned-reuse-runtime.ts",
+                 "packages/daemon/src/auth/owned.ts", "packages/shared/src/protocol.ts",
+                 "packages/web/tests/helpers/relay-hub.ts", "bunfig.toml", "bun.lock", "tsconfig.json"):
+        git("reset", "--hard", producer)
+        git("clean", "-fdq")
+        write(path, "unqualified runtime/test input\n")
+        changed = commit()
+        values = copy.deepcopy(original_values)
+        values[0].update(head=changed, checkout=changed, tree=git("rev-parse", f"{changed}^{{tree}}"))
+        try:
+            evaluate(values)
+        except ValueError:
+            count += 1
+        else:
+            raise AssertionError(("reuse delta refusal", path))
+    for operation in ("delete", "rename", "diverge"):
+        git("reset", "--hard", protected if operation == "diverge" else producer)
+        git("clean", "-fdq")
+        path = Path("packages/daemon/src/owned-reuse-runtime.ts")
+        if operation == "delete":
+            path.unlink()
+        elif operation == "rename":
+            path.rename(path.with_suffix(".moved.ts"))
+        else:
+            write("docs/owned-divergent.md", "prose on independent history\n")
+        changed = commit()
+        values = copy.deepcopy(original_values)
+        values[0].update(head=changed, checkout=changed, tree=git("rev-parse", f"{changed}^{{tree}}"))
+        try:
+            evaluate(values)
+        except (ValueError, subprocess.SubprocessError):
+            count += 1
+        else:
+            raise AssertionError(("reuse history refusal", operation))
+    git("reset", "--hard", protected)
+    git("clean", "-fdq")
+    write(".github/ci-scope.md", "changed producer policy\n")
+    drifted = commit()
+    write("docs/owned-reuse-followup.md", "prose\n")
+    drifted_head = commit()
+    values = copy.deepcopy(original_values)
+    values[0].update(head=drifted_head, checkout=drifted_head)
+    values[1].update(head=drifted, checkout=drifted, tree=git("rev-parse", f"{drifted}^{{tree}}"))
+    values[2].update(head_sha=drifted)
+    values[2]["pull_requests"][0]["head"]["sha"] = drifted
+    values[4]["workflow_run"]["head_sha"] = drifted
+    values[5].update(sha=drifted, tree={"sha": values[1]["tree"]})
+    try:
+        evaluate(values)
+    except ValueError:
+        count += 1
+    else:
+        raise AssertionError("reuse accepted producer policy drift")
+    event = {"repository": {"id": 11, "full_name": "owned/controls"}, "pull_request": {
+        "number": 12, "head": {"repo": {"id": 11}, "sha": drifted_head, "ref": "owned-head"},
+        "base": {"repo": {"id": 11}, "sha": protected}}}
+    write("owned-reuse-event.json", json.dumps(event))
+    environment = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(Path("owned-reuse-event.json").resolve()),
+                   "GITHUB_REPOSITORY": "owned/controls", "GITHUB_REPOSITORY_ID": "11", "GITHUB_JOB": "local-relay",
+                   "GITHUB_WORKFLOW_REF": "owned/controls/.github/workflows/relay-r7.yml@refs/pull/12/merge",
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_API_URL": "https://api.github.com",
+                   "GITHUB_WORKSPACE": str(Path.cwd()), "GITHUB_SHA": drifted_head}
+    saved = {key: os.environ.get(key) for key in environment}
+    try:
+        os.environ.update(environment)
+        try:
+            REUSE["context"]()
+        except ValueError as error:
+            assert str(error) == "policy not landed at protected base", error
+            count += 1
+        else:
+            raise AssertionError("reuse self-qualified unlanded policy")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr("producer.json", json.dumps(receipt))
+    encoded = raw.getvalue()
+    binding = {**artifact, "digest": "sha256:" + hashlib.sha256(encoded).hexdigest()}
+    assert REUSE["archive_receipt"](encoded, binding) == receipt
+    count += 1
+    for data, info in ((encoded + b"tamper", binding),
+                       (b"not a zip", {"digest": "sha256:" + hashlib.sha256(b"not a zip").hexdigest()})):
+        try:
+            REUSE["archive_receipt"](data, info)
+        except (ValueError, zipfile.BadZipFile):
+            count += 1
+        else:
+            raise AssertionError("reuse accepted corrupted archive")
+    for name, body in (("wrong.json", "{}"), ("producer.json", "x" * (64 * 1024 + 1)),
+                       ("producer.json", '{"schema":1,"schema":1}')):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr(name, body)
+        encoded = stream.getvalue()
+        info = {"digest": "sha256:" + hashlib.sha256(encoded).hexdigest()}
+        try:
+            REUSE["archive_receipt"](encoded, info)
+        except ValueError:
+            count += 1
+        else:
+            raise AssertionError(("reuse archive refusal", name, len(body)))
+    assert len(REUSE["candidates"]([run] * 20, current)) == 3
+    count += 1
+    for action in (lambda: REUSE["candidates"]([run] * 21, current),
+                   lambda: REUSE["decode"](b'{"schema":1,"schema":1}')):
+        try:
+            action()
+        except ValueError:
+            count += 1
+        else:
+            raise AssertionError("reuse accepted unbounded or ambiguous data")
+    api = REUSE["API"]("owned/controls")
+    api.deadline = 0
+    try:
+        api.read("actions/workflows/relay-r7.yml")
+    except ValueError:
+        count += 1
+    else:
+        raise AssertionError("reuse ignored exhausted lookup budget")
+    source = ast.parse(Path(REUSE["__file__"]).read_text())
+    api_class = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "API")
+    reader = next(node for node in api_class.body if isinstance(node, ast.FunctionDef) and node.name == "read")
+    invoke = next(node for node in ast.walk(reader) if isinstance(node, ast.Call) and
+                  isinstance(node.func, ast.Attribute) and node.func.attr == "run" and
+                  isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess")
+    assert isinstance(invoke.args[0], ast.List) and [
+        node.value if isinstance(node, ast.Constant) else None for node in invoke.args[0].elts[:4]
+    ] == ["gh", "api", "--hostname", "github.com"], "reuse API host is not literally pinned"
+    count += 1
+    for event in ("push", "workflow_dispatch"):
+        output = Path("owned-reuse-output")
+        output.write_text("")
+        result = subprocess.run([sys.executable, str(SCRIPT.with_name("relay-soak-reuse.py"))],
+                                env=dict(os.environ, GITHUB_EVENT_NAME=event, GITHUB_OUTPUT=str(output.resolve())),
+                                capture_output=True, check=False, text=True)
+        assert result.returncode == 0 and json.loads(result.stdout)["verified"] is False
+        assert output.read_text() == "verified=false\n"
+        count += 1
+    failure = subprocess.run([sys.executable, str(SCRIPT.with_name("relay-soak-reuse.py")), "--invalid-control"],
+                             capture_output=True, check=False)
+    assert failure.returncode != 0 and not failure.stdout
+    count += 1
+    for mutation in ("drop-lookup", "noop-receipt", "ignore-helper-failure", "unguarded-soak"):
+        git("reset", "--hard", protected)
+        git("clean", "-fdq")
+        workflow = WORKFLOW_TOOLS["load"](REUSE_POLICY_TEXT[".github/workflows/relay-r7.yml"])
+        steps = workflow["jobs"]["local-relay"]["steps"]
+        if mutation == "drop-lookup":
+            steps[:] = [step for step in steps if step.get("id") != "reuse"]
+        elif mutation == "noop-receipt":
+            next(step for step in steps if step.get("name") == "Record actual soak producer")["run"] = "true"
+        elif mutation == "ignore-helper-failure":
+            next(step for step in steps if step.get("id") == "reuse")["continue-on-error"] = "true"
+        else:
+            next(step for step in steps if step.get("id") == "soak")["if"] = (
+                "needs.scope.result == 'success' && needs.scope.outputs.relay_soak != 'false'")
+        write(".github/workflows/relay-r7.yml", yaml.safe_dump(workflow, sort_keys=False))
+        commit()
+        try:
+            WORKFLOW_TOOLS["validate"]()
+        except AssertionError as error:
+            assert str(error) == "relay reuse order/commands/conditions/permissions changed", error
+            count += 1
+        else:
+            raise AssertionError(("reuse workflow refusal", mutation))
 
 
 original = Path.cwd()
@@ -3584,7 +3842,11 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                           (entry_name, "unapproved executable doc"), False)
         assert count - image_entry_start == 26, count - image_entry_start
         # END #1170 image-worker entry transition controls.
-        assert count == 2291, count
+        # The registered helper adds two existing generic inventory controls; old bodies/order stay fixed.
+        assert count == 2293, count
+        reuse_start = count
+        reuse_controls()
+        assert count - reuse_start == 74, count - reuse_start
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
