@@ -16,8 +16,12 @@ FAIL_SCOPE = {"name": "Fail unvalidated scope", "if": "needs.scope.result != 'su
 SOAK_SKIP = {
     "name": "Report scoped soak skip",
     "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'",
-    "run": 'echo "61-minute soak scoped out for reviewed fixture changes; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
+    "run": 'echo "61-minute soak scoped out for exact reviewed input transitions; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
 }
+
+# Only these two complete inert mappings are equivalent during the reporter migration.
+SOAK_SKIP_PREVIOUS = {**SOAK_SKIP, "run": SOAK_SKIP["run"].replace(
+    "exact reviewed input transitions", "reviewed fixture changes")}
 
 COVERAGE_TEST_RUN = (
     "set -o pipefail\n"
@@ -106,7 +110,7 @@ def execution(value, path):
             job.pop(key, None)
         steps = []
         for original in job["steps"]:
-            if original == FAIL_SCOPE or original == SOAK_SKIP:
+            if original == FAIL_SCOPE or original == SOAK_SKIP or original == SOAK_SKIP_PREVIOUS:
                 continue  # Dedicated cheap failure routing, with no runtime execution.
             step = dict(original)
             step.pop("if", None)
