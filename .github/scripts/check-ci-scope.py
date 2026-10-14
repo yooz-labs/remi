@@ -3847,6 +3847,85 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         reuse_start = count
         reuse_controls()
         assert count - reuse_start == 74, count - reuse_start
+        # Exact CI-only Bun diagnostics runner/test pair: all normal checks stay selected,
+        # while only the unrelated relay workflow is omitted. Keep caller pins literal.
+        diagnostic_start = count
+        diagnostic_inputs = tuple(module["CI_BUN_DIAGNOSTIC_INPUTS"])
+        source_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=original).decode().strip()
+        git("fetch", "--quiet", "--no-tags", str(original), source_head)
+        diagnostic_updates = []
+        for path in diagnostic_inputs:
+            source = (original / path).read_bytes()
+            diagnostic_updates.append((path, source + b"\n// owned exact-pair scope control\n", "100644"))
+        self_edits = [
+            (".github/scripts/ci-scope.py", (original / ".github/scripts/ci-scope.py").read_bytes() +
+             b"\n# owned classifier scope control\n", "100644"),
+            (".github/scripts/check-ci-scope.py", (original / ".github/scripts/check-ci-scope.py").read_bytes() +
+             b"\n# owned corpus scope control\n", "100644"),
+            (".github/ci-scope.md", (original / ".github/ci-scope.md").read_bytes() +
+             b"\n<!-- owned scope documentation control -->\n", "100644"),
+            ("docs/owned-ci-diagnostics.md", "ordinary documentation\n", "100644"),
+        ]
+
+        def diagnostic_assert(left, right, label, skip):
+            global count
+            result = classify(left, right)
+            assert selected(result) == (gates - {"relay"} if skip else gates), (label, result)
+            assert result["relay_soak"] is (not skip), (label, result)
+            count += 1
+
+        diagnostic_base = source_head
+        diagnostic_candidate = soak_tree(diagnostic_base, [*diagnostic_updates, *self_edits])
+        diagnostic_assert(diagnostic_base, diagnostic_candidate, "complete pair with approved self-edits/docs", True)
+        diagnostic_assert(diagnostic_base, soak_tree(diagnostic_base, diagnostic_updates),
+                          "exact pair only", True)
+        for omitted in diagnostic_inputs:
+            diagnostic_assert(diagnostic_base,
+                              soak_tree(diagnostic_base, [update for update in diagnostic_updates
+                                                          if update[0] != omitted]),
+                              ("one-file partial", omitted), False)
+        for path in diagnostic_inputs:
+            mode_updates = [(item_path, body, "100755" if item_path == path else mode)
+                            for item_path, body, mode in diagnostic_updates]
+            diagnostic_assert(diagnostic_base, soak_tree(diagnostic_base, mode_updates),
+                              ("executable producer mode", path), False)
+        runner_path, test_path = diagnostic_inputs
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base, [diagnostic_updates[1]], removals=(runner_path,)),
+                          "runner deletion/rename-shaped diff", False)
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base, [diagnostic_updates[0]], removals=(test_path,)),
+                          "test deletion/rename-shaped diff", False)
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base,
+                                    [diagnostic_updates[1], (runner_path + ".moved", diagnostic_updates[0][1], "100644")],
+                                    removals=(runner_path,)),
+                          "runner rename", False)
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base, [*diagnostic_updates,
+                              ("packages/daemon/src/owned-mixed-runtime.ts", "export {};\n", "100644")]),
+                          "mixed runtime path", False)
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base, [*diagnostic_updates,
+                              ("docs/relay-r7-gates.md", "changed R7 contract\n", "100644")]),
+                          "mixed explicit relay documentation", False)
+
+        unexpected_caller = "packages/daemon/src/owned-diagnostic-caller.ts"
+        caller_base = soak_tree(diagnostic_base, [(unexpected_caller,
+            "import './scripts/ci/run-bun-test-with-diagnostics';\n", "100644")])
+        diagnostic_assert(caller_base, soak_tree(caller_base, diagnostic_updates),
+                          "unchanged extra caller at both endpoints", False)
+        diagnostic_assert(diagnostic_base,
+                          soak_tree(diagnostic_base, [*diagnostic_updates,
+                              (unexpected_caller, "import './scripts/ci/run-bun-test-with-diagnostics';\n", "100644")]),
+                          "added extra caller", False)
+
+        closure_path = ".github/scripts/workflow-contracts.json"
+        closure_drift = soak_tree(diagnostic_base, [(closure_path,
+            (original / closure_path).read_bytes() + b"\n", "100644")])
+        diagnostic_assert(closure_drift, soak_tree(closure_drift, diagnostic_updates),
+                          "pinned caller drift at all endpoints", False)
+        assert count - diagnostic_start == 14, count - diagnostic_start
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
