@@ -20,6 +20,8 @@ import {
 
 interface InputAreaProps {
   readonly onSend: (message: string) => void;
+  /** Enables a separate explicit Send for a confirmed image already in the terminal draft. */
+  readonly hasImageDraft?: boolean;
   /** Answer the active question (#401). Quick-response chips route here so
    *  tapping Yes/No on a 2-option permission sends `sendAnswer` not the
    *  literal "y"/"n" via `sendInput`. Required when `question` is set
@@ -77,6 +79,7 @@ function QuickResponse({
 
 export function InputArea({
   onSend,
+  hasImageDraft = false,
   onAnswer,
   onCancel,
   disabled = false,
@@ -171,7 +174,7 @@ export function InputArea({
       e.stopPropagation();
 
       const trimmed = value.trim();
-      if (!trimmed || disabled) {
+      if ((!trimmed && !hasImageDraft) || disabled) {
         return;
       }
 
@@ -205,7 +208,7 @@ export function InputArea({
       return;
     }
     const trimmed = value.trim();
-    if (!trimmed || disabled) {
+    if ((!trimmed && !hasImageDraft) || disabled) {
       return;
     }
 
@@ -357,7 +360,7 @@ export function InputArea({
         {/* The one button: tap sends, long-press opens the Stop dialog (#624
             review). Not HTML-`disabled` when the text is empty — only when the
             whole input is disabled — so the long-press escape stays reachable
-            while Claude is busy and the field is empty. The empty-state tap is a
+            while Claude is busy and the field is empty. Without a confirmed image draft, the empty-state tap is a
             no-op (handled in handleSend); the greyed style signals it. */}
         <button
           onClick={handleSend}
@@ -368,12 +371,18 @@ export function InputArea({
           disabled={disabled}
           className={clsx(
             'flex size-10 shrink-0 select-none items-center justify-center rounded-full transition-all',
-            value.trim()
+            value.trim() || hasImageDraft
               ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)] active:scale-95'
               : 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)]',
             disabled && 'cursor-not-allowed opacity-50',
           )}
-          aria-label={onCancel ? 'Send message (long-press to stop)' : 'Send message'}
+          aria-label={
+            !value.trim() && hasImageDraft
+              ? 'Send image draft'
+              : onCancel
+                ? 'Send message (long-press to stop)'
+                : 'Send message'
+          }
         >
           <Send className="size-5" />
         </button>

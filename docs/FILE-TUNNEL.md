@@ -4,7 +4,7 @@ Design proposal for [#1170](https://github.com/yooz-labs/remi/issues/1170), star
 This document specifies work to review before implementation; it adds no messages, capabilities, endpoints or native attachment controls.
 The direct staging vocabulary is accepted; protocol/runtime integration and the other tunnel operations remain pending.
 The owner included the tunnel's frames in the protocol freeze (#1233, comment on #1170); native attachment and preview UI remains X5 (#1245).
-The first runnable unit is direct image staging; harness insertion has its own later gates.
+Direct image staging and explicit Claude draft insertion have source callers under accepted ADRs0041/0042. Native, relay attachment transport, links and downloads retain their separate gates.
 This separate follow-up does not establish or block relay backend release acceptance.
 
 ## Current code and reuse
@@ -90,16 +90,16 @@ Explicit insertion must recheck the captured device grant incarnation, runtime, 
 If refused, the image may remain staged until its expiry, with an honest retryable result; a later retry must not replay an earlier insertion.
 Idempotency must distinguish confirmed insertion from uncertain delivery; it must not type a second copy after a lost response.
 
-Claude's first proposed delivery is an `@path` reference without Enter.
-Its exact quoting, spaces, special characters and behavior on the installed CLI require a local probe before accepting this operation.
+Claude insertion uses a quoted absolute retained PNG/JPEG reference without Enter, under [ADR0042](../.context/decisions/0042-claude-image-insertion.md).
+The installed Claude 2.1.296 check read the exact retained PNG/JPEG files outside the project, including spaces; unmeasured quote, backslash and control-containing host paths are refused.
 The shared prompt signal cannot detect every possible dialog; record what those controls demonstrate, without claiming complete screen safety.
 Codex insertion remains unavailable until the owner resolves #1207 and an app-server attachment operation is independently verified against the installed version.
 An upload must not start a Codex turn, change a thread or use `-i` on a resumed TUI implicitly.
 
 Abandoned and failed partial files are removed when the transfer ends.
-Uninserted completed files expire after 24 hours or session exit, whichever comes first.
-Before insertion ships, the implementation must establish when each harness no longer needs its image reference, including a later resume.
-If it cannot establish that lifetime, insertion does not ship under this deletion policy; it must not silently retain files forever instead.
+Completed files retain their original at-most-24-hour/session-exit deadline after insertion.
+The owner accepted the visible Send-before lifetime in ADR0042: an expired unsent reference requires a fresh upload and manual removal from the terminal draft.
+The installed CLI embeds image bytes on submission; the observed ordinary exit/resume retains them, without claiming later compaction or file reads never need the original.
 Crash recovery scans only its own private scratch namespace, with descriptor-based traversal; it never walks the project or follows links.
 Deletion is limited to owned transfer artifacts, with failures counted visibly and their reserved disk budget retained until cleanup succeeds.
 
@@ -241,7 +241,7 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 
 | Operation | Candidate frames and effect | Gate and availability |
 |---|---|---|
-| Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. Installed-Claude and lifetime gates remain unresolved. |
+| Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. The owner accepted the original expiry in ADR0042. The installed corrected route, direct host and explicit web caller are verified separately; native conformance is still required for native availability. |
 | File fetch | Candidate `file_fetch_begin/accepted`, `file_fetch_chunk/ack`, `file_fetch_complete/result`, `file_fetch_cancel/result`; begin selects one permitted project-relative path. Prepare a reserved private copy before any content frame. Completion describes its length and SHA-256; never claim an atomic source snapshot. | Names stay in freeze scope, not advertised. Exact fetch fields/ack/cancellation rules await descriptor confinement, denial-policy and private-copy spike evidence; no placeholder implementation. |
 | Link forwarding | Candidate `link_candidate` and a client-local explicit open choice; candidate carries a bounded validated URL, never a host-fetch instruction. | Unavailable until the per-session shim, URL bounds, selected-client routing and actual launch boundary are specified and proven. |
 | Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
@@ -264,7 +264,7 @@ Intel Mac and Rosetta execution are outside product scope.
 | Xcode operation | Availability after this docs-only preparation |
 |---|---|
 | Picker/upload progress | No runnable capability yet. X5 may consume frozen staging frames only after handler, production caller and TypeScript/Swift conformance gates pass. |
-| Agent attachment insertion | Separate from staged upload; Claude unavailable until its effect/lifetime gates, Codex unavailable until #1207 and structured-operation proof. |
+| Agent attachment insertion | Separate from staged upload; signed direct Claude host/web caller under ADR0042, native independently gated; Codex unavailable until #1207 and structured-operation proof. |
 | File download/preview | Unavailable until fetch fields, portable confinement, validated private-copy semantics and inert preview gates pass. |
 | Open agent link | Unavailable until explicit selected-client forwarding/launch gates pass; no automatic open or host fetch. |
 | Relay attachment bytes | Unavailable until accepted v2 transport and real Worker/hub/client ciphertext-only controls; no APNs/HTTP-answer/legacy fallback. |
@@ -494,7 +494,7 @@ A passing parser or build does not establish filesystem confinement, harness del
 - Prove the macOS/Linux descriptor API available to Bun, and choose any required platform helper explicitly; do not substitute a racy `realpath` check.
 - Prove the descriptor checks for validated private-copy fetch semantics; do not describe them as atomic source snapshots or complete concurrent-edit detection.
 - Choose a bounded decoder only after CPU/memory/concurrency and compiled-target evidence; dimensions and a transitive development dependency are insufficient.
-- Verify installed Claude reference insertion and establish image-reference lifetime before enabling automatic deletion.
+- Claude direct insertion and visible original expiry are accepted in ADR0042; native follows its own conformance and rendered-device gates.
 - Resolve Codex attachment delivery with #1207; observing a CLI flag is insufficient to authorize starting a turn.
 - Review the proposed type allowlist, bounds, cleanup lifetime and credential deny corpus before freezing them.
 
@@ -837,3 +837,23 @@ identity provision; a different identity disables upload. The isolated real-brow
 regression passes eight assertions on each Bun, and restoring the old effect fails
 its post-effect enabled assertion. Native/Swift and physical-device acceptance,
 relay transport and harness insertion remain separate. Hosted checks precede landing.
+
+
+## Explicit direct Claude draft caller
+
+The existing web upload panel now offers **Add to draft** after successful staging when the original signed direct connection advertises `image_insertion`.
+The host writes one generated retained reference without Enter.
+The panel shows the unchanged **Send before** deadline and session-end limit.
+The existing Send action submits separately, including an image-only turn; its input receipt remains distinct from the image insertion result.
+An unconfirmed Send retains the deadline, and the existing message retry keeps its original input ID.
+Uploading a replacement is blocked while a known unsent reference is still tracked.
+
+A delayed insertion response shows uncertainty; the person can explicitly check status with the exact original insertion request.
+No timer, reconnect or new request ID automatically reinserts the image.
+Known session close and local expiry remove the Send affordance; an expired unsent reference must be removed manually before a fresh upload.
+The client retains bounded metadata, not the File bytes, and uses a single deadline timer rather than polling.
+
+Production App controls cover PNG/JPEG at 390×844, 1024×768 and 1440×1000, plus an actual paused-source-daemon retry.
+Compiled host controls cover Apple Silicon Mac and Linux ARM64/x64 on Bun1.3.11/1.4.2; the inert CLI consumes no additional model turn.
+These controls do not establish native conformance, phone battery use, deployed relay attachments or a new 24-hour hardware soak.
+Keep #1170 open for those scopes and the link/download follow-ups.

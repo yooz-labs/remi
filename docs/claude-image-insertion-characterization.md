@@ -88,7 +88,7 @@ Both answers correctly named red, green, blue and yellow in quadrant order.
 The child was reaped and both journals settled with zero retained charge.
 Exact receipts are under `corrected-route-check/` in the same artifact directory.
 Exactly six authorized turns have now been consumed; no additional model turn
-is part of this check. Managed insertion and its production caller remain unavailable.
+is part of this check. Managed direct insertion and the explicit web caller were implemented separately under ADR0042; this installed-CLI record alone establishes no caller, native or deployed acceptance.
 
 ## Queue prerequisite
 

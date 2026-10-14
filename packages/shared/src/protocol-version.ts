@@ -40,6 +40,7 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
    */
   workspaces: 'start a session in a new git worktree',
   image_staging: 'upload an image to the attached Claude session',
+  image_insertion: 'add an image to the attached Claude draft',
 };
 
 /** Whether a machine supports what a client needs, from its `hello_ack`. */

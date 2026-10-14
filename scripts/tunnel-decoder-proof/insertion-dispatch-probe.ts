@@ -189,8 +189,8 @@ try {
   assert(hello?.sessionId && hello.harnessSessionId && hello.harness === 'claude');
   assert(hello.capabilities?.includes('image_staging'));
   assert(
-    !hello.capabilities?.includes('image_insertion'),
-    'client availability gate remains closed',
+    hello.capabilities?.includes('image_insertion'),
+    'supported signed direct Claude attachment advertises insertion',
   );
   const sessionId = hello.sessionId;
   const binding = { harness: 'claude' as const, harnessSessionId: hello.harnessSessionId };
@@ -367,6 +367,6 @@ console.log(
     checks,
     children,
     scope:
-      'Actual compiled direct production entry with inert cat CLI; no model or native/client availability',
+      'Actual compiled direct production entry with inert cat CLI; no model or native acceptance; web caller checked separately',
   }),
 );

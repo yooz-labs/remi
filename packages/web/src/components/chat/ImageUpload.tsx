@@ -4,6 +4,23 @@ import { type ChangeEvent, useRef, useState } from 'react';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 
+export interface ImageDraftState {
+  readonly phase:
+    | 'available'
+    | 'inserting'
+    | 'inserted'
+    | 'submitted'
+    | 'submitting'
+    | 'send_uncertain'
+    | 'refused'
+    | 'uncertain'
+    | 'expired'
+    | 'unavailable';
+  readonly expiresAt: string;
+  readonly message: string;
+  readonly action: 'insert' | 'check' | null;
+}
+
 export type ImageUploadState =
   | { readonly phase: 'idle' }
   | {
@@ -19,6 +36,7 @@ export type ImageUploadState =
   | {
       readonly phase: 'staged';
       readonly filename: string;
+      readonly draft?: ImageDraftState;
     }
   | {
       readonly phase: 'failed' | 'uncertain';
@@ -32,6 +50,7 @@ interface ImageUploadProps {
   readonly onSelect: (file: File) => void;
   readonly onCancel: () => void;
   readonly onDismiss: () => void;
+  readonly onAddToDraft?: () => void;
 }
 
 const ACTIVE_PHASES = new Set(['preparing', 'uploading', 'checking', 'cancelling']);
@@ -46,11 +65,21 @@ function isActive(state: ImageUploadState): boolean {
   return ACTIVE_PHASES.has(state.phase);
 }
 
-/** A local file picker and truthful status surface for direct image staging. */
-export function ImageUpload({ enabled, state, onSelect, onCancel, onDismiss }: ImageUploadProps) {
+/** Existing image picker plus explicit draft action; Send remains a separate choice. */
+export function ImageUpload({
+  enabled,
+  state,
+  onSelect,
+  onCancel,
+  onDismiss,
+  onAddToDraft,
+}: ImageUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [selectionError, setSelectionError] = useState<string | null>(null);
-  const active = isActive(state);
+  const active =
+    isActive(state) ||
+    (state.phase === 'staged' &&
+      ['inserting', 'inserted', 'submitting'].includes(state.draft?.phase ?? ''));
   const disabled = !enabled || active;
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -191,24 +220,68 @@ export function ImageUpload({ enabled, state, onSelect, onCancel, onDismiss }: I
         )}
 
         {state.phase === 'staged' && (
-          <output className="flex min-w-0 flex-1 basis-full items-center gap-2 text-xs sm:basis-auto">
-            <CheckCircle2
-              aria-hidden="true"
-              className="size-4 shrink-0 text-[var(--color-success)]"
-            />
-            <span className="min-w-0 flex-1 truncate text-[var(--color-text)]">
-              Image uploaded · {state.filename}
-            </span>
-            {pickButton}
-            <button
-              type="button"
-              aria-label="Dismiss image upload status"
-              onClick={onDismiss}
-              className="rounded-md p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
-            >
-              <X aria-hidden="true" className="size-4" />
-            </button>
-          </output>
+          <div className="flex min-w-0 flex-1 basis-full flex-wrap items-center gap-2">
+            <output className="flex min-w-0 flex-1 items-start gap-2 text-xs">
+              {state.draft?.phase === 'inserting' ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 animate-spin text-[var(--color-primary)]"
+                />
+              ) : (
+                <CheckCircle2
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--color-success)]"
+                />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-[var(--color-text)]">
+                  {state.filename}
+                </span>
+                <span className="mt-0.5 block break-words text-[var(--color-text-secondary)]">
+                  {state.draft?.message ?? 'Image uploaded.'}
+                </span>
+                {state.draft &&
+                  state.draft.phase !== 'expired' &&
+                  state.draft.phase !== 'submitted' && (
+                    <span className="mt-0.5 block text-[var(--color-text-muted)]">
+                      Send before{' '}
+                      <time dateTime={state.draft.expiresAt}>
+                        {new Date(state.draft.expiresAt).toLocaleString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
+                      </time>{' '}
+                      · before this session ends.
+                      {state.draft.phase === 'available' &&
+                        ' Add to draft first, then Send when ready.'}
+                    </span>
+                  )}
+              </span>
+            </output>
+            <div className="flex w-full flex-wrap items-center gap-2 pl-6 sm:w-auto sm:pl-0">
+              {state.draft?.action && onAddToDraft && (
+                <button
+                  type="button"
+                  onClick={onAddToDraft}
+                  className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-primary)] px-3 py-2 text-xs font-semibold text-[var(--color-accent-ink)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+                >
+                  {state.draft.action === 'check' ? 'Check status' : 'Add to draft'}
+                </button>
+              )}
+              {pickButton}
+              <button
+                type="button"
+                disabled={active}
+                aria-label="Dismiss image upload status"
+                onClick={onDismiss}
+                className="min-h-11 rounded-md p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] disabled:opacity-50"
+              >
+                <X aria-hidden="true" className="size-4" />
+              </button>
+            </div>
+          </div>
         )}
 
         {(state.phase === 'failed' || state.phase === 'uncertain') && (

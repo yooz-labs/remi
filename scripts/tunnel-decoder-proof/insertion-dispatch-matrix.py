@@ -51,7 +51,7 @@ def proof_for(source=REPO):
             "actual compiled held hook refuses insertion and receives No",
             "revoked original grant cannot replay a cached result",
         },
-        "scope": "Actual compiled direct production entry with inert cat CLI; no model or native/client availability",
+        "scope": "Actual compiled direct production entry with inert cat CLI; no model or native acceptance; web caller checked separately",
     }
 
 

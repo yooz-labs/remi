@@ -1,6 +1,6 @@
 # ADR 0042: Explicit Claude image-reference insertion
 
-**Status:** accepted contract; production insertion gates remain
+**Status:** accepted; signed direct Claude host and web caller implemented; native conformance separate
 **Date:** 2026-10-13
 **Owner:** Yahya
 
@@ -109,7 +109,9 @@ first-version connection restriction and expiring unsent draft is recorded above
 The corrected exact managed filename route passed on the installed CLI.
 Managed acquisition/one-effect retirement, the bounded outcome coordinator, strict shared vectors and direct host dispatch/directions are implemented.
 Source controls pass on Apple Silicon Mac with both Bun versions; the actual compiled CLI caller passes on all three supported hosts and both Bun versions, including a real HTTP permission hold and No answer with an inert CLI.
-The production explicit client action, visible expiry and client result correlation remain the next availability gate.
+The web caller reuses its existing upload controller and authenticated direct socket. It offers explicit Add to draft, correlates strict results, retains the original expiry and uses one expiry timer rather than polling. An uncertain status check resends exactly the original request after an explicit click; it cannot create a fresh effect. The ordinary Send action is separate, including image-only Send, and its correlated delivered input receipt releases the local draft status. Until then, replacing a known unsent image is disabled so its original deadline remains visible.
+
+The host advertises `image_insertion` only with the real coordinator and current supported signed direct Claude attachment. Base/hub, relay, Codex and capability-only peers do not gain it. Actual production App rendering at phone, tablet and desktop sizes and a paused-daemon retry control accompany the source and compiled evidence. A local finite expiry control is not a 24-hour device soak.
 Real signed socket/grant/session/binding/held-hook controls must prove zero bytes on refusal, one reference and zero CR/LF on success, and no replay after uncertainty.
 Run source/compiled controls on the three supported hosts and both Bun versions; native runs the shared conformance corpus independently.
 Do not advertise the capability until the actual handler and client caller pass those gates.

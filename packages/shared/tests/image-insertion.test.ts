@@ -56,9 +56,9 @@ describe('actual accepted image insertion structural codec', () => {
           );
       }
     });
-  test('two strict registry directions preserve version1 without advertising insertion', () => {
+  test('two strict registry directions preserve version1 with documented gated insertion', () => {
     expect(PROTOCOL_VERSION).toBe(1);
-    expect(Object.hasOwn(PROTOCOL_CAPABILITIES, IMAGE_INSERTION_CAPABILITY)).toBe(false);
+    expect(Object.hasOwn(PROTOCOL_CAPABILITIES, IMAGE_INSERTION_CAPABILITY)).toBe(true);
     expect(
       Object.fromEntries(
         Object.entries(MESSAGE_DIRECTION).filter(([type]) => type.startsWith('image_insert_')),

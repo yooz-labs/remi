@@ -123,7 +123,13 @@ import type {
   UnlockedIdentity,
 } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
-import { IMAGE_STAGING_CAPABILITY, boundedEscape, generateId, now } from '@remi/shared';
+import {
+  IMAGE_INSERTION_CAPABILITY,
+  IMAGE_STAGING_CAPABILITY,
+  boundedEscape,
+  generateId,
+  now,
+} from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
@@ -1145,7 +1151,11 @@ let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 const capabilitiesForConnection = (id: UUID): readonly string[] =>
   imageStagingService?.isAvailable(id)
-    ? [...DAEMON_CAPABILITIES, IMAGE_STAGING_CAPABILITY]
+    ? [
+        ...DAEMON_CAPABILITIES,
+        IMAGE_STAGING_CAPABILITY,
+        ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : []),
+      ]
     : DAEMON_CAPABILITIES;
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);

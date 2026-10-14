@@ -1,5 +1,6 @@
 import type { ImageUploadState } from '@/components/chat/ImageUpload';
-import { generateId, hubSupport } from '@remi/shared';
+import { type ProtocolMessage, generateId, hubSupport } from '@remi/shared';
+import type { ImageInsertRequest, ImageInsertResult } from '../../../shared/src/image-insertion.ts';
 import {
   IMAGE_STAGING_CAPABILITY,
   IMAGE_STAGING_LIMITS,
@@ -8,6 +9,7 @@ import {
   type ImageStagingOperation,
   type ImageStagingRequest,
 } from '../../../shared/src/image-staging.ts';
+import { ImageDraftController } from './image-draft';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -26,6 +28,7 @@ export interface ImageUploadContext {
 export interface ImageUploadTransport {
   /** True means the request was queued to the current direct WebSocket. */
   readonly send: (request: ImageStagingRequest) => boolean;
+  readonly sendInsertion?: (request: ImageInsertRequest) => boolean;
   /** Null until the current direct connection is authenticated and attached. */
   readonly context: () => ImageUploadContext | null;
 }
@@ -147,10 +150,9 @@ function sameContext(current: ImageUploadContext | null, captured: CapturedConte
     current.protocolVersion === captured.protocolVersion &&
     current.binding.harness === 'claude' &&
     current.binding.harnessSessionId === captured.harnessSessionId &&
-    hubSupport(
-      { protocolVersion: current.protocolVersion, capabilities: current.capabilities },
-      [IMAGE_STAGING_CAPABILITY],
-    ).supported
+    hubSupport({ protocolVersion: current.protocolVersion, capabilities: current.capabilities }, [
+      IMAGE_STAGING_CAPABILITY,
+    ]).supported
   );
 }
 
@@ -171,10 +173,9 @@ function captureContext(context: ImageUploadContext | null): CapturedContext | n
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(context.sessionId) ||
     context.binding.harness !== 'claude' ||
     context.binding.harnessSessionId.length === 0 ||
-    !hubSupport(
-      { protocolVersion: context.protocolVersion, capabilities: context.capabilities },
-      [IMAGE_STAGING_CAPABILITY],
-    ).supported
+    !hubSupport({ protocolVersion: context.protocolVersion, capabilities: context.capabilities }, [
+      IMAGE_STAGING_CAPABILITY,
+    ]).supported
   ) {
     return null;
   }
@@ -245,27 +246,31 @@ export class ImageUploadController {
   private blockedContext: CapturedContext | null = null;
   private readonly pending = new Map<string, PendingRequest>();
   private disposed = false;
+  private readonly draft: ImageDraftController;
 
   constructor(transport: ImageUploadTransport, onState: (state: ImageUploadState) => void) {
     this.transport = transport;
+    this.draft = new ImageDraftController(transport, onState);
     this.onState = onState;
   }
 
   /** Whether a new upload can start in the controller's current direct context. */
   get canUpload(): boolean {
-    if (this.disposed || this.active) return false;
+    if (this.disposed || this.active || !this.draft.canReplace) return false;
     const context = this.captureCurrentContext();
     return context !== null && !sameCapturedContext(this.blockedContext, context);
   }
 
   /** Dismiss a terminal status without changing any server-side staged state. */
   dismiss(): void {
-    if (this.disposed || this.active) return;
+    if (this.disposed || this.active || !this.draft.canDismiss) return;
+    this.draft.clear();
     this.onState({ phase: 'idle' });
   }
 
   async upload(file: File): Promise<void> {
-    if (this.disposed || this.active) return;
+    if (this.disposed || this.active || !this.draft.canReplace) return;
+    this.draft.clear();
     const mediaType = supportedFile(file);
     if (!mediaType) {
       this.onState({
@@ -465,6 +470,7 @@ export class ImageUploadController {
 
   /** Abort the current client attempt on connection/session lifecycle change. */
   disconnect(): void {
+    this.draft.disconnect();
     const active = this.active;
     if (active)
       this.finishActive(
@@ -477,12 +483,33 @@ export class ImageUploadController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.draft.clear();
     for (const pending of this.pending.values()) {
       this.clearPending(pending);
       pending.reject(new UploadError('context_lost', 'Image upload controller was disposed'));
     }
     this.active = null;
     this.blockedContext = null;
+  }
+
+  addToDraft(): void {
+    if (!this.disposed && !this.active) this.draft.addToDraft();
+  }
+
+  receiveInsertion(result: ImageInsertResult): void {
+    if (!this.disposed) this.draft.receive(result);
+  }
+
+  takeImageDraftForSend(messageId: string): boolean {
+    return !this.disposed && !this.active && this.draft.takeForSend(messageId);
+  }
+
+  receiveInputReceipt(message: ProtocolMessage): void {
+    if (!this.disposed) this.draft.receiveInputReceipt(message);
+  }
+
+  endSession(sessionId: string): void {
+    if (!this.disposed) this.draft.endSession(sessionId);
   }
 
   private async performUpload(active: ActiveUpload, file: File): Promise<void> {
@@ -934,7 +961,16 @@ export class ImageUploadController {
       }
     }
     this.active = null;
-    if (!this.disposed) this.onState(state);
+    if (!this.disposed) {
+      if (state.phase === 'staged' && active.stagedResult) {
+        const draft = this.draft.stage(
+          active.filename,
+          active.stagedResult.artifactId,
+          active.stagedResult.artifactExpiresAt,
+        );
+        this.onState(draft ? { ...state, draft } : state);
+      } else this.onState(state);
+    }
   }
 }
 

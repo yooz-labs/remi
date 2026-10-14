@@ -284,8 +284,9 @@ without reference bytes and sends No. Revoking the original grant through the CL
 then prevents cached result disclosure. Helper commands and daemon exit are
 awaited and ESRCH-confirmed; all three staged reservations must settle to zero
 charge and both staging directories must be empty before owned fixture removal.
-These controls establish the compiled host path; the explicit client action and
-native decoder conformance remain separate availability gates.
+These controls establish the compiled host path and its conditional signed-direct
+capability. The explicit web caller is rendered and verified separately; native
+decoder conformance remains a separate availability gate.
 
 Prepare a symlink-free copy of the installed production dependency closure with
 `prepare-insertion-dispatch-deps.py --out <owned-S1-directory>`. No version is

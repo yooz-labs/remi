@@ -2011,6 +2011,8 @@ function App() {
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
+    addImageToDraft,
+    takeImageDraftForSend,
     getConnectionMode,
     getOwnFingerprint,
   } = useConnectionManager({
@@ -2776,13 +2778,16 @@ function App() {
         return;
       }
 
+      // Claim the confirmed image Send once before queuing ordinary input (including an empty image-only turn).
+      const messageId = generateId();
+      const hasImageDraft = takeImageDraftForSend(connId, activeSessionId, messageId);
+      if (!content && !hasImageDraft) return;
       const reply = replyContextsRef.current.get(activeSessionId);
-      const wireContent = reply ? formatReplyMessage(reply, content) : content;
+      const wireContent = reply && content ? formatReplyMessage(reply, content) : content;
       // Same id for the UI bubble AND the wire message (#663): the daemon's
       // `ack.messageId` echoes back whatever id we send, so this is what
       // lets an inbound ack find its bubble. Also what a retry reuses so
       // the daemon's MessageIdTracker dedups it.
-      const messageId = generateId();
 
       const newMessage: UIMessage = {
         id: messageId,
@@ -2845,7 +2850,7 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput, sessions],
+    [activeSessionId, getActiveConnectionId, sendInput, sessions, takeImageDraftForSend],
   );
 
   // Tap-to-retry a 'failed' bubble (#663). Reuses the SAME message id so the
@@ -3419,6 +3424,7 @@ function App() {
           void cancelImageUpload(activeSession.connectionId, activeSession.id).catch(() => {});
         },
         onDismiss: () => dismissImageUpload(activeSession.connectionId, activeSession.id),
+        onAddToDraft: () => addImageToDraft(activeSession.connectionId, activeSession.id),
       }}
     />
   ) : (

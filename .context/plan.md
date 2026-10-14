@@ -605,3 +605,19 @@ turns; it does not claim additional model, native or device acceptance.
 `image_insertion` is still not advertised. The production explicit Add to draft
 client, visible original expiry, client result correlation and rendered QA are
 the next step; native runs the shared corpus independently.
+
+
+## Image insertion: explicit expiring web draft
+
+The web caller reuses ImageUploadController, WebSocketClient and the existing connection manager.
+Successful staging exposes Add to draft only with the original authenticated direct Claude context and `image_insertion`.
+Strict response correlation keeps one pending request; explicit status retry preserves all original fields and never creates another possible effect.
+An inserted reference enables a separate Send, including image-only Send; its ordinary delivered input receipt confirms submission and releases the local draft status.
+Until that receipt, the original expiry remains visible and replacement is blocked.
+Known session end and the single local expiry timer retire that affordance; there is no background polling, automatic Enter or terminal-draft edit.
+
+Source controls and actual rendered App checks exercise the caller, finite expiry and paused-daemon uncertainty.
+The existing six-cell compiled host proof checks conditional availability with original ownership, held No and revocation controls.
+No additional model, phone or native action is used.
+The accepted two-message contract and storage deadline are unchanged; native runs the shared corpus independently.
+The reviewed host/codec/coordinator/dispatch slices can land with this final caller as one integration PR to avoid duplicate whole-stack CI runs.

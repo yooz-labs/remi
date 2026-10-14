@@ -1,4 +1,4 @@
-/** ADR0042 internal effect/retry owner. No public dispatch or capability in this slice. */
+/** ADR0042 effect/retry owner; original staging authority governs public direct dispatch. */
 import { randomUUID } from 'node:crypto';
 import type {
   ImageInsertRequest,

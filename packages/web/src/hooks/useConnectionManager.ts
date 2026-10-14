@@ -95,6 +95,7 @@ interface ManagedConnection {
   imageUploadController?: ImageUploadController;
   imageUploadState: ConnectionState['imageUploadState'];
   imageUploadSessionId?: UUID | null;
+  imageStopRequest?: { readonly id: string; readonly sessionId: string };
   /**
    * Whether this connection holds the session's exclusive write lock
    * ('attached') or is read-only, queued behind another connection
@@ -240,6 +241,8 @@ export interface UseConnectionManagerReturn {
   getSessionId: (connectionId: ConnectionId) => string | null;
   uploadImage: (connectionId: ConnectionId, sessionId: UUID, file: File) => Promise<void>;
   cancelImageUpload: (connectionId: ConnectionId, sessionId: UUID) => Promise<void>;
+  takeImageDraftForSend: (connectionId: ConnectionId, sessionId: UUID, messageId: UUID) => boolean;
+  addImageToDraft: (connectionId: ConnectionId, sessionId: UUID) => void;
   dismissImageUpload: (connectionId: ConnectionId, sessionId: UUID) => void;
   /** Whether any connection needs a passphrase */
   needsPassphrase: boolean;
@@ -709,6 +712,32 @@ export function useConnectionManager(
           syncState();
         }
 
+        mc.imageUploadController?.receiveInputReceipt(message);
+
+        if (message.type === 'session_update' && message.session.endedAt !== undefined) {
+          mc.imageUploadController?.endSession(message.session.id);
+        }
+
+        if (
+          message.type === 'kill_session_response' &&
+          mc.imageStopRequest?.id === message.requestId
+        ) {
+          if (message.success) mc.imageUploadController?.endSession(mc.imageStopRequest.sessionId);
+          mc.imageStopRequest = undefined;
+        }
+
+        if (message.type === 'session_list_response') {
+          for (const session of message.sessions) {
+            if (session.source === 'daemon' && session.status === 'orphaned') {
+              mc.imageUploadController?.endSession(session.sessionId);
+            }
+          }
+        }
+
+        if (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId) {
+          mc.imageUploadController?.endSession(mc.sessionId);
+        }
+
         // Forward to app handler with connectionId context
         onMessageRef.current?.(connectionId, message);
       };
@@ -887,6 +916,10 @@ export function useConnectionManager(
           syncState();
         },
         onMessage: messageHandler,
+        onImageInsertionMessage: (message) => {
+          if (connectionsMapRef.current.get(connectionId) !== mc) return;
+          mc.imageUploadController?.receiveInsertion(message);
+        },
         onImageStagingMessage: (message) => {
           if (connectionsMapRef.current.get(connectionId) !== mc) return;
           mc.imageUploadController?.receive(message);
@@ -908,6 +941,10 @@ export function useConnectionManager(
           send: (request) =>
             connectionsMapRef.current.get(connectionId) === mc && mc.mode === 'direct'
               ? client.sendImageStaging(request)
+              : false,
+          sendInsertion: (request) =>
+            connectionsMapRef.current.get(connectionId) === mc && mc.mode === 'direct'
+              ? client.sendImageInsertion(request)
               : false,
           context: () => {
             if (
@@ -1164,7 +1201,15 @@ export function useConnectionManager(
         return false;
       }
       if (mc.mode === 'relay' && message.type === 'answer') return mc.relayRequests?.answer(message) ?? false;
-      return mc.client.send(message);
+      const sent = mc.client.send(message);
+      if (
+        sent &&
+        message.type === 'kill_session_request' &&
+        message.sessionId === mc.imageUploadSessionId
+      ) {
+        mc.imageStopRequest = { id: message.id, sessionId: message.sessionId };
+      }
+      return sent;
     },
     [getMc],
   );
@@ -1408,6 +1453,36 @@ export function useConnectionManager(
     [getMc],
   );
 
+  const takeImageDraftForSend = useCallback(
+    (connectionId: ConnectionId, sessionId: UUID, messageId: UUID): boolean => {
+      const mc = getMc(connectionId);
+      return (
+        !!mc &&
+        mc.mode === 'direct' &&
+        mc.sessionId === sessionId &&
+        mc.imageUploadSessionId === sessionId &&
+        connectionsMapRef.current.get(connectionId) === mc &&
+        !!mc.imageUploadController?.takeImageDraftForSend(messageId)
+      );
+    },
+    [getMc],
+  );
+
+  const addImageToDraft = useCallback(
+    (connectionId: ConnectionId, sessionId: UUID): void => {
+      const mc = getMc(connectionId);
+      if (
+        !mc ||
+        mc.mode !== 'direct' ||
+        mc.sessionId !== sessionId ||
+        mc.imageUploadSessionId !== sessionId ||
+        connectionsMapRef.current.get(connectionId) !== mc
+      ) return;
+      mc.imageUploadController?.addToDraft();
+    },
+    [getMc],
+  );
+
   const dismissImageUpload = useCallback(
     (connectionId: ConnectionId, sessionId: UUID): void => {
       const mc = getMc(connectionId);
@@ -1524,6 +1599,8 @@ export function useConnectionManager(
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
+    addImageToDraft,
+    takeImageDraftForSend,
     getOwnFingerprint: () => identityRef.current?.fingerprint ?? null,
     getConnectionMode: connectionId => connectionsMapRef.current.get(connectionId)?.mode ?? null,
     needsPassphrase,
