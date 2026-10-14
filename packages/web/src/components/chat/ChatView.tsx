@@ -34,6 +34,7 @@ interface ChatViewProps {
    *  into a markdown blockquote inside this callback's caller (#401). */
   readonly onSend: (message: string) => void;
   readonly chatUnavailable?: string | null;
+  readonly onReconnectChat?: (() => void) | undefined;
   /** Answer a specific pending question. Routes through sendAnswer keyed by the
    *  question itself; decoupled from onSend so the bottom InputArea no longer
    *  hijacks input when a question is pending (#401). Non-optional so the
@@ -87,6 +88,7 @@ export function ChatView({
   error,
   onSend,
   chatUnavailable,
+  onReconnectChat,
   onAnswer,
   onAuqAnswer,
   onCancelQuestion,
@@ -216,7 +218,11 @@ export function ChatView({
           real daemon session), so there is no input to route (#499 phase 3). */}
       {!session.isSubagent && (
         <>
-          {chatUnavailable && <p role="status" className="px-4 py-2 text-xs text-[var(--color-text-muted)]">{chatUnavailable}</p>}
+          {chatUnavailable && <div role="status" className="flex items-center gap-3 px-4 py-2 text-xs text-[var(--color-text-muted)]">
+            <p className="flex-1">{chatUnavailable}</p>
+            {onReconnectChat && <button type="button" onClick={onReconnectChat}
+              className="rounded-lg border border-[var(--color-border)] px-3 py-2 font-medium text-[var(--color-text)]">Reconnect</button>}
+          </div>}
           {imageUpload && session.harness !== 'codex' && <ImageUpload key={`${session.connectionId}:${session.id}`} {...imageUpload} />}
           <InputArea
             onSend={onSend}

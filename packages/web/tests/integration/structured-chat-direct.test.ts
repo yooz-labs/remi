@@ -318,6 +318,7 @@ const relayControl = process.env['REMI_CODEX_RELAY_CONTROL'] === '1';
             adapter,
             service,
             effects: () => effects.length,
+            effectLog: () => effects,
             onMetadata: (operation) => {
               afterMetadata = operation;
             },

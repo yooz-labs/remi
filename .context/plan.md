@@ -1,10 +1,12 @@
 # Plan: the roadmap
 
-Updated 2026-10-11.
+Updated 2026-10-14.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
 ## Where things stand
+
+- **Codex remote chat (#1207):** #1504 is the reviewed signed direct host/web integration awaiting fresh hosted checks. The next isolated relay phase reuses that implementation through capability-verified child proxies and the original device/grant/enrollment snapshot. The child remains the only sequence owner; losing it retires the whole machine channel. Accountless installed-server controls and rendered phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI, provider completion beyond the already bounded observation, and hosted relay-phase acceptance remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md).
 
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance

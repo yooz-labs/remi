@@ -36,6 +36,7 @@ interface Fixture {
   adapter: WebSocketAdapter;
   service: StructuredChatService;
   effects(): number;
+  effectLog(): readonly { method: string; params: Record<string, unknown> }[];
   onMetadata(operation: () => void): void;
   nextChildConnection(): Promise<UUID>;
 }
@@ -169,6 +170,11 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
     const one = request(1);
     const accepted = await send(first, one);
     expect(accepted).toMatchObject({ outcome: 'accepted', method: 'turn/start' });
+    expect(f.effectLog()[initial]?.params).toEqual({
+      threadId: f.threadId,
+      clientUserMessageId: one.id,
+      input: [{ type: 'text', text: one.content }],
+    });
     expect(f.effects()).toBe(initial + 1);
     expect(await send(first, one)).toEqual(accepted);
     expect(await send(first, { ...one, content: 'Changed relay input' })).toMatchObject({
@@ -281,6 +287,16 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
     expect(f.effects()).toBe(beforeWeb + 1);
     await devices.add(f.identity.publicKeyRaw, 'restored enrollment');
     expect(controller.canSubmit(f.sessionId, f.threadId)).toBe(false);
+    for (const effect of f.effectLog()) {
+      expect(Object.keys(effect.params).sort()).toEqual(
+        [
+          'threadId',
+          'clientUserMessageId',
+          'input',
+          ...(effect.method === 'turn/steer' ? ['expectedTurnId'] : []),
+        ].sort(),
+      );
+    }
     checks.push(
       'shipping relay transport/controller admits one explicit input; enrollment loss stays uncertain with no replay or restored authority on the old generation',
     );

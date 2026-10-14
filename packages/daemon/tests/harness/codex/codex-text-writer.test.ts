@@ -451,6 +451,43 @@ live(
       ).toEqual({ outcome: 'uncertain', code: 'delivery_unknown' });
       expect(effects).toHaveLength(beforeCommitException + 1);
       receipt.checks.push('false and throwing post-send commits stay uncertain, with one RPC each');
+
+      // A real provider failure leaves this accountless thread in systemError.
+      // A later explicit intent must still be able to start a turn, without
+      // replaying the failed input or changing the thread's policy.
+      currentThread = threads[0] as string;
+      epoch = {};
+      const errorDeadline = performance.now() + 20_000;
+      for (;;) {
+        const observed = await client.request<{ thread: { status: { type: string } } }>(
+          'thread/read',
+          { threadId: currentThread, includeTurns: false },
+        );
+        if (observed.thread.status.type === 'systemError') break;
+        if (performance.now() >= errorDeadline)
+          throw new Error('native accountless failure status was not published');
+        await Bun.sleep(50);
+      }
+      const beforeRecovery = effects.length;
+      expect(await writer.send(request(), () => false)).toEqual({
+        outcome: 'refused',
+        code: 'unavailable',
+      });
+      expect(effects).toHaveLength(beforeRecovery);
+      const recovery = request();
+      expect(await writer.send(recovery, () => true)).toMatchObject({
+        outcome: 'accepted',
+        method: 'turn/start',
+      });
+      expect(effects).toHaveLength(beforeRecovery + 1);
+      expect(effects.at(-1)?.params).toEqual({
+        threadId: currentThread,
+        clientUserMessageId: recovery.id,
+        input: [{ type: 'text', text: recovery.text }],
+      });
+      receipt.checks.push(
+        'explicit start after real systemError retains all authority and policy guards',
+      );
       writer.close();
       const afterClose = effects.length;
       expect(await writer.send(request(), () => true)).toEqual({

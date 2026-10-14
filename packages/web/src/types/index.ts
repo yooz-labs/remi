@@ -87,6 +87,7 @@ export interface ConnectionState {
   readonly imageUploadEnabled: boolean;
   readonly structuredChatEnabled?: boolean;
   readonly structuredChatSessions?: readonly string[];
+  readonly structuredChatNeedsReconnect?: boolean;
 }
 
 /** Message sender type */

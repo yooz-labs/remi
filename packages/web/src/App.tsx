@@ -1996,6 +1996,7 @@ function App() {
     unregisterRelayPush,
     disconnect: disconnectConnection,
     reconnect: reconnectConnection,
+    reconnectChat: reconnectChatConnection,
     disconnectAll,
     sendInput,
     submitStructuredChat,
@@ -3428,6 +3429,8 @@ function App() {
       chatUnavailable={activeSession.harness === 'codex' && !activeConnection?.structuredChatEnabled &&
         !activeConnection?.structuredChatSessions?.includes(activeSession.id)
         ? 'Codex chat is waiting for the connection or submission. After an unknown delivery, check the session and reconnect.' : null}
+      onReconnectChat={activeSession.harness === 'codex' && activeConnection?.structuredChatNeedsReconnect
+        ? () => reconnectChatConnection(activeConnection.connectionId) : undefined}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
       onCancelQuestion={handleCancelQuestion}

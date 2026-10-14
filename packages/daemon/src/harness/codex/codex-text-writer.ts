@@ -1,5 +1,5 @@
 /**
- * #1207 RPC writer used by CodexSession.structuredChat on the signed direct path.
+ * #1207 RPC writer used by CodexSession.structuredChat on admitted chat routes.
  *
  * StructuredChatService owns device/session authority, sequencing and correlated
  * delivery, including the original grant lock around this writer's commit callback.
@@ -90,7 +90,9 @@ function status(response: unknown, threadId: string): 'idle' | 'active' | 'block
   )
     return null;
   const state = record(thread['status']);
-  if (state?.['type'] === 'idle') return 'idle';
+  // A failed turn is inactive, not a permanently unavailable thread. Native
+  // Codex accepts a fresh explicit start from systemError; never replay input.
+  if (state?.['type'] === 'idle' || state?.['type'] === 'systemError') return 'idle';
   if (state?.['type'] !== 'active') return null;
   const flags = state['activeFlags'];
   if (!Array.isArray(flags) || flags.length > 16 || flags.some((flag) => typeof flag !== 'string'))

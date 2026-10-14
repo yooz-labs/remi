@@ -86,6 +86,8 @@ interface ManagedConnection {
     harness: string; threadId: string | null; capabilities: readonly string[];
     protocolVersion: unknown; attachState: 'attached' | 'queued' | undefined;
   }>;
+  /** Explicit session selection to reattach after a fresh verified machine channel. */
+  relayResumeSessionId?: string;
   client: ConnectionTransport;
   connectionId: ConnectionId;
   url: string;
@@ -186,6 +188,7 @@ export interface UseConnectionManagerReturn {
   disconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection by re-running port discovery against its host (#435). */
   reconnect: (connectionId: ConnectionId) => void;
+  reconnectChat: (connectionId: ConnectionId) => void;
   /** Disconnect all connections */
   disconnectAll: () => void;
   /**
@@ -307,6 +310,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
       mc.structuredChatController?.canSubmit(mc.sessionId, mc.harnessSessionId)),
     structuredChatSessions: [...mc.relayChatSessions ?? []].filter(([id, value]) =>
       !!value.threadId && mc.structuredChatController?.canSubmit(id, value.threadId)).map(([id]) => id),
+    structuredChatNeedsReconnect: mc.structuredChatController?.needsReconnect ?? false,
     approval: mc.approval.snapshot,
     relayPin: mc.relayPin,
     relayConfirmation: mc.relayConfirmation,
@@ -1173,8 +1177,17 @@ export function useConnectionManager(
       onStatus: status => {
         if (!alive()) return;
         mc.status = status;
-        if (status === 'connected') { mc.error = null; mc.relayConfirmation = undefined; mc.helloSent = false; sendHello(mc); }
-        if (status !== 'connected') mc.structuredChatController?.disconnect();
+        if (status === 'connected') {
+          mc.error = null; mc.relayConfirmation = undefined; mc.helloSent = false; sendHello(mc);
+          if (mc.relayResumeSessionId) mc.client.send(createHello(clientId, clientVersion, {
+            resumeSessionId: mc.relayResumeSessionId, deviceId: getOrCreateDeviceId(window.localStorage),
+          }));
+        }
+        if (status !== 'connected') {
+          mc.structuredChatController?.disconnect();
+          mc.relayChatSessions?.clear();
+          mc.sessionAttachments?.clear();
+        }
         if (status === 'disconnected') { mc.helloSent = false; mc.sessionAttachments?.clear(); mc.relayChatSessions?.clear(); }
         syncState();
       },
@@ -1205,11 +1218,12 @@ export function useConnectionManager(
       if (signal.aborted) { cancel(); throw new Error('Pairing canceled.'); }
     }
     void (mc.client as RelayTransport).connect(); syncState(); return connectionId;
-  }, [createMessageHandler, sendHello, syncState]);
+  }, [clientId, clientVersion, createMessageHandler, sendHello, syncState]);
 
   const requestSessionAttach = useCallback((connectionId: ConnectionId, sessionId: string): boolean => {
     const mc = connectionsMapRef.current.get(connectionId);
     if (!mc || mc.mode !== 'relay') return false;
+    mc.relayResumeSessionId = sessionId;
     return mc.client.send(createHello(clientId, clientVersion, { resumeSessionId: sessionId,
       deviceId: getOrCreateDeviceId(window.localStorage) }));
   }, [clientId, clientVersion]);
@@ -1255,6 +1269,16 @@ export function useConnectionManager(
     },
     [connectRelay, escalateReconnect, syncState],
   );
+
+  /** Explicit recovery of uncertain chat, including an otherwise healthy socket. */
+  const reconnectChat = useCallback((connectionId: ConnectionId) => {
+    const mc = connectionsMapRef.current.get(connectionId);
+    if (!mc?.structuredChatController?.needsReconnect ||
+      mc.status === 'connecting' || mc.status === 'authenticating' || mc.status === 'reconnecting') return;
+    mc.structuredChatController.disconnect();
+    mc.relayRequests?.closed();
+    mc.client.forceReconnect();
+  }, []);
 
   // Disconnect a specific connection
   const disconnect = useCallback(
@@ -1685,6 +1709,7 @@ export function useConnectionManager(
     unregisterRelayPush,
     disconnect,
     reconnect,
+    reconnectChat,
     disconnectAll,
     sendInput,
     sendEscape,

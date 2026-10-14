@@ -10,7 +10,7 @@ See [ADR 0033](../.context/decisions/0033-codex-adapter-app-server.md#structured
 
 The connected direct implementation reuses the reviewed `CodexTextWriter`, strict submit/result codec and bounded sequence receipts.
 The actual Codex session exposes its neutral structured-input member to the signed direct service.
-An attached signed direct client sees `structured_chat` only where that handler/writer exists; first-thread binding is still required for admission.
+An attached signed direct client or admitted relay child sees `structured_chat` only where that handler/writer exists; first-thread binding is still required for admission.
 Codex's existing `acceptsTypedChat: false` is unchanged.
 Nothing in this module types text or Enter into a PTY.
 
@@ -23,6 +23,7 @@ replaced on runtime, app-server connection or main-thread identity changes.
 
 The writer checks live metadata and local blocking questions.
 An idle first turn does not need materialized history.
+After a native `systemError`, a new explicit message can start another turn; failed input is never automatically retried.
 An active turn uses a bounded latest-turn read and atomic `expectedTurnId` on steer.
 The writer checks authority again immediately before its single possible turn RPC.
 Every turn request omits sandbox, approval-policy, working-directory and model overrides.
@@ -66,7 +67,7 @@ account absence, measured checks and process cleanup without message bodies.
 These checks establish local RPC admission and omission of policy overrides.
 They do not establish model completion, model-side steering or sandbox enforcement.
 An account-backed model check needs separate bounded owner approval.
-Native device UI and relay routing remain later steps; the connected direct path is described below.
+Native device UI remains separate; the connected direct and relay paths are described below.
 
 
 ## Bounded installed-model observation (2026-10-13)
@@ -125,4 +126,34 @@ It constructs the real signed WebSocketAdapter, identity/session stores, CodexHa
 It measures original-grant commit locking, duplicate input, detach/revoke/restoration, strict bad frames and closed service.
 Its PTY is inert cat and account is null, so it proves routing/admission, not model completion, OS sandbox enforcement or fresh native startup.
 The actual App is also checked against an owned compiled hub/child at phone, tablet and desktop widths, including paused-daemon uncertainty with no replay.
-Relay routing, genuine hub-created native first-thread startup, hosted review/checks and native UI remain open; #1207 remains open.
+Prompt-free warm and cold native startup controls also bound genuine hub-created first threads, without an observer connected before the child. These used zero model turns and do not establish another model completion.
+Hosted review/checks and native UI remain separate gates; #1207 remains open.
+
+## Encrypted relay child delivery
+
+The relay reuses the direct service and the child's existing sequence owner.
+The hub forwards its original device/grant/enrollment snapshot through a bounded canonical internal header on a capability-proved loopback child upgrade.
+The child rechecks that snapshot under the original grant lock at the synchronous RPC send and receipt delivery, alongside its actual connection, attachment, session, binding and writer context.
+Ordinary capability connections acquire no chat authority, direct identity getters remain null on proxies, and image permissions are unchanged.
+
+Once a chat request may reach a child socket, losing or replacing that owner retires the whole machine channel.
+This prevents a replacement child from resetting an old request's consumed sequence; other streams reconnect as well.
+Distributed close cannot undo bytes already forwarded, so missing outcomes remain uncertain.
+
+The web caller tracks the exact child's hello, capability, binding and attachment.
+It sends once, with a counter per session and no automatic replay across verified relay generations.
+After unknown delivery, **Reconnect** creates a fresh transport and reattaches the last selected child using metadata only.
+The old uncertain row remains visible; sending again requires a new explicit message.
+
+The optional installed-server relay control reuses the direct fixture:
+
+```sh
+TMPDIR=/Volumes/S1/yooz/remi/tmp \
+REMI_CODEX_ACCOUNTLESS_CLI=/absolute/path/to/native/codex \
+REMI_CODEX_RELAY_CONTROL=1 \
+bun test packages/web/tests/integration/structured-chat-direct.test.ts
+```
+
+It runs the actual Worker, hub, capability child, Codex harness and native server, checks account absence and original-grant RPC locking, and retains duplicate/conflict, revoke/restore, enrollment and child-owner loss controls.
+The rendered App check additionally pauses its owned hub courier: delivery becomes unknown after 15 seconds, reconnect sends no old input, and a new explicit message is accepted after a real native failure state.
+These are admission/UI controls, not model completion, deployment acceptance or native app conformance.

@@ -1,6 +1,6 @@
 # ADR 0043: Structured chat submissions
 
-Status: proposed contract; connected direct implementation under validation.
+Status: proposed contract; connected direct and relay implementations under validation.
 Date: 2026-10-13 Pacific.
 Issue: #1207.
 
@@ -32,7 +32,7 @@ Timestamps are canonical millisecond UTC strings, used for display/correlation r
 Sequence is an integer from1 through4294967295.
 The raw frame limit is128 KiB so every valid16-KiB text, including six-byte JSON escapes, fits.
 Unknown/duplicate members, invalid Unicode/UTF-8, wrong field types and extra policy/cwd/model/raw fields are refused by the standalone codec.
-The capability name is structured_chat. This branch conditionally advertises it on a signed direct connection attached to the actual Codex harness writer; no hub, relay, capability-only or Claude connection qualifies.
+The capability name is structured_chat. It is conditionally advertised on an attached signed direct connection or an admitted relay child proxy with the actual Codex harness writer. A sessionless hub, ordinary capability-only connection and Claude connection do not qualify.
 Availability describes the connected handler; a first thread may bind after hello, and submission still requires its exact current identity.
 
 ## Bounded sequencing
@@ -84,7 +84,7 @@ Their PTY is inert cat; they are admission and routing controls, not model compl
 
 The actual rendered App check found transcript replacement erasing submission status; replacement now retains that separately correlated status and refused input is not merged by matching content alone.
 Pending/accepted/refused/uncertain stay distinct from transport ACK and model completion; uncertainty has no blind Retry action.
-Native upload UI remains with the Xcode developer and is not changed here.
+Native app UI remains with the Xcode developer and is not changed here.
 
 Installed0.162.1 also returned method-not-found for thread/items/list.
 History selects thread/turns/list with full items only on first-page method absence, never after a cursor or another error, preserving bounded raw-item/page/deadline limits.
@@ -101,4 +101,30 @@ The web relay receiver now preserves that BOM too and rejects a host-to-client c
 Actual Worker/HubRelay/RelayMachineChannel controls reproduce those two original failures; both corrections pass on both Buns and removing either correction fails its original control.
 No relay writer authority or capability is enabled by these frame checks.
 
-Final hosted checks, relay writer routing and native conformance/UI remain open gates; #1207 is not closed by this direct phase.
+## Relay child authority and recovery
+
+The hub passes its original immutable device key, fingerprint, grant epoch and enrollment epoch in a canonical internal descriptor only on a current-capability-authenticated TCP loopback child upgrade.
+The child stores it separately from direct identity; direct public-key/fingerprint getters remain null and image authority is unchanged.
+Shape alone grants nothing: the existing child service checks the original grant and enrollment under the grant lock, plus the concrete connection, attachment, session, PTY, exact binding and writer epoch at the actual RPC send and result delivery.
+Restoring a grant or enrollment cannot refresh an old descriptor.
+
+The existing child SubmissionSequence is the sole sequence owner.
+Before forwarding the first structured request, the proxy marks that concrete child socket as its chat owner, including a request the writer may refuse.
+Losing or replacing that socket, registry generation or receipt path retires the whole authenticated machine channel before another child can reset its consumed watermark.
+Other child streams on that machine reconnect too; possible delivery remains uncertain.
+A remote close cannot retract bytes already forwarded or a turn already admitted.
+
+The web controller keeps bounded counters per session and one pending input per machine.
+Child hello metadata supplies capability, binding and attachment; a fresh verified relay channel supplies the new transport generation.
+Unknown delivery blocks further input on its generation and exposes an explicit Reconnect action, including when the socket otherwise remains healthy.
+Reconnect reattaches the last selected child with hello metadata only, never old chat input.
+A new explicit intent then starts its fresh sequence at one; the uncertain prior row remains visible.
+
+An actual native systemError is an inactive failed turn, not a permanent loss of chat support.
+The writer permits a new explicit start from that state while retaining all authority and policy checks; it never retries the failed turn automatically.
+The original installed-server control reproduced refusal while native turn/start accepted, and the corrected control passes on both Buns.
+
+Actual Worker, hub, capability child, installed accountless Codex and shipping web transport controls cover exact override-free RPCs, cached/conflicting requests, binding/attachment changes, revocation/enrollment restoration and child-owner loss.
+Rendered App checks cover phone/tablet/desktop submission and a measured 15-second paused-hub timeout, retained uncertainty, explicit reconnect and new input after real native systemError.
+These establish routing/admission and UI behavior with account=null and an inert PTY, not provider completion or OS sandbox enforcement.
+Final hosted checks, independent relay review and native conformance/UI remain separate gates; #1207 remains open.

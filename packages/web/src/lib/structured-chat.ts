@@ -39,6 +39,9 @@ export class StructuredChatController {
     this.transport = transport;
     this.timeoutMs = timeoutMs;
   }
+  get needsReconnect(): boolean {
+    return !this.closed && this.generation !== null && this.blockedGeneration === this.generation;
+  }
 
   private context(sessionId: string, threadId: string): StructuredChatContext | null {
     if (this.closed) return null;
