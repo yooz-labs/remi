@@ -8,7 +8,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
 
 - **Codex remote chat (#1207):** the reviewed combined direct/relay implementation landed in #1507 at `49094b02`, including #1504 and its reviewed prerequisites. The actual hosted suite passed 9,808 tests with 30 skips and zero failures, 91.79% line coverage and the actual 61-minute relay gate. Two earlier direct-head Test timeouts remain preserved; the combined pass does not diagnose them. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless installed-server controls and rendered web phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI, physical-device acceptance and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md) and the [native handoff](../docs/codex-remote-chat.md#native-integration-handoff).
 
-- **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. The owner accepted its baseline fields on 2026-10-14 and requested HTTPS/WSS direct operation; transport sequencing and actual producer/client delivery remain pending; Codex producer support, relay delivery, native conformance and file downloads remain separate.
+- **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. The owner accepted its baseline fields on 2026-10-14 and requires HTTPS/WSS before direct release; the TLS transport and actual producer/client delivery remain pending; Codex producer support, relay delivery, native conformance and file downloads remain separate.
 
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
@@ -730,6 +730,32 @@ answer behavior changes.
 All 32 original and added cases pass on each Mac Bun runtime; root and web
 TypeScript checks pass. Independent R1 has no actionable source findings; hosted acceptance remains pending.
 
+## Accepted direct download contract (#1170 T3)
+
+The owner accepted [ADR 0045](decisions/0045-direct-file-download.md) on 2026-10-14,
+then explicitly kept the 10 MiB ceiling and required HTTPS/WSS before the first
+direct link/download release. Browser-link fields in ADR 0044 are separately
+accepted and landed in #1508. Full relay tunneling follows the direct release.
+Existing descriptor admission and generic managed-journal ownership are reused;
+the extra publication factory remains unpublished because the managed path does
+not need it.
+
+The contract specifies one explicit project-relative nonempty regular file up to
+10 MiB, exact completed private-copy validation, one 32 KiB pull response at a time,
+preparation cancellation by begin ID, five-minute total/30-second idle expiry and
+explicit client Save with no automatic preview/open/extraction. It requires
+HTTPS/WSS plus signed device authentication and known Claude/Codex bindings.
+Empty files remain an explicit first-version limitation of current positive-byte
+reservations. No download availability, native UI or relay acceptance is claimed.
+
+Implement secure direct transport while retaining local CLI/hub/child operation.
+The admitted-read extraction and managed preparation already have reviewed local
+continuations and standalone six-cell compiled/held-answer observations; they
+remain unpublished and do not establish an authenticated download handler.
+Strict codec/goldens, actual daemon/web Save and rendered acceptance follow.
+Native URL construction/conformance/Save stay with the Xcode track. Use one
+implementation lead and one independent reviewer per bounded change.
+
 ## Direct connections after key removal (#1305)
 
 Local continuation reuses the already verified exact identity and the existing
@@ -760,8 +786,10 @@ requires CLOSING, a closed socket, no image result or acknowledgement, and no
 PTY output; it fails against the old base and passes the candidate on both Buns.
 No runtime guard or timeout was relaxed. The expanded nine-module population
 passes 126 tests with 1,648 assertions on each Mac Bun; final root/web types and
-formatting pass, and fix-only R2 has no actionable findings. Fresh hosted
-full-suite/relay validation remains before landing.
+formatting pass, and fix-only R2 has no actionable findings. The corrected head
+passed the hosted full suite (9,834 pass, 30 skips, zero failures, 91.83% line
+coverage) and the actual 61-minute relay run, with producer and artifact identity
+verified. It landed in [#1520](https://github.com/yooz-labs/remi/pull/1520).
 The first hosted failure and all differential attempts are preserved separately;
-its in-progress relay run cannot qualify the corrected head.
+the earlier head's relay run did not qualify the corrected head.
 Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-connection-revocation/`.
