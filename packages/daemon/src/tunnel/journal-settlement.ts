@@ -1,8 +1,14 @@
-// #1170 internal journal composition; no transfer authority or runtime caller.
+// #1170 journal composition used by authenticated direct image staging and recovery.
+// Captured transfer authority belongs to ImageStagingService; insertion remains separately gated.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DirectoryRoot } from './admission';
-import { type JournalLease, sameWitnesses } from './journal-schema';
+import {
+  type JournalBinding,
+  type JournalLease,
+  journalArtifactName,
+  sameWitnesses,
+} from './journal-schema';
 import { RecoveryError, RecoveryIntent, type RecoveryOps } from './recovery';
 import { ReservationError, type Reservations } from './reservations';
 
@@ -63,7 +69,14 @@ function openJournalRead(
   try {
     const byteLength = store.captureJournalRead(lease, (bytes, ownership) => {
       roots(lease, scratch, metadata);
-      intent = RecoveryIntent.open(scratch, metadata, lease.id, ops);
+      intent = RecoveryIntent.open(
+        scratch,
+        metadata,
+        lease.id,
+        ops,
+        false,
+        lease.artifactExtension,
+      );
       const measured = intent.snapshot(['intent', 'owned']);
       if (!sameWitnesses(measured, ownership)) throw new RecoveryError('unavailable');
       fd = intent.openArtifactRead();
@@ -122,7 +135,7 @@ function openJournalRead(
       referencePath() {
         if (!staged) throw new RecoveryError('unavailable');
         account();
-        return path.join(scratch.pathname, `${lease.id}.artifact`);
+        return path.join(scratch.pathname, journalArtifactName(lease.id, lease.artifactExtension));
       },
       retainStaged() {
         if (closed) throw new RecoveryError('unavailable');
@@ -160,14 +173,21 @@ export function beginJournal(
   scratch: DirectoryRoot,
   metadata: DirectoryRoot,
   ops: RecoveryOps,
+  artifactExtension?: JournalBinding['artifactExtension'],
 ): JournalWriter {
   if (!scratch.isCurrent() || !metadata.isCurrent()) throw new RecoveryError('unavailable');
-  const lease = store.reserveJournal(owner, bytes, scratch.identity, metadata.identity);
+  const lease = store.reserveJournal(
+    owner,
+    bytes,
+    scratch.identity,
+    metadata.identity,
+    artifactExtension,
+  );
   let intent: RecoveryIntent | undefined;
   let fd = -1;
   try {
     roots(lease, scratch, metadata);
-    intent = RecoveryIntent.open(scratch, metadata, lease.id, ops, true);
+    intent = RecoveryIntent.open(scratch, metadata, lease.id, ops, true, lease.artifactExtension);
     fd = intent.createArtifact();
     store.bindJournalOwnership(
       lease,
@@ -263,7 +283,14 @@ export function settleJournal(
     lease,
     (ownership, retainAllocation) => {
       roots(lease, scratch, metadata);
-      const intent = RecoveryIntent.open(scratch, metadata, lease.id, ops);
+      const intent = RecoveryIntent.open(
+        scratch,
+        metadata,
+        lease.id,
+        ops,
+        false,
+        lease.artifactExtension,
+      );
       try {
         const measured = intent.snapshot(['intent', 'owned']);
         if (!sameWitnesses(measured, ownership)) throw new RecoveryError('unavailable');
@@ -284,6 +311,7 @@ export function settleJournal(
         witnesses,
         (stage) => checkpoint?.(stage as SettlementStage),
         retainMarkers,
+        lease.artifactExtension,
       );
     },
     checkpoint,
