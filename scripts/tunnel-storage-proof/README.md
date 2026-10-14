@@ -46,6 +46,18 @@ are 0600 beneath a captured owner-only 0700 directory; only the completed
 private descriptor is read. A retained directory FD supports cleanup after a
 root-path replacement and an actual failed completed unlink remains retryable.
 
+The existing source loop and validation are shared by the proof-owned
+`AdmittedRead` cursor. It borrows the admitted descriptor, returns at most 32 KiB
+until the admitted length, inspects one extra byte only at finish and verifies
+the original source metadata/current names. Its source digest is independent of
+the private destination's own validation. The copy keeps its original creation,
+partial-write, fsync, publication and cleanup operations. Direct cursor controls
+are part of the existing empty/nonempty/10 MiB group, including incomplete/repeated
+finish, reads after finish, changed admission/root and mutation before finish.
+This extraction supplies no production caller, authority, journal composition or
+download contract; that later caller must consume each borrowed chunk before reuse,
+yield and recheck its original authority around each actual effect.
+
 Eleven copy control groups cover empty/nonempty/10 MiB bytes/digest/mode, growth,
 truncation and detected same-size changes, an exactly restored mtime with a
 changed ctime, source name replacements and new hardlinks, private byte/mode

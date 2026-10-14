@@ -663,3 +663,30 @@ This fixture uses inert cat and no account; it complements the earlier three app
 Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Admitted-source cursor preparation (#1170)
+
+The existing private-copy proof now shares its source cursor under
+`scripts/tunnel-storage-proof/admitted-read.ts`. The source length+one read budget,
+32 KiB chunks, source digest, before/after metadata/current-name validation and
+later publication recheck are preserved. Destination creation, partial writes,
+independent private-byte validation, fsync, publication and cleanup/debt remain
+in their existing implementation. No code is selected into production by this
+proof refactor; the future managed-journal caller still needs its own authority,
+yield/cancellation/recovery and held-answer controls.
+
+The original 43-group compiled matrix passed all six supported platform/Bun
+cells at unchanged current develop before extraction. The extracted candidate
+then passed those same 43 ordered group identities in all six cells, with direct
+cursor assertions inside the existing empty/nonempty/10 MiB group. Six isolated
+removed-guard variants failed their exact named compiled assertions on both Mac
+Bun gates (12/12); Linux mutation execution is unmeasured. Preserve the original
+receipts and exact final source hashes before landing. Review and hosted checks
+remain required. Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-admitted-read-core/`.
+
+The owner-review download contract is the separate ADR0045 proposal in #1513;
+links remain the independent #1508 proposal. No fetch fields, models, capability,
+handler, native UI or relay transfer is added by this extraction. The extra
+private-publication factory remains unpublished because the existing journal
+already owns generic bytes.
