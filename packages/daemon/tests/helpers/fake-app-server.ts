@@ -162,7 +162,7 @@ export class FakeAppServer {
   /**
    * Stop the server, drop every client, and remove the temp directory.
    *
-   * The promise from `stop(true)` is deliberately not awaited. On Bun 1.3.11 (the CI pin) it never
+   * The promise from `stop(true)` is deliberately not awaited. On Bun 1.3.11 (the former CI pin) it never
    * resolves once the server itself has closed or terminated a WebSocket (`closeClient`,
    * `dropClient`), although the listener is shut and the clients are dropped; Bun 1.4.2 resolves
    * it. Awaiting it hung every teardown after such a test.

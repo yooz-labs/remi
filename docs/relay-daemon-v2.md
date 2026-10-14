@@ -104,7 +104,7 @@ drains the wrapper receive queue before the channel verdict while suppressing
 post-close application effects. The Worker's control `gone` notice is emitted
 only for pending peers; ready disconnect closes the pipe, which owns its drain.
 
-On Bun 1.3.11, the CI and release pin, the hub's WebSocket client close usually
+On Bun 1.3.11, the former CI and release pin, the hub's WebSocket client close usually
 resets the connection instead of waiting for the Worker's Close reply (#1225). A
 Worker that gets to the socket late, as on a loaded machine, then records the close
 as abnormal (1006) and can lose what it had not read yet: the Close frame, and the
@@ -133,8 +133,9 @@ get the Worker's `closed` reason instead of the hub's empty one, the same failur
 either way. The client's verdict comes from the authenticated BYE, not from the close
 code; the web client reports that verdict and does not read the code. Linux R7 CI
 also observed a verified BYE and `clean` stream verdict followed by 4400 on Bun
-1.3.11 (run `38023193641`, #1234). The authority-retirement controls accept that
+1.3.11 (run `38023193641`, #1234). The historical authority-retirement controls accepted that
 runtime-specific close only after verifying the authenticated stream ending.
+The 1.4.2 pin requires transport 1000 as well as the authenticated clean ending (#1273).
 Each pipe close
 is logged in a fixed form with no connection id (`Relay pipe closed by the hub (1000)`,
 or `by the far side`). The loaded client-close runs were measured on macOS against the local workerd, where

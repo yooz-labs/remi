@@ -13,7 +13,7 @@ permissions:
 # with a trivial `console.log` script; not specific to remi code. Bump in
 # lockstep with ci.yml after validating a real compiled binary.
 env:
-  BUN_VERSION: 1.3.11
+  BUN_VERSION: 1.4.2
 
 jobs:
   build:

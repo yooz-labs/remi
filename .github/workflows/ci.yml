@@ -17,7 +17,7 @@ concurrency:
 # we actually publish. Bump in lockstep after validating against a real
 # compiled binary.
 env:
-  BUN_VERSION: 1.3.11
+  BUN_VERSION: 1.4.2
 
 jobs:
   scope:

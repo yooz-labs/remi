@@ -135,13 +135,12 @@ for (const trigger of ['inbound', 'connection-count', 'connection-presence'] as 
       expect(frame[0]).toBe(relayV2.TYPE_BYE);
       expect(await owned.channel.receive(frame)).toBeNull();
       await owned.channel.bye();
-      // Let the hub close after its bounded grace (#1225). Bun 1.3.11's
-      // immediate client close can discard the reply BYE this pin must prove.
+      // Let the hub close after its bounded grace; prove the reply BYE and clean close.
       const close = await owned.socket.closed;
-      // #1225: Bun 1.3.11 on macOS and Linux can report transport 4400 after an intact BYE.
       // The stream verdict proves its ending; a bare transport close cannot substitute for it.
+      // The 1.4.2 pin also requires 1000, without the historical 1.3.11 allowance (#1273).
       expect(await owned.channel.transportClosed()).toBe('clean');
-      expect(Bun.version === '1.3.11' ? [1000, 4400] : [1000]).toContain(close.code);
+      expect(close.code).toBe(1000);
       expect(await owned.socket.quiet(50)).toBe(true);
       expect(owned.logs.some((line) => line.includes('no longer current'))).toBe(false);
       expect(await holder.exited).toBe(0);
@@ -234,7 +233,7 @@ test('a held session-list response resumes into a real busy writer and retires t
       // existing clean-end tests (#1225).
       const close = await owned.socket.closed;
       expect(await owned.channel.transportClosed()).toBe('clean');
-      expect(Bun.version === '1.3.11' ? [1000, 4400] : [1000]).toContain(close.code);
+      expect(close.code).toBe(1000);
       expect(await owned.socket.quiet(50)).toBe(true);
       expect(await holder.exited).toBe(0);
       expect(owned.logs.some((line) => line.startsWith('Relay delivery uncertain:'))).toBe(false);
