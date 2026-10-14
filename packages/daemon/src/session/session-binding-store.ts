@@ -39,7 +39,15 @@ export interface SessionBinding {
 
 export interface SessionBindingObservers {
   beforeWrite(id: UUID): void;
+  /** Claude only: its real durable transcript mirror readback. */
   afterCommit(id: UUID, expectedClaudeId: string | null, mirrorVerified: boolean): void;
+  /** Non-Claude commits carry the actual returned row; no fabricated Claude mirror result. */
+  afterHarnessIdentityCommit?(
+    id: UUID,
+    harness: Exclude<HarnessId, 'claude'>,
+    expected: string | null,
+    committed: StoredSession | null,
+  ): void;
 }
 
 export class SessionBindingStore {
@@ -164,8 +172,15 @@ export class SessionBindingStore {
     harness: Exclude<HarnessId, 'claude'>,
     harnessSessionId: string,
   ): void {
+    this.observers?.beforeWrite(remiSessionId);
     this.purgeBeforeIdentity();
-    this.store.updateHarnessIdentity(remiSessionId, harness, harnessSessionId);
+    const committed = this.store.updateHarnessIdentity(remiSessionId, harness, harnessSessionId);
+    this.observers?.afterHarnessIdentityCommit?.(
+      remiSessionId,
+      harness,
+      harnessSessionId,
+      committed,
+    );
   }
 
   /**
@@ -212,6 +227,17 @@ export class SessionBindingStore {
       log(
         `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );
+    }
+    if (!isClaudeRecord(saved)) {
+      const identity = identityOfRecord(saved);
+      if (identity && identity.harness !== 'claude')
+        this.observers?.afterHarnessIdentityCommit?.(
+          saved.remiSessionId,
+          identity.harness,
+          identity.harnessSessionId,
+          saved,
+        );
+      return;
     }
     this.observers?.afterCommit(
       saved.remiSessionId,
