@@ -65,7 +65,7 @@ async function child(argv: string[], cwd: string) {
       ]),
       30_000,
     );
-    return { exit, stdout, stderr };
+    return { exit, stdout, stderr, pid: process.pid, signalCode: process.signalCode };
   } finally {
     if (process.exitCode === null) {
       process.kill('SIGKILL');
@@ -633,6 +633,7 @@ describe('dormant browser producer: real Unix framing, owned launcher and actual
         socket.on('close', () => sockets.delete(socket));
         socket.once('data', () => socket.end(response));
       });
+      let responseIndex = 0;
       for (response of [
         Buffer.from('OK\nextra'),
         Buffer.from([0xcf, 0xcb, 10]),
@@ -643,9 +644,38 @@ describe('dormant browser producer: real Unix framing, owned launcher and actual
           [...browserLinkCommand(), join(directory, 'profile.json'), URL_TEXT],
           cwd,
         );
-        expect(refused.exit).toBe(1);
-        expect(refused.stdout).toBe('');
-        expect(refused.stderr).toBe('');
+        const boundedStream = (stream: string) =>
+          Buffer.from(
+            stream
+              .split('\n')
+              .map((line) =>
+                line.includes('example.invalid') ||
+                line.includes('profile.json') ||
+                line.includes(token)
+                  ? '[owned invocation omitted]'
+                  : line,
+              )
+              .join('\n'),
+          )
+            .subarray(0, 4096)
+            .toString();
+        const diagnostic = JSON.stringify({
+          responseIndex: responseIndex++,
+          responseHex: response.toString('hex'),
+          pid: refused.pid,
+          signalCode: refused.signalCode,
+          exit: refused.exit,
+          stdoutBytes: Buffer.byteLength(refused.stdout),
+          stderrBytes: Buffer.byteLength(refused.stderr),
+          stdout: boundedStream(refused.stdout),
+          stderr: boundedStream(refused.stderr),
+          truncated:
+            Buffer.byteLength(refused.stdout) > 4096 || Buffer.byteLength(refused.stderr) > 4096,
+          ownedInvocationRedacted: true,
+        });
+        expect(refused.exit, diagnostic).toBe(1);
+        expect(refused.stdout, diagnostic).toBe('');
+        expect(refused.stderr, diagnostic).toBe('');
       }
     } finally {
       for (const socket of sockets) socket.destroy();

@@ -18,6 +18,19 @@ import {
   decodeBrowserLinkFrame,
   encodeBrowserLinkFrame,
 } from './browser-links.ts';
+import {
+  type FileFetchAccepted,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchCancelResult,
+  type FileFetchChunk,
+  type FileFetchComplete,
+  type FileFetchRead,
+  type FileFetchRefused,
+  type FileFetchResult,
+  decodeFileDownloadFrame,
+  encodeFileDownloadFrame,
+} from './file-download.ts';
 import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
 import {
   type ImageInsertRequest,
@@ -27,6 +40,7 @@ import {
 } from './image-insertion.ts';
 import {
   isBrowserLinkCandidate,
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
@@ -132,6 +146,15 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  file_fetch_begin: FileFetchBegin;
+  file_fetch_accepted: FileFetchAccepted;
+  file_fetch_read: FileFetchRead;
+  file_fetch_chunk: FileFetchChunk;
+  file_fetch_complete: FileFetchComplete;
+  file_fetch_result: FileFetchResult;
+  file_fetch_cancel: FileFetchCancel;
+  file_fetch_cancel_result: FileFetchCancelResult;
+  file_fetch_refused: FileFetchRefused;
   browser_link_receiver_request: BrowserLinkReceiverRequest;
   browser_link_receiver_result: BrowserLinkReceiverResult;
   browser_link_receiver_ended: BrowserLinkReceiverEnded;
@@ -271,6 +294,15 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  file_fetch_begin: 'c2d',
+  file_fetch_accepted: 'd2c',
+  file_fetch_read: 'c2d',
+  file_fetch_chunk: 'd2c',
+  file_fetch_complete: 'c2d',
+  file_fetch_result: 'd2c',
+  file_fetch_cancel: 'c2d',
+  file_fetch_cancel_result: 'd2c',
+  file_fetch_refused: 'd2c',
   browser_link_receiver_request: 'c2d',
   browser_link_receiver_result: 'd2c',
   browser_link_receiver_ended: 'd2c',
@@ -1575,6 +1607,8 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type.startsWith('file_fetch_'))
+    return encodeFileDownloadFrame(message as import('./file-download.ts').FileDownloadMessage);
   if (message.type.startsWith('browser_link_'))
     return encodeBrowserLinkFrame(message as import('./browser-links.ts').BrowserLinkMessage);
   if (message.type === 'chat_submit_request' || message.type === 'chat_submit_result')
@@ -1591,6 +1625,7 @@ export function serialize(message: ProtocolMessage): string {
  * Returns null if parsing fails or message is invalid.
  */
 export function deserialize(data: string): ProtocolMessage | null {
+  if (isFileDownloadCandidate(data)) return decodeFileDownloadFrame(data);
   if (isBrowserLinkCandidate(data)) return decodeBrowserLinkFrame(data);
   if (isStructuredChatCandidate(data)) return decodeStructuredChatFrame(data);
   // Stage frames never pass through the permissive legacy parser (#1170).

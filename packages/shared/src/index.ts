@@ -294,6 +294,7 @@ export * from './image-staging.ts';
 // Accepted structural vocabulary; availability still requires the insertion caller gates.
 export * from './image-insertion.ts';
 export {
+  isFileDownloadCandidate,
   isBrowserLinkCandidate,
   isImageStagingCandidate,
   isImageInsertionCandidate,
@@ -304,3 +305,4 @@ export * from './structured-chat.ts';
 export * from './browser-links.ts';
 // Structural file-download vocabulary; host admission and HTTPS/WSS release gates remain required.
 export * from './file-download.ts';
+export * from './file-download-ingress.ts';

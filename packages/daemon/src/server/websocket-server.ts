@@ -7,6 +7,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
@@ -801,6 +802,10 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
+      if (typeof message !== 'string' && isFileDownloadCandidate(message)) {
+        connection.handleFileDownloadFrame(message);
+        return;
+      }
       if (
         this.events.onBrowserLinkReceiver &&
         typeof message !== 'string' &&

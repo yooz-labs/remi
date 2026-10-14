@@ -24,11 +24,13 @@ import {
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeFileDownloadIngress,
   decodeImageInsertionIngress,
   decodeImageStagingIngress,
   decodeStructuredChatFrame,
   deserialize,
   generateId,
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
@@ -306,6 +308,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isFileDownloadCandidate(data)) {
+      this.handleFileDownloadFrame(data);
+      return;
+    }
     if (isBrowserLinkCandidate(data)) {
       if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
       else if (this.checkAuthorization())
@@ -379,6 +385,10 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        file_fetch_begin: () => this.close('Invalid file download route'),
+        file_fetch_read: () => this.close('Invalid file download route'),
+        file_fetch_complete: () => this.close('Invalid file download route'),
+        file_fetch_cancel: () => this.close('Invalid file download route'),
         browser_link_receiver_request: () => this.close('Invalid browser link route'),
         chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
@@ -462,6 +472,27 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Original units bypass legacy ACK/dedupe; only the installed service owns effects. */
+  handleFileDownloadFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    if (!this.events.onFileDownload) {
+      this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
+    const ingress = decodeFileDownloadIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid file download frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onFileDownload(ingress);
+      if (pending) void pending.catch(() => this.close('File download unavailable'));
+    } catch {
+      this.close('File download unavailable');
     }
   }
 

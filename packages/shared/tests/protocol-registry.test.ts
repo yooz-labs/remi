@@ -19,6 +19,15 @@ import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
 /** The Independent golden types: original #895 list plus explicit R3/R5/R6 additions. */
 const GOLDEN_TYPES = [
+  'file_fetch_begin',
+  'file_fetch_accepted',
+  'file_fetch_read',
+  'file_fetch_chunk',
+  'file_fetch_complete',
+  'file_fetch_result',
+  'file_fetch_cancel',
+  'file_fetch_cancel_result',
+  'file_fetch_refused',
   'browser_link_receiver_request',
   'browser_link_receiver_result',
   'browser_link_receiver_ended',
@@ -97,12 +106,12 @@ const GOLDEN_TYPES = [
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 74 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(74);
-    expect(new Set(GOLDEN_TYPES).size).toBe(74);
+  test('GOLDEN_TYPES has exactly 83 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(83);
+    expect(new Set(GOLDEN_TYPES).size).toBe(83);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 74 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 83 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
