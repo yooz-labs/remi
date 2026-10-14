@@ -277,8 +277,9 @@ What an app should show:
 
 ## What this does not change
 
-The direct WebSocket is not encrypted by remi ([ADR 0009](../.context/decisions/0009-transport-encryption-scope.md)).
-Provisioning a key authenticates a device, and it does not protect the traffic.
+Unconfigured direct `ws://` is not encrypted by Remi; optional HTTPS/WSS is
+documented in [direct TLS setup](DIRECT-TLS.md) and the [ADR 0009 amendment](../.context/decisions/0009-transport-encryption-scope.md).
+Provisioning a key authenticates a device; transport encryption is configured separately.
 Public keys are safe to distribute, and installing one grants that device access.
 
 ## Where it is tested

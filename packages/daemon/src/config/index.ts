@@ -15,6 +15,7 @@ export {
 export type {
   AuthConfig,
   DaemonConfig,
+  DaemonTlsConfig,
   DisplayConfig,
   HarnessConfig,
   LoadedConfig,

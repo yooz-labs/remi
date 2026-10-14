@@ -8,7 +8,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
 
 - **Codex remote chat (#1207):** the reviewed combined direct/relay implementation landed in #1507 at `49094b02`, including #1504 and its reviewed prerequisites. The actual hosted suite passed 9,808 tests with 30 skips and zero failures, 91.79% line coverage and the actual 61-minute relay gate. Two earlier direct-head Test timeouts remain preserved; the combined pass does not diagnose them. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless installed-server controls and rendered web phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI, physical-device acceptance and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md) and the [native handoff](../docs/codex-remote-chat.md#native-integration-handoff).
 
-- **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. The owner accepted its baseline fields on 2026-10-14 and requires HTTPS/WSS before direct release; the TLS transport and actual producer/client delivery remain pending; Codex producer support, relay delivery, native conformance and file downloads remain separate.
+- **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. The owner accepted its baseline fields on 2026-10-14 and requires HTTPS/WSS before direct release; optional host TLS and local control routing are implemented in the current transport continuation, while actual producer/client delivery remains pending. Codex producer support, relay delivery, native conformance and file downloads remain separate.
 
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
@@ -793,3 +793,28 @@ verified. It landed in [#1520](https://github.com/yooz-labs/remi/pull/1520).
 The first hosted failure and all differential attempts are preserved separately;
 the earlier head's relay run did not qualify the corrected head.
 Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-connection-revocation/`.
+
+## Optional direct TLS continuation (#1170)
+
+The host now loads an optional `[daemon.tls]` certificate/key pair once per start,
+relative to its config file, and shares the loaded policy across all daemon and
+wrapper adapter construction paths. Configured TLS failures stop startup without
+a plaintext public fallback. Local CLI and verified relay-child connections use
+a separately held loopback capability endpoint; off-machine CLI targets receive
+no host-local capability. Public status and session ports remain public ports.
+
+The web discovery/reconnect continuation preserves an existing WSS scheme,
+certificate hostname and effective port, with HTTPS-only probing and no HTTP
+redirect follow. Legacy mDNS cannot describe TLS and is suppressed; direct v1
+pairing refuses a verified same-PID TLS endpoint. Native/secure QR and remote
+CLI WSS adoption remain later.
+See [setup and client limits](../docs/DIRECT-TLS.md).
+
+The exact B2 backend head passed 969 tests across 59 modules on each Mac Bun: zero
+failures, 5,435 assertions on 1.3.11 and 5,433 on 1.4.2. Public unsolicited update
+counts account for the assertion difference. Its 27 source hashes and the five
+accepted B1 hashes were verified after the normal develop merge. The separately
+reviewed WSS unit passed 155 tests on each runtime; all six source hashes were
+retained in the normal combined merge. Hosted checks, full rendered WSS client
+and native/device acceptance remain separate from those local results. Browser
+link/download handlers and callers remain unadvertised until their own gates.

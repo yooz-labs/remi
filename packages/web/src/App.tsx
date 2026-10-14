@@ -12,7 +12,7 @@ import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
-import { dedupeConnectionUrls } from '@/lib/connection-id';
+import { childDaemonUrl, dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
 import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
@@ -327,6 +327,7 @@ function App() {
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
+  const directConnectionUrlRef = useRef<((id: ConnectionId) => string | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
   // Outstanding user_input sends awaiting their `ack`, keyed by message id
   // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
@@ -1183,13 +1184,14 @@ function App() {
 
         // Auto-connect to other daemon ports on the same machine.
         // Use setTimeout to run after this handler completes (avoids stale refs).
-        if (connectionModeRef.current?.(connectionId) !== 'relay' && message.daemonPorts && message.daemonPorts.length > 0) {
+        const parentUrl = directConnectionUrlRef.current?.(connectionId);
+        if (parentUrl && message.daemonPorts && message.daemonPorts.length > 0) {
           const ports = [...message.daemonPorts];
-          const host = connectionId.replace(/:\d+$/, '');
           setTimeout(() => {
+            if (directConnectionUrlRef.current?.(connectionId) !== parentUrl) return;
             for (const port of ports) {
-              const url = `ws://${host}:${port}/ws`;
-              connectDirectRef.current(url);
+              const url = childDaemonUrl(parentUrl, port);
+              if (url) connectDirectRef.current(url);
             }
           }, 100);
         }
@@ -2022,6 +2024,7 @@ function App() {
     addImageToDraft,
     takeImageDraftForSend,
     getConnectionMode,
+    getDirectConnectionUrl,
     getOwnFingerprint,
   } = useConnectionManager({
     onMessage: handleMessage,
@@ -2035,6 +2038,7 @@ function App() {
   const nativeConnectionsRef = useRef(connections);
   nativeConnectionsRef.current = connections;
   connectionModeRef.current = getConnectionMode;
+  directConnectionUrlRef.current = getDirectConnectionUrl;
 
   const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
     setUnlockedIdentity(identity);

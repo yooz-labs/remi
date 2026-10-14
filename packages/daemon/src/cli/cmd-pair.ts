@@ -312,7 +312,7 @@ export function pairingHosts(
  * not an address or that no phone could dial (loopback, unspecified).
  */
 export function pairPreconditions(
-  status: { port: number; bind?: string; auth?: boolean } | null,
+  status: { port: number; bind?: string; auth?: boolean; directTls?: true } | null,
   requestedHost: string | undefined,
   interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
 ): { ok: true; host: string; port: number; others: string[] } | { ok: false; message: string } {
@@ -321,6 +321,13 @@ export function pairPreconditions(
       ok: false,
       message:
         'No hub is running. Start one with `remi start` (with `daemon.bind` set to an address your phone can reach), then run remi pair again.',
+    };
+  }
+  if (status.directTls) {
+    return {
+      ok: false,
+      message:
+        'Direct QR pairing is unavailable while this hub uses TLS. Secure endpoint pairing support is pending.',
     };
   }
   if (status.bind === undefined || status.auth === undefined) {
@@ -407,7 +414,14 @@ export async function runPairCommand(flags: { host?: string }): Promise<number> 
     );
     return 2;
   }
-  const checked = pairPreconditions(readHubStatus(), flags.host, os.networkInterfaces());
+  let hub: ReturnType<typeof readHubStatus>;
+  try {
+    hub = readHubStatus();
+  } catch {
+    console.error('Local daemon endpoint unavailable.');
+    return 1;
+  }
+  const checked = pairPreconditions(hub, flags.host, os.networkInterfaces());
   if (!checked.ok) {
     console.error(checked.message);
     return 1;
