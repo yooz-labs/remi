@@ -19,6 +19,8 @@ import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
 /** The Independent golden types: original #895 list plus explicit R3/R5/R6 additions. */
 const GOLDEN_TYPES = [
+  'image_insert_request',
+  'image_insert_result',
   'image_upload_begin',
   'image_upload_accepted',
   'image_upload_chunk',
@@ -89,12 +91,12 @@ const GOLDEN_TYPES = [
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 66 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(66);
-    expect(new Set(GOLDEN_TYPES).size).toBe(66);
+  test('GOLDEN_TYPES has exactly 68 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(68);
+    expect(new Set(GOLDEN_TYPES).size).toBe(68);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 66 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 68 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -124,6 +126,7 @@ describe('protocol registry golden equality (#895)', () => {
    * UNKNOWN_MESSAGE.
    */
   const INBOUND_ROUTED = [
+    'image_insert_request',
     'image_upload_begin',
     'image_upload_chunk',
     'image_upload_complete',

@@ -8,6 +8,7 @@ import {
   decodeImageInsertionIngress,
   encodeImageInsertionFrame,
 } from '../src/image-insertion';
+import { isImageInsertionCandidate } from '../src/image-staging-ingress';
 import { MESSAGE_DIRECTION, deserialize } from '../src/protocol';
 import { PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from '../src/protocol-version';
 import type schema from './fixtures/image-insertion/vectors.json';
@@ -55,13 +56,20 @@ describe('actual accepted image insertion structural codec', () => {
           );
       }
     });
-  test('reserved vocabulary adds no public protocol/capability availability', () => {
+  test('two strict registry directions preserve version1 without advertising insertion', () => {
     expect(PROTOCOL_VERSION).toBe(1);
     expect(Object.hasOwn(PROTOCOL_CAPABILITIES, IMAGE_INSERTION_CAPABILITY)).toBe(false);
-    expect(Object.keys(MESSAGE_DIRECTION).some((type) => type.startsWith('image_insert_'))).toBe(
-      false,
-    );
-    for (const vector of vectors.positive) expect(deserialize(vector.raw)).toBeNull();
+    expect(
+      Object.fromEntries(
+        Object.entries(MESSAGE_DIRECTION).filter(([type]) => type.startsWith('image_insert_')),
+      ),
+    ).toEqual({ image_insert_request: 'c2d', image_insert_result: 'd2c' });
+    for (const vector of vectors.positive)
+      expect(deserialize(vector.raw)).toEqual(vector.expected as ImageInsertionMessage);
+    // Other known legacy types retain their own parser; only insertion candidates select this codec.
+    for (const vector of vectors.negative)
+      if ('raw' in vector && isImageInsertionCandidate(vector.raw))
+        expect(deserialize(vector.raw)).toBeNull();
   });
   test('encoder rejects discarded fields and unsupported values uniformly', () => {
     const request = vectors.positive[0]?.expected;

@@ -18,7 +18,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
   - the relay off by default and fail-closed (#1193);
   - one `turn_failed` alert per failure until the agent works again (#1153, #1226).
 - **Relay backend landed in develop:** [#1331](https://github.com/yooz-labs/remi/pull/1331), merge `b1168126`, includes the existing R1-R5 and daemon R6 contracts, the authority-contention correction, v1 retirement and heartbeat replies. Relay remains off by default. Both full Bun suites and the actual [61-minute Linux relay gate](https://github.com/yooz-labs/remi/actions/runs/37905906897) passed at backend `2858e4bd`, whose tree equals the merge. Signed-device and deployed-Worker acceptance remain open; #1195/#1202 are not closed by the source landing.
-- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the broader proposal. The owner accepted [ADR 0041](decisions/0041-direct-image-staging.md)'s direct upload fields, bounds, outcomes and cleanup/retry rules on 2026-10-11. The dormant shared codec/fixtures passed 408 preserved and 508 new tests per Bun, six compiled executions and twelve exact guard controls. Corrected fixtures load in Foundation; Swift wire conformance is still pending. Protocol/runtime integration and attachment availability remain pending. Production storage/decoder adoption precedes staging UI; harness insertion has its own later lifetime gate.
+- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the broader proposal. Direct PNG/JPEG staging and its web caller landed in #1487 under accepted [ADR 0041](decisions/0041-direct-image-staging.md). [ADR 0042](decisions/0042-claude-image-insertion.md) separately covers explicit no-Enter insertion and visible original expiry: host lease/coordinator/strict direct dispatch controls are recorded below; the explicit client action and native conformance remain availability gates. Links and downloads are later scope.
 - **Apps today:**
   - a sandboxed macOS menu-bar app that hosts the web UI;
   - the Capacitor iPhone app with a Notification Service Extension;
@@ -523,16 +523,17 @@ duplicate attach, change on genuine reattach and clear on detach/session exit.
 Staging's existing authority checks use the same token. The original control
 failed before this fix and passes afterward; the old upload cannot revive either.
 
-Correlated outcome/retry handling, strict shared vectors and dispatch, an explicit
-client action, capability availability and native conformance remain subsequent
-integration work. The internal lease is not a shipping Add to draft action.
+The following sections record outcome/retry handling, shared vectors and direct
+host dispatch. The explicit client action, capability availability and native
+conformance remain separate gates; the lease alone is not Add to draft.
 
 ## Image insertion: shared structural contract
 
 The accepted two-message codec and request-only correlated ingress reuse the
 existing strict scalar/UUID/date/opaque-ID/binding/frame guards. Before extraction,
 all 503 staging vector outcomes were pinned; their decoded/ingress/encoded hash
-remains unchanged. The public registry and capability advertisement are unchanged.
+remains unchanged. At that stage the public registry and capability advertisement
+were unchanged; direct dispatch is recorded below.
 
 An independent generator imports no production codec/guard and supplies 14
 positive and 282 negative insertion vectors. Both Bun source populations pass
@@ -540,8 +541,8 @@ positive and 282 negative insertion vectors. Both Bun source populations pass
 The supported compiled matrix passes the new vectors and the preserved staging
 hash on Apple Silicon Mac and Linux ARM64/x64 with Bun 1.3.11 and 1.4.2.
 The outer corpus loads in Foundation; this is fixture interchange, not native
-decoder conformance. The correlated outcome coordinator, actual queued caller,
-public dispatch/client action and native conformance remain subsequent gates.
+decoder conformance. The later sections record the coordinator and queued host
+caller. The explicit client action and native conformance remain separate gates.
 
 ## Image insertion: internal outcome coordinator
 
@@ -564,11 +565,43 @@ The first 128-request bound control timed out because each request revalidated
 all retained files. Sweeping only at capacity makes that same unchanged control
 pass in 2.1 seconds, without relaxing its 15-second limit.
 
-This remains an internal coordinator, without public dispatch/capability or a
-client action. Compiled public caller and native conformance gates remain.
+The direct dispatch section below records the supported compiled caller controls.
+The coordinator alone does not provide the explicit client action or native
+conformance required for availability.
 
 The coordinator's R1 found that spreading binding members preserved their JSON
 order in the retry signature. Copying the two binding fields in a fixed order
 now makes equivalent reordered retries share the recorded outcome. The actual
 signed-wire regression failed before this fix; the coordinator source controls
 pass 169 tests and 1,508 assertions on both supported Bun versions afterward.
+
+## Image insertion: strict direct host dispatch
+
+Exactly two public message/direction entries use the strict codec before legacy
+parsing and ordinary ID deduplication. The existing fixed-unit candidacy scanner
+is reused with a second fixed prefix; a separately committed original 503-case
+candidacy hash remains unchanged, alongside the earlier codec/ingress hash.
+Malformed hints locate only the original current owner for a fixed refusal code.
+Uncorrelatable, wrong-direction and oversized frames close without an effect.
+
+The CLI constructs the coordinator beside the supported authenticated direct
+Claude staging service, uses the same current harness prompt-up wiring as chat,
+and closes the coordinator before staging cleanup. The signed-socket fixture
+uses that same production handler factory. On Apple Silicon Mac, both Bun source
+populations pass 1,764 shared/event tests (16,623 assertions) plus 178 daemon/PTY/registry/journal
+tests (1,705 assertions), with root and web type checks clean.
+
+The actual compiled production entry passes on Apple Silicon Mac and Linux
+ARM64/x64 with Bun 1.3.11 and 1.4.2. Each cell provisions an ephemeral signed
+client, stages PNG and JPEG through the actual worker, writes one original
+reference per image with zero CR/LF, replays an equivalent reordered retry,
+refuses another ID, refuses insertion during the actual HTTP permission hold,
+answers No, and rejects cached delivery after grant revocation. Owned helper and
+daemon exits are awaited/ESRCH-confirmed; three rows settle to zero charge and
+staging names are gone. The harness executable is inert cat, with no model or
+owner configuration used. This complements the six earlier approved Claude
+turns; it does not claim additional model, native or device acceptance.
+
+`image_insertion` is still not advertised. The production explicit Add to draft
+client, visible original expiry, client result correlation and rendered QA are
+the next step; native runs the shared corpus independently.

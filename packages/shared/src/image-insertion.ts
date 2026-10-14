@@ -1,4 +1,4 @@
-/** ADR0042 structural codec. No registered messages, effect authority or advertised capability. */
+/** ADR0042 strict structural codec. Effect authority remains with the original host lease. */
 import type { ImageStagingBinding } from './image-staging';
 import {
   type Guard,

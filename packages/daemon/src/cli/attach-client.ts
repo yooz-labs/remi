@@ -335,7 +335,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
-      // The terminal attach client has no image staging UI (#1170).
+      // The terminal attach client has no image staging/insertion UI (#1170).
+      image_insert_request: 'ignore',
+      image_insert_result: 'ignore',
       image_upload_begin: 'ignore',
       image_upload_accepted: 'ignore',
       image_upload_chunk: 'ignore',

@@ -1,9 +1,11 @@
 // #1170 authenticated direct image staging and internal insertion lease preparation.
-// Staging writes no harness input; insertion has no production handler or capability yet.
+// Staging writes no harness input; insertion reuses its original owner and retained artifact.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  type ImageInsertionCorrelation,
+  type ImageInsertionRefusalCode,
   type ImageStagingBinding,
   type ImageStagingCorrelation,
   type ImageStagingMessage,
@@ -378,6 +380,44 @@ export class ImageStagingService {
         return operation();
       },
     );
+  }
+
+  /** A malformed envelope can locate its existing owner only; it never acquires an effect lease. */
+  insertionMalformedCode(
+    id: UUID,
+    correlation: ImageInsertionCorrelation,
+  ): ImageInsertionRefusalCode {
+    try {
+      const record = [...this.transfers.values()].find(
+        (item) => item.artifact?.id === correlation.artifactId,
+      );
+      if (
+        this.closed ||
+        !record ||
+        record.retired ||
+        record.state !== 'staged' ||
+        this.expired(record) ||
+        record.begin.sessionId !== correlation.sessionId ||
+        this.direct(id) !== record.authority.connection
+      )
+        return 'unavailable';
+      return this.owner(
+        record,
+        () => {
+          const current = this.host.bindingStore.getIdentity(correlation.sessionId);
+          if (!current?.harnessSessionId) return 'unavailable';
+          return current.harness === 'claude' &&
+            current.harnessSessionId === record.authority.binding.harnessSessionId
+            ? 'malformed'
+            : 'binding_changed';
+        },
+        false,
+      );
+    } catch (error) {
+      return error instanceof Error && 'code' in error && error.code === 'busy'
+        ? 'busy'
+        : 'unavailable';
+    }
   }
 
   /** Internal host lease only. Preparing never writes input or changes the original storage lifetime. */

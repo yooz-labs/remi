@@ -27,6 +27,7 @@ import {
 } from '@remi/shared';
 import {
   type ImageInsertRequest,
+  type ImageInsertResult,
   decodeImageInsertionFrame,
   encodeImageInsertionFrame,
 } from '../../../shared/src/image-insertion';
@@ -37,6 +38,7 @@ import { MessageAPI } from '../../src/api/message-api';
 import { Authenticator } from '../../src/auth/authenticator';
 import { IdentityStore } from '../../src/auth/identity-store';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate';
+import { createImageInsertionHandlers } from '../../src/cli/handlers/image-insertion-events';
 import { promptUpFor } from '../../src/cli/handlers/prompt-up';
 import { PTYSession } from '../../src/pty/pty-session';
 import { SessionBindingStore } from '../../src/session/session-binding-store';
@@ -75,8 +77,14 @@ async function fixture(parent = tmpdir()) {
     },
   );
   const sockets: WebSocket[] = [];
-  const resources: { adapter?: WebSocketAdapter; service?: ImageStagingService } = {};
+  const resources: {
+    adapter?: WebSocketAdapter;
+    service?: ImageStagingService;
+    coordinator?: ImageInsertionCoordinator;
+    gate: AutoApproveGate | undefined;
+  } = { gate: undefined };
   cleanup.push(async () => {
+    resources.coordinator?.close();
     const settled = resources.service ? await resources.service.close() : true;
     for (const socket of sockets) socket.close();
     await resources.adapter?.stop();
@@ -109,8 +117,14 @@ async function fixture(parent = tmpdir()) {
       },
       onDisconnect(id) {
         registry.detachConnection(id);
+        resources.coordinator?.invalidateConnection(id);
         void resources.service?.invalidateConnection(id);
       },
+      ...createImageInsertionHandlers({
+        service: () => resources.service,
+        coordinator: () => resources.coordinator,
+        send: (id, response) => adapter.sendRaw(id, response),
+      }),
       async onImageUpload(id, ingress) {
         const current = resources.service;
         if (!current) throw new Error('Service not initialized');
@@ -133,6 +147,10 @@ async function fixture(parent = tmpdir()) {
     directAdapter,
   });
   resources.service = service;
+  resources.coordinator = new ImageInsertionCoordinator(
+    service,
+    () => promptUpFor(resources.gate, undefined) !== null,
+  );
   async function client() {
     connected = Promise.withResolvers<UUID>();
     const identity = await createIdentity();
@@ -200,6 +218,10 @@ async function fixture(parent = tmpdir()) {
     adapter,
     directAdapter,
     service,
+    coordinator: resources.coordinator,
+    setPromptGate: (gate: AutoApproveGate | undefined) => {
+      resources.gate = gate;
+    },
     client,
     owner,
     ledger,
@@ -342,6 +364,162 @@ function insertionRequest(
     binding: { harness: 'claude', harnessSessionId: f.harnessSessionId },
     artifactId,
   };
+}
+
+async function wireInsertion(
+  f: Awaited<ReturnType<typeof fixture>>,
+  request: ImageInsertRequest,
+  client = f.owner,
+  raw: string | Uint8Array = encodeImageInsertionFrame(request),
+): Promise<ImageInsertResult> {
+  const before = client.received.length;
+  client.socket.send(raw);
+  const response = () =>
+    client.received
+      .slice(before)
+      .find(
+        (message) => message.type === 'image_insert_result' && message.requestId === request.id,
+      );
+  await pollUntil(() => response() !== undefined, 5000, 'actual signed insertion result');
+  const message = response();
+  if (!message || message.type !== 'image_insert_result')
+    throw new Error('Missing actual insertion result');
+  expect(message.sessionId).toBe(request.sessionId);
+  return message;
+}
+
+for (const file of ['fixture.png', 'fixture.jpg']) {
+  test(`strict signed wire inserts ${file} once and replays equivalent reordered fields`, async () => {
+    const { f, result: staged, prepare } = await stagedForInsertion(file);
+    const request = insertionRequest(f, staged.artifactId);
+    const reference = prepare().referencePath();
+    const ledger = f.ledger();
+    const first = await wireInsertion(f, request);
+    expect(first.outcome).toBe('inserted');
+    const reordered = {
+      artifactId: request.artifactId,
+      binding: {
+        harnessSessionId: request.binding.harnessSessionId,
+        harness: request.binding.harness,
+      },
+      sessionId: request.sessionId,
+      timestamp: request.timestamp,
+      id: request.id,
+      type: request.type,
+    };
+    const raw = JSON.stringify(reordered)
+      .replace('"type"', '"t\\u0079pe"')
+      .replace('image_insert_request', 'image\\u005finsert_request');
+    const replay = await wireInsertion(f, request, f.owner, new TextEncoder().encode(raw));
+    expect(replay).toEqual(first);
+    expect((await wireInsertion(f, { ...request, id: generateId() })).code).toBe('conflict');
+    await pollUntil(() => f.output().includes(reference), 1000, 'wire insertion echo');
+    expect(f.output()).toBe(` @"${reference}" `);
+    expect(f.output()).not.toMatch(/[\r\n]/u);
+    expect(f.ledger()).toEqual(ledger);
+    expect(
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === request.id,
+      ),
+    ).toBe(false);
+  }, 20000);
+}
+
+test('strict wire malformed insertion hints distinguish only the original current owner', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const request = insertionRequest(f, staged.artifactId);
+  const raw = JSON.stringify({ ...request, extra: 'owned invalid field' });
+  const ledger = f.ledger();
+  const foreign = await f.client();
+  expect((await wireInsertion(f, request, foreign, raw)).code).toBe('unavailable');
+  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('malformed');
+  const missing = { ...request, artifactId: 'A'.repeat(22) };
+  expect(
+    (await wireInsertion(f, missing, f.owner, JSON.stringify({ ...missing, extra: true }))).code,
+  ).toBe('unavailable');
+  expect(f.output()).toBe('');
+  expect(f.ledger()).toEqual(ledger);
+  expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
+  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('unavailable');
+  expect(f.output()).toBe('');
+});
+
+test('strict wire held hook refuses without input; a fresh explicit ID works after release', async () => {
+  const { f, result: staged, prepare } = await stagedForInsertion();
+  const reference = prepare().referencePath();
+  const gate = new AutoApproveGate(
+    {
+      sessionRegistry: f.registry,
+      isInSubagentContext: () => false,
+      holdMs: 60000,
+      hasLocalTerminal: false,
+      escalate: () => generateId(),
+    },
+    f.sessionId,
+  );
+  f.setPromptGate(gate);
+  const hook = gate.resolvePermission({
+    session_id: f.harnessSessionId,
+    transcript_path: join(f.home, 'transcript.jsonl'),
+    cwd: f.home,
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'echo insertion-wire-control' },
+  });
+  const request = insertionRequest(f, staged.artifactId);
+  let held: ImageInsertResult;
+  try {
+    expect(promptUpFor(gate, undefined)).toBe('held');
+    held = await wireInsertion(f, request);
+    expect(held.code).toBe('prompt_up');
+    expect(f.output()).toBe('');
+  } finally {
+    gate.forceRelease('test cleanup');
+    await hook;
+    gate.noteTerminalEscape();
+    f.setPromptGate(undefined);
+  }
+  expect(await wireInsertion(f, request)).toEqual(held);
+  expect((await wireInsertion(f, { ...request, id: generateId() })).outcome).toBe('inserted');
+  await pollUntil(() => f.output().includes(reference), 1000, 'wire released image echo');
+  expect(f.output()).toBe(` @"${reference}" `);
+});
+
+for (const fault of ['duplicate', 'bad-utf8', 'oversized', 'host-result'] as const) {
+  test(`strict signed insertion ${fault} closes without reference bytes`, async () => {
+    const { f, result: staged } = await stagedForInsertion();
+    const request = insertionRequest(f, staged.artifactId);
+    const raw = encodeImageInsertionFrame(request);
+    const payload =
+      fault === 'duplicate'
+        ? `${raw.slice(0, -1)},"t\\u0079pe":"ping"}`
+        : fault === 'bad-utf8'
+          ? Uint8Array.from([...new TextEncoder().encode(raw.slice(0, -1)), 255, 125])
+          : fault === 'oversized'
+            ? new TextEncoder().encode(JSON.stringify({ extra: 'x'.repeat(70000), ...request }))
+            : encodeImageInsertionFrame({
+                type: 'image_insert_result',
+                id: generateId(),
+                timestamp: new Date().toISOString(),
+                requestId: request.id,
+                sessionId: request.sessionId,
+                outcome: 'inserted',
+                code: 'none',
+              });
+    f.owner.socket.send(payload);
+    await pollUntil(
+      () => f.owner.socket.readyState === WebSocket.CLOSED,
+      5000,
+      'strict insertion close',
+    );
+    expect(f.output()).toBe('');
+    expect(
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === request.id,
+      ),
+    ).toBe(false);
+  }, 20000);
 }
 
 for (const file of ['fixture.png', 'fixture.jpg']) {

@@ -107,7 +107,9 @@ No retention extension or second storage namespace is introduced.
 Owner acceptance of the two-message contract, `image_insertion` name,
 first-version connection restriction and expiring unsent draft is recorded above.
 The corrected exact managed filename route passed on the installed CLI.
-Then implement managed artifact acquisition and one-effect retirement, strict shared vectors, dispatch/direction handling and one production explicit client action.
+Managed acquisition/one-effect retirement, the bounded outcome coordinator, strict shared vectors and direct host dispatch/directions are implemented.
+Source controls pass on Apple Silicon Mac with both Bun versions; the actual compiled CLI caller passes on all three supported hosts and both Bun versions, including a real HTTP permission hold and No answer with an inert CLI.
+The production explicit client action, visible expiry and client result correlation remain the next availability gate.
 Real signed socket/grant/session/binding/held-hook controls must prove zero bytes on refusal, one reference and zero CR/LF on success, and no replay after uncertainty.
 Run source/compiled controls on the three supported hosts and both Bun versions; native runs the shared conformance corpus independently.
 Do not advertise the capability until the actual handler and client caller pass those gates.

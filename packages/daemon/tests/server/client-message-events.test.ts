@@ -5,7 +5,7 @@
  * `bindConnectionId`) that replaced 13 hand-written per-event closures each
  * in `websocket-adapter.ts` and `websocket-server.ts`.
  *
- * `GOLDEN_KEYS` below is a hand-transcribed copy of the 13 event names,
+ * `GOLDEN_KEYS` below is a hand-transcribed copy of the original event names plus explicit additions,
  * deliberately NOT imported from `CLIENT_MESSAGE_EVENT_KEYS` -- the same
  * reason `protocol-registry.test.ts`'s `GOLDEN_TYPES` isn't derived from
  * `MESSAGE_DIRECTION`: a test that reads its expectation from the thing it's
@@ -24,6 +24,7 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onImageInsert',
   // Explicit R6 signed-proof event, added to the original 13 (#1201).
   'onImageUpload',
   'onNativeAnswer',
@@ -44,9 +45,9 @@ const GOLDEN_KEYS = [
 ];
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 16 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(16);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(16);
+  test('has exactly 17 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(17);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(17);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {
@@ -146,7 +147,7 @@ describe('bindConnectionId', () => {
     }
   });
 
-  test('binds every one of the 14 keys to the SAME connectionId', () => {
+  test('binds every declared key to the SAME connectionId', () => {
     for (const key of CLIENT_MESSAGE_EVENT_KEYS) {
       const calls: unknown[][] = [];
       const sink: Partial<ClientMessageEventsWithConnectionId> = {

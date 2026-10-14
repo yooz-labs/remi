@@ -1854,6 +1854,11 @@ function App() {
       case 'auth_result':
         break;
 
+      // The insertion client action is a separate gate; its frames never become chat bubbles.
+      case 'image_insert_request':
+      case 'image_insert_result':
+        break;
+
       // Direct staging is strictly decoded by WebSocketClient and owned by the
       // connection manager's ImageUploadController; it never becomes a chat bubble.
       case 'image_upload_begin':
