@@ -299,3 +299,5 @@ export {
   isStructuredChatCandidate,
 } from './image-staging-ingress.ts';
 export * from './structured-chat.ts';
+// Structural file-download vocabulary; host admission and HTTPS/WSS release gates remain required.
+export * from './file-download.ts';
