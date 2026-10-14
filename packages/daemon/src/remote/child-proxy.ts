@@ -17,7 +17,7 @@ import {
   RELAY_CHAT_AUTHORITY_HEADER,
   encodeRelayChatAuthority,
 } from '../auth/relay-chat-authority';
-import { capabilityWsOptions } from '../cli/capability-client.ts';
+import { resolveDaemonWsTarget } from '../cli/daemon-target.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 
@@ -166,6 +166,7 @@ export class ChildProxy {
     private readonly authorized: () => boolean,
     private readonly relayAuthority?: SecurePushAuthority,
     private readonly listChanged?: () => void,
+    private readonly localHome?: string,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
@@ -194,13 +195,17 @@ export class ChildProxy {
     }
     if (!child) {
       if (this.children.size >= 32) throw new Error('CHILD_CAPACITY');
-      const options = capabilityWsOptions();
+      const target = resolveDaemonWsTarget('127.0.0.1', live.wsPort, {
+        ...(this.localHome !== undefined && { home: this.localHome }),
+        expectedPid: live.pid,
+      });
+      const options = target.options;
       if (!options) throw new Error('LOCAL_CAPABILITY_REQUIRED');
       if (this.relayAuthority)
         options.headers[RELAY_CHAT_AUTHORITY_HEADER] = encodeRelayChatAuthority(
           this.relayAuthority,
         );
-      const ws = new WebSocket(`ws://127.0.0.1:${live.wsPort}/ws`, options as never);
+      const ws = new WebSocket(target.url, options as never);
       let verified = false;
       const ready = new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {

@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
@@ -108,7 +109,12 @@ function readStatus(): Record<string, unknown> | null {
  * The running hub's port, bind and whether it authenticates, for `remi pair` (#1275): null when no
  * hub is running. `bind` and `auth` are absent from a hub older than `remi pair`.
  */
-export function readHubStatus(): { port: number; bind?: string; auth?: boolean } | null {
+export function readHubStatus(): {
+  port: number;
+  bind?: string;
+  auth?: boolean;
+  directTls?: true;
+} | null {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (pid === null) return null;
   const status = readStatus();
@@ -117,10 +123,15 @@ export function readHubStatus(): { port: number; bind?: string; auth?: boolean }
   if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null;
   const bind = status['bind'];
   const auth = status['auth'];
+  const local = readLocalDaemonEndpoint(port, { home: REMI_DIR, expectedPid: pid });
+  if (local.kind === 'invalid') throw new Error('Local daemon endpoint unavailable');
   return {
     port,
     ...(typeof bind === 'string' && { bind }),
     ...(typeof auth === 'boolean' && { auth }),
+    // A same-PID local routing hint is enough to refuse an incompatible v1 QR.
+    // Its absence says nothing about the listener's transport or PID age.
+    ...(local.kind === 'found' && { directTls: true as const }),
   };
 }
 
