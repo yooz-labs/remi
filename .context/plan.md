@@ -69,6 +69,18 @@ The existing native caller needs no new Swift model or wire field for this persi
 
 ## Tracks (work outside the milestones)
 
+The named origin-policy and direct-answer fixture cases in #1232 now have a
+local continuation based on #1515's actual WebSocket port reporting.
+The origin fixture binds loopback port zero directly and uses the held port;
+the raw answer fixture binds the same loopback address its clients dial.
+Both new listener assertions fail against the original setup on both Mac Bun
+versions, while all 30 predecessor cases pass there.
+This is a narrow test setup correction: the broader fixed/random-port and
+wildcard-listener inventory remains open under #1232; no production origin or
+answer behavior changes.
+All 32 original and added cases pass on each Mac Bun runtime; root and web
+TypeScript checks pass. Independent review and hosted acceptance remain pending.
+
 Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 

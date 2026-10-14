@@ -61,7 +61,7 @@ describe('relayAnswerDirect (#575 P4a)', () => {
   });
 
   function startServer(handler: (req: Request) => Response | Promise<Response>) {
-    return Bun.serve({ port: 0, fetch: handler });
+    return Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: handler });
   }
 
   test('the answer fixture binds the same loopback address its clients dial', async () => {

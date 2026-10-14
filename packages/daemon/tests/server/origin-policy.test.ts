@@ -15,7 +15,6 @@ import {
   isAllowedOrigin,
 } from '../../src/server/origin-policy.ts';
 import { WebSocketServer } from '../../src/server/websocket-server.ts';
-import { reserveRange } from '../session/port-test-helpers.ts';
 
 describe('isAllowedOrigin', () => {
   test('a native client sends no Origin and is allowed', () => {
@@ -103,9 +102,8 @@ describe('WebSocketServer enforces the origin policy', () => {
   });
 
   async function startServer(allowedOrigins: readonly string[] = []): Promise<void> {
-    port = await reserveRange(1);
     server = new WebSocketServer({
-      port,
+      port: 0,
       host: '127.0.0.1',
       allowedOrigins,
       // Swallow the rejection notice; the point here is the response, and a
@@ -113,6 +111,7 @@ describe('WebSocketServer enforces the origin policy', () => {
       logFn: () => {},
     });
     await server.start();
+    port = server.port;
   }
 
   /** Open a WebSocket with an explicit Origin, resolving to 'open' or 'refused'. */
