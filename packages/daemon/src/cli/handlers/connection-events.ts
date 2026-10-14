@@ -88,6 +88,29 @@ export interface ConnectionHandlerDeps {
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
 
+/** Same scoped hello fields for initial attach and an event-driven readiness refresh. */
+export function createConnectionHello(
+  deps: Pick<
+    ConnectionHandlerDeps,
+    'machine' | 'capabilities' | 'capabilitiesForConnection' | 'harnesses' | 'remiVersion'
+  >,
+  connectionId: UUID,
+  sessionId: UUID | null,
+  options: CreateHelloAckOptions = {},
+) {
+  const selectedCapabilities =
+    deps.capabilitiesForConnection?.(connectionId) ?? deps.capabilities ?? DAEMON_CAPABILITIES;
+  const descriptor = deps.machine?.();
+  const machine = descriptor ? { ...descriptor, capabilities: selectedCapabilities } : undefined;
+  return createHelloAck('1.0.0', sessionId, {
+    ...options,
+    daemonVersion: deps.remiVersion,
+    harnesses: machine?.harnesses ?? deps.harnesses(),
+    capabilities: selectedCapabilities,
+    machine,
+  });
+}
+
 export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
@@ -113,17 +136,12 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
    * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
    */
   const ack = (connectionId: UUID, sessionId: UUID | null, options: CreateHelloAckOptions = {}) => {
-    const selectedCapabilities = deps.capabilitiesForConnection?.(connectionId) ?? capabilities;
-    const descriptor = deps.machine?.();
-    // ADR 0039 keeps hello fields equal to its connection-scoped machine descriptor.
-    const machine = descriptor ? { ...descriptor, capabilities: selectedCapabilities } : undefined;
-    return createHelloAck('1.0.0', sessionId, {
-      ...options,
-      daemonVersion: remiVersion,
-      harnesses: machine?.harnesses ?? harnesses(),
-      capabilities: selectedCapabilities,
-      machine,
-    });
+    return createConnectionHello(
+      { ...deps, capabilities, harnesses, remiVersion },
+      connectionId,
+      sessionId,
+      options,
+    );
   };
 
   /** The current binding for hello_ack: who the session is, and the transcript it writes. */

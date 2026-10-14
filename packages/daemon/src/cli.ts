@@ -160,6 +160,7 @@ import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
   createConnectionHandlers,
+  createConnectionHello,
 } from './cli/handlers/connection-events.ts';
 import {
   type CreateSessionHandlers,
@@ -302,6 +303,10 @@ import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
+import {
+  FileDownloadSessionHost,
+  downloadProtectionRoots,
+} from './tunnel/file-download-session-host';
 import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
@@ -1170,8 +1175,10 @@ let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 let structuredChatService: StructuredChatService | undefined;
 let browserLinkService: BrowserLinkService | undefined;
 let browserSessionHost: BrowserLinkSessionHost | undefined;
+let fileDownloadSessionHost: FileDownloadSessionHost | undefined;
 const capabilitiesForConnection = (id: UUID): readonly string[] => [
   ...DAEMON_CAPABILITIES,
+  ...(fileDownloadSessionHost?.service?.isAvailable(id) ? ['file_download'] : []),
   ...(browserLinkService?.isAvailable(id) ? [BROWSER_LINKS_CAPABILITY] : []),
   ...(imageStagingService?.isAvailable(id)
     ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
@@ -1270,11 +1277,18 @@ const transcriptIndex = new TranscriptIndex();
 const bindingStore = new SessionBindingStore(
   sessionStore,
   transcriptIndex,
-  daemonTls && authEnabled && !serveMode && harnessId === 'claude'
+  daemonTls && authEnabled && !serveMode
     ? {
-        beforeWrite: (id) => browserSessionHost?.beforeBindingWrite(id),
-        afterCommit: (id, expected, mirrorVerified) =>
-          browserSessionHost?.afterBindingCommit(id, expected, mirrorVerified),
+        beforeWrite: (id) => {
+          browserSessionHost?.beforeBindingWrite(id);
+          fileDownloadSessionHost?.beforeBindingWrite(id);
+        },
+        afterCommit: (id, expected, mirrorVerified) => {
+          browserSessionHost?.afterBindingCommit(id, expected, mirrorVerified);
+          fileDownloadSessionHost?.afterClaudeCommit(id, expected, mirrorVerified);
+        },
+        afterHarnessIdentityCommit: (id, harness, expected, committed) =>
+          fileDownloadSessionHost?.afterHarnessIdentityCommit(id, harness, expected, committed),
       }
     : undefined,
 );
@@ -1328,6 +1342,8 @@ const sessionRegistry = new SessionRegistry(
     onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       retireSecurePushRuntime(sessionId);
       browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
+      fileDownloadSessionHost?.retireSession(sessionId);
+      void fileDownloadSessionHost?.closeSession(sessionId);
       void imageStagingService?.invalidateSession(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
@@ -1400,6 +1416,7 @@ const sessionRegistry = new SessionRegistry(
     // lines that mutate the set, so it covers every attach path by
     // construction; `refresh()` schedules only on a real change.
     onAttachStateChanged: (id) => {
+      fileDownloadSessionHost?.attachmentsChanged(id);
       browserLinkService?.maintainSession(id);
       statusWriter.refresh();
       void imageStagingService?.maintain();
@@ -1457,6 +1474,34 @@ if (daemonTls && authEnabled && !serveMode && harnessId === 'claude') {
     sessions: sessionRegistry,
     bindings: bindingStore,
     service: () => browserLinkService,
+  });
+}
+if (
+  daemonTls &&
+  authEnabled &&
+  !serveMode &&
+  ((process.platform === 'darwin' && process.arch === 'arm64') ||
+    (process.platform === 'linux' && ['arm64', 'x64'].includes(process.arch)))
+) {
+  fileDownloadSessionHost = new FileDownloadSessionHost({
+    home: REMI_DIR,
+    sessions: sessionRegistry,
+    bindings: bindingStore,
+    runtimeFor: (id) => harnessSessions.get(id),
+    directAdapter: () => {
+      const adapter = registry.getAdapter('websocket');
+      return adapter instanceof WebSocketAdapter ? adapter : undefined;
+    },
+    rootsFor: (workingDirectory) =>
+      downloadProtectionRoots({
+        home: REMI_DIR,
+        userHome: os.homedir(),
+        workingDirectory,
+        harness: harnessId,
+        claudeConfigDirectory: process.env['CLAUDE_CONFIG_DIR'],
+        codexHome: process.env['CODEX_HOME'],
+      }),
+    onReady: (id) => publishDownloadReadiness(id),
   });
 }
 
@@ -1812,6 +1857,7 @@ async function createNewSession(
   const runtime = securePushContexts.begin(sessionId);
   securePushRuntimes.set(sessionId, runtime);
   try {
+    fileDownloadSessionHost?.beginSession(sessionId, workingDirectory);
     const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
       {
         sessionRegistry,
@@ -1872,6 +1918,7 @@ async function createNewSession(
     });
     browserSessionHost?.bindSession(sessionId, session);
     harnessSessions.set(sessionId, session);
+    fileDownloadSessionHost?.bindSession(sessionId, session);
     const ptySession = session.pty;
 
     const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1908,6 +1955,7 @@ async function createNewSession(
     // daemon process itself exits.
     try {
       await session.start();
+      fileDownloadSessionHost?.started(sessionId);
     } catch (err) {
       try {
         sessionStore.markExited(sessionId, null);
@@ -1939,6 +1987,7 @@ async function createNewSession(
     browserSessionHost?.finishStartup(true);
     return ptySession;
   } catch (error) {
+    fileDownloadSessionHost?.retireSession(sessionId);
     browserSessionHost?.finishStartup(false);
     try {
       sessionStore.markExited(sessionId, null);
@@ -1955,6 +2004,8 @@ async function createNewSession(
       sessionNotifiers.delete(sessionId);
     }
     const errors: unknown[] = [error];
+    if (fileDownloadSessionHost && !(await fileDownloadSessionHost.failed(sessionId)))
+      errors.push(new Error('File download cleanup unavailable'));
     try {
       await browserSessionHost?.closeSession(sessionId);
     } catch (cleanupError) {
@@ -2435,6 +2486,70 @@ async function waitForBrowserStartup(id: UUID): Promise<boolean> {
   return browserSessionHost.waitForConnection(id, adapter, relayTrust);
 }
 
+/** Refresh only an already attached concrete signed TLS peer; never attach or replay. */
+function publishDownloadReadiness(sessionId: UUID): void {
+  const owner = fileDownloadSessionHost;
+  const context = owner?.contextFor(sessionId);
+  const session = sessionRegistry.getSession(sessionId);
+  const adapter = registry.getAdapter('websocket');
+  if (!owner || !context || !session || !(adapter instanceof WebSocketAdapter)) return;
+  for (const id of session.attachedConnections) {
+    try {
+      const connection = adapter.getDirectConnection(id);
+      const key = connection?.connectionClientPublicKey;
+      const fingerprint = connection?.connectionClientFingerprint;
+      const attachment = sessionRegistry.getAttachmentToken(id);
+      if (
+        !connection?.isConnected ||
+        connection.connectionListenerTransport !== 'public-tls' ||
+        connection.structuredChatProxyAuthority ||
+        !key ||
+        !fingerprint ||
+        !attachment
+      )
+        continue;
+      const grant = relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => epoch, true);
+      const current = currentOwnedSession();
+      const capabilities = capabilitiesForConnection(id);
+      if (!grant || current?.sessionId !== sessionId || !capabilities.includes('file_download'))
+        continue;
+      const message = createConnectionHello(
+        {
+          machine: machineDescriptor,
+          capabilities,
+          remiVersion: REMI_VERSION,
+          harnesses: () => harnessRegistry.available(),
+        },
+        id,
+        sessionId,
+        {
+          attachState: 'attached',
+          binding: { identity: current.identity, transcriptPath: current.transcriptPath },
+        },
+      );
+      relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => {
+        const identity = bindingStore.getIdentity(sessionId);
+        if (
+          epoch !== grant ||
+          adapter.getDirectConnection(id) !== connection ||
+          !connection.isConnected ||
+          connection.connectionClientPublicKey !== key ||
+          connection.connectionClientFingerprint !== fingerprint ||
+          sessionRegistry.getSessionForConnection(id) !== session ||
+          sessionRegistry.getAttachmentToken(id) !== attachment ||
+          owner.contextFor(sessionId) !== context ||
+          identity?.harness !== current.identity.harness ||
+          identity.harnessSessionId !== current.identity.harnessSessionId
+        )
+          return;
+        sendToConnection(id, message);
+      });
+    } catch {
+      // Best-effort metadata only; failure grants no capability and sends no stale snapshot.
+    }
+  }
+}
+
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   machine: machineDescriptor,
   beforeAttach: waitForBrowserStartup,
@@ -2459,6 +2574,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
   onConnectionClosed: (id) => {
+    fileDownloadSessionHost?.invalidateConnection(id);
     browserLinkService?.forgetConnection(id);
     structuredChatService?.forgetConnection(id);
     forgetConnectionToken(id);
@@ -2474,7 +2590,20 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
   send: sendToConnection,
 });
 
-const sharedEvents = {
+let sharedEvents = {
+  ...(fileDownloadSessionHost && {
+    onFileDownload: async (
+      id: UUID,
+      ingress: Exclude<
+        import('@remi/shared').FileDownloadIngressResult,
+        { kind: 'uncorrelatable' }
+      >,
+    ) => {
+      const service = fileDownloadSessionHost?.service;
+      if (ingress.kind === 'request') await service?.handle(id, ingress.request);
+      else service?.refuseMalformed(id, ingress.correlation);
+    },
+  }),
   ...(browserSessionHost && {
     onBrowserLinkReceiver: (
       id: UUID,
@@ -2755,6 +2884,11 @@ if (browserSessionHost) {
     producerContextFor: (id) => browserSessionHost?.contextFor(id) ?? null,
   });
 }
+if (fileDownloadSessionHost && !(await fileDownloadSessionHost.open(relayTrust))) {
+  const { onFileDownload: _unavailableFileDownload, ...ordinaryEvents } = sharedEvents;
+  sharedEvents = ordinaryEvents;
+  console.error('File downloads are unavailable on this host.');
+}
 const wsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
 registry.register(wsAdapter);
 
@@ -2887,6 +3021,7 @@ function cleanup(): Promise<void> {
   return cleanupTask;
 }
 async function performCleanup(): Promise<void> {
+  fileDownloadSessionHost?.cancelAll();
   browserSessionHost?.cancelAll();
   browserLinkService?.close();
   imageInsertionCoordinator?.close();
@@ -2975,6 +3110,10 @@ async function performCleanup(): Promise<void> {
     () => draining,
     () => sessionRegistry.shutdown(),
     () => browserSessionHost?.closeAll(),
+    async () => {
+      if (fileDownloadSessionHost && !(await fileDownloadSessionHost.closeAll()))
+        throw new Error('File download cleanup could not be confirmed.');
+    },
   ]) {
     try {
       await close();
