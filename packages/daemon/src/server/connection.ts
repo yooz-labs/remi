@@ -66,6 +66,14 @@ import {
   encodeBrowserLinkFrame,
 } from '@remi/shared';
 import { isBrowserLinkCandidate } from '@remi/shared';
+import {
+  type FileDownloadMessage,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchComplete,
+  type FileFetchRead,
+  encodeFileDownloadFrame,
+} from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
@@ -485,6 +493,28 @@ export class Connection {
       )
         return false;
       const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One bounded send attempt only; positive status is not client receipt or an OS Save. */
+  sendFileDownloadFrame(
+    message: Exclude<
+      FileDownloadMessage,
+      FileFetchBegin | FileFetchRead | FileFetchComplete | FileFetchCancel
+    >,
+  ): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeFileDownloadFrame(message));
       return typeof status === 'number' && status > 0;
     } catch {
       return false;

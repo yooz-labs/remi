@@ -818,3 +818,73 @@ reviewed WSS unit passed 155 tests on each runtime; all six source hashes were
 retained in the normal combined merge. Hosted checks, full rendered WSS client
 and native/device acceptance remain separate from those local results. Browser
 link/download handlers and callers remain unadvertised until their own gates.
+
+
+Historical preparation result sections preserved from 1b302801 follow. Their policy-status wording describes that snapshot; current accepted ADR0045 controls the 10 MiB and HTTPS/WSS decisions.
+
+## Admitted-source cursor preparation (#1170)
+
+The existing private-copy proof now shares its source cursor under
+`packages/daemon/src/tunnel/admitted-read.ts`, with a proof reexport at
+`scripts/tunnel-storage-proof/admitted-read.ts`. The source length+one read budget,
+32 KiB chunks, source digest, before/after metadata/current-name validation and
+later publication recheck are preserved. Destination creation, partial writes,
+independent private-byte validation, fsync, publication and cleanup/debt remain
+in their existing implementation. No transfer is selected into production by this
+preparation; the managed-journal caller still needs its own authority,
+yield/cancellation/recovery and held-answer controls.
+
+The original 43-group compiled matrix passed all six supported platform/Bun
+cells at unchanged current develop before extraction. The extracted candidate
+then passed those same 43 ordered group identities in all six cells, with direct
+cursor assertions inside the existing empty/nonempty/10 MiB group. Six isolated
+removed-guard variants failed their exact named compiled assertions on both Mac
+Bun gates (12/12); Linux mutation execution is unmeasured. Preserve the original
+receipts and exact final source hashes before landing. Review and hosted checks
+remain required. Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-admitted-read-core/`.
+
+The owner accepted the ADR0045 baseline in #1513 and the separate link contract
+in #1508. Larger download limits and HTTPS/WSS phasing are pending clarification.
+No fetch fields, models, capability,
+handler, native UI or relay transfer is added by this extraction. The extra
+private-publication factory remains unpublished because the existing journal
+already owns generic bytes.
+
+## Managed download copy preparation (#1170)
+
+The local prototype composes the existing admitted cursor, reservation ledger
+and managed journal writer/reader. It copies and independently verifies private
+bytes in yielded 32 KiB effects, closes the source before returning a guarded
+reader, and retires through the existing journal settlement. Source validation
+is repeated after private verification yields. Failed cleanup retains charged
+debt; a failed descriptor close is not retried by numeric descriptor.
+
+All six supported compiled platform/Bun cells passed the original 43 ordered
+groups and eight new preparation groups. The relocated cursor also passed all
+12 original named removed-guard controls on compiled Mac binaries. Current
+source limits remain 10 MiB; these measurements establish no larger transfer
+limit, network throughput, current-grant service or held-answer latency result.
+The first combined source run failed on a too-long macOS Unix socket path;
+the unchanged fixture passed using an owned short S1 temporary root. A fixture
+typing error and a missing source check after verification were corrected before
+the compiled matrix. Evidence is under
+`/Volumes/S1/yooz/remi/artifacts/2026-10-14-direct-tunnel-acceptance/`.
+
+Independent R1 found two publication/cleanup truth defects: the final private
+verification yield needed a bounded current-reader check, and confirmed
+settlement needed a local idempotent result after unrelated ledger faults.
+Both were reproduced against the original reviewed preparer and corrected in
+one batch. The fixed candidate passed all six compiled 51-group cells, both
+source gates, focused/root types, format and 14 named compiled Mac removed-guard
+controls. The final fix-only R2 found no Critical or Important defects. An
+earlier digest-removal control did not discriminate the hash guard because
+metadata checks caught its write; the replacement corrupts the private file
+after the final write and before reader capture, and fails on both Buns when
+the digest guard is removed. Preserve the failed oracle and original receipts.
+
+This remains a local prototype, with no advertised capability,
+download handler, web/native Save action or relay transfer. Independent review
+has completed for preparation; actual current-grant caller, further managed-copy
+failure and held-answer acceptance remain pending. The workspace-update gate
+subsequently passed its full suite and actual 61-minute measurement, landing in
+#1515 at `5efb5665`; its evidence remains separate from download preparation.
