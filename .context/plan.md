@@ -715,3 +715,17 @@ retired or replaced child sockets cannot notify. Background refresh failures
 are logged without payloads and retire the channel. No new polling or wire shape.
 The original head's full suite and actual R7 soak remain evidence for that head;
 the corrected relay source needs fix-delta review and fresh hosted validation.
+
+## Remaining named loopback fixtures (#1232)
+
+The named origin-policy and direct-answer fixture cases in #1232 now have a
+local continuation based on #1515's actual WebSocket port reporting.
+The origin fixture binds loopback port zero directly and uses the held port;
+the raw answer fixture binds the same loopback address its clients dial.
+Both new listener assertions fail against the original setup on both Mac Bun
+versions, while all 30 predecessor cases pass there.
+This is a narrow test setup correction: the broader fixed/random-port and
+wildcard-listener inventory remains open under #1232; no production origin or
+answer behavior changes.
+All 32 original and added cases pass on each Mac Bun runtime; root and web
+TypeScript checks pass. Independent R1 has no actionable source findings; hosted acceptance remains pending.
