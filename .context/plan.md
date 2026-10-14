@@ -612,8 +612,8 @@ the next step; native runs the shared corpus independently.
 The web caller reuses ImageUploadController, WebSocketClient and the existing connection manager.
 Successful staging exposes Add to draft only with the original authenticated direct Claude context and `image_insertion`.
 Strict response correlation keeps one pending request; explicit status retry preserves all original fields and never creates another possible effect.
-An inserted reference enables a separate Send, including image-only Send; its ordinary delivered input receipt confirms submission and releases the local draft status.
-Until that receipt, the original expiry remains visible and replacement is blocked.
+An inserted reference enables a separate Send, including image-only Send; its ordinary transport receipt is not proof of submission, and later correlated input errors still update the status.
+A possible reference retains its original expiry and blocks replacement until the person explicitly clears its status through the explained abandonment choice; clearing does not remove terminal text.
 Known session end and the single local expiry timer retire that affordance; there is no background polling, automatic Enter or terminal-draft edit.
 
 Source controls and actual rendered App checks exercise the caller, finite expiry and paused-daemon uncertainty.

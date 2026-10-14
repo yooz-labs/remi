@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle2, ImagePlus, LoaderCircle, X } from 'lucide-react';
-import { type ChangeEvent, useRef, useState } from 'react';
+import { type ChangeEvent, useEffect, useRef, useState } from 'react';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
@@ -9,7 +9,7 @@ export interface ImageDraftState {
     | 'available'
     | 'inserting'
     | 'inserted'
-    | 'submitted'
+    | 'send_requested'
     | 'submitting'
     | 'send_uncertain'
     | 'refused'
@@ -17,6 +17,7 @@ export interface ImageDraftState {
     | 'expired'
     | 'unavailable';
   readonly expiresAt: string;
+  readonly requiresAbandonment: boolean;
   readonly message: string;
   readonly action: 'insert' | 'check' | null;
 }
@@ -51,6 +52,7 @@ interface ImageUploadProps {
   readonly onCancel: () => void;
   readonly onDismiss: () => void;
   readonly onAddToDraft?: () => void;
+  readonly onAbandonDraft?: () => void;
 }
 
 const ACTIVE_PHASES = new Set(['preparing', 'uploading', 'checking', 'cancelling']);
@@ -73,14 +75,24 @@ export function ImageUpload({
   onCancel,
   onDismiss,
   onAddToDraft,
+  onAbandonDraft,
 }: ImageUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const active =
     isActive(state) ||
-    (state.phase === 'staged' &&
-      ['inserting', 'inserted', 'submitting'].includes(state.draft?.phase ?? ''));
+    (state.phase === 'staged' && ['inserting', 'submitting'].includes(state.draft?.phase ?? ''));
   const disabled = !enabled || active;
+  useEffect(() => {
+    if (
+      state.phase !== 'staged' ||
+      !state.draft?.requiresAbandonment ||
+      ['inserting', 'submitting'].includes(state.draft.phase)
+    ) {
+      setConfirmClear(false);
+    }
+  }, [state]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
@@ -240,24 +252,22 @@ export function ImageUpload({
                 <span className="mt-0.5 block break-words text-[var(--color-text-secondary)]">
                   {state.draft?.message ?? 'Image uploaded.'}
                 </span>
-                {state.draft &&
-                  state.draft.phase !== 'expired' &&
-                  state.draft.phase !== 'submitted' && (
-                    <span className="mt-0.5 block text-[var(--color-text-muted)]">
-                      Send before{' '}
-                      <time dateTime={state.draft.expiresAt}>
-                        {new Date(state.draft.expiresAt).toLocaleString(undefined, {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        })}
-                      </time>{' '}
-                      · before this session ends.
-                      {state.draft.phase === 'available' &&
-                        ' Add to draft first, then Send when ready.'}
-                    </span>
-                  )}
+                {state.draft && state.draft.phase !== 'expired' && (
+                  <span className="mt-0.5 block text-[var(--color-text-muted)]">
+                    Send before{' '}
+                    <time dateTime={state.draft.expiresAt}>
+                      {new Date(state.draft.expiresAt).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </time>{' '}
+                    · before this session ends.
+                    {state.draft.phase === 'available' &&
+                      ' Add to draft first, then Send when ready.'}
+                  </span>
+                )}
               </span>
             </output>
             <div className="flex w-full flex-wrap items-center gap-2 pl-6 sm:w-auto sm:pl-0">
@@ -275,7 +285,10 @@ export function ImageUpload({
                 type="button"
                 disabled={active}
                 aria-label="Dismiss image upload status"
-                onClick={onDismiss}
+                onClick={() => {
+                  if (state.draft?.requiresAbandonment) setConfirmClear(true);
+                  else onDismiss();
+                }}
                 className="min-h-11 rounded-md p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] disabled:opacity-50"
               >
                 <X aria-hidden="true" className="size-4" />
@@ -311,6 +324,42 @@ export function ImageUpload({
           </div>
         )}
       </div>
+
+      {confirmClear && state.phase === 'staged' && state.draft?.requiresAbandonment && (
+        <fieldset
+          className="mt-3 min-w-0 rounded-lg border border-[var(--color-border)] p-3 text-xs"
+          aria-label="Clear image status"
+        >
+          <p className="text-[var(--color-text-secondary)]">
+            Clearing this status does not remove any image reference from the terminal draft. Its
+            file expires at{' '}
+            <time dateTime={state.draft.expiresAt}>
+              {new Date(state.draft.expiresAt).toLocaleString()}
+            </time>
+            . Check the session and remove any unsent reference before uploading again.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmClear(false)}
+              className="min-h-11 rounded-lg border border-[var(--color-border)] px-3 font-semibold text-[var(--color-text)]"
+            >
+              Keep status
+            </button>
+            <button
+              type="button"
+              disabled={!onAbandonDraft}
+              onClick={() => {
+                setConfirmClear(false);
+                onAbandonDraft?.();
+              }}
+              className="min-h-11 rounded-lg px-3 font-semibold text-[var(--color-text-secondary)]"
+            >
+              Clear status
+            </button>
+          </div>
+        </fieldset>
+      )}
 
       {state.phase === 'idle' && !enabled && (
         <p className="mt-1 pl-6 text-[11px] text-[var(--color-text-muted)]">

@@ -17,6 +17,7 @@ interface Draft {
   state: ImageDraftState;
   request: ImageInsertRequest | null;
   sendId: string | null;
+  hasPossibleReference: boolean;
 }
 
 /** One staged image's explicit draft action; never submits a turn or extends retention. */
@@ -34,16 +35,15 @@ export class ImageDraftController {
   }
 
   get canReplace(): boolean {
-    return (
-      !this.draft ||
-      !['inserting', 'inserted', 'uncertain', 'submitting', 'send_uncertain'].includes(
-        this.draft.state.phase,
-      )
-    );
+    return !this.draft?.hasPossibleReference && this.draft?.state.phase !== 'inserting';
   }
 
   get canDismiss(): boolean {
-    return !this.draft || !['inserting', 'inserted', 'submitting'].includes(this.draft.state.phase);
+    return this.canReplace;
+  }
+
+  get canAbandon(): boolean {
+    return this.draft?.state.phase !== 'inserting' && this.draft?.state.phase !== 'submitting';
   }
 
   stage(filename: string, artifactId: string, expiresAt: string): ImageDraftState | undefined {
@@ -63,11 +63,13 @@ export class ImageDraftController {
       state: {
         phase: 'available',
         expiresAt,
+        requiresAbandonment: false,
         message: 'Ready to add to your draft.',
         action: 'insert',
       },
       request: null,
       sendId: null,
+      hasPossibleReference: false,
     };
     const delay = Date.parse(expiresAt) - Date.now();
     if (delay <= 0) this.expire();
@@ -90,6 +92,7 @@ export class ImageDraftController {
       };
     }
     if (!draft.request) return;
+    draft.hasPossibleReference = true;
     this.clearReplyTimer();
     this.publish(draft, { phase: 'inserting', message: 'Adding image to draft…', action: null });
     this.replyTimer = setTimeout(() => {
@@ -120,7 +123,7 @@ export class ImageDraftController {
     const draft = this.draft;
     if (
       !draft?.request ||
-      ['submitted', 'submitting', 'send_uncertain'].includes(draft.state.phase) ||
+      ['send_requested', 'submitting', 'send_uncertain'].includes(draft.state.phase) ||
       result.requestId !== draft.request.id ||
       result.sessionId !== draft.context.sessionId ||
       !this.ensureCurrent(draft)
@@ -139,13 +142,18 @@ export class ImageDraftController {
     } else if (result.code === 'expired') {
       this.expire();
     } else {
+      // These exact refusals precede any possible write. Other authority/refusal results
+      // can hide a retired effect, so retain its deadline until the person explicitly clears it.
+      if (result.code === 'prompt_up' || result.code === 'malformed')
+        draft.hasPossibleReference = false;
       const messages = {
         busy: 'The host is busy. Try Add to draft again in a moment.',
         prompt_up: 'Answer the current question before adding this image.',
         conflict:
           'This image may already be in the draft. Check the session before uploading again.',
-        unavailable: 'This image can no longer be added from this connection. Upload it again.',
-        binding_changed: 'The session changed. Upload this image again.',
+        unavailable:
+          'This request is no longer available. Check the session before uploading again.',
+        binding_changed: 'The session changed. Check its draft before uploading this image again.',
         malformed: 'The host could not accept this draft request. Upload the image again.',
       };
       this.publish(draft, {
@@ -169,7 +177,7 @@ export class ImageDraftController {
       });
       return;
     }
-    if (draft.state.phase === 'submitted' || draft.state.phase === 'expired') return;
+    if (draft.state.phase === 'send_requested' || draft.state.phase === 'expired') return;
     this.publish(draft, {
       phase: draft.request ? 'uncertain' : 'unavailable',
       message: draft.request
@@ -194,7 +202,11 @@ export class ImageDraftController {
 
   receiveInputReceipt(message: ProtocolMessage): void {
     const draft = this.draft;
-    if (!draft?.sendId || !['submitting', 'send_uncertain'].includes(draft.state.phase)) return;
+    if (
+      !draft?.sendId ||
+      !['submitting', 'send_requested', 'send_uncertain'].includes(draft.state.phase)
+    )
+      return;
     const accepted =
       message.type === 'ack' &&
       message.ack.messageId === draft.sendId &&
@@ -202,13 +214,14 @@ export class ImageDraftController {
     const refused = message.type === 'error' && message.details?.['messageId'] === draft.sendId;
     if ((!accepted && !refused) || !this.ensureCurrent(draft)) return;
     this.clearReplyTimer();
-    if (accepted)
-      this.publish(draft, {
-        phase: 'submitted',
-        message: 'Image draft submitted. Check the session for its response.',
-        action: null,
-      });
-    else this.sendUncertain(draft);
+    if (accepted) {
+      if (draft.state.phase !== 'send_uncertain')
+        this.publish(draft, {
+          phase: 'send_requested',
+          message: 'Send request received. Check the session for submission.',
+          action: null,
+        });
+    } else this.sendUncertain(draft);
   }
 
   private sendUncertain(draft: Draft): void {
@@ -279,8 +292,15 @@ export class ImageDraftController {
     });
   }
 
-  private publish(draft: Draft, state: Omit<ImageDraftState, 'expiresAt'>): void {
-    draft.state = { ...state, expiresAt: draft.expiresAt };
+  private publish(
+    draft: Draft,
+    state: Omit<ImageDraftState, 'expiresAt' | 'requiresAbandonment'>,
+  ): void {
+    draft.state = {
+      ...state,
+      expiresAt: draft.expiresAt,
+      requiresAbandonment: draft.hasPossibleReference,
+    };
     this.onState({ phase: 'staged', filename: draft.filename, draft: draft.state });
   }
 

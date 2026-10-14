@@ -3425,6 +3425,7 @@ function App() {
         },
         onDismiss: () => dismissImageUpload(activeSession.connectionId, activeSession.id),
         onAddToDraft: () => addImageToDraft(activeSession.connectionId, activeSession.id),
+        onAbandonDraft: () => dismissImageUpload(activeSession.connectionId, activeSession.id, true),
       }}
     />
   ) : (

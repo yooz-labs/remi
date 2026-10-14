@@ -845,8 +845,8 @@ The existing web upload panel now offers **Add to draft** after successful stagi
 The host writes one generated retained reference without Enter.
 The panel shows the unchanged **Send before** deadline and session-end limit.
 The existing Send action submits separately, including an image-only turn; its input receipt remains distinct from the image insertion result.
-An unconfirmed Send retains the deadline, and the existing message retry keeps its original input ID.
-Uploading a replacement is blocked while a known unsent reference is still tracked.
+A transport ACK confirms receipt, never submission; a later correlated input refusal remains visible, and the existing message retry keeps its original input ID.
+A possible reference retains the original deadline and blocks replacement. Clearing its status requires a separately explained explicit choice and never removes text from the terminal draft.
 
 A delayed insertion response shows uncertainty; the person can explicitly check status with the exact original insertion request.
 No timer, reconnect or new request ID automatically reinserts the image.

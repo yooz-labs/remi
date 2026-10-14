@@ -243,7 +243,7 @@ export interface UseConnectionManagerReturn {
   cancelImageUpload: (connectionId: ConnectionId, sessionId: UUID) => Promise<void>;
   takeImageDraftForSend: (connectionId: ConnectionId, sessionId: UUID, messageId: UUID) => boolean;
   addImageToDraft: (connectionId: ConnectionId, sessionId: UUID) => void;
-  dismissImageUpload: (connectionId: ConnectionId, sessionId: UUID) => void;
+  dismissImageUpload: (connectionId: ConnectionId, sessionId: UUID, abandonDraft?: boolean) => void;
   /** Whether any connection needs a passphrase */
   needsPassphrase: boolean;
   /** The connectionId that needs a passphrase (if any) */
@@ -1484,7 +1484,7 @@ export function useConnectionManager(
   );
 
   const dismissImageUpload = useCallback(
-    (connectionId: ConnectionId, sessionId: UUID): void => {
+    (connectionId: ConnectionId, sessionId: UUID, abandonDraft = false): void => {
       const mc = getMc(connectionId);
       if (
         !mc ||
@@ -1493,7 +1493,7 @@ export function useConnectionManager(
       ) {
         return;
       }
-      mc.imageUploadController?.dismiss();
+      mc.imageUploadController?.dismiss(abandonDraft);
     },
     [getMc],
   );

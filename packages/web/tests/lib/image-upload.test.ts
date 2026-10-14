@@ -1340,6 +1340,10 @@ describe('explicit image draft client over real WebSocket', () => {
     expect(f.lastDraft()?.phase).toBe('inserting');
     await waitFor(() => f.lastDraft()?.phase === 'uncertain', 16_000);
     expect(f.lastDraft()?.action).toBe('check');
+    const beforeDismiss = f.states.at(-1);
+    f.controller.dismiss();
+    expect(f.states.at(-1)).toBe(beforeDismiss);
+    expect(f.controller.canUpload).toBe(false);
     expect(f.requests).toHaveLength(1);
     f.controller.addToDraft();
     await waitFor(() => f.requests.length === 2);
@@ -1429,7 +1433,7 @@ describe('explicit image draft client over real WebSocket', () => {
         ack: { messageId: sendId, state: 'delivered', timestamp: new Date().toISOString() },
       }),
     );
-    await waitFor(() => f.lastDraft()?.phase === 'submitted');
+    await waitFor(() => f.lastDraft()?.phase === 'send_requested');
     expect(f.controller.takeImageDraftForSend(crypto.randomUUID())).toBe(false);
     expect(f.otherRequests.map((request) => request.type)).toEqual([
       'image_upload_begin',
@@ -1438,7 +1442,7 @@ describe('explicit image draft client over real WebSocket', () => {
     ]);
   });
 
-  test('send timeout retains its deadline and only its delivered receipt releases the draft', async () => {
+  test('send timeout and transport receipts preserve possible-reference metadata', async () => {
     const f = await insertionFixture();
     f.controller.addToDraft();
     await waitFor(() => f.requests.length === 1);
@@ -1464,10 +1468,61 @@ describe('explicit image draft client over real WebSocket', () => {
     expect(f.lastDraft()?.expiresAt).toBe(expiry);
     expect(f.controller.canUpload).toBe(false);
     f.raw(ack(sendId));
-    await waitFor(() => f.lastDraft()?.phase === 'submitted');
+    await wait(20);
+    expect(f.lastDraft()?.phase).toBe('send_uncertain');
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss(true);
+    expect(f.states.at(-1)).toEqual({ phase: 'idle' });
     expect(f.controller.canUpload).toBe(true);
     expect(f.requests).toHaveLength(1);
   }, 20_000);
+
+  test('input receipt alone never means submitted; a later actual refusal keeps the deadline', async () => {
+    const f = await insertionFixture();
+    f.controller.addToDraft();
+    await waitFor(() => f.requests.length === 1);
+    f.send(f.result({ outcome: 'inserted', code: 'none' }));
+    await waitFor(() => f.lastDraft()?.phase === 'inserted');
+    const expiry = f.lastDraft()?.expiresAt;
+    const sendId = crypto.randomUUID();
+    expect(f.controller.takeImageDraftForSend(sendId)).toBe(true);
+    f.raw(
+      JSON.stringify({
+        type: 'ack',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        ack: { messageId: sendId, state: 'delivered', timestamp: new Date().toISOString() },
+      }),
+    );
+    await waitFor(() => f.lastDraft()?.phase !== 'submitting');
+    expect(f.lastDraft()?.phase).toBe('send_requested');
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    expect(f.lastDraft()?.requiresAbandonment).toBe(true);
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.phase).toBe('send_requested');
+    f.raw(
+      JSON.stringify({
+        type: 'error',
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        code: 'PROMPT_WAITING',
+        message: 'held test question',
+        details: { sessionId: SESSION_ID, messageId: sendId },
+      }),
+    );
+    await waitFor(() => f.lastDraft()?.phase === 'send_uncertain');
+    expect(f.lastDraft()?.expiresAt).toBe(expiry);
+    f.controller.dismiss();
+    expect(f.lastDraft()?.phase).toBe('send_uncertain');
+    expect(f.controller.canUpload).toBe(false);
+    f.controller.dismiss(true);
+    expect(f.states.at(-1)).toEqual({ phase: 'idle' });
+    expect(f.controller.canUpload).toBe(true);
+  });
 
   test('known session end expires the reference and dismiss cancels the local timer', async () => {
     const f = await insertionFixture({ expiryMs: 120 });
@@ -1475,7 +1530,7 @@ describe('explicit image draft client over real WebSocket', () => {
     expect(f.lastDraft()?.phase).toBe('available');
     f.controller.endSession(SESSION_ID);
     expect(f.lastDraft()?.phase).toBe('expired');
-    f.controller.dismiss();
+    f.controller.dismiss(true);
     const count = f.states.length;
     await wait(150);
     expect(f.states).toHaveLength(count);

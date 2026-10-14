@@ -74,6 +74,7 @@ interface ChatViewProps {
     readonly onCancel: () => void;
     readonly onDismiss: () => void;
     readonly onAddToDraft?: () => void;
+    readonly onAbandonDraft?: () => void;
   };
   readonly className?: string;
 }
@@ -213,7 +214,7 @@ export function ChatView({
           real daemon session), so there is no input to route (#499 phase 3). */}
       {!session.isSubagent && (
         <>
-          {imageUpload && <ImageUpload {...imageUpload} />}
+          {imageUpload && <ImageUpload key={`${session.connectionId}:${session.id}`} {...imageUpload} />}
           <InputArea
             onSend={onSend}
             hasImageDraft={

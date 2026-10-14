@@ -262,8 +262,9 @@ export class ImageUploadController {
   }
 
   /** Dismiss a terminal status without changing any server-side staged state. */
-  dismiss(): void {
-    if (this.disposed || this.active || !this.draft.canDismiss) return;
+  dismiss(abandonDraft = false): void {
+    if (this.disposed || this.active) return;
+    if (!this.draft.canDismiss && (!abandonDraft || !this.draft.canAbandon)) return;
     this.draft.clear();
     this.onState({ phase: 'idle' });
   }
