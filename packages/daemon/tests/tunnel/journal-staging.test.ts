@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
 import { journalStagingProbe } from '../../../../scripts/tunnel-storage-proof/journal-staging-cases';
 
+// Aggregate harness budget for 35 filesystem groups and 14 sequential child/reap controls.
+// The helper's own checkpoint, exit and cleanup deadlines/assertions remain unchanged.
 test('journal staging constructs actual closed readers and retains filesystem accounting', async () => {
   const receipt = await journalStagingProbe();
   expect(receipt.checks).toHaveLength(35);
@@ -11,4 +13,4 @@ test('journal staging constructs actual closed readers and retains filesystem ac
     expect(child.missingAfterExit).toBe(true);
     expect(child.signal).toBe('SIGKILL');
   }
-});
+}, 30_000);
