@@ -132,6 +132,7 @@ import {
   now,
 } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
+import type { WebSocketAdapterConfig } from './adapters/websocket-adapter.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
@@ -212,6 +213,7 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
+import { loadDaemonTls } from './config/daemon-tls.ts';
 import {
   CONFIG_PATH,
   DEFAULT_CONFIG,
@@ -1060,6 +1062,15 @@ if (!remiConfig.features.transcript_binder_enabled) {
   );
 }
 
+let daemonTls: ReturnType<typeof loadDaemonTls>;
+try {
+  daemonTls = loadDaemonTls(remiConfig.daemon.tls, CONFIG_PATH);
+} catch {
+  console.error('TLS_CONFIG_INVALID: cannot load configured TLS files.');
+  process.exit(1);
+}
+const publicWsScheme = daemonTls ? 'wss' : 'ws';
+
 // ---------------------------------------------------------------------------
 // Config (merge: CLI flags > env vars > config file > built-in defaults)
 // ---------------------------------------------------------------------------
@@ -1730,6 +1741,7 @@ async function startMdnsIfNeeded(
   // install takes -- so the daemon silently stopped being discoverable and
   // nothing in its own output said why.
   const suppression = mdnsSuppression({
+    tlsConfigured: daemonTls !== undefined,
     cliNoMdns,
     configMdns: remiConfig.network.mdns,
     isLocalhostBind,
@@ -2499,9 +2511,17 @@ let localCapabilityToken = '';
 try {
   localCapabilityToken = loadOrCreateCapabilityToken(undefined, logError);
 } catch (err) {
+  if (daemonTls) {
+    console.error('TLS_LOCAL_CONTROL_UNAVAILABLE: cannot initialize local control.');
+    process.exit(1);
+  }
   logError(
     `[capability] could not create the local capability token: ${errorToString(err)}. Local clients will be challenged instead.`,
   );
+}
+if (daemonTls && !localCapabilityToken) {
+  console.error('TLS_LOCAL_CONTROL_UNAVAILABLE: cannot initialize local control.');
+  process.exit(1);
 }
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
@@ -2648,17 +2668,16 @@ if (authEnabled) {
 // ---------------------------------------------------------------------------
 // Create and register adapters
 // ---------------------------------------------------------------------------
-const wsAdapter = new WebSocketAdapter(
-  {
-    port: PORT,
-    host: bindHost,
-    authenticator,
-    allowedOrigins: remiConfig.daemon.allowed_origins,
-    capabilityToken: localCapabilityToken,
-    ...(localRelayControl && { relayControl: localRelayControl }),
-  },
-  sharedEvents,
-);
+const websocketConfigFor = (port: number): Partial<WebSocketAdapterConfig> => ({
+  port,
+  host: bindHost,
+  authenticator,
+  allowedOrigins: remiConfig.daemon.allowed_origins,
+  capabilityToken: localCapabilityToken,
+  ...(localRelayControl && { relayControl: localRelayControl }),
+  ...(daemonTls && { tls: daemonTls, localControl: { home: REMI_DIR } }),
+});
+const wsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
 registry.register(wsAdapter);
 
 // Only an authenticated Claude host owns the direct staging lifecycle (#1170).
@@ -2773,6 +2792,16 @@ if (relayWanted && relayIdentity) {
 // ---------------------------------------------------------------------------
 // Cleanup helper
 // ---------------------------------------------------------------------------
+async function fatalTlsStartup(): Promise<never> {
+  logError('TLS_START_FAILED: cannot start the configured secure listener.');
+  try {
+    await cleanup();
+  } catch {
+    logError('TLS_CLEANUP_FAILED: local state cleanup needs attention.');
+  }
+  process.exit(1);
+}
+
 let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
@@ -2961,17 +2990,7 @@ if (cliDaemonMode) {
       await registry.unregister('websocket');
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
-      const newWsAdapter = new WebSocketAdapter(
-        {
-          port: PORT,
-          host: bindHost,
-          authenticator,
-          allowedOrigins: remiConfig.daemon.allowed_origins,
-          capabilityToken: localCapabilityToken,
-          ...(localRelayControl && { relayControl: localRelayControl }),
-        },
-        sharedEvents,
-      );
+      const newWsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
       registry.register(newWsAdapter);
     }
   }
@@ -2979,6 +2998,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAdapter('websocket');
   } catch (err) {
+    if (daemonTls) await fatalTlsStartup();
     const msg = errorToString(err);
     console.error(`Failed to start WebSocket on port ${PORT}: ${msg}`);
     console.error('Use --port to specify a different port, or stop existing sessions.');
@@ -3113,7 +3133,7 @@ if (cliDaemonMode) {
 
     console.log('');
     console.log('Remi hub ready!');
-    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  WebSocket: ${publicWsScheme}://${bindHost}:${PORT}/ws`);
     console.log(`  Port: ${PORT} (use --port to change)`);
     console.log('  Sessions: create from the app or `remi new`');
     if (mdnsPublisher?.isRunning) {
@@ -3215,7 +3235,7 @@ if (cliDaemonMode) {
 
     console.log('');
     console.log('Remi daemon ready!');
-    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  WebSocket: ${publicWsScheme}://${bindHost}:${PORT}/ws`);
     console.log(`  Port: ${PORT} (use --port to change)`);
     console.log(`  Session: ${managedSession?.name ?? sessionId}`);
     console.log(`  Directory: ${workingDirectory}`);
@@ -3326,23 +3346,14 @@ if (cliDaemonMode) {
       }
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
-      const newWsAdapter = new WebSocketAdapter(
-        {
-          port: PORT,
-          host: bindHost,
-          authenticator,
-          allowedOrigins: remiConfig.daemon.allowed_origins,
-          capabilityToken: localCapabilityToken,
-          ...(localRelayControl && { relayControl: localRelayControl }),
-        },
-        sharedEvents,
-      );
+      const newWsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
       registry.register(newWsAdapter);
       // Attribute the reassignment log to the port this wrapper will actually
       // serve, not the occupied tentative port another session owns.
       setLogFileContext({ port: PORT, sessionId });
       log(`Port ${occupiedPort} in use, using ${PORT}`);
     } else if (probed === null) {
+      if (daemonTls) await fatalTlsStartup();
       logError('All ports in range are in use. Remote monitoring disabled.');
       wsProbeSucceeded = false;
     }
@@ -3356,10 +3367,11 @@ if (cliDaemonMode) {
   if (wsProbeSucceeded) {
     try {
       await registry.startAdapter('websocket');
-      log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
+      log(`WebSocket server listening on ${publicWsScheme}://${bindHost}:${PORT}/ws`);
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;
     } catch (err) {
+      if (daemonTls) await fatalTlsStartup();
       const msg = errorToString(err);
       logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }

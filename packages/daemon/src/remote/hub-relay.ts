@@ -667,6 +667,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         peer.listDirty = true;
         this.refreshSessionList(peer);
       },
+      this.cfg.dir,
     );
     peer.connection = new Connection(
       {

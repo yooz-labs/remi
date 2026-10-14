@@ -336,6 +336,15 @@ describe('pairFlow (#1275)', () => {
 });
 
 describe('pairingHosts and pairPreconditions (#1275)', () => {
+  test('a same-PID TLS hint refuses legacy direct pairing before selecting an address', () => {
+    const result = pairPreconditions(
+      { port: 18765, bind: '0.0.0.0', auth: true, directTls: true },
+      undefined,
+      {},
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('Direct QR pairing is unavailable');
+  });
   const interfaces = {
     lo0: [{ address: '127.0.0.1', family: 'IPv4', internal: true }],
     bridge100: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],

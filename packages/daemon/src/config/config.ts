@@ -14,8 +14,15 @@ import { remiHome } from './remi-home.ts';
 const REMI_DIR = remiHome();
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
 
+/** Operator-provided TLS file paths. Certificate rotation requires a restart. */
+export interface DaemonTlsConfig {
+  readonly certificate_file: string;
+  readonly private_key_file: string;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
+  readonly tls: DaemonTlsConfig | null;
   readonly base_port: number;
   readonly port_range: number;
   readonly bind: string;
@@ -203,6 +210,7 @@ export interface RemiConfig {
 export const DEFAULT_CONFIG: RemiConfig = {
   harness: { default: 'claude' },
   daemon: {
+    tls: null,
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
     // #880/#873: remote binding remains opt-in; auth defaults on for every bind.
@@ -377,8 +385,21 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
   }
 
   try {
-    const parsed = parseToml(raw) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseToml(raw) as Record<string, unknown>;
+    } catch {
+      // A syntax error can quote pasted private material, including a malformed TLS path.
+      throw new Error('TOML_PARSE_FAILED: unable to parse configuration');
+    }
     validateHarnessTable(parsed['harness'], configPath);
+    const daemon = parsed['daemon'];
+    if (daemon !== undefined) {
+      if (typeof daemon !== 'object' || daemon === null || Array.isArray(daemon)) {
+        throw new Error('TLS_CONFIG_INVALID: daemon must be a table');
+      }
+      if ('tls' in daemon) assertDaemonTlsConfig((daemon as Record<string, unknown>)['tls']);
+    }
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     const legacy = legacyAutoApprove(parsed);
     const config = legacy.subagentAlert
@@ -477,6 +498,7 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
  * would then substring-match origins against it, which is not what anyone meant.
  */
 function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  assertDaemonTlsConfig(cfg.tls);
   const v: unknown = cfg.allowed_origins;
   if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
     throw new Error(
@@ -581,11 +603,45 @@ function validateTerminal(cfg: TerminalConfig, configPath: string): void {
   }
 }
 
+/** Validate the complete TLS table before merging can discard unknown fields. */
+export function assertDaemonTlsConfig(value: unknown): asserts value is DaemonTlsConfig | null {
+  if (value === null) return;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      'TLS_CONFIG_INVALID: daemon.tls requires certificate_file and private_key_file',
+    );
+  }
+  const table = value as Record<string, unknown>;
+  const prototype = Object.getPrototypeOf(table);
+  if (
+    (prototype !== Object.prototype && prototype !== null) ||
+    Object.keys(table).length !== 2 ||
+    Object.keys(table).some((key) => key !== 'certificate_file' && key !== 'private_key_file')
+  ) {
+    throw new Error(
+      'TLS_CONFIG_INVALID: daemon.tls requires exactly certificate_file and private_key_file',
+    );
+  }
+  for (const key of ['certificate_file', 'private_key_file']) {
+    const path = table[key];
+    if (
+      typeof path !== 'string' ||
+      path.trim().length === 0 ||
+      /[\u0000-\u001f\u007f-\u009f]/.test(path)
+    ) {
+      throw new Error(
+        'TLS_CONFIG_INVALID: certificate_file and private_key_file must be nonempty paths without controls',
+      );
+    }
+  }
+}
+
 /**
  * Apply environment variable overrides to a config.
  * Env vars take precedence over config file values.
  */
 export function applyEnvOverrides(config: RemiConfig): RemiConfig {
+  assertDaemonTlsConfig(config.daemon.tls);
   validateAuth(config.auth, CONFIG_PATH);
   const env = process.env;
 
@@ -699,6 +755,13 @@ persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions al
 #   allowed_origins = ["https://remi.example.com"]
 allowed_origins = []
 
+# Optional public HTTPS/WSS. Remove this whole table to disable TLS.
+# Paths are absolute or relative to this config file; no tilde expansion.
+# Certificate/key changes require restarting remi. Secure app/QR discovery is pending.
+# [daemon.tls]
+# certificate_file = "certificates/server.pem"
+# private_key_file = "certificates/server.key"
+
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
 # Opt-in authenticated hub relay (#1198); client/deployed acceptance pending.
@@ -802,6 +865,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
   lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
+  lines.push(
+    `  tls = ${config.daemon.tls === null ? 'disabled' : 'configured (restart required)'}`,
+  );
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
