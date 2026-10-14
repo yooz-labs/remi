@@ -52,6 +52,14 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
     let droppedEnded = 0;
     let currentSessionId = '';
     let terminalSeen = false;
+    let actualHello: string | undefined;
+    let observedKillResponses = 0;
+    let imageRequests = 0;
+    const ownKillRequests: string[] = [];
+    const deferredKills: string[] = [];
+    const actualKillResponses: { requestId: string; success: boolean }[] = [];
+    let repeatActualHello: (() => void) | undefined;
+    let repeatActualFailure: (() => void) | undefined;
     const receiverSeqs: number[] = [];
     let sendBackend: ((raw: string) => void) | undefined;
     let sendWithheld: (() => void) | undefined;
@@ -145,6 +153,14 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
                 const frame = JSON.parse(raw);
                 if (frame.type === 'hello_ack' && frame.sessionId)
                   currentSessionId = frame.sessionId;
+                if (frame.type === 'hello_ack' && frame.sessionId) {
+                  actualHello = raw;
+                  repeatActualHello = () => front.send(raw);
+                }
+                if (frame.type === 'kill_session_response') {
+                  actualKillResponses.push(frame);
+                  if (!frame.success) repeatActualFailure = () => front.send(raw);
+                }
                 if (frame.type === 'error' && frame.code === 'SESSION_ENDED') terminalSeen = true;
                 if (lifecycle && frame.type === 'browser_link_receiver_ended') {
                   droppedEnded++;
@@ -172,6 +188,17 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
             message(front, raw) {
               const text = typeof raw === 'string' ? raw : raw.toString();
               const frame = JSON.parse(text);
+              if (frame.type.startsWith('image_')) imageRequests++;
+              if (frame.type === 'kill_session_request') {
+                ownKillRequests.push(frame.id);
+                if (lifecycle === 'own-end-saturation') {
+                  deferredKills.push(text);
+                  return;
+                }
+                // A real, previously emitted hello refreshes the local marker before the
+                // actual same-session stop result. No business response is fabricated.
+                if (lifecycle === 'own-end-refresh' && actualHello) front.send(actualHello);
+              }
               // Component-wire profile withholds auxiliary UI queries; it supplies no fake replies.
               if (
                 component &&
@@ -263,6 +290,8 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
           try {
             if (JSON.parse(String(event.payload)).type === 'browser_link_candidate')
               receivedCandidates++;
+            if (JSON.parse(String(event.payload)).type === 'kill_session_response')
+              observedKillResponses++;
           } catch {
             /* Observer ignores non-JSON transport frames. */
           }
@@ -297,14 +326,12 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
           component.adapter.sendRaw(
             componentCid,
             createSessionListResponse(
-              component.registry
-                .listSessions()
-                .map((row) => ({
-                  ...row,
-                  harness: 'claude',
-                  harnessSessionId: bound?.harnessSessionId ?? undefined,
-                  claudeSessionId: bound?.harnessSessionId ?? undefined,
-                })),
+              component.registry.listSessions().map((row) => ({
+                ...row,
+                harness: 'claude',
+                harnessSessionId: bound?.harnessSessionId ?? undefined,
+                claudeSessionId: bound?.harnessSessionId ?? undefined,
+              })),
               crypto.randomUUID(),
             ),
           );
@@ -483,6 +510,39 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
         await background.close();
       }
       if (lifecycle) {
+        if (lifecycle === 'other-failure') {
+          // Actual shipping daemon refuses a real request for an unknown session.
+          // Replay that original failed frame after a same-session hello refresh.
+          sendBackend?.(serialize(createKillSessionRequest(crypto.randomUUID())));
+          await until(() => observedKillResponses > 0, 'actual unknown-session stop refusal');
+          expect(actualKillResponses.at(-1)?.success).toBe(false);
+          expect(await destination.count()).toBe(1);
+          expect(await receive.isEnabled()).toBe(true);
+          repeatActualHello?.();
+          await until(() => receivedCandidates > 0, 'original actual candidate observed');
+          await page.waitForTimeout(100);
+          expect(await destination.count()).toBe(0);
+          expect(await receive.isEnabled()).toBe(true);
+          await receive.click();
+          await page.getByText('Receiving browser links here.', { exact: false }).waitFor();
+          const launcher = fs.readFileSync(join(f.directory, 'browser-path'), 'utf8');
+          const fresh = Bun.spawn([launcher, exact], {
+            env: f.env,
+            stdout: 'ignore',
+            stderr: 'ignore',
+          });
+          expect(await fresh.exited).toBe(0);
+          await destination.waitFor();
+          const observed = observedKillResponses;
+          repeatActualFailure?.();
+          await until(() => observedKillResponses > observed, 'actual stale failed stop frame');
+          await page.waitForTimeout(100);
+          expect(await destination.count()).toBe(1);
+          expect(await receive.isEnabled()).toBe(true);
+          expect(receiverSeqs).toEqual([1, 2]);
+          expect(navigation).toHaveLength(1);
+          return;
+        }
         if (component) {
           component.registry.closeSession(component.sessionId, 'forced');
           await until(
@@ -498,6 +558,36 @@ const expiry = process.env['REMI_BROWSER_EXPIRY_TEST'] === '1';
         } else if (lifecycle === 'detach') {
           await page.getByRole('button', { name: 'Detach session', exact: true }).first().click();
           await page.getByText('work', { exact: true }).first().click();
+        } else if (lifecycle.startsWith('own-end')) {
+          page.on('dialog', (dialog) => dialog.accept());
+          const count = lifecycle === 'own-end-saturation' ? 9 : 1;
+          for (let i = 0; i < count; i++) {
+            await page.getByRole('button', { name: 'More options', exact: true }).first().click();
+            await page.getByRole('button', { name: 'Exit session', exact: true }).last().click();
+          }
+          if (lifecycle === 'own-end-saturation') {
+            await until(
+              () => ownKillRequests.length === 9,
+              'nine actual duplicate-session stop sends',
+            );
+            expect(actualKillResponses).toHaveLength(0);
+            expect(await destination.count()).toBe(0);
+            expect(await receive.isEnabled()).toBe(false);
+            repeatActualHello?.();
+            await page.waitForTimeout(100);
+            expect(await receive.isEnabled()).toBe(false);
+            for (const raw of deferredKills) sendBackend?.(raw);
+          }
+          await until(
+            () => actualKillResponses.some((frame) => frame.success),
+            'actual own End success',
+          );
+          await until(() => observedKillResponses > 0, 'own End response observed by actual App');
+          expect(ownKillRequests).toHaveLength(count);
+          expect(new Set(ownKillRequests).size).toBe(count);
+          expect(imageRequests).toBe(0);
+          expect(terminalSeen).toBe(false);
+          await page.waitForTimeout(100);
         } else {
           const own = await unlockIdentity(identity);
           const query = new WebSocket(`wss://127.0.0.1:${port}/ws`, { tls: { ca: f.ca } } as never);

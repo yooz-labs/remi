@@ -106,6 +106,8 @@ interface ManagedConnection {
   structuredChatController?: StructuredChatController;
   browserLinkController?: BrowserLinkController;
   browserAttachment?: object;
+  browserStopRequests?: Map<string, { readonly sessionId: string; readonly attachment: object }>;
+  browserStopSaturatedSession?: string;
   browserIdentity?: { readonly revision: number; readonly key: string };
   imageUploadState: ConnectionState['imageUploadState'];
   imageUploadSessionId?: UUID | null;
@@ -150,6 +152,8 @@ interface ManagedConnection {
 /** Stop a captured identity context and publish that close synchronously. */
 function invalidateIdentityConnection(mc: ManagedConnection, message = 'Identity changed. Reconnect with the current identity.') {
   mc.imageUploadAuthenticated = false;
+  mc.browserStopRequests?.clear();
+  mc.browserStopSaturatedSession = undefined;
   mc.relayCancel?.(); mc.relayRequests?.closed(); mc.client.disconnect();
   mc.status = 'disconnected'; mc.helloSent = false; mc.pendingChallenge = null; mc.authAttempt = null;
   mc.sessionAttachments?.clear(); mc.error = new Error(message);
@@ -361,6 +365,8 @@ export function useConnectionManager(
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
       }
     }
@@ -371,6 +377,8 @@ export function useConnectionManager(
           // React commits the matching prop update. Keep a proof that completed
           // in that window; only a real key transition invalidates it.
           mc.imageUploadAuthenticated = false;
+          mc.browserStopRequests?.clear();
+          mc.browserStopSaturatedSession = undefined;
           mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
           mc.approval.reset();
           mc.authAttempt = null;
@@ -388,6 +396,8 @@ export function useConnectionManager(
       identityRef.current = null;
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
         mc.approval.reset();
         mc.authAttempt = null;
@@ -452,6 +462,8 @@ export function useConnectionManager(
     ) => {
       if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
       mc.imageUploadAuthenticated = false;
+      mc.browserStopRequests?.clear();
+      mc.browserStopSaturatedSession = undefined;
       const pending = {
         challenge,
         serverPublicKey: srvPublicKey,
@@ -484,6 +496,8 @@ export function useConnectionManager(
       } catch (err) {
         if (!currentChallenge() || getIdentityRevision() !== challengeRevision) return;
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.approval.reset();
         mc.error = new Error(errorToString(err));
         mc.client.disconnect();
@@ -565,6 +579,8 @@ export function useConnectionManager(
         mc.pendingChallenge === pending && mc.approval.isCurrent(attempt);
       if (!isCurrent()) return;
       mc.imageUploadAuthenticated = false;
+      mc.browserStopRequests?.clear();
+      mc.browserStopSaturatedSession = undefined;
       if (!success) {
         mc.approval.refuse(attempt, authError);
         mc.error = new Error(`Authentication failed: ${authError ?? 'unknown error'}`);
@@ -575,6 +591,8 @@ export function useConnectionManager(
 
       if (!srvSignature || !pending) {
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.approval.reset();
         mc.error = new Error('Server did not provide mutual authentication signature');
         mc.client.disconnect();
@@ -589,6 +607,8 @@ export function useConnectionManager(
         if (!isCurrent()) return;
         if (!valid) {
           mc.imageUploadAuthenticated = false;
+          mc.browserStopRequests?.clear();
+          mc.browserStopSaturatedSession = undefined;
           mc.approval.reset();
           mc.error = new Error('Server signature verification failed');
           mc.client.disconnect();
@@ -598,6 +618,8 @@ export function useConnectionManager(
       } catch (err) {
         if (!isCurrent()) return;
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.approval.reset();
         mc.error = new Error(
           `Server verification error: ${errorToString(err)}`,
@@ -696,8 +718,14 @@ export function useConnectionManager(
             }
           } else {
             // Every observed attached hello starts a fresh client attachment scope.
+            // A stop confirms the Remi session lifetime, including across a same-session hello.
+            if (mc.sessionId !== message.sessionId) {
+              mc.browserStopRequests?.clear();
+              mc.browserStopSaturatedSession = undefined;
+            }
             mc.browserLinkController?.disconnect();
-            mc.browserAttachment = message.sessionId && message.attachState === 'attached' ? {} : undefined;
+            mc.browserAttachment = message.sessionId && message.attachState === 'attached' &&
+              mc.browserStopSaturatedSession !== message.sessionId ? {} : undefined;
             const nextHarness = message.harness ?? 'claude';
             const nextHarnessSessionId =
               message.harnessSessionId !== undefined
@@ -747,12 +775,17 @@ export function useConnectionManager(
           syncState();
         }
 
+        const browserStop = message.type === 'kill_session_response'
+          ? mc.browserStopRequests?.get(message.requestId) : undefined;
+        if (message.type === 'kill_session_response') mc.browserStopRequests?.delete(message.requestId);
         // These observed lifecycle signals remain authoritative if best-effort ended is lost.
         if ((message.type === 'detach_session_ack' && message.success && message.sessionId === mc.sessionId) ||
           (message.type === 'session_update' && message.session.id === mc.sessionId && message.session.endedAt !== undefined) ||
-          (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId)) {
+          (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId) ||
+          (message.type === 'kill_session_response' && message.success && browserStop?.sessionId === mc.sessionId)) {
           mc.browserAttachment = undefined;
           mc.browserLinkController?.disconnect();
+          if (message.type !== 'detach_session_ack') mc.browserStopRequests?.clear();
           syncState();
         }
 
@@ -857,6 +890,8 @@ export function useConnectionManager(
         if (!newUrl) throw new Error('Invalid resolved direct endpoint');
         if (mc.url !== newUrl) {
           mc.imageUploadAuthenticated = false;
+          mc.browserStopRequests?.clear();
+          mc.browserStopSaturatedSession = undefined;
           mc.approval.reset();
         }
         mc.url = newUrl;
@@ -970,6 +1005,8 @@ export function useConnectionManager(
             newStatus === 'error'
           ) {
             mc.imageUploadAuthenticated = false;
+            mc.browserStopRequests?.clear();
+            mc.browserStopSaturatedSession = undefined;
             mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
             mc.sessionId = null;
             mc.attachState = undefined;
@@ -1356,6 +1393,20 @@ export function useConnectionManager(
       }
       if (mc.mode === 'relay' && message.type === 'answer') return mc.relayRequests?.answer(message) ?? false;
       const sent = mc.client.send(message);
+      if (sent && message.type === 'kill_session_request' &&
+        message.sessionId === mc.sessionId && mc.browserAttachment) {
+        const pending = mc.browserStopRequests ??= new Map();
+        if (!pending.has(message.id) && pending.size >= 8) {
+          // No eviction can forget an effectful stop while leaving URLs available.
+          pending.clear();
+          mc.browserStopSaturatedSession = message.sessionId;
+          mc.browserAttachment = undefined;
+          mc.browserLinkController?.disconnect();
+          syncState();
+        } else {
+          pending.set(message.id, { sessionId: message.sessionId, attachment: mc.browserAttachment });
+        }
+      }
       if (
         sent &&
         message.type === 'kill_session_request' &&
@@ -1365,7 +1416,7 @@ export function useConnectionManager(
       }
       return sent;
     },
-    [getMc],
+    [getMc, syncState],
   );
 
   const sendInput = useCallback(
@@ -1523,6 +1574,8 @@ export function useConnectionManager(
       // otherwise sees the replacement as already current (#873).
       for (const mc of connectionsMapRef.current.values()) {
         mc.imageUploadAuthenticated = false;
+        mc.browserStopRequests?.clear();
+        mc.browserStopSaturatedSession = undefined;
         mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect();
       }
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
