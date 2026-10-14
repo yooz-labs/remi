@@ -453,3 +453,51 @@ Real PTY tests cover exact literal input, queue ordering, queued validity change
 This does not advertise insertion or add a production caller.
 Artifact acquisition/one-effect retirement, an accepted expiration contract, shared/native wire conformance and explicit client action remain the next slice.
 The current 24-hour/session-exit policy does not promise an indefinitely valid unsent reference; settle that product behavior explicitly before freezing insertion.
+
+## Image insertion: owned reference preparation
+
+The internal `JournalRead.referencePath()` candidate reuses its held staged file and current descriptor/name/root/accounting checks.
+It supplies no path before successful retention or after close, creates no copy and changes no quota or deadline.
+The later coordinator must still check device/grant/session/binding/prompt and expiration at the queued effect; this internal accessor supplies none of that authority.
+No protocol field, capability or production insertion caller is registered by this slice.
+
+Both Bun source populations pass 25 tests/593 assertions, including staged PNG/JPEG access and actual replacement, mutation, symlink, hardlink, unlink and configured-root refusal on macOS.
+Six supported compiled executions pass the 105-group storage/journal profile; added reference controls cover staged-only access, exact named bytes and closed access.
+Specific accessor mutation controls remain source macOS observations, while the compiled profile exercises the reused ownership validators' existing fault controls.
+All six executions retain identical current source/dependency inputs and report no cleanup errors.
+
+The first compiled attempt found a stale predecessor control before the new reference groups: 130 same-device cycles expected 128 home rows but correctly retained 32 device receipts plus one pending row.
+The unchanged 95702c73 base reproduced the same `33 != 128` failure.
+The corrected control independently checks 130 same-device cycles and 130 distinct-device cycles, proving both 32/device and 128/home history bounds, retained pending charge and both eviction/retry outcomes.
+Production reservation limits and algorithms remain unchanged; original failures and corrected receipts are retained on S1.
+Independent review completed without actionable findings; publication/hosted checks precede landing.
+The insertion contract was subsequently accepted by the owner; the exact-path
+result and correction are recorded below. Production caller/native acceptance remain later gates.
+
+## Image insertion: accepted contract and filename correction
+
+The owner accepted ADR0042 on 2026-10-13, including the first-version original
+direct connection, one possible insertion, separate Send and visible original
+24-hour/session-end expiry. Exactly one additionally authorized Claude turn
+tested actual private `.artifact` references outside its project: neither became
+an embedded image. Insertion remains unavailable; no capability/caller is added.
+
+New image journals select `.png` / `.jpg` from their declared media type at
+creation; completion already verifies that type against bytes and full decoding.
+The exact extension is stored in the lease/reservation and immutable version2
+markers. Original `.artifact` journals retain version1 naming and recovery.
+Read, accounting, cleanup and retirement use that same persisted choice.
+No existing file is renamed, copied or linked, and no quota/deadline changes.
+Older binaries reject the extended ledger schema instead of guessing cleanup;
+these rows require the matching daemon for recovery and remain charged otherwise.
+
+The correction preserves all 105 predecessor compiled groups and adds 18
+actual-file/image-name groups, including both formats, wrong-format refusal,
+descriptor/name/root mutation and six killed-retirement restart boundaries per
+format. Both Bun source populations pass 25 tests/635 assertions, and all six
+supported compiled cells pass 123 groups with unchanged source, clean runtime
+temp and no cleanup errors, using the predecessor's 256 MiB/64-PID Linux envelope.
+Independent review found only stale caller banners in three touched storage
+modules; those descriptions are corrected in this same change.
+The corrected exact-path model check, managed insertion retirement, shared
+vectors, handler/client integration and native conformance remain subsequent gates.

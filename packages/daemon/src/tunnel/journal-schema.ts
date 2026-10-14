@@ -12,10 +12,14 @@ export type JournalBinding = {
   home: string;
   scratch: string;
   metadata: string;
+  artifactExtension?: 'png' | 'jpg';
   ownership?: MarkerWitness[];
   retirement?: MarkerWitness[];
 };
-export type JournalLease = Pick<JournalBinding, 'nonce' | 'home' | 'scratch' | 'metadata'> & {
+export type JournalLease = Pick<
+  JournalBinding,
+  'nonce' | 'home' | 'scratch' | 'metadata' | 'artifactExtension'
+> & {
   id: string;
 };
 const TOKEN = /^[a-f0-9]{32}$/;
@@ -53,12 +57,16 @@ export function validWitnesses(
 export function validBinding(value: unknown, state: string): value is JournalBinding {
   if (!object(value)) return false;
   const keys = Object.keys(value).sort().join();
-  const base = 'home,metadata,nonce,scratch';
+  const image = 'artifactExtension' in value;
+  if (image && value['artifactExtension'] !== 'png' && value['artifactExtension'] !== 'jpg')
+    return false;
+  const prefix = image ? 'artifactExtension,' : '';
+  const base = `${prefix}home,metadata,nonce,scratch`;
   if (
     ![
       base,
-      'home,metadata,nonce,ownership,scratch',
-      'home,metadata,nonce,ownership,retirement,scratch',
+      `${prefix}home,metadata,nonce,ownership,scratch`,
+      `${prefix}home,metadata,nonce,ownership,retirement,scratch`,
     ].includes(keys)
   )
     return false;
@@ -89,8 +97,19 @@ export function sameLease(binding: JournalBinding, lease: JournalLease): boolean
     binding.nonce === lease.nonce &&
     binding.home === lease.home &&
     binding.scratch === lease.scratch &&
-    binding.metadata === lease.metadata
+    binding.metadata === lease.metadata &&
+    binding.artifactExtension === lease.artifactExtension
   );
+}
+
+/** Host-generated original name; absence preserves legacy journals without renaming them. */
+export function journalArtifactName(
+  id: string,
+  extension?: JournalBinding['artifactExtension'],
+): string {
+  if (!TOKEN.test(id) || (extension !== undefined && extension !== 'png' && extension !== 'jpg'))
+    throw new Error('Invalid journal name');
+  return `${id}.${extension ?? 'artifact'}`;
 }
 export function sameWitnesses(a: readonly MarkerWitness[], b: readonly MarkerWitness[]): boolean {
   return (

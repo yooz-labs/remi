@@ -1,6 +1,6 @@
 # ADR 0042: Explicit Claude image-reference insertion
 
-**Status:** proposed; owner review required before contract freeze or availability
+**Status:** accepted contract; implementation and corrected CLI route gates remain
 **Date:** 2026-10-13
 **Owner:** Yahya
 
@@ -17,7 +17,14 @@ Submitted image encodings persisted through a normal exit/resume without the ori
 The resumed color answer is consistent with both the retained images and earlier text; compaction and isolated image-only recall remain unmeasured.
 Deleting a new draft reference's original before Enter produced no image attachment.
 
-## Proposed decision
+The owner accepted the two-message contract, capability name, original-connection
+restriction and visible draft expiry on 2026-10-13.
+The separately authorized exact `.artifact` route check failed: neither image
+became an embedded attachment. New image journals are being corrected to use
+their verified media extension from creation; this changes no wire field or
+deadline and does not make insertion available.
+
+## Decision
 
 ### 1. Add one staged image to the current draft
 
@@ -30,7 +37,7 @@ The result means a reference was written, not that Claude read the image.
 Use only the authenticated attached direct Claude connection that completed the upload in the first version.
 Reconnect/detach does not revive insertion authority, even while retained storage remains charged.
 Relay and Codex support keep their separate gates.
-No new message or capability is registered or advertised by this proposed ADR.
+Contract acceptance alone registers or advertises no message or capability.
 
 ### 2. Exact two-message contract
 
@@ -94,7 +101,9 @@ No retention extension or second storage namespace is introduced.
 
 ## Availability gates
 
-Owner acceptance of the two-message contract, `image_insertion` name, first-version connection restriction and expiring unsent draft is required.
+Owner acceptance of the two-message contract, `image_insertion` name,
+first-version connection restriction and expiring unsent draft is recorded above.
+First pass the corrected exact managed filename route on the installed CLI.
 Then implement managed artifact acquisition and one-effect retirement, strict shared vectors, dispatch/direction handling and one production explicit client action.
 Real signed socket/grant/session/binding/held-hook controls must prove zero bytes on refusal, one reference and zero CR/LF on success, and no replay after uncertainty.
 Run source/compiled controls on the three supported hosts and both Bun versions; native runs the shared conformance corpus independently.
