@@ -526,3 +526,19 @@ failed before this fix and passes afterward; the old upload cannot revive either
 Correlated outcome/retry handling, strict shared vectors and dispatch, an explicit
 client action, capability availability and native conformance remain subsequent
 integration work. The internal lease is not a shipping Add to draft action.
+
+## Image insertion: shared structural contract
+
+The accepted two-message codec and request-only correlated ingress reuse the
+existing strict scalar/UUID/date/opaque-ID/binding/frame guards. Before extraction,
+all 503 staging vector outcomes were pinned; their decoded/ingress/encoded hash
+remains unchanged. The public registry and capability advertisement are unchanged.
+
+An independent generator imports no production codec/guard and supplies 14
+positive and 282 negative insertion vectors. Both Bun source populations pass
+1,747 focused tests and 16,249 assertions, including existing protocol fixtures.
+The supported compiled matrix passes the new vectors and the preserved staging
+hash on Apple Silicon Mac and Linux ARM64/x64 with Bun 1.3.11 and 1.4.2.
+The outer corpus loads in Foundation; this is fixture interchange, not native
+decoder conformance. The correlated outcome coordinator, actual queued caller,
+public dispatch/client action and native conformance remain subsequent gates.
