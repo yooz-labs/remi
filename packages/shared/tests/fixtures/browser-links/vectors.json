@@ -1,0 +1,444 @@
+{
+  "version": 1,
+  "status": "structural-codec-only",
+  "positive": [
+    {
+      "name": "select-request-sequence-one",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}",
+      "expected": {
+        "type": "browser_link_receiver_request",
+        "id": "00112233-4455-4677-8899-aabbccddeeff",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "binding": {
+          "harness": "claude",
+          "harnessSessionId": "11223344-5566-7788-99aa-bbccddeeff00"
+        },
+        "seq": 1,
+        "action": "select"
+      }
+    },
+    {
+      "name": "release-request-maximum-sequence",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"778899aa-bbcc-4dde-8ff0-112233445566\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":4294967295,\"action\":\"release\"}",
+      "expected": {
+        "type": "browser_link_receiver_request",
+        "id": "778899aa-bbcc-4dde-8ff0-112233445566",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "binding": {
+          "harness": "claude",
+          "harnessSessionId": "11223344-5566-7788-99aa-bbccddeeff00"
+        },
+        "seq": 4294967295,
+        "action": "release"
+      }
+    },
+    {
+      "name": "selected-result",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":3,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"selected\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 3,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "selected",
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233"
+      }
+    },
+    {
+      "name": "released-result",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":4,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"released\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 4,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "released"
+      }
+    },
+    {
+      "name": "refused-unavailable",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":5,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"unavailable\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 5,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "unavailable"
+      }
+    },
+    {
+      "name": "refused-unsupported",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":6,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"unsupported\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 6,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "unsupported"
+      }
+    },
+    {
+      "name": "refused-binding-changed",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":7,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"binding_changed\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 7,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "binding_changed"
+      }
+    },
+    {
+      "name": "refused-capacity",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":8,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"capacity\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 8,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "capacity"
+      }
+    },
+    {
+      "name": "refused-sequence",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":9,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"sequence\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 9,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "sequence"
+      }
+    },
+    {
+      "name": "refused-conflict",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":10,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"conflict\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 10,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "conflict"
+      }
+    },
+    {
+      "name": "refused-stale-receiver",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":11,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"stale_receiver\"}",
+      "expected": {
+        "type": "browser_link_receiver_result",
+        "id": "22334455-6677-4889-aabb-ccddeeff0011",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "seq": 11,
+        "requestId": "33445566-7788-499a-bbcc-ddeeff001122",
+        "outcome": "refused",
+        "code": "stale_receiver"
+      }
+    },
+    {
+      "name": "ended-released",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"released\"}",
+      "expected": {
+        "type": "browser_link_receiver_ended",
+        "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "reason": "released"
+      }
+    },
+    {
+      "name": "ended-replaced",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"replaced\"}",
+      "expected": {
+        "type": "browser_link_receiver_ended",
+        "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "reason": "replaced"
+      }
+    },
+    {
+      "name": "ended-session-changed",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"session_changed\"}",
+      "expected": {
+        "type": "browser_link_receiver_ended",
+        "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "reason": "session_changed"
+      }
+    },
+    {
+      "name": "ended-disconnected",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"disconnected\"}",
+      "expected": {
+        "type": "browser_link_receiver_ended",
+        "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "reason": "disconnected"
+      }
+    },
+    {
+      "name": "candidate-canonical-url",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://example.com/a%20b?q=x%20y#top\",\"lifetimeMs\":120000}",
+      "expected": {
+        "type": "browser_link_candidate",
+        "id": "66778899-aabb-4ccd-8eef-001122334455",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "binding": {
+          "harness": "claude",
+          "harnessSessionId": "11223344-5566-7788-99aa-bbccddeeff00"
+        },
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "url": "https://example.com/a%20b?q=x%20y#top",
+        "lifetimeMs": 120000
+      }
+    },
+    {
+      "name": "candidate-idna-ascii-url",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://xn--bcher-kva.example/\",\"lifetimeMs\":120000}",
+      "expected": {
+        "type": "browser_link_candidate",
+        "id": "66778899-aabb-4ccd-8eef-001122334455",
+        "timestamp": "2026-10-14T03:00:00.000Z",
+        "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+        "binding": {
+          "harness": "claude",
+          "harnessSessionId": "11223344-5566-7788-99aa-bbccddeeff00"
+        },
+        "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+        "url": "https://xn--bcher-kva.example/",
+        "lifetimeMs": 120000
+      }
+    }
+  ],
+  "negative": [
+    {
+      "name": "unknown-type",
+      "raw": "{\"type\":\"browser_link_other\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\"}"
+    },
+    {
+      "name": "request-missing-session-id",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "request-extra-root-field",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\",\"extra\":true}"
+    },
+    {
+      "name": "id-not-uuid-v4",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-1677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "uppercase-id",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-AABBCCDDEEFF\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "invalid-timestamp-calendar-date",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-02-30T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "session-id-not-canonical",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-AABBCCDDEEFF\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "sequence-zero",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":0,\"action\":\"select\"}"
+    },
+    {
+      "name": "sequence-above-uint32",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":4294967296,\"action\":\"select\"}"
+    },
+    {
+      "name": "fractional-sequence",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1.5,\"action\":\"select\"}"
+    },
+    {
+      "name": "wrong-harness-binding",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"codex\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "binding-session-id-invalid",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-BBCCDDEEFF00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "binding-extra-field",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\",\"extra\":true},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "unknown-action",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"open\"}"
+    },
+    {
+      "name": "selected-missing-lease-id",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":3,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"selected\"}"
+    },
+    {
+      "name": "selected-lease-id-not-uuid-v4",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":3,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"selected\",\"leaseId\":\"44556677-8899-1aab-bccd-eeff00112233\"}"
+    },
+    {
+      "name": "selected-extra-code-field",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":3,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"selected\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"code\":\"capacity\"}"
+    },
+    {
+      "name": "released-extra-lease-id",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":4,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"released\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\"}"
+    },
+    {
+      "name": "refused-unknown-code",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":5,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"delivery_unknown\"}"
+    },
+    {
+      "name": "refused-extra-lease-id",
+      "raw": "{\"type\":\"browser_link_receiver_result\",\"id\":\"22334455-6677-4889-aabb-ccddeeff0011\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"seq\":5,\"requestId\":\"33445566-7788-499a-bbcc-ddeeff001122\",\"outcome\":\"refused\",\"code\":\"capacity\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\"}"
+    },
+    {
+      "name": "ended-unknown-reason",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"closed\"}"
+    },
+    {
+      "name": "ended-extra-field",
+      "raw": "{\"type\":\"browser_link_receiver_ended\",\"id\":\"55667788-99aa-4bbc-8dde-ff0011223344\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"reason\":\"released\",\"seq\":1}"
+    },
+    {
+      "name": "candidate-binding-extra-field",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\",\"extra\":1},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://example.com/\",\"lifetimeMs\":120000}"
+    },
+    {
+      "name": "candidate-wrong-lifetime",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://example.com/\",\"lifetimeMs\":119999}"
+    },
+    {
+      "name": "candidate-unicode-host-not-canonical",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://bücher.example/\",\"lifetimeMs\":120000}"
+    },
+    {
+      "name": "candidate-credentials-url",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bccd-eeff00112233\",\"url\":\"https://user:pass@example.com/\",\"lifetimeMs\":120000}"
+    },
+    {
+      "name": "candidate-non-http-scheme",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bbcc-ddeeff001122\",\"url\":\"wss://example.com/\",\"lifetimeMs\":120000}"
+    },
+    {
+      "name": "duplicate-top-level-sequence",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"seq\":2,\"action\":\"select\"}"
+    },
+    {
+      "name": "escaped-duplicate-type",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"ty\\u0070e\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "nested-duplicate-binding-member",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}"
+    },
+    {
+      "name": "escaped-lone-surrogate-in-url",
+      "raw": "{\"type\":\"browser_link_candidate\",\"id\":\"66778899-aabb-4ccd-8eef-001122334455\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"leaseId\":\"44556677-8899-4aab-bbcc-ddeeff001122\",\"url\":\"https://example.com/\\ud800\",\"lifetimeMs\":120000}"
+    },
+    {
+      "name": "unescaped-control-character",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\",\"bad\":\"line\u0001break\"}"
+    },
+    {
+      "name": "trailing-data",
+      "raw": "{\"type\":\"browser_link_receiver_request\",\"id\":\"00112233-4455-4677-8899-aabbccddeeff\",\"timestamp\":\"2026-10-14T03:00:00.000Z\",\"sessionId\":\"00112233-4455-7677-8899-aabbccddeeff\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"11223344-5566-7788-99aa-bbccddeeff00\"},\"seq\":1,\"action\":\"select\"}{}"
+    },
+    {
+      "name": "non-json",
+      "raw": "[[[[[[[[[[]]]]]]]]]]"
+    },
+    {
+      "name": "invalid-utf8-overlong",
+      "bytes": [192, 175]
+    },
+    {
+      "name": "invalid-utf8-truncated",
+      "bytes": [240, 159]
+    },
+    {
+      "name": "invalid-utf8-surrogate-scalar",
+      "bytes": [237, 160, 128]
+    }
+  ],
+  "urlNormalization": {
+    "runtimeNote": "WHATWG URL serialization pinned with Bun 1.3.11 and 1.4.2; these vectors do not establish Swift/native portability.",
+    "positive": [
+      {
+        "name": "adds-empty-root-path",
+        "input": "http://example.com",
+        "expected": "http://example.com/"
+      },
+      {
+        "name": "lowercase-host-and-remove-default-https-port",
+        "input": "HTTPS://EXAMPLE.COM:443",
+        "expected": "https://example.com/"
+      },
+      {
+        "name": "idna-and-path-query-fragment-escaping",
+        "input": "https://bücher.example/café path?q=a b#résumé",
+        "expected": "https://xn--bcher-kva.example/caf%C3%A9%20path?q=a%20b#r%C3%A9sum%C3%A9"
+      },
+      {
+        "name": "preserves-existing-percent-escapes",
+        "input": "https://example.com/%7euser?x=%2f#%C3%A9",
+        "expected": "https://example.com/%7euser?x=%2f#%C3%A9"
+      },
+      {
+        "name": "resolves-dot-segments",
+        "input": "https://example.com/a/../b",
+        "expected": "https://example.com/b"
+      }
+    ],
+    "negative": [
+      { "name": "relative-url-without-base", "input": "example.com/path" },
+      { "name": "ftp-scheme", "input": "ftp://example.com/file" },
+      { "name": "javascript-scheme", "input": "javascript:alert(1)" },
+      { "name": "file-scheme", "input": "file:///tmp/page" },
+      { "name": "username-and-password", "input": "https://user:pass@example.com/" },
+      { "name": "empty-userinfo", "input": "https://@example.com/" },
+      { "name": "userinfo-after-host", "input": "http://example.com@attacker.example/" },
+      { "name": "encoded-username", "input": "https://user%40name@example.com/" },
+      { "name": "backslash", "input": "https://example.com\\@attacker.example/" },
+      { "name": "leading-space", "input": " https://example.com/" },
+      { "name": "trailing-space", "input": "https://example.com/ " },
+      { "name": "literal-c0-control", "input": "https://example.com/\u0001" },
+      { "name": "literal-c1-control", "input": "https://example.com/\u0085" },
+      { "name": "missing-host", "input": "http:///" },
+      { "name": "invalid-port", "input": "https://example.com:abc/" },
+      { "name": "non-scalar-surrogate", "input": "https://example.com/\ud800" },
+      { "name": "non-string-input", "input": 42 }
+    ]
+  }
+}
