@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.166'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.167'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.166'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.167'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -123,7 +123,13 @@ import type {
   UnlockedIdentity,
 } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
-import { IMAGE_STAGING_CAPABILITY, boundedEscape, generateId, now } from '@remi/shared';
+import {
+  IMAGE_INSERTION_CAPABILITY,
+  IMAGE_STAGING_CAPABILITY,
+  boundedEscape,
+  generateId,
+  now,
+} from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
@@ -156,6 +162,7 @@ import {
   type CreateSessionHandlers,
   createCreateSessionHandlers,
 } from './cli/handlers/create-session-events.ts';
+import { createImageInsertionHandlers } from './cli/handlers/image-insertion-events.ts';
 import {
   type InputHandlers,
   createInputHandlers,
@@ -288,6 +295,7 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
+import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
 import { RecentRepositoryStore } from './workspace/recent-store.ts';
@@ -1140,9 +1148,14 @@ const securePushRuntimes = new Map<UUID, SecurePushRuntime>();
 let securePushService: SecurePushService | undefined;
 let nativeAnswerLedger: NativeAnswerLedger | undefined;
 let imageStagingService: ImageStagingService | undefined;
+let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 const capabilitiesForConnection = (id: UUID): readonly string[] =>
   imageStagingService?.isAvailable(id)
-    ? [...DAEMON_CAPABILITIES, IMAGE_STAGING_CAPABILITY]
+    ? [
+        ...DAEMON_CAPABILITIES,
+        IMAGE_STAGING_CAPABILITY,
+        ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : []),
+      ]
     : DAEMON_CAPABILITIES;
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);
@@ -2359,6 +2372,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: (id) => {
     forgetConnectionToken(id);
     void imageStagingService?.invalidateConnection(id);
+    imageInsertionCoordinator?.invalidateConnection(id);
   },
 });
 
@@ -2370,6 +2384,11 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
 });
 
 const sharedEvents = {
+  ...createImageInsertionHandlers({
+    service: () => imageStagingService,
+    coordinator: () => imageInsertionCoordinator,
+    send: sendToConnection,
+  }),
   onImageUpload: async (
     connectionId: UUID,
     ingress: Exclude<import('@remi/shared').ImageStagingIngressResult, { kind: 'uncorrelatable' }>,
@@ -2621,6 +2640,10 @@ if (
         return adapter instanceof WebSocketAdapter ? adapter : undefined;
       },
     });
+    imageInsertionCoordinator = new ImageInsertionCoordinator(
+      imageStagingService,
+      (id) => promptUpWiring.promptUp(id) !== null,
+    );
   } catch (error) {
     console.error(
       `Image uploads are unavailable on this host: ${boundedEscape(errorToString(error), 500)}`,
@@ -2700,6 +2723,7 @@ let cleanupRunning = false;
 async function cleanup(): Promise<void> {
   if (cleanupRunning) return;
   cleanupRunning = true;
+  imageInsertionCoordinator?.close();
   if (imageStagingService && !(await imageStagingService.close()))
     logError('Image staging cleanup remains charged until process exit.');
   for (const sessionId of securePushRuntimes.keys()) retireSecurePushRuntime(sessionId);

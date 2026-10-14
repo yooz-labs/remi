@@ -25,6 +25,12 @@ import {
   sign,
   unlockIdentity,
 } from '@remi/shared';
+import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from '../../../shared/src/image-insertion';
 import { encodeImageStagingFrame } from '../../../shared/src/image-staging';
 import type { ImageUploadBegin, ImageUploadChunk } from '../../../shared/src/image-staging';
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter';
@@ -32,11 +38,13 @@ import { MessageAPI } from '../../src/api/message-api';
 import { Authenticator } from '../../src/auth/authenticator';
 import { IdentityStore } from '../../src/auth/identity-store';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate';
+import { createImageInsertionHandlers } from '../../src/cli/handlers/image-insertion-events';
 import { promptUpFor } from '../../src/cli/handlers/prompt-up';
 import { PTYSession } from '../../src/pty/pty-session';
 import { SessionBindingStore } from '../../src/session/session-binding-store';
 import { SessionRegistry } from '../../src/session/session-registry';
 import { SessionStore } from '../../src/session/session-store';
+import { ImageInsertionCoordinator } from '../../src/tunnel/image-insertion-coordinator';
 import {
   type ImageStagingRequest,
   type ImageStagingResponse,
@@ -69,8 +77,14 @@ async function fixture(parent = tmpdir()) {
     },
   );
   const sockets: WebSocket[] = [];
-  const resources: { adapter?: WebSocketAdapter; service?: ImageStagingService } = {};
+  const resources: {
+    adapter?: WebSocketAdapter;
+    service?: ImageStagingService;
+    coordinator?: ImageInsertionCoordinator;
+    gate: AutoApproveGate | undefined;
+  } = { gate: undefined };
   cleanup.push(async () => {
+    resources.coordinator?.close();
     const settled = resources.service ? await resources.service.close() : true;
     for (const socket of sockets) socket.close();
     await resources.adapter?.stop();
@@ -103,8 +117,14 @@ async function fixture(parent = tmpdir()) {
       },
       onDisconnect(id) {
         registry.detachConnection(id);
+        resources.coordinator?.invalidateConnection(id);
         void resources.service?.invalidateConnection(id);
       },
+      ...createImageInsertionHandlers({
+        service: () => resources.service,
+        coordinator: () => resources.coordinator,
+        send: (id, response) => adapter.sendRaw(id, response),
+      }),
       async onImageUpload(id, ingress) {
         const current = resources.service;
         if (!current) throw new Error('Service not initialized');
@@ -127,6 +147,10 @@ async function fixture(parent = tmpdir()) {
     directAdapter,
   });
   resources.service = service;
+  resources.coordinator = new ImageInsertionCoordinator(
+    service,
+    () => promptUpFor(resources.gate, undefined) !== null,
+  );
   async function client() {
     connected = Promise.withResolvers<UUID>();
     const identity = await createIdentity();
@@ -194,6 +218,10 @@ async function fixture(parent = tmpdir()) {
     adapter,
     directAdapter,
     service,
+    coordinator: resources.coordinator,
+    setPromptGate: (gate: AutoApproveGate | undefined) => {
+      resources.gate = gate;
+    },
     client,
     owner,
     ledger,
@@ -323,6 +351,446 @@ async function stagedForInsertion(file = 'fixture.png', parent = tmpdir()) {
 }
 
 const noPrompt = () => promptUpFor(undefined, undefined) !== null;
+
+function insertionRequest(
+  f: Awaited<ReturnType<typeof fixture>>,
+  artifactId: string,
+): ImageInsertRequest {
+  return {
+    type: 'image_insert_request',
+    id: generateId(),
+    timestamp: new Date().toISOString(),
+    sessionId: f.sessionId,
+    binding: { harness: 'claude', harnessSessionId: f.harnessSessionId },
+    artifactId,
+  };
+}
+
+async function wireInsertion(
+  f: Awaited<ReturnType<typeof fixture>>,
+  request: ImageInsertRequest,
+  client = f.owner,
+  raw: string | Uint8Array = encodeImageInsertionFrame(request),
+): Promise<ImageInsertResult> {
+  const before = client.received.length;
+  client.socket.send(raw);
+  const response = () =>
+    client.received
+      .slice(before)
+      .find(
+        (message) => message.type === 'image_insert_result' && message.requestId === request.id,
+      );
+  await pollUntil(() => response() !== undefined, 5000, 'actual signed insertion result');
+  const message = response();
+  if (!message || message.type !== 'image_insert_result')
+    throw new Error('Missing actual insertion result');
+  expect(message.sessionId).toBe(request.sessionId);
+  return message;
+}
+
+for (const file of ['fixture.png', 'fixture.jpg']) {
+  test(`strict signed wire inserts ${file} once and replays equivalent reordered fields`, async () => {
+    const { f, result: staged, prepare } = await stagedForInsertion(file);
+    const request = insertionRequest(f, staged.artifactId);
+    const reference = prepare().referencePath();
+    const ledger = f.ledger();
+    const first = await wireInsertion(f, request);
+    expect(first.outcome).toBe('inserted');
+    const reordered = {
+      artifactId: request.artifactId,
+      binding: {
+        harnessSessionId: request.binding.harnessSessionId,
+        harness: request.binding.harness,
+      },
+      sessionId: request.sessionId,
+      timestamp: request.timestamp,
+      id: request.id,
+      type: request.type,
+    };
+    const raw = JSON.stringify(reordered)
+      .replace('"type"', '"t\\u0079pe"')
+      .replace('image_insert_request', 'image\\u005finsert_request');
+    const replay = await wireInsertion(f, request, f.owner, new TextEncoder().encode(raw));
+    expect(replay).toEqual(first);
+    expect((await wireInsertion(f, { ...request, id: generateId() })).code).toBe('conflict');
+    await pollUntil(() => f.output().includes(reference), 1000, 'wire insertion echo');
+    expect(f.output()).toBe(` @"${reference}" `);
+    expect(f.output()).not.toMatch(/[\r\n]/u);
+    expect(f.ledger()).toEqual(ledger);
+    expect(
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === request.id,
+      ),
+    ).toBe(false);
+  }, 20000);
+}
+
+test('strict wire malformed insertion hints distinguish only the original current owner', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const request = insertionRequest(f, staged.artifactId);
+  const raw = JSON.stringify({ ...request, extra: 'owned invalid field' });
+  const ledger = f.ledger();
+  const foreign = await f.client();
+  expect((await wireInsertion(f, request, foreign, raw)).code).toBe('unavailable');
+  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('malformed');
+  const missing = { ...request, artifactId: 'A'.repeat(22) };
+  expect(
+    (await wireInsertion(f, missing, f.owner, JSON.stringify({ ...missing, extra: true }))).code,
+  ).toBe('unavailable');
+  expect(f.output()).toBe('');
+  expect(f.ledger()).toEqual(ledger);
+  expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
+  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('unavailable');
+  expect(f.output()).toBe('');
+});
+
+test('strict wire held hook refuses without input; a fresh explicit ID works after release', async () => {
+  const { f, result: staged, prepare } = await stagedForInsertion();
+  const reference = prepare().referencePath();
+  const gate = new AutoApproveGate(
+    {
+      sessionRegistry: f.registry,
+      isInSubagentContext: () => false,
+      holdMs: 60000,
+      hasLocalTerminal: false,
+      escalate: () => generateId(),
+    },
+    f.sessionId,
+  );
+  f.setPromptGate(gate);
+  const hook = gate.resolvePermission({
+    session_id: f.harnessSessionId,
+    transcript_path: join(f.home, 'transcript.jsonl'),
+    cwd: f.home,
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'echo insertion-wire-control' },
+  });
+  const request = insertionRequest(f, staged.artifactId);
+  let held: ImageInsertResult;
+  try {
+    expect(promptUpFor(gate, undefined)).toBe('held');
+    held = await wireInsertion(f, request);
+    expect(held.code).toBe('prompt_up');
+    expect(f.output()).toBe('');
+  } finally {
+    gate.forceRelease('test cleanup');
+    await hook;
+    gate.noteTerminalEscape();
+    f.setPromptGate(undefined);
+  }
+  expect(await wireInsertion(f, request)).toEqual(held);
+  expect((await wireInsertion(f, { ...request, id: generateId() })).outcome).toBe('inserted');
+  await pollUntil(() => f.output().includes(reference), 1000, 'wire released image echo');
+  expect(f.output()).toBe(` @"${reference}" `);
+});
+
+for (const fault of ['duplicate', 'bad-utf8', 'oversized', 'host-result'] as const) {
+  test(`strict signed insertion ${fault} closes without reference bytes`, async () => {
+    const { f, result: staged } = await stagedForInsertion();
+    const request = insertionRequest(f, staged.artifactId);
+    const raw = encodeImageInsertionFrame(request);
+    const payload =
+      fault === 'duplicate'
+        ? `${raw.slice(0, -1)},"t\\u0079pe":"ping"}`
+        : fault === 'bad-utf8'
+          ? Uint8Array.from([...new TextEncoder().encode(raw.slice(0, -1)), 255, 125])
+          : fault === 'oversized'
+            ? new TextEncoder().encode(JSON.stringify({ extra: 'x'.repeat(70000), ...request }))
+            : encodeImageInsertionFrame({
+                type: 'image_insert_result',
+                id: generateId(),
+                timestamp: new Date().toISOString(),
+                requestId: request.id,
+                sessionId: request.sessionId,
+                outcome: 'inserted',
+                code: 'none',
+              });
+    f.owner.socket.send(payload);
+    await pollUntil(
+      () => f.owner.socket.readyState === WebSocket.CLOSED,
+      5000,
+      'strict insertion close',
+    );
+    expect(f.output()).toBe('');
+    expect(
+      f.owner.received.some(
+        (message) => message.type === 'ack' && message.ack.messageId === request.id,
+      ),
+    ).toBe(false);
+  }, 20000);
+}
+
+for (const file of ['fixture.png', 'fixture.jpg']) {
+  test(`actual ${file} coordinator records one no-Enter write and replays concurrent/lost results`, async () => {
+    const { f, result: staged, prepare } = await stagedForInsertion(file);
+    const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+    cleanup.push(async () => coordinator.close());
+    const request = insertionRequest(f, staged.artifactId);
+    const reference = prepare().referencePath();
+    const ledger = f.ledger();
+    const [first, concurrent] = await Promise.all([
+      coordinator.handle(f.owner.id, request),
+      coordinator.handle(f.owner.id, request),
+    ]);
+    expect(first.outcome).toBe('inserted');
+    expect(first.code).toBe('none');
+    expect(first.requestId).toBe(request.id);
+    expect(first.sessionId).toBe(request.sessionId);
+    expect(concurrent).toBe(first);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(decodeImageInsertionFrame(encodeImageInsertionFrame(first))).toEqual(first);
+    // Caller can lose the first response; a fresh delivery still reuses the recorded effect/result.
+    expect(
+      await coordinator.handle(f.owner.id, { ...request, binding: { ...request.binding } }),
+    ).toBe(first);
+    const fresh = await coordinator.handle(f.owner.id, { ...request, id: generateId() });
+    expect(fresh.outcome).toBe('refused');
+    expect(fresh.code).toBe('conflict');
+    await pollUntil(() => f.output().includes(reference), 1000, 'actual insertion echo');
+    expect(f.output()).toBe(` @"${reference}" `);
+    expect(f.output()).not.toMatch(/[\r\n]/u);
+    expect(f.ledger()).toEqual(ledger);
+    expect(readFileSync(reference).length).toBe(staged.byteLength);
+  });
+}
+
+test('coordinator captures caller fields and refuses request reuse after an actual queued write', async () => {
+  const { f, result: staged, prepare } = await stagedForInsertion();
+  const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  const original = { ...request, binding: { ...request.binding } };
+  const reference = prepare().referencePath();
+  const earlier = f.pty.submitInput('EARLIER');
+  const pending = coordinator.handle(f.owner.id, request);
+  request.binding.harnessSessionId = generateId();
+  request.artifactId = 'A'.repeat(22);
+  await earlier;
+  const first = await pending;
+  expect(first.outcome).toBe('inserted');
+  expect(await coordinator.handle(f.owner.id, original)).toBe(first);
+  for (const fields of [
+    { artifactId: request.artifactId },
+    { binding: request.binding },
+    { sessionId: generateId() },
+    { timestamp: '2026-10-13T12:00:00.000Z' },
+  ]) {
+    const changed = await coordinator.handle(f.owner.id, { ...original, ...fields });
+    expect(changed.outcome).toBe('refused');
+    expect(changed.code).toBe('conflict');
+  }
+  await pollUntil(() => f.output().includes(reference), 1000, 'captured insertion echo');
+  expect(f.output().split(reference)).toHaveLength(2);
+});
+
+test('coordinator held-hook refusal stays correlated; only a fresh explicit ID can try after release', async () => {
+  const { f, result: staged, prepare } = await stagedForInsertion();
+  const gate = new AutoApproveGate(
+    {
+      sessionRegistry: f.registry,
+      isInSubagentContext: () => false,
+      holdMs: 60000,
+      hasLocalTerminal: false,
+      escalate: () => generateId(),
+    },
+    f.sessionId,
+  );
+  const coordinator = new ImageInsertionCoordinator(
+    f.service,
+    () => promptUpFor(gate, undefined) !== null,
+  );
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  const reference = prepare().referencePath();
+  const earlier = f.pty.submitInput('EARLIER');
+  const pending = coordinator.handle(f.owner.id, request);
+  const hook = gate.resolvePermission({
+    session_id: f.harnessSessionId,
+    transcript_path: join(f.home, 'transcript.jsonl'),
+    cwd: f.home,
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'echo insertion-coordinator-control' },
+  });
+  let refused: Awaited<typeof pending>;
+  try {
+    expect(promptUpFor(gate, undefined)).toBe('held');
+    await earlier;
+    refused = await pending;
+    expect(refused.outcome).toBe('refused');
+    expect(refused.code).toBe('prompt_up');
+    expect(f.output()).not.toContain(reference);
+  } finally {
+    gate.forceRelease('test cleanup');
+    await hook;
+    gate.noteTerminalEscape();
+  }
+  expect(await coordinator.handle(f.owner.id, request)).toBe(refused);
+  const fresh = await coordinator.handle(f.owner.id, { ...request, id: generateId() });
+  expect(fresh.outcome).toBe('inserted');
+  await pollUntil(() => f.output().includes(reference), 1000, 'released insertion echo');
+  expect(f.output().split(reference)).toHaveLength(2);
+});
+
+for (const change of [
+  'grant',
+  'reattach',
+  'binding',
+  'exit',
+  'file',
+  'coordinator-close',
+] as const) {
+  test(`queued actual ${change} invalidates coordinator before any image write`, async () => {
+    const { f, result: staged, prepare } = await stagedForInsertion();
+    const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+    cleanup.push(async () => coordinator.close());
+    const request = insertionRequest(f, staged.artifactId);
+    const reference = prepare().referencePath();
+    const earlier = f.pty.submitInput('EARLIER');
+    const pending = coordinator.handle(f.owner.id, request);
+    const observed = Promise.allSettled([earlier, pending]);
+    if (change === 'grant') {
+      expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
+      await f.store.addAuthorizedKey(f.owner.identity.publicKey, 'regranted');
+    } else if (change === 'reattach') {
+      f.registry.detachConnection(f.owner.id);
+      expect(f.registry.attachConnection(f.sessionId, f.owner.id).success).toBe(true);
+    } else if (change === 'binding') f.binding.update(f.sessionId, generateId());
+    else if (change === 'exit') await f.pty.close();
+    else if (change === 'coordinator-close') coordinator.close();
+    else {
+      renameSync(reference, `${reference}.original`);
+      writeFileSync(reference, 'actual replacement', { mode: 0o600 });
+      cleanup.push(async () => {
+        rmSync(reference);
+        renameSync(`${reference}.original`, reference);
+      });
+    }
+    const outcomes = await observed;
+    const outcome = outcomes[1];
+    expect(outcome?.status).toBe('fulfilled');
+    if (outcome?.status !== 'fulfilled') throw new Error('Missing coordinator outcome');
+    expect(outcome.value.outcome).toBe('refused');
+    expect(outcome.value.code).toBe(change === 'binding' ? 'binding_changed' : 'unavailable');
+    expect(f.output()).not.toContain(reference);
+    expect((await coordinator.handle(f.owner.id, request)).outcome).toBe('refused');
+    expect(f.output()).not.toContain(reference);
+  });
+}
+
+test('cached insertion results disclose nothing to a foreign socket or a revoked original grant', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  expect((await coordinator.handle(f.owner.id, request)).outcome).toBe('inserted');
+  const foreign = await f.client();
+  const unknown = await coordinator.handle(foreign.id, request);
+  expect(unknown.outcome).toBe('refused');
+  expect(unknown.code).toBe('unavailable');
+  expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
+  const revoked = await coordinator.handle(f.owner.id, request);
+  expect(revoked.code).toBe('unavailable');
+  const changed = await coordinator.handle(f.owner.id, { ...request, artifactId: 'A'.repeat(22) });
+  expect(changed.code).toBe('unavailable');
+});
+
+test('actual closed terminal after retirement records uncertain and no fresh ID can replay it', async () => {
+  const { f, result: staged, prepare } = await stagedForInsertion();
+  const reference = prepare().referencePath();
+  const process = Reflect.get(f.pty, 'process') as { terminal?: { close(): void } };
+  if (!process.terminal) throw new Error('Actual fixture terminal missing');
+  const terminal = process.terminal;
+  const coordinator = new ImageInsertionCoordinator(f.service, () => {
+    terminal.close();
+    return false;
+  });
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  const delivered = await coordinator.handle(f.owner.id, request);
+  const attempts = Reflect.get(coordinator, 'attempts') as Map<
+    string,
+    { result: Promise<import('@remi/shared').ImageInsertResult> }
+  >;
+  const attempt = attempts.get(`${f.owner.id}:${request.id}`);
+  if (!attempt) throw new Error('Actual possible-write outcome missing');
+  const recorded = await attempt.result;
+  expect(recorded.outcome).toBe('uncertain');
+  expect(recorded.code).toBe('delivery_unknown');
+  // Exit can end delivery authority; it cannot restore the possible-write lease.
+  expect(['uncertain', 'refused']).toContain(delivered.outcome);
+  expect(f.output()).not.toContain(reference);
+  expect((await coordinator.handle(f.owner.id, request)).outcome).not.toBe('inserted');
+  expect((await coordinator.handle(f.owner.id, { ...request, id: generateId() })).outcome).toBe(
+    'refused',
+  );
+  expect(f.output()).not.toContain(reference);
+});
+
+test('actual held-hook attempts stop at128; expired artifacts free correlations for a new staged image', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const gate = new AutoApproveGate(
+    {
+      sessionRegistry: f.registry,
+      isInSubagentContext: () => false,
+      holdMs: 60000,
+      hasLocalTerminal: false,
+      escalate: () => generateId(),
+    },
+    f.sessionId,
+  );
+  const coordinator = new ImageInsertionCoordinator(
+    f.service,
+    () => promptUpFor(gate, undefined) !== null,
+  );
+  cleanup.push(async () => coordinator.close());
+  const hook = gate.resolvePermission({
+    session_id: f.harnessSessionId,
+    transcript_path: join(f.home, 'transcript.jsonl'),
+    cwd: f.home,
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'echo insertion-attempt-bound' },
+  });
+  try {
+    for (let i = 0; i < 128; i++) {
+      const response = await coordinator.handle(f.owner.id, insertionRequest(f, staged.artifactId));
+      expect(response.code).toBe('prompt_up');
+    }
+    const full = await coordinator.handle(f.owner.id, insertionRequest(f, staged.artifactId));
+    expect(full.code).toBe('busy');
+    expect((Reflect.get(coordinator, 'attempts') as Map<string, unknown>).size).toBe(128);
+    expect(f.output()).toBe('');
+  } finally {
+    gate.forceRelease('test cleanup');
+    await hook;
+    gate.noteTerminalEscape();
+  }
+  const transfers = Reflect.get(f.service, 'transfers') as Map<
+    string,
+    { artifact?: { id: string; expiresAt: string } }
+  >;
+  const artifact = [...transfers.values()].find(
+    (row) => row.artifact?.id === staged.artifactId,
+  )?.artifact;
+  if (!artifact) throw new Error('Actual fixture artifact missing');
+  artifact.expiresAt = new Date(Date.now() - 1).toISOString();
+  const { bytes, accepted } = await start(f, 'fixture.jpg');
+  await chunks(f, accepted.transferId, bytes);
+  const next = await invoke(
+    f.service,
+    f.owner.id,
+    operation(f, accepted.transferId, 'image_upload_complete'),
+  );
+  if (next.type !== 'image_upload_result') throw new Error('Fresh actual image not staged');
+  const response = await coordinator.handle(f.owner.id, insertionRequest(f, next.artifactId));
+  expect(response.outcome).toBe('inserted');
+  expect((Reflect.get(coordinator, 'attempts') as Map<string, unknown>).size).toBe(1);
+}, 15000);
 
 test('actual detach and same-socket reattach cannot revive a captured insertion lease', async () => {
   const { f, prepare } = await stagedForInsertion();
@@ -965,4 +1433,21 @@ test('late type on oversized binary staging closes, while a large ordinary frame
     5000,
     'oversized staging close',
   );
+});
+
+test('equivalent reordered binding members replay the actual coordinator outcome', async () => {
+  const { f, result: staged } = await stagedForInsertion();
+  const coordinator = new ImageInsertionCoordinator(f.service, noPrompt);
+  cleanup.push(async () => coordinator.close());
+  const request = insertionRequest(f, staged.artifactId);
+  const first = await coordinator.handle(f.owner.id, request);
+  expect(first.outcome).toBe('inserted');
+  const reordered = {
+    ...request,
+    binding: {
+      harnessSessionId: request.binding.harnessSessionId,
+      harness: request.binding.harness,
+    },
+  };
+  expect(await coordinator.handle(f.owner.id, reordered)).toBe(first);
 });

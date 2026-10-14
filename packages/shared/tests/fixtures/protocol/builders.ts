@@ -18,6 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import { identityFromClaudeId } from '../../../src/harness.ts';
+import { decodeImageInsertionFrame } from '../../../src/image-insertion.ts';
 import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
 import {
   createAck,
@@ -276,7 +277,21 @@ function imageVector<K extends Extract<keyof ProtocolMessageMap, `image_upload_$
   return message as ProtocolMessageMap[K];
 }
 
+function insertionVector<K extends 'image_insert_request' | 'image_insert_result'>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../image-insertion/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeImageInsertionFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict insertion fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  image_insert_request: () => insertionVector('image_insert_request'),
+  image_insert_result: () => insertionVector('image_insert_result'),
   image_upload_begin: () => imageVector('image_upload_begin'),
   image_upload_accepted: () => imageVector('image_upload_accepted'),
   image_upload_chunk: () => imageVector('image_upload_chunk'),

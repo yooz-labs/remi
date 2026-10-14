@@ -1,14 +1,25 @@
 /** ADR 0041 wire codec; no authority, transfer, image decode or storage effects. */
-import { fromB64u, fromUtf8, utf8 } from './relay/bytes.ts';
-import { parseStrictJson } from './relay/strict-json.ts';
+import {
+  type Guard,
+  IMAGE_WIRE_LIMITS,
+  binding,
+  date,
+  encoded,
+  exact,
+  imageWireValue,
+  integer,
+  scalarJson,
+  uuid,
+  uuid4,
+} from './image-wire.ts';
 
 export const IMAGE_STAGING_CAPABILITY = 'image_staging';
 export const IMAGE_STAGING_LIMITS = {
-  frameBytes: 65536,
+  frameBytes: IMAGE_WIRE_LIMITS.frameBytes,
   imageBytes: 10485760,
   chunkBytes: 32768,
   maxSequence: 319,
-  bindingBytes: 200,
+  bindingBytes: IMAGE_WIRE_LIMITS.bindingBytes,
 } as const;
 export const IMAGE_STAGING_REFUSAL_CODES = [
   'malformed',
@@ -113,46 +124,6 @@ export type ImageStagingIngressResult =
   | { kind: 'malformed'; correlation: ImageStagingCorrelation }
   | { kind: 'uncorrelatable' };
 
-type Guard = (value: unknown) => boolean;
-const scalar = (value: string): boolean => fromUtf8(utf8(value)) === value;
-const uuid: Guard = (v) =>
-  typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v);
-const uuid4: Guard = (v) =>
-  uuid(v) &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v as string);
-const date: Guard = (v) =>
-  typeof v === 'string' &&
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(v) &&
-  new Date(v).toISOString() === v;
-const integer =
-  (min: number, max: number): Guard =>
-  (v) =>
-    typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
-const encoded =
-  (min: number, max: number): Guard =>
-  (value) => {
-    if (typeof value !== 'string' || value.length > Math.ceil((max * 4) / 3)) return false;
-    const bytes = fromB64u(value);
-    return bytes.length >= min && bytes.length <= max;
-  };
-const exact = (value: unknown, fields: Record<string, Guard>): value is Record<string, unknown> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const object = value as Record<string, unknown>;
-  if (Object.keys(object).length !== Object.keys(fields).length) return false;
-  return Object.entries(fields).every(
-    ([key, guard]) => Object.prototype.hasOwnProperty.call(object, key) && guard(object[key]),
-  );
-};
-const binding: Guard = (v) =>
-  exact(v, {
-    harness: (h) => h === 'claude',
-    harnessSessionId: (s) =>
-      typeof s === 'string' &&
-      s.length > 0 &&
-      scalar(s) &&
-      utf8(s).length <= IMAGE_STAGING_LIMITS.bindingBytes &&
-      !/[\u0000-\u001f\u007f-\u009f]/.test(s),
-  });
 const transfer = encoded(16, 16);
 const length = integer(1, IMAGE_STAGING_LIMITS.imageBytes);
 const sequence = integer(0, IMAGE_STAGING_LIMITS.maxSequence);
@@ -220,17 +191,10 @@ function validated(value: unknown): ImageStagingMessage | null {
   if (type === 'image_upload_result' && object['artifactId'] === object['transferId']) return null;
   return object as unknown as ImageStagingMessage;
 }
-function imageStagingValue(input: string | Uint8Array): unknown {
-  if (typeof input !== 'string' && !(input instanceof Uint8Array)) return null;
-  if (input.length > IMAGE_STAGING_LIMITS.frameBytes) return null;
-  const text = typeof input === 'string' ? input : fromUtf8(input);
-  if (!scalar(text) || utf8(text).length > IMAGE_STAGING_LIMITS.frameBytes) return null;
-  return parseStrictJson(text, IMAGE_STAGING_LIMITS.frameBytes);
-}
 /** Bounds raw input before JSON parsing. Shape validity grants no transfer authority. */
 export function decodeImageStagingFrame(input: string | Uint8Array): ImageStagingMessage | null {
   try {
-    return validated(imageStagingValue(input));
+    return validated(imageWireValue(input));
   } catch {
     return null;
   }
@@ -255,14 +219,6 @@ function requestOperation(value: unknown): value is ImageStagingOperation {
     value === 'image_upload_cancel'
   );
 }
-// The strict parser bounds depth/nodes; also reject escaped lone surrogates in invalid fields/keys.
-function scalarJson(value: unknown): boolean {
-  if (typeof value === 'string') return scalar(value);
-  if (Array.isArray(value)) return value.every(scalarJson);
-  if (value && typeof value === 'object')
-    return Object.entries(value).every(([key, item]) => scalar(key) && scalarJson(item));
-  return true;
-}
 function correlationTransfer(value: unknown): string | null {
   try {
     return transfer(value) ? (value as string) : null;
@@ -273,7 +229,7 @@ function correlationTransfer(value: unknown): string | null {
 /** Dedicated request ingress only; syntax/envelope ambiguity never falls back to legacy parsing. */
 export function decodeImageStagingIngress(input: string | Uint8Array): ImageStagingIngressResult {
   try {
-    const value = imageStagingValue(input);
+    const value = imageWireValue(input);
     if (!value || typeof value !== 'object' || Array.isArray(value) || !scalarJson(value))
       return { kind: 'uncorrelatable' };
     const object = value as Record<string, unknown>;

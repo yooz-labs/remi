@@ -6,6 +6,8 @@ export interface ImageInsertionLease {
   readonly expiresAt: string;
   /** Whether this lease crossed the possible-write boundary, even if the sink subsequently failed. */
   readonly possibleWrite: boolean;
+  /** Current original authority/file only, including after retirement; this never allows another write. */
+  assertCurrent(): void;
   referencePath(): string;
   /** Call only at the actual serialized effect, before its first possible terminal write. */
   retire(expectedReference: string, promptUp: () => boolean): void;

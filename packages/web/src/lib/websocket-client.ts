@@ -7,7 +7,16 @@
 import type { ConnectionStatus } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
-import { isImageStagingCandidate } from '../../../shared/src/image-staging-ingress.ts';
+import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from '../../../shared/src/image-insertion.ts';
+import {
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+} from '../../../shared/src/image-staging-ingress.ts';
 import type {
   ImageStagingMessage,
   ImageStagingRequest,
@@ -71,6 +80,7 @@ export interface WebSocketClientEvents {
   onMessage?: (message: ProtocolMessage) => void;
   /** Called only for strictly decoded daemon-to-client image staging messages. */
   onImageStagingMessage?: (message: ImageStagingResponse) => void;
+  onImageInsertionMessage?: (message: ImageInsertResult) => void;
   /** Called on error */
   onError?: (error: Error) => void;
   /**
@@ -256,6 +266,8 @@ export class WebSocketClient {
 
     try {
       const ws = new WebSocket(this.currentUrl);
+      // Strict image codecs inspect original binary bytes instead of bypassing Blob frames.
+      ws.binaryType = 'arraybuffer';
       this.ws = ws;
       this.imageStagingGeneration = Object.freeze({});
 
@@ -358,6 +370,19 @@ export class WebSocketClient {
     }
   }
 
+  /** Strict direct draft request; never includes a submit/Enter. */
+  sendImageInsertion(request: ImageInsertRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+    try {
+      ws.send(encodeImageInsertionFrame(request));
+      return true;
+    } catch {
+      this.handleError(new Error('Unable to send image draft request'));
+      return false;
+    }
+  }
+
   /** Handle WebSocket open */
   private handleOpen(source: WebSocket): void {
     if (this.ws !== source) return;
@@ -449,6 +474,21 @@ export class WebSocketClient {
           this.events.onImageStagingMessage?.(message as ImageStagingResponse);
         } catch {
           this.handleError(new Error('Image staging response handler failed'));
+        }
+        return;
+      }
+
+      if (raw !== null && isImageInsertionCandidate(raw)) {
+        const message = decodeImageInsertionFrame(raw);
+        if (!message || message.type !== 'image_insert_result') {
+          this.handleError(new Error('Invalid image insertion response'));
+          source.close(1002, 'Invalid image insertion response');
+          return;
+        }
+        try {
+          this.events.onImageInsertionMessage?.(message);
+        } catch {
+          this.handleError(new Error('Image insertion response handler failed'));
         }
         return;
       }
