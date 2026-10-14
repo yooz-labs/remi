@@ -499,8 +499,9 @@ supported compiled cells pass 123 groups with unchanged source, clean runtime
 temp and no cleanup errors, using the predecessor's 256 MiB/64-PID Linux envelope.
 Independent review found only stale caller banners in three touched storage
 modules; those descriptions are corrected in this same change.
-The corrected exact-path model check, managed insertion retirement, shared
-vectors, handler/client integration and native conformance remain subsequent gates.
+The subsequent corrected exact-path model check passed, as recorded below.
+Managed insertion retirement, shared vectors, handler/client integration and
+native conformance are separate subsequent gates.
 
 ## Image insertion: corrected CLI route and internal lease
 

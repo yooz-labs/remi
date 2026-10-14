@@ -57,7 +57,7 @@ add a row below.
 | [0039](0039-machine-object-on-the-wire.md) | Machine descriptor on hello and lists: existing relay room ID, shared bounded pairing name, connection-scoped version/harnesses/capabilities, session machine IDs, and native alias/pin handoff |
 | [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
 | [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; `image_staging` availability waits for production handler/caller conformance |
-| [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: two messages and separate capability, guarded no-Enter write, one possible insertion per artifact and an expiring unsent draft; corrected CLI route and production caller gates remain |
+| [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; internal guarded no-Enter lease, one possible insertion per artifact and an expiring unsent draft; coordinator, shared wire, production handler/client and native conformance gates remain |
 
 ## By area
 
