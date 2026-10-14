@@ -58,6 +58,7 @@ add a row below.
 | [0040](0040-supported-host-platforms.md) | Supported hosts: Apple Silicon macOS, Linux ARM64 and Linux x86_64; three distribution targets and six two-version Bun executions |
 | [0041](0041-direct-image-staging.md) | Accepted direct PNG/JPEG staging contract: nine exact message shapes, correlated writes/results, current device/grant/session/binding, existing upload/storage bounds and cleanup/retry policy; direct staging and web caller validated; native conformance remains separate |
 | [0042](0042-claude-image-insertion.md) | Accepted explicit Claude image-reference insertion: corrected CLI route passed; guarded one-write lease/coordinator, strict signed-direct dispatch and explicit expiring web draft caller validated; native conformance remains separate |
+| [0044](0044-explicit-browser-link-forwarding.md) | Proposed explicit selected-client browser-link forwarding; existing transcript anchors are reused, with no automatic open or host fetch; owner review precedes contract freeze and implementation |
 
 ## By area
 

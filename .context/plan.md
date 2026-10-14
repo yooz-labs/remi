@@ -6,6 +6,8 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
 
 ## Where things stand
 
+- **Next file-tunnel phase (#1170 T2):** ordinary transcript links already open explicitly. Proposed [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) continues the existing BROWSER-forwarding plan with exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. It registers no wire or capability and implements no handler. Owner acceptance and the actual producer/launcher path precede adoption; Codex producer support, relay delivery, native conformance and file downloads remain separate.
+
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
   and future distribution scope.
