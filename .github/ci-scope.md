@@ -609,3 +609,41 @@ during measurement. Profiled elapsed time was 818.73 seconds at baseline and
 measurements, not hosted job times. No unprofiled baseline/candidate pair was
 run, so they do not establish an unprofiled speedup. The full profile receipts
 are stored with the 2026-10-13 S1 CI efficiency artifacts.
+
+## Completed soak evidence reuse (#1206)
+
+The initial source gate remains required. After the new head's short relay
+controls pass, the relay job may reuse an earlier actual 61-minute measurement
+for the same repository, PR, branch, declared base and effective checkout base.
+The producer head must be a strict ancestor, and the unchanged classifier must
+classify that intervening delta with explicit `relay_soak=false`. There is no
+new dormant-module or test-directory exemption. All ordinary gates and fresh
+short controls remain selected exactly as before; only the hour may be reused.
+
+Admission requires completed successful run/attempt/job metadata and successful
+actual short and long steps, not a green scoped skip. A bounded JSON producer
+receipt binds the tested checkout/tree/parents, policy inventory, runner image
+and Bun identity. It is written only after both actual steps succeed. Its exact
+attempt-specific artifact must match GitHub's digest, run/head/repository and
+non-expiry metadata. The consumer parses one bounded JSON member without
+extracting or executing artifacts. Prior reused/skipped/cancelled runs cannot
+become producers. The reused run, artifact and digest are reported explicitly;
+the current head does not claim another hour measurement.
+
+The complete validator inventory must agree at protected base, prior head and
+current checkout, including the current executing bytes. Existing checkout,
+public-object and dirty/untracked-input guards still apply. Main/manual events,
+forks, base advancement, policy/toolchain/runtime/unknown-test changes, missing
+objects or unavailable trust facts retain the original long gate. Lookup reads
+at most 20 completed runs and three plausible candidates, within 30 seconds,
+with no retry/wait loop. Expected evidence misses preserve the original flag;
+unexpected helper failure fails the job before the soak. No cache lookup can
+activate a runtime gate that scope had already skipped.
+
+**Rollout status:** offline Git/ZIP/metadata eligibility and refusal controls
+are configuration tests, not a successful live producer fixture. The initial
+policy PR runs its real relevant gate and may emit a genuine receipt, but its
+policy differs from protected base and cannot self-qualify reuse. First live
+reuse acceptance belongs to the first later eligible PR after this policy
+lands. No backfill, docs-only follow-up on the initial PR, measured savings or
+completed live reuse pair is claimed. #1206 remains open for that acceptance.
