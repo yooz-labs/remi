@@ -1,6 +1,6 @@
 # ADR 0043: Structured chat submissions
 
-Status: proposed contract; connected direct and relay implementations under validation.
+Status: connected direct and relay contract implemented; native conformance/UI remain separate.
 Date: 2026-10-13 Pacific.
 Issue: #1207.
 
@@ -11,7 +11,7 @@ The existing input ACK precedes its handler, so it cannot establish submission.
 The internal writer returns accepted/refused/uncertain without a PTY fallback or per-turn policy overrides.
 A generic chat write also needs bounded duplicate handling: evicting an old request ID must not authorize running old input again.
 
-## Proposed contract
+## Connected contract
 
 A request names the exact Remi session and Codex thread, carries a fresh UUID and a positive sequence, and contains at most 16 KiB of nonblank scalar UTF-8 text with no NUL.
 The sequence starts at one for each concrete connection/Remi-session pair.
@@ -69,7 +69,7 @@ Post-admission close and controlled delivery exceptions remain uncertain without
 Its private account is null, its owned process is reaped, and its private profile is removed.
 This is local admission evidence, not model completion, a Remi authenticated route or permission enforcement.
 
-Completion of1207 requires independent contract/component review, strict runtime routing and total conformance, actual harness caller, authenticated direct and separately relay paths, rendered App UI, fresh hub first-turn binding and separately approved model acceptance.
+Backend acceptance includes independent contract/component review, strict runtime routing and total conformance, the actual harness caller, authenticated direct and separately relay paths, rendered web UI, fresh hub first-turn binding and the separately approved bounded model observation described in the connected chat guide.
 Native contract conformance/UI remain with the Xcode developer.
 The exported installed Thread schema omitted environments, but the later actual native TUI frame included one environment and the existing production parser/tracker bound that exact thread.
 No discovery guard was relaxed from the schema-only concern.
@@ -127,4 +127,4 @@ The original installed-server control reproduced refusal while native turn/start
 Actual Worker, hub, capability child, installed accountless Codex and shipping web transport controls cover exact override-free RPCs, cached/conflicting requests, binding/attachment changes, revocation/enrollment restoration and child-owner loss.
 Rendered App checks cover phone/tablet/desktop submission and a measured 15-second paused-hub timeout, retained uncertainty, explicit reconnect and new input after real native systemError.
 These establish routing/admission and UI behavior with account=null and an inert PTY, not provider completion or OS sandbox enforcement.
-Final hosted checks, independent relay review and native conformance/UI remain separate gates; #1207 remains open.
+The reviewed combined direct/relay implementation landed through #1507 at merge `49094b025b18e4156bd834c7a4b607504cbb1a91`. Its actual hosted suite passed 9,808 tests with 30 skips and zero failures, 91.79% line coverage and the actual 61-minute relay gate. Earlier direct-head timeouts remain unresolved evidence, not a diagnosed or fixed hang. Native conformance/UI and device acceptance remain separate; #1207 stays open. The [native handoff](../../docs/codex-remote-chat.md#native-integration-handoff) lists the client requirements.

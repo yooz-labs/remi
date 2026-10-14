@@ -2,15 +2,13 @@
  * A daemon's session list (#1274): its own sessions, each named by its harness (#1179), and, when
  * asked, the Claude transcripts on disk that no session here manages.
  *
- * Both ways a daemon sends its list build it here: the answer to `session_list_request`
- * (`session-events.ts`) and the live-sessions broadcast sent when the set of sessions on the
- * machine changes while another daemon runs (`collectLiveSessionsUpdate` in `cli.ts`). Before
- * #1274 only the first named the harness, so after a broadcast a Codex session read as Claude
- * until the next request.
+ * Every list uses this builder: the requested list, the live-sessions census and a changed
+ * workspace read (#1285). Before #1274 only the requested list named the harness, so after a
+ * broadcast a Codex session read as Claude until the next request.
  */
 
-import { errorToString } from '@remi/shared';
-import type { DiscoverableSession, UUID } from '@remi/shared';
+import { createSessionListResponse, errorToString, generateId } from '@remi/shared';
+import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { logError } from '../logger.ts';
@@ -34,6 +32,36 @@ export interface SessionList {
   readonly own: DiscoverableSession[];
   /** Claude transcripts on disk that no session here manages; empty unless asked for. */
   readonly external: DiscoverableSession[];
+}
+
+/** The same current list sent after an existing workspace read changes (#1285). */
+export function broadcastWorkspaceChange(
+  deps: Omit<SessionListDeps, 'sessionRegistry'> & {
+    readonly sessionRegistry: SessionListDeps['sessionRegistry'] &
+      Pick<SessionRegistry, 'getSession'>;
+    readonly currentPort: () => number;
+    readonly getLivePorts: () => readonly number[];
+    readonly machine?: () => MachineDescriptor | undefined;
+    readonly broadcast: (message: ProtocolMessage) => void;
+  },
+  directory: string,
+): void {
+  // A read may finish after its session closed. Do not push unrelated entries for that old read.
+  if (
+    !deps.sessionRegistry
+      .getActiveSessionIds()
+      .some((id) => deps.sessionRegistry.getSession(id)?.workingDirectory === directory)
+  )
+    return;
+  const { own, external } = buildSessionList(deps, true);
+  deps.broadcast(
+    createSessionListResponse(
+      [...own, ...external],
+      generateId(),
+      deps.getLivePorts().filter((port) => port !== deps.currentPort()),
+      deps.machine?.(),
+    ),
+  );
 }
 
 /** The daemon's list: its own sessions, and the external transcripts when `includeExternal`. */

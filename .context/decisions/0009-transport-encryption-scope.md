@@ -1,8 +1,21 @@
 # ADR 0009: Transport encryption applies to the relay only, never to direct connections
 
-**Status:** accepted
+**Status:** accepted; amended 2026-10-14 for new link/download features by ADRs 0044/0045
 **Date:** 2026-07-28
 **Owner:** Yahya
+
+## 2026-10-14 amendment: new direct links and downloads
+
+The owner requires HTTPS/WSS, with the existing signed device authentication,
+before the first direct browser-link and file-download release (ADRs
+[0044](0044-explicit-browser-link-forwarding.md) and
+[0045](0045-direct-file-download.md)). Full relay tunneling follows.
+This supersedes the direct-transport exemption below for those new features.
+The current daemon has no TLS listener, and existing direct `ws://` connections
+remain unencrypted by Remi. Do not advertise the new features before the secure
+transport and actual shipping caller pass their own acceptance.
+
+The original decision and its historical source references follow.
 
 ## Context
 

@@ -29,8 +29,8 @@ CI_BUN_DIAGNOSTIC_INPUTS = (
 )
 CI_BUN_DIAGNOSTIC_CALLERS = {
     ".github/workflows/ci.yml": ("100644", "0e73aeb9b57b0645311076f5a7743bd4e149364f"),
-    ".github/scripts/workflow-scope.py": ("100644", "bb1a012124eb49d5a9a914cac6930c071b3a40a0"),
-    ".github/scripts/workflow-contracts.json": ("100644", "c3425e31119003f1bd4e9f69d0c8b2557834f968"),
+    ".github/scripts/workflow-scope.py": ("100644", "8b6b63d472069400bbae9c2688d50be4eb9e5c60"),
+    ".github/scripts/workflow-contracts.json": ("100644", "a5e4607e38aa3d6dc0d89723771426b91a62d262"),
     "packages/daemon/tests/ci-coverage-threshold.test.ts": (
         "100644", "0187211bf0bbcd35937b7fe9d57cfebbba551a78",
     ),
@@ -46,6 +46,44 @@ HOOK_TEST_COMMENTS = {
         "2f070d8de7da9247e8dc153f211dad76732b5d33", 10,
         " * at it exactly like `hook-server.test.ts` does, and exits; the parent test",
     ),
+}
+# Exact unit-test producers outside the reviewed R7 runner, never a test-directory exemption (#1516).
+ISOLATED_TEST_INPUTS = {
+    "packages/daemon/tests/cli/attach-client.test.ts": {},
+    "packages/daemon/tests/harness/claude-session.test.ts": {
+        "packages/daemon/tests/cli/log-guard-wiring.test.ts": (
+            "86546f0dfd548ee9bfcf7a4953f34eec46f5b4cb", 4,
+            " * `claude-session.test.ts` does); the debug sinks are tested by behavior in",
+        ),
+        "packages/daemon/tests/cli/push-token-refresh-wiring.test.ts": (
+            "8eaef6d033da636805e2d95b4b2e5669284b5801", 6,
+            " * `cli.ts` wiring by its source (as `claude-session.test.ts` does).",
+        ),
+        "packages/daemon/tests/notifications/claude-turn-stop.test.ts": (
+            "47fb9decbddd0a3556acbf326294228d08f85d35", 10,
+            " * filter's answer (what the harness says; its own tests are `harness/claude-session.test.ts`) and",
+        ),
+        "packages/daemon/tests/notifications/turn-failed.test.ts": (
+            "b9e41ede3f4c83341f69c84686586f4eb5951c8e", 581,
+            "       *  is covered through the real Worker in claude-session.test.ts; this pins only which",
+        ),
+    },
+    "packages/daemon/tests/server/origin-policy.test.ts": {
+        "packages/daemon/tests/websocket-server.test.ts": (
+            "bb6a7aa9f014839b6e7d87aa5385ef3970522041", 124,
+            "    // tests/server/origin-policy.test.ts.",
+        ),
+    },
+    "packages/web/tests/lib/push-answer-relay.test.ts": {},
+}
+ISOLATED_TEST_RUNNERS = {
+    ".github/workflows/relay-r7.yml": "9fa98da60f588ba52b7af22f6e09db8003e60700",
+    "bunfig.toml": "3cdd70fa50576ab11b0ca1d8faeac951c3786196",
+    "packages/daemon/tests/debug/test-harness-marker.ts": "e0e598b09ea569730495b91e42a485e0541fafd2",
+    "packages/daemon/tests/unset-remi-home.ts": "5183f291018ec6e71d63708c35edcaddc926eb09",
+    "packages/signaling/tests/e2e/harness.ts": "df152a92fd95d8dcfd5176e79c3110aa7b500628",
+    "packages/signaling/tests/e2e/test-entry.ts": "be546df77024a1e7e3a32023ac53e5175627f526",
+    "tests/integration/relay-r7-portability.test.ts": "8a72829ad961a187d6af82d3976dd3cee8e9e2ef",
 }
 # Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
 STAGING_SOURCE = "packages/shared/src/image-staging.ts"
@@ -694,6 +732,96 @@ CI_TOOLS = {
 
 
 # #1476 public reconstruction inputs only; candidate head objects are reconstructed by the corpus.
+# One exact reviewed additive codec transition; barrel initialization is pure, not absent.
+SOAK_CODEC_SOURCE_ROOT = '40153a63a41214c5c9b7fafef3ef369e6a348817'
+SOAK_CODEC_CANDIDATE_ROOT = '0d9f6448a536e385511b72484122852ff2a0cdf3'
+SOAK_CODEC_TRANSITION = {'packages/shared/src/browser-links.ts': {'head': ['100644', 'c590eb3e2241dac1af8db1540e9354dc506a6e69'],
+                                          'original': None},
+ 'packages/shared/src/file-download.ts': {'head': ['100644', 'e5c20b304b63682d9f2d7d6fe88a37c8de72bf47'],
+                                          'original': None},
+ 'packages/shared/src/index.ts': {'head': ['100644', 'e7bf540fdff0e6880db0ca7f5addbd7e40a9fb71'],
+                                  'original': ['100644', '270f2a35222a30ef3bcc7c973008e71fb259d1a6']},
+ 'packages/shared/tests/browser-links.test.ts': {'head': ['100644',
+                                                          'a27d44e8bbc15937dc28c90a976320fade993c7e'],
+                                                 'original': None},
+ 'packages/shared/tests/file-download.test.ts': {'head': ['100644',
+                                                          '22267e95c8e87c619a8cbd7f260f470f4d0427f0'],
+                                                 'original': None},
+ 'packages/shared/tests/fixtures/browser-links/vectors.json': {'head': ['100644',
+                                                                        '664b406c06bd46c530d08fc9d7fd261ee2319e0d'],
+                                                               'original': None},
+ 'packages/shared/tests/fixtures/file-download/vectors.json': {'head': ['100644',
+                                                                        '99e8d05a40b4227a7d839c8440e33fa88b0ff8cc'],
+                                                               'original': None}}
+SOAK_CODEC_CORE = {'.github/workflows/ci.yml': ['100644', '0e73aeb9b57b0645311076f5a7743bd4e149364f'],
+ '.github/workflows/relay-r7.yml': ['100644', '9fa98da60f588ba52b7af22f6e09db8003e60700'],
+ 'bun.lock': ['100644', '050863afa48b7cbb21fe70f36ee15457523c820a'],
+ 'bunfig.toml': ['100644', '3cdd70fa50576ab11b0ca1d8faeac951c3786196'],
+ 'packages/daemon/package.json': ['100644', 'db898b9c969f69b6a60561fae7e44b2e10690f9d'],
+ 'packages/daemon/src/entry.ts': ['100644', '9819108666d5c86a5543268ee5687c685be00905'],
+ 'packages/daemon/src/remote/child-proxy.ts': ['100644', 'a488247963f9261bc1798ef7b6c20064d4564728'],
+ 'packages/daemon/src/remote/hub-relay.ts': ['100644', '3ec391980cae797881f7febe06edc245603f940c'],
+ 'packages/daemon/src/server/client-message-events.ts': ['100644',
+                                                         '96ea695fa4193bef1cb69bc44a930aaafb84e8d5'],
+ 'packages/daemon/src/server/connection.ts': ['100644', 'daafac4147f69f87c58ce5af25473eaabfe87ac5'],
+ 'packages/daemon/src/session/session-registry.ts': ['100644', '77d217a3ff81a315a77fa08c7f86bfa7cb2c4fb8'],
+ 'packages/daemon/tests/debug/test-harness-marker.ts': ['100644', 'e0e598b09ea569730495b91e42a485e0541fafd2'],
+ 'packages/daemon/tests/unset-remi-home.ts': ['100644', '5183f291018ec6e71d63708c35edcaddc926eb09'],
+ 'packages/shared/package.json': ['100644', '8189dd3c4837465936e6d2402dc3bc4c4511c204'],
+ 'packages/shared/src/image-wire.ts': ['100644', 'e9e8e01bc4cd05306ceb203aa184038457159b95'],
+ 'packages/shared/src/protocol-version.ts': ['100644', '5019ca37cee1327db6ee288779d596b2e13a1816'],
+ 'packages/shared/src/protocol.ts': ['100644', 'eb65a418fbcf4cd5e2d807c7fac591643462dadf'],
+ 'packages/shared/src/relay/bytes.ts': ['100644', '9f44a6e8eaf73d74f0d5f118392204b260382511'],
+ 'packages/shared/src/relay/errors.ts': ['100644', '16836dc4edccef52c23df5b635c6b3c727bae4f5'],
+ 'packages/shared/src/relay/strict-json.ts': ['100644', '460e2ebaa82492b7fb2071e142474d6f4396191e'],
+ 'packages/shared/tests/relay/public-surface.test.ts': ['100644', 'fdb87a9bfc881a161fc7744bbcc0e9b6869d2549'],
+ 'packages/signaling/tests/e2e/endpoints.ts': ['100644', '95efbb070e2cae88b306fa9ea1aa50207e95b7e9'],
+ 'packages/signaling/tests/e2e/harness.ts': ['100644', 'df152a92fd95d8dcfd5176e79c3110aa7b500628'],
+ 'packages/signaling/tests/e2e/test-entry.ts': ['100644', 'be546df77024a1e7e3a32023ac53e5175627f526'],
+ 'packages/web/src/lib/relay-machine-channel.ts': ['100644', '7b6143b1048e762598ddb6015cd4e46f56838b88'],
+ 'packages/web/tests/helpers/relay-hub.ts': ['100644', 'c7cbf893b5cc3365952da29bed6403b32cda0d52'],
+ 'packages/web/tests/relay-r7-soak.test.ts': ['100644', '62563dd6a34518982397ca0cfb0c8f99a387b412'],
+ 'tests/integration/relay-r3-fixture.ts': ['100644', 'a467c8ac3e2ca1c32abffe35d6773cb87ae64761'],
+ 'tests/integration/relay-r3-retirement.test.ts': ['100644', 'a840a8095828b1192e1cb30ab4f662924fa78aa2']}
+SOAK_CODEC_VERSION_TRACE = {'package.json': '406d8dcec0c16794fbbf97d4d77b1030c856da213ec551a802f8d6dc31022168',
+ 'packages/daemon/src/cli.ts': '36fe4aacd5aec24c8c8bae02dd09392b1aa2ab9697a34b0be957451cde347764'}
+SOAK_CODEC_IDENTIFIERS = ('BROWSER_LINKS_CAPABILITY',
+ 'BROWSER_LINKS_LIMITS',
+ 'BROWSER_LINK_ENDED_REASONS',
+ 'BROWSER_LINK_RECEIVER_ACTIONS',
+ 'BROWSER_LINK_REFUSAL_CODES',
+ 'BrowserLinkBinding',
+ 'BrowserLinkCandidate',
+ 'BrowserLinkEndedReason',
+ 'BrowserLinkMessage',
+ 'BrowserLinkReceiverAction',
+ 'BrowserLinkReceiverEnded',
+ 'BrowserLinkReceiverRequest',
+ 'BrowserLinkReceiverResult',
+ 'BrowserLinkRefusalCode',
+ 'FILE_DOWNLOAD_LIMITS',
+ 'FILE_DOWNLOAD_OPERATIONS',
+ 'FILE_DOWNLOAD_REFUSAL_CODES',
+ 'FileDownloadBinding',
+ 'FileDownloadMessage',
+ 'FileDownloadOperation',
+ 'FileDownloadRefusalCode',
+ 'FileFetchAccepted',
+ 'FileFetchBegin',
+ 'FileFetchCancel',
+ 'FileFetchCancelResult',
+ 'FileFetchChunk',
+ 'FileFetchComplete',
+ 'FileFetchRead',
+ 'FileFetchRefused',
+ 'FileFetchResult',
+ 'decodeBrowserLinkFrame',
+ 'decodeFileDownloadFrame',
+ 'encodeBrowserLinkFrame',
+ 'encodeFileDownloadFrame',
+ 'normalizeBrowserLinkURL')
+SOAK_CODEC_TOKENS = ("browser-links", "file-download", "browser_link_", "browser_links", "file_fetch_")
+
 VALIDATION_PUBLIC_ROOTS = (
     "a0f0c8502a518aa41ef48145eef3b0cd87a1e593",
     "b9c2e49a0a5e02186737c041551f5548147b9938",
@@ -701,6 +829,8 @@ VALIDATION_PUBLIC_ROOTS = (
     "c1c71ef456d075bd11c6bc01d4648fe6ee24169d",
     "f22bf6e360a16a8c3ae7c1ae0fe9a49eea612ab7",
     SOAK_IMAGE_ENTRY_SOURCE_ROOT,
+    SOAK_CODEC_SOURCE_ROOT,
+    SOAK_CODEC_CANDIDATE_ROOT,
 )
 VALIDATION_PUBLIC_BLOBS = (
     "08c583da4b17c7844a5db98a978bc64ad69e6d37",
@@ -1003,6 +1133,72 @@ def hook_test_references_reviewed(base, head):
             # Scan whole known files too: only their single exact comment lines are permitted.
             if consumers.returncode != 0 or sorted(consumers.stdout.decode().splitlines()) != sorted(expected):
                 return False
+        return True
+    except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
+        return False
+
+
+def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=None):
+    """Keep ordinary gates for exact isolated tests; unknown consumers/metadata restore R7."""
+    try:
+        producers = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        self_tools = {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md"}
+        if not producers or any(path not in producers and path not in self_tools and not (
+                ordinary_soak_doc(path) and not path.startswith((".github/", ".rules/"))) for path in paths):
+            return False
+        for path in producers:
+            if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):
+                return False
+        surfaces = ("packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts")
+        inventories = {}
+        for ref in dict.fromkeys((base, head, merge_base)):
+            raw = git("ls-tree", "-r", "-z", ref, "--", *surfaces)
+            root = git("ls-tree", "-z", ref)
+            if not raw or not raw.endswith(b"\0") or not root or not root.endswith(b"\0"):
+                return False
+            entries = raw[:-1].split(b"\0")
+            for entry in root[:-1].split(b"\0"):
+                header, separator, _ = entry.partition(b"\t")
+                if not separator:
+                    return False
+                if not re.fullmatch(rb"040000 tree [0-9a-f]{40}", header):
+                    entries.append(entry)
+            tree = {}
+            for entry in entries:
+                header, separator, encoded_path = entry.partition(b"\t")
+                path = encoded_path.decode("utf-8", "strict")
+                if (not separator or not re.fullmatch(rb"100(?:644|755) blob [0-9a-f]{40}", header) or
+                        path in tree or any(part in ("", ".", "..") for part in path.split("/")) or
+                        any(ord(char) < 32 or ord(char) == 127 for char in path)):
+                    return False
+                mode, _, blob = header.decode("ascii", "strict").split()
+                tree[path] = (mode, blob)
+            for path in producers:
+                if tree.get(path, (None,))[0] != "100644":
+                    return False
+            pins = dict(ISOLATED_TEST_RUNNERS)
+            for producer in producers:
+                pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS[producer].items()})
+            if any(tree.get(path) != ("100644", blob) for path, blob in pins.items()):
+                return False
+            inventories[ref] = tree
+        # Git grep alone need not detect a corrupt unreferenced object. Read and hash the
+        # complete scanned blob population, with the existing bounded batch reader, each call.
+        validation_objects({blob: "blob" for tree in inventories.values() for _, blob in tree.values()})
+        for ref, tree in inventories.items():
+            roots = [f":(literal){path}" for path in tree if "/" not in path]
+            for producer in producers:
+                expected = [f"{ref}:{path}:{line}:{text}" for path, (_, line, text) in
+                            ISOLATED_TEST_INPUTS[producer].items()]
+                scan = subprocess.run(
+                    ["git", "grep", "-n", "-F", "--no-textconv", "-e", Path(producer).stem, ref, "--",
+                     *surfaces, *roots, f":(exclude){producer}",
+                     ":(exclude).github/scripts/ci-scope.py", ":(exclude).github/scripts/check-ci-scope.py"],
+                    capture_output=True, check=False,
+                )
+                if (scan.returncode != (0 if expected else 1) or
+                        sorted(scan.stdout.decode("utf-8", "strict").splitlines()) != sorted(expected)):
+                    return False
         return True
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
         return False
@@ -1756,9 +1952,12 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
     launch_paths = set(SOAK_LAUNCH_TRANSITION)
     decode_paths = set(SOAK_DECODE_TRANSITION)
     image_entry_paths = set(SOAK_IMAGE_ENTRY_TRANSITION)
+    codec_paths = set(SOAK_CODEC_TRANSITION)
     changed = set(paths)
     worker = False
-    if launch_paths <= changed:
+    if codec_paths <= changed:
+        name, policy = "Dormant browser/download codecs", SOAK_CODEC_TRANSITION
+    elif launch_paths <= changed:
         name, policy = "CLI-default", SOAK_LAUNCH_TRANSITION
     elif decode_paths <= changed:
         name, policy = "Dormant full-decoder", SOAK_DECODE_TRANSITION
@@ -1770,7 +1969,10 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
     else:
         return None
     required = set(policy)
-    if name == "Image worker entry":
+    if name == "Dormant browser/download codecs":
+        if any(not ordinary_soak_doc(path) for path in changed - required):
+            return None
+    elif name == "Image worker entry":
         allowed = required | SOAK_IMAGE_ENTRY_DOCS | {"packages/daemon/src/cli.ts"}
         if not required <= changed or not SOAK_IMAGE_ENTRY_DOCS <= changed or changed - allowed:
             return None
@@ -1809,7 +2011,9 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
                 return None
         # The image-entry transition uses its separately reviewed public source
         # baseline, which includes the already-published lock/package/support updates.
-        fixed = ({path: value for path, value in SOAK_IMAGE_ENTRY_CORE.items() if path not in required}
+        fixed = ({path: value for path, value in SOAK_CODEC_CORE.items() if path not in required}
+                 if name == "Dormant browser/download codecs" else
+                 {path: value for path, value in SOAK_IMAGE_ENTRY_CORE.items() if path not in required}
                  if name == "Image worker entry" else
                  {path: value for path, value in SOAK_TRANSITION_CORE.items() if path not in required})
         if name in {"Dormant full-decoder", "Image worker entry"}:
@@ -1825,7 +2029,12 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
                     if path not in exceptional and not ordinary_soak_doc(path)}
         if any(remaining(trees[ref]) != remaining(trees[merge_base]) for ref in trees):
             return None
-        if name == "Dormant full-decoder":
+        if name == "Dormant browser/download codecs":
+            if any(trees[ref].get(path) != trees[merge_base].get(path)
+                   for ref in trees for path in ("package.json", "packages/daemon/src/cli.ts")) or not all(
+                    soak_versions_reviewed(tree, SOAK_CODEC_VERSION_TRACE) for tree in trees.values()):
+                return None
+        elif name == "Dormant full-decoder":
             # Never admit the CLI feature mixed into this separate decoder transition.
             launch_role = None
             for role, trace in (("original", SOAK_VERSION_TRACE), ("head", SOAK_LAUNCH_VERSION_TRACE)):
@@ -1849,6 +2058,13 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
                 return None
         # Pins prove bytes only after successful type/size/UTF-8/NUL/object reads.
         # Known published .env.example is a public sample; actual secret-named files are refused unread.
+        if name == "Dormant browser/download codecs":
+            # Read/hash binary objects too; no content interpretation or secret file reads.
+            if any((Path(path).name.startswith(".env") and path != ".env.example") or
+                   Path(path).suffix.lower() in {".pem", ".key", ".p12"} or
+                   Path(path).name in {"credentials", "secrets.json"} for tree in trees.values() for path in tree):
+                return None
+            validation_objects({blob: "blob" for tree in trees.values() for _, blob in tree.values()})
         scan = {}
         for tree in trees.values():
             for path, (mode, blob) in tree.items():
@@ -1883,7 +2099,11 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
             content_by_blob[blob] = text
         if stream.read():
             return None
-        if name == "CLI-default":
+        if name == "Dormant browser/download codecs":
+            targets = {"packages/shared/src/browser-links.ts", "packages/shared/src/file-download.ts"}
+            identifiers = SOAK_CODEC_IDENTIFIERS
+            known = required
+        elif name == "CLI-default":
             targets = {"packages/daemon/src/cli/launch-harness.ts"}
             identifiers = ("resolveLaunchHarness", "isSessionLaunch", "HarnessConfig")
             known = required
@@ -1908,6 +2128,8 @@ def reviewed_launch_or_decode_only(base, head, merge_base, paths, status_lookup=
                         ordinary_soak_doc(path) or Path(path).suffix.lower() in STAGING_BINARY):
                     continue
                 text = content_by_blob[blob]
+                if name == "Dormant browser/download codecs" and any(token in text for token in SOAK_CODEC_TOKENS):
+                    return None
                 # Triple-slash declarations/config entry fields can contain literal relative asset paths.
                 asset_literals = re.findall(r"\b(?:path|entry|file)[\"']?\s*[:=]\s*[\"']([^\"'\n]+)[\"']", text)
                 if asset_literals:
@@ -1963,6 +2185,9 @@ def classify(base, head):
                     status_state["error"] = True
             return status_state["value"]
 
+        isolated_tests = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        if isolated_tests and not isolated_test_inputs_reviewed(base, head, merge_base, paths, changed_statuses):
+            return all_gates("Isolated test transition, reference or runner proof unavailable; running all gates")
         transition = reviewed_launch_or_decode_only(base, head, merge_base, paths, changed_statuses)
         if status_state["error"]:
             return all_gates("Diff status unavailable or malformed; running all gates")
@@ -2002,6 +2227,8 @@ def classify(base, head):
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path in CI_BUN_DIAGNOSTIC_INPUTS:
                 # This exact CI-only test producer retains every ordinary gate, not R7.
+                gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
+            elif path in isolated_tests:
                 gates.update(dict.fromkeys((key for key in GATES if key != "relay"), True))
             elif path == CI_COVERAGE_READER:
                 consumers = subprocess.run(

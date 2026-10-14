@@ -56,7 +56,7 @@ The hub (`remi serve`), every session daemon the hub starts, a wrapper (`remi`) 
 Writes (`remi authorize`, a key's last-used stamp, a pending key) take one interprocess lock.
 Reads take none, and rely on every write being an atomic rename.
 Authentication reads `authorized_keys.json` each time, with no cache.
-So a grant or a removal applies to the next fresh authentication, at the hub and at every session daemon, with no restart.
+So a grant or a removal applies to the next fresh authentication, at the hub and at every session daemon, with no restart. Authenticated direct connections also reread that grant before dispatching incoming operations and at their existing heartbeat tick (#1305).
 
 Run `remi authorize` as the same user, and with the same `REMI_HOME`, as the hub.
 A service installed with `remi --install` uses the installing user's `$HOME/.remi`.
@@ -228,10 +228,10 @@ A client that pinned the old one sees the change, which is its correct response 
   The next fresh authentication with that key is refused (`UNKNOWN_KEY`), and the key is pending again, so approving it again restores access.
   A removed key is not banned and has no memory.
   Signed HTTP answers (lock-screen taps) check the grant on every request.
-- **A connection that is already authenticated is not closed by a removal** (#1305).
-  That device keeps full access, including answering approval cards, until its socket closes.
-  The only way to end it today is to stop the daemon process that holds the socket.
-  `remi stop --all` stops the hub and every session daemon, so it also ends those sessions; this has not been exercised here against an open socket.
+- **An authenticated direct connection closes when its next operation or heartbeat finds the grant removed** (#1305).
+  The next incoming operation is refused before its domain callback runs. After hello completes, a silent connection closes at its next existing ping tick (30 seconds by default, plus event-loop scheduling delay). A peer still waiting for hello retains the existing handshake deadline.
+  The existing `CLOSING` error says "Device authorization removed; local approval required"; an unreadable grant store closes with "Device authorization unavailable; reconnect required". The normal disconnect path releases connection resources.
+  Local capability connections keep their separate admission, and relay authority remains hub-owned. Already accepted operations keep their existing cancellation semantics. A key removed and reauthorized entirely between checks may keep its existing socket.
 - **Rotate:** a new device, or a restore onto one, has a new key with a new fingerprint.
   The old grant does not carry over and is not removed.
   Approve the new key, then remove the old one.

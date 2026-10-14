@@ -969,7 +969,8 @@ def validation_controls():
             git("config", "user.name", "Owned validator scope control")
             git("config", "user.email", "test@example.com")
             git("fetch", "--quiet", "--no-tags", str(original), source_parent)
-            git("fetch", "--quiet", "--no-tags", str(original), module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"])
+            git("fetch", "--quiet", "--no-tags", str(original), module["SOAK_IMAGE_ENTRY_SOURCE_ROOT"],
+                module["SOAK_CODEC_SOURCE_ROOT"], module["SOAK_CODEC_CANDIDATE_ROOT"])
 
             def tree(parent, updates=(), removals=()):
                 git("read-tree", parent)
@@ -1443,6 +1444,445 @@ def reuse_controls():
             count += 1
         else:
             raise AssertionError(("reuse workflow refusal", mutation))
+
+
+def isolated_test_controls():
+    """Separate #1516 controls over real owned Git histories; no existing count/order changes."""
+    import zlib
+
+    source = SCRIPT.resolve().parents[2]
+    prior = Path.cwd()
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        del os.environ[key]
+    controls = 0
+    with tempfile.TemporaryDirectory(prefix="remi-isolated-test-scope-") as owned:
+        repo = Path(owned)
+        index = repo / "owned-index"
+        environment = {**os.environ, "GIT_INDEX_FILE": str(index)}
+
+        def actual(*args, data=None, cwd=repo):
+            return subprocess.check_output(
+                ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", *args],
+                cwd=cwd, env=environment, input=data, stderr=subprocess.PIPE)
+
+        try:
+            source_head = actual("rev-parse", "HEAD", cwd=source).decode().strip()
+            baseline_source = actual("show", "992600cc2380f8d47035324b6da8e8519779cf7a:.github/scripts/ci-scope.py",
+                                     cwd=source).decode()
+            baseline = {"__file__": str(SCRIPT), "__name__": "isolated_test_original"}
+            exec(compile(baseline_source, str(SCRIPT), "exec"), baseline)
+            actual("init", "-q")
+            actual("config", "user.name", "Owned isolated scope control")
+            actual("config", "user.email", "owned@example.invalid")
+            actual("fetch", "--quiet", "--no-tags", str(source), source_head)
+            os.chdir(repo)
+
+            def tree(parent, updates=(), removals=()):
+                actual("read-tree", parent)
+                for path in removals:
+                    actual("update-index", "--force-remove", "--", path)
+                for path, body, mode in updates:
+                    if mode == "160000":
+                        blob = parent
+                    else:
+                        blob = actual("hash-object", "-w", "--stdin",
+                                      data=body.encode() if isinstance(body, str) else body).decode().strip()
+                    actual("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+                oid = actual("write-tree").decode().strip()
+                return actual("commit-tree", oid, "-p", parent, "-m", "owned isolated scope control").decode().strip()
+
+            def check(left, right, label, skip=False):
+                nonlocal controls
+                result = module["classify"](left, right)
+                assert selected(result) == (gates - {"relay"} if skip else gates), (label, result)
+                assert result["relay_soak"] is (not skip), (label, result)
+                controls += 1
+
+            inputs = tuple(module["ISOLATED_TEST_INPUTS"])
+            bodies = {path: actual("show", f"{source_head}:{path}") for path in inputs}
+            updates = [(path, bodies[path] + b"\n// owned isolated modification\n", "100644") for path in inputs]
+            comments = {path: pin for values in module["ISOLATED_TEST_INPUTS"].values()
+                        for path, pin in values.items()}
+            for update in updates:
+                head = tree(source_head, [update])
+                check(source_head, head, ("single producer", update[0]), True)
+                old = baseline["classify"](source_head, head)
+                assert old["relay"] is True and old["relay_soak"] is True, old
+            for group in (updates[:2], updates[2:], updates):
+                check(source_head, tree(source_head, group), "independent producer group", True)
+            self_tools = [(path, actual("show", f"{source_head}:{path}") + b"\n", "100644")
+                          for path in (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
+                                       ".github/ci-scope.md")]
+            check(source_head, tree(source_head, [*updates, *self_tools,
+                  ("docs/owned-isolated.md", "inert prose\n", "100644")]), "allowed self-tools/docs", True)
+            package = actual("show", f"{source_head}:package.json").decode()
+            value = json.loads(package)
+            value["version"] = "0.7.17-dev.999"
+            version_base = tree(source_head, [("package.json", json.dumps(value), "100644")])
+            check(version_base, tree(version_base, updates), "root package version is not a blob pin", True)
+
+            for path, body, _ in updates:
+                absent = tree(source_head, removals=(path,))
+                check(absent, tree(absent, [(path, body, "100644")]), ("addition", path))
+                check(source_head, absent, ("deletion", path))
+                check(source_head, tree(source_head, [(path + ".moved", body, "100644")], (path,)),
+                      ("rename", path))
+                for mode in ("100755", "120000", "160000"):
+                    check(source_head, tree(source_head, [(path, body, mode)]), ("producer mode", path, mode))
+                changed_base = tree(source_head, [(path, bodies[path], "100755")])
+                check(changed_base, tree(changed_base, [(path, body, "100644")]), ("base mode", path))
+                left = tree(absent, [(path, bodies[path], "100644")])
+                right = tree(absent, [(path, body, "100644")])
+                check(left, right, ("independent divergent additions", path))
+                stem = Path(path).stem
+                for expression in (f"import './{stem}';\n", f"require('./{stem}');\n",
+                                   f"Bun.spawn(['bun','test','{stem}.ts']);\n",
+                                   f"readFileSync('{stem}.ts');\n"):
+                    caller = "packages/daemon/src/owned-isolated-consumer.ts"
+                    caller_base = tree(source_head, [(caller, expression, "100644")])
+                    check(caller_base, tree(caller_base, [(path, body, "100644")]),
+                          ("unchanged executable reference", path, expression))
+                    check(caller_base, tree(source_head, [(path, body, "100644")]),
+                          ("reference only at divergent target base", path, expression))
+                    check(source_head, tree(source_head, [(path, body, "100644"),
+                          (caller, expression, "100644")]), ("new reference", path))
+                    check(caller_base, tree(caller_base, [(path, body, "100644")], (caller,)),
+                          ("removed reference", path))
+                for root_input in ("package.json", "tsconfig.owned.json", "owned.config.ts"):
+                    root_base = tree(source_head, [(root_input, f"'{stem}'\n", "100644")])
+                    check(root_base, tree(root_base, [(path, body, "100644")]), ("root reference", path, root_input))
+                other = inputs[(inputs.index(path) + 1) % len(inputs)]
+                check(source_head, tree(source_head, [(path, body, "100644"),
+                      (other, bodies[other] + f"\nimport './{stem}';\n".encode(), "100644")]),
+                      ("cross producer reference", path, other))
+
+            for path, (_, line, text) in comments.items():
+                content = actual("show", f"{source_head}:{path}")
+                mutations = [content + b"\n// unrelated changed byte\n",
+                             content + (text + "\n").encode(),
+                             content.replace(text.encode(), b" * moved commentary", 1),
+                             b"\n" + content]
+                for body in mutations:
+                    changed = tree(source_head, [(path, body, "100644")])
+                    check(changed, tree(changed, updates), ("comment drift at both endpoints", path))
+                for mode in ("100755", "120000", "160000"):
+                    changed = tree(source_head, [(path, content, mode)])
+                    check(changed, tree(changed, updates), ("comment mode", path, mode))
+                missing = tree(source_head, removals=(path,))
+                check(missing, tree(missing, updates), ("comment missing", path))
+
+            for path in module["ISOLATED_TEST_RUNNERS"]:
+                content = actual("show", f"{source_head}:{path}")
+                for mode, body in (("100644", content + b"\n// computed producer discovery\n"),
+                                   ("100755", content), ("120000", content), ("160000", content)):
+                    changed = tree(source_head, [(path, body, mode)])
+                    check(changed, tree(changed, updates), ("runner drift at both endpoints", path, mode))
+                missing = tree(source_head, removals=(path,))
+                check(missing, tree(missing, updates), ("runner missing", path))
+            workflow_path = ".github/workflows/relay-r7.yml"
+            workflow = actual("show", f"{source_head}:{workflow_path}")
+            for discovery in (b"packages/daemon/tests/cli", b"packages/daemon/tests/harness",
+                              b"packages/web/tests", b"'**/*.test.ts'"):
+                broadened = workflow.replace(b"bun test packages/signaling/tests/e2e",
+                                             b"bun test " + discovery + b" packages/signaling/tests/e2e", 1)
+                assert broadened != workflow
+                changed = tree(source_head, [(workflow_path, broadened, "100644")])
+                check(changed, tree(changed, updates), ("pre-existing broadened R7 discovery", discovery.decode()))
+            bunfig = actual("show", f"{source_head}:bunfig.toml")
+            preload = bunfig.replace(b"preload = [", b'preload = [\n  "./' + inputs[0].encode() + b'",', 1)
+            assert preload != bunfig
+            changed = tree(source_head, [("bunfig.toml", preload, "100644")])
+            check(changed, tree(changed, updates), "pre-existing producer preload")
+            for loader in ("packages/signaling/tests/e2e/harness.ts", "tests/integration/relay-r7-portability.test.ts"):
+                body = actual("show", f"{source_head}:{loader}") + (
+                    b"\n// Deliberately computed: the basename scan alone cannot establish this.\n"
+                    b"const ownedTest = 'packages/daemon/tests/cli/' + 'attach-' + 'client.test.ts';\n"
+                    + (b"await import(ownedTest);\n" if loader.endswith("harness.ts") else b"fixtures.push(ownedTest);\n"))
+                changed = tree(source_head, [(loader, body, "100644")])
+                check(changed, tree(changed, updates), ("pre-existing computed loader", loader))
+            for root in ("packages", "tests", "scripts", ".github/workflows", ".github/actions", ".github/scripts", ""):
+                path = (root + "/" if root else "") + "owned-hidden-input.ts"
+                for mode in ("120000", "160000"):
+                    changed = tree(source_head, [(path, "hidden-target", mode)])
+                    check(changed, tree(changed, updates), ("unrelated nonregular entry", path, mode))
+            for path in ("packages/daemon/src/owned.ts", "packages/web/src/owned.ts", "packages/shared/src/owned.ts",
+                         "packages/signaling/src/owned.ts", "packages/daemon/tests/helpers/owned.ts",
+                         "packages/daemon/tests/owned.test.ts", "package.json", "bunfig.toml", "tsconfig.json",
+                         ".github/workflows/owned.yml", ".github/actions/owned/action.yml",
+                         ".github/scripts/workflow-contracts.json", ".rules/testing.md",
+                         "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "docs/owned.test.ts"):
+                check(source_head, tree(source_head, [updates[0], (path, "owned mixed input\n", "100644")]),
+                      ("mixed execution or gate input", path))
+
+            # Existing malformed status cases exercise the parser; these new consumers must
+            # also fail closed when directly given incomplete metadata from an actual diff.
+            one_head = tree(source_head, [updates[0]])
+            raw = actual("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z", source_head, one_head, "--")
+            for malformed in (raw[:-1], raw + raw, raw.replace(b"M\0", b"X\0", 1), b"M\0\xff\0"):
+                def lookup():
+                    return module["parse_name_status"](malformed, [inputs[0]])
+                assert not module["isolated_test_inputs_reviewed"](source_head, one_head, source_head,
+                                                                  [inputs[0]], lookup)
+                controls += 1
+            for bad_ref in ("f" * 40, "missing-ref"):
+                assert not module["isolated_test_inputs_reviewed"](bad_ref, one_head, source_head, [inputs[0]])
+                controls += 1
+            actual("config", "grep.threads", "not-a-number")
+            try:
+                check(source_head, one_head, "actual reference scanner failure")
+            finally:
+                actual("config", "--unset", "grep.threads")
+
+            # The only intentionally damaged files are loose objects inside this owned repo.
+            unique_base = tree(source_head, [("owned-object-config.json", '{"owned":"object-body"}\n', "100644")])
+            unique_head = tree(unique_base, [(inputs[0], b"// owned missing/corrupt producer body\n", "100644")])
+            producer_blob = actual("rev-parse", f"{unique_head}:{inputs[0]}").decode().strip()
+            pinned_blob = next(iter(comments.values()))[0]
+            config_blob = actual("rev-parse", f"{unique_head}:owned-object-config.json").decode().strip()
+            root_tree = actual("rev-parse", f"{unique_base}^{{tree}}").decode().strip()
+            # A damaged loose duplicate is not a damaged object if Git can read an intact
+            # packed copy. Use an exclusively loose, owned reachable store for these controls.
+            packed = actual("pack-objects", "--stdout", "--revs", data=(unique_head + "\n").encode())
+            (repo / ".git/objects").rename(repo / ".git/owned-original-objects")
+            (repo / ".git/objects").mkdir()
+            actual("unpack-objects", data=packed)
+            assert not list((repo / ".git/objects").glob("pack/*.pack"))
+            for oid in (producer_blob, pinned_blob, config_blob, root_tree):
+                object_path = repo / ".git/objects" / oid[:2] / oid[2:]
+                saved = object_path.read_bytes() if object_path.exists() else None
+                saved_mode = object_path.stat().st_mode & 0o777 if saved is not None else None
+                object_path.parent.mkdir(exist_ok=True)
+                try:
+                    if saved_mode is not None:
+                        object_path.chmod(0o600)
+                    object_path.write_bytes(zlib.compress(b"blob 5\0owned"))
+                    check(unique_base, unique_head, ("corrupt actual object", oid))
+                finally:
+                    if saved is None:
+                        object_path.unlink()
+                    else:
+                        object_path.write_bytes(saved)
+                        object_path.chmod(saved_mode)
+            for oid in (producer_blob, pinned_blob, config_blob):
+                object_path = repo / ".git/objects" / oid[:2] / oid[2:]
+                saved = object_path.read_bytes()
+                saved_mode = object_path.stat().st_mode & 0o777
+                try:
+                    object_path.unlink()
+                    check(unique_base, unique_head, ("missing actual scanned object", oid))
+                finally:
+                    object_path.write_bytes(saved)
+                    object_path.chmod(saved_mode)
+            check(unique_base, unique_head, "owned object restoration", True)
+            return controls
+        finally:
+            os.chdir(prior)
+            os.environ.update(inherited)
+
+
+def dormant_codec_controls():
+    """Actual complete public trees and conservative refusal histories; never a live soak."""
+    prior = Path.cwd()
+    source = SCRIPT.parents[2]
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        del os.environ[key]
+    controls = 0
+    with tempfile.TemporaryDirectory(prefix="remi-codec-scope-") as owned:
+        try:
+            os.chdir(owned)
+            def actual(*args, data=None):
+                return subprocess.check_output(["git", *args], input=data, stderr=subprocess.PIPE)
+            actual("init", "-q")
+            actual("config", "user.name", "Owned codec scope control")
+            actual("config", "user.email", "test@example.com")
+            actual("fetch", "--quiet", "--no-tags", str(source), module["SOAK_CODEC_SOURCE_ROOT"],
+                   module["SOAK_CODEC_CANDIDATE_ROOT"])
+            def body(ref, path):
+                return actual("show", f"{ref}:{path}")
+            def make(parent, updates=(), removals=()):
+                actual("read-tree", parent)
+                for path in removals:
+                    actual("update-index", "--force-remove", "--", path)
+                for path, content, mode in updates:
+                    content = content.encode() if isinstance(content, str) else content
+                    oid = parent if mode == "160000" else actual("hash-object", "-w", "--stdin", data=content).decode().strip()
+                    actual("update-index", "--add", "--cacheinfo", mode, oid, path)
+                tree = actual("write-tree").decode().strip()
+                return actual("commit-tree", tree, "-p", parent, "-m", "owned codec scope history").decode().strip()
+            def check(left, right, label, skip=False, classifier=classify):
+                nonlocal controls
+                result = classifier(left, right)
+                assert selected(result) == gates and result["typecheck"] and result["relay"] and (
+                    result["relay_soak"] is not skip), (label, result)
+                controls += 1
+            policy_paths = (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md",
+                            ".github/workflows/relay-r7.yml", ".github/scripts/workflow-scope.py",
+                            ".github/scripts/workflow-contracts.json")
+            base = make(module["SOAK_CODEC_SOURCE_ROOT"],
+                        [(path, (source / path).read_bytes(), "100644") for path in policy_paths])
+            updates = [(path, body(module["SOAK_CODEC_CANDIDATE_ROOT"], path), "100644")
+                       for path in module["SOAK_CODEC_TRANSITION"]]
+            head = make(base, updates)
+            check(base, head, "complete exact codec transition", True)
+            check(base, make(base, [*updates, ("docs/owned-codec.md", "inert prose\n", "100644")]),
+                  "codec plus inert docs", True)
+            version = json.loads(body(base, "package.json"))["version"]
+            version_updates = [("package.json", body(base, "package.json").replace(
+                f'"version": "{version}"'.encode(), b'"version": "0.7.17-dev.999"'), "100644"),
+                ("packages/daemon/src/cli.ts", body(base, "packages/daemon/src/cli.ts").replace(
+                    f"return '{version}'; // REMI_COMPILED_VERSION".encode(),
+                    b"return '0.7.17-dev.999'; // REMI_COMPILED_VERSION"), "100644")]
+            version_base = make(base, version_updates)
+            check(version_base, make(version_base, updates), "synchronized version already on base", True)
+            check(base, make(base, [*updates, *version_updates]), "version edit mixed into codec PR")
+            for path, content, _ in updates:
+                others = [item for item in updates if item[0] != path]
+                for replacement, mode, label in ((content + b"\n// unreviewed\n", "100644", "body"),
+                                                  (content, "100755", "mode"),
+                                                  (b"../owned-codec", "120000", "type")):
+                    check(base, make(base, [*others, (path, replacement, mode)]), (path, label))
+                check(base, make(base, others), (path, "omitted"))
+                check(base, make(base, others, [path]), (path, "deleted"))
+                check(base, make(base, [*others, (path + ".moved", content, "100644")], [path]),
+                      (path, "rename out"))
+                old = make(base, [(path + ".moved", content, "100644")])
+                check(old, make(old, updates, [path + ".moved"]), (path, "rename in"))
+                if module["SOAK_CODEC_TRANSITION"][path]["original"] is None:
+                    old = make(base, [(path, content, "100644")])
+                    check(old, make(old, updates), (path, "preexisting addition"))
+                    # Target/head independently add the same producer after a missing common ancestor.
+                    check(old, make(base, updates), (path, "divergent addition"))
+            for path in module["SOAK_CODEC_CORE"]:
+                drift = (path, body(base, path) + b"\n# unreviewed core\n", "100644")
+                old = make(base, [drift])
+                check(old, make(old, updates), (path, "already-on-base core drift"))
+                check(base, make(base, [*updates, drift]), (path, "head core drift"))
+            consumers = ("packages/daemon/src/owned-codec.ts", "packages/shared/src/owned-codec.ts",
+                         "packages/web/src/owned-codec.ts", "packages/signaling/src/owned-codec.ts",
+                         "packages/native/owned-codec.swift", "tests/owned-codec.ts", "scripts/owned-codec.sh",
+                         ".github/workflows/owned-codec.yml", ".github/actions/owned-codec/action.yml",
+                         ".github/scripts/owned-codec.py", "owned-codec-config.json")
+            for path in consumers:
+                for text in ("import 'browser-links';\n", "const codec = decodeFileDownloadFrame;\n",
+                             "const wire = 'browser_link_candidate';\n",
+                             "entry: 'packages/shared/src/file-download.ts'\n"):
+                    drift = (path, text, "100644")
+                    old = make(base, [drift])
+                    check(old, make(old, updates), (path, text, "already on base and head"))
+                    check(base, make(base, [*updates, drift]), (path, text, "new head caller"))
+                    check(old, make(old, updates, [path]), (path, text, "removed caller"))
+            for path in ("packages/daemon/src/server/connection.ts", "packages/shared/src/protocol-version.ts",
+                         "packages/shared/src/owned-neighbor.ts", "packages/shared/tests/owned-neighbor.test.ts",
+                         "bun.lock", "docs/PROVISIONING.md", "docs/relay-r7-gates.md", "docs/owned-codec.test.ts", "package.json",
+                         "packages/daemon/src/cli.ts"):
+                content = body(base, path) if path not in {"packages/shared/src/owned-neighbor.ts",
+                          "packages/shared/tests/owned-neighbor.test.ts", "docs/owned-codec.test.ts"} else b"export {};\n"
+                check(base, make(base, [*updates, (path, content + b"\n// mixed\n", "100644")]),
+                      (path, "mixed input"))
+            for path, mode, content in (("packages/web/src/owned-link.ts", "120000",
+                                        "../../shared/src/browser-links.ts"),
+                                       ("packages/web/owned-dir", "120000", "../shared"),
+                                       ("scripts/owned-submodule", "160000", ""),
+                                       ("docs/owned-symlink.md", "120000", "../packages/shared")):
+                for context in ("base", "head"):
+                    drift = (path, content, mode)
+                    old = make(base, [drift]) if context == "base" else base
+                    check(old, make(old, [*updates, *([drift] if context == "head" else [])]),
+                          (path, context, "nonregular tree"))
+            check(base, "f" * 40, "unavailable head / git command failure")
+            check("f" * 40, head, "unavailable base / git command failure")
+            # A unique owned loose object is actually removed/corrupted, never a mocked Git reply.
+            probe_path = "scripts/owned-plain-object.ts"
+            unique_base = make(base, [(probe_path, "export const ownedPlain = 724819;\n", "100644")])
+            unique_head = make(unique_base, updates)
+            check(unique_base, unique_head, "regular owned scanned object", True)
+            oid = actual("rev-parse", f"{unique_base}:{probe_path}").decode().strip()
+            loose = Path(".git/objects") / oid[:2] / oid[2:]
+            assert (not loose.is_symlink() and loose.is_file() and loose.stat().st_nlink == 1 and
+                    loose.resolve().is_relative_to(Path(owned).resolve()) and
+                    not Path(".git/objects/info/alternates").exists()), "owned private loose-object store"
+            saved = loose.read_bytes()
+            try:
+                loose.unlink()
+                check(unique_base, unique_head, "missing actual scanned blob")
+                loose.write_bytes(b"invalid owned zlib object")
+                check(unique_base, unique_head, "corrupt actual scanned blob")
+            finally:
+                loose.write_bytes(saved)
+            check(unique_base, unique_head, "restored actual scanned blob", True)
+            for path in ("scripts/owned\tentry.ts", "scripts/owned\nentry.ts"):
+                old = make(base, [(path, "export {};\n", "100644")])
+                check(old, make(old, updates), (path, "actual control character path"))
+            escaped = ("packages/web/src/owned-escaped.ts", "import '../../shared/src/browser-\\x6cinks.ts';\n", "100644")
+            old = make(base, [escaped])
+            check(old, make(old, updates), "already-on-base escaped literal consumer")
+            # Guard-removal witnesses run the actual classifier on these same real histories.
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_guard_control"}
+            text = SCRIPT.read_text()
+            disabled = text.replace('if codec_paths <= changed:', 'if False and codec_paths <= changed:', 1)
+            exec(compile(disabled, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit classifier mutation control
+            result = namespace["classify"](base, head)
+            assert result["relay_soak"], "positive must detect removed codec eligibility branch"
+            controls += 1
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_core_guard_control"}
+            exec(compile(text, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit reviewed classifier mutation
+            caller = "packages/daemon/src/server/connection.ts"
+            drift_base = make(base, [(caller, body(base, caller) + b"\n// owned readiness drift\n", "100644")])
+            drift_head = make(drift_base, updates)
+            namespace["SOAK_CODEC_CORE"] = {path: pin for path, pin in namespace["SOAK_CODEC_CORE"].items()
+                                            if path != caller}
+            assert namespace["classify"](drift_base, drift_head)["relay_soak"] is False, "core drift witness"
+            controls += 1
+            namespace = {"__file__": str(SCRIPT), "__name__": "codec_token_guard_control"}
+            disabled = text.replace('and any(token in text for token in SOAK_CODEC_TOKENS):', 'and False:', 1)
+            exec(compile(disabled, str(SCRIPT), "exec"), namespace)  # noqa: S102 - explicit reviewed classifier mutation
+            wire_base = make(base, [("scripts/owned-wire-reference.ts", "const wire = 'browser_link_candidate';\n", "100644")])
+            assert namespace["classify"](wire_base, make(wire_base, updates))["relay_soak"] is False, "wire token witness"
+            controls += 1
+            # Exact old/new reporter semantics agree; altered mappings are never normalized away.
+            import copy
+            workflow = WORKFLOW_TOOLS["load"]((source / ".github/workflows/relay-r7.yml").read_text())
+            old_workflow = copy.deepcopy(workflow)
+            old_steps = old_workflow["jobs"]["local-relay"]["steps"]
+            old_steps[old_steps.index(WORKFLOW_TOOLS["SOAK_SKIP"])] = WORKFLOW_TOOLS["SOAK_SKIP_PREVIOUS"]
+            assert WORKFLOW_TOOLS["execution"](workflow, "relay-r7.yml") == WORKFLOW_TOOLS["execution"](
+                old_workflow, "relay-r7.yml")
+            controls += 1
+            assert old_workflow["jobs"]["local-relay"] != WORKFLOW_TOOLS["CONTRACTS"]["relay_reuse_job"]
+            controls += 1
+            for field, value in (("run", "true"), ("if", "true"), ("name", "wrong"), ("env", {"X": "1"})):
+                altered = copy.deepcopy(old_workflow)
+                step = next(step for step in altered["jobs"]["local-relay"]["steps"]
+                            if step.get("name") == "Report scoped soak skip")
+                step[field] = value
+                assert WORKFLOW_TOOLS["execution"](altered, "relay-r7.yml") != WORKFLOW_TOOLS["execution"](
+                    workflow, "relay-r7.yml"), field
+                controls += 1
+            return controls
+        finally:
+            os.chdir(prior)
+            os.environ.update(inherited)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--codecs-only"]:
+    print(json.dumps({"dormant_codec_controls": dormant_codec_controls(), "failed": 0,
+                      "scope": "actual owned Git codec controls, not runtime acceptance"}))
+    raise SystemExit(0)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--validation-only"]:
+    original, count = Path.cwd(), 0
+    validation_controls()
+    print(json.dumps({"validation_controls": count, "failed": 0}))
+    raise SystemExit(0)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--isolated-tests-only"]:
+    print(json.dumps({"isolated_test_controls": isolated_test_controls(), "failed": 0,
+                      "scope": "new owned real Git controls only"}))
+    raise SystemExit(0)
 
 
 original = Path.cwd()
@@ -3982,8 +4422,12 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             classifier_globals["soak_fixture_only"] = original_soak_fixture_only
         assert not selected(doc_result) and not doc_result["relay_soak"] and not soak_fixture_calls, doc_result
         focused_status_controls += 1
+        isolated_controls = isolated_test_controls()
+        codec_controls = dormant_codec_controls()
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
+                          "isolated_test_controls": isolated_controls,
+                          "dormant_codec_controls": codec_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)
