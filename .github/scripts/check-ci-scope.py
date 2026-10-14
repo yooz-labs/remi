@@ -1574,8 +1574,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         # Every soak-scope case retains the complete actual published repository tree/modes.
         soak_base = ACCOUNTING_FULL_BASE
         fixture_paths = tuple(SOAK_FINAL_CONTENT)[:2]  # Retain the original 643 control scenarios.
-        def soak_tree(parent, updates=(), removals=(), source=None):
-            git("read-tree", source or parent)
+        def apply_legacy_index_updates(updates, removals):
             for path, text, mode in updates:
                 data = text.encode() if isinstance(text, str) else text
                 blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
@@ -1583,6 +1582,99 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                 git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
             for path in removals:
                 git("update-index", "--force-remove", "--", path)
+
+        def index_info_path(path):
+            if not isinstance(path, str) or not path or "\0" in path or path.startswith("/"):
+                return None
+            parts = path.split("/")
+            if any(part in {"", ".", ".."} or part.rstrip(" .").casefold() == ".git"
+                   for part in parts):
+                return None
+            try:
+                return os.fsencode(path)
+            except (UnicodeError, TypeError, ValueError, OSError):
+                return None
+
+        def index_prefix_collision(paths, existing):
+            touched = set(paths)
+            for path in touched:
+                for other in existing | touched:
+                    if path != other and (path.startswith(other + b"/") or other.startswith(path + b"/")):
+                        return True
+            return False
+
+        def update_index_info(records):
+            subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", "-c",
+                                     "commit.gpgsign=false", "update-index", "-z", "--index-info"],
+                                    input=b"".join(records), stderr=subprocess.PIPE)
+
+        def soak_tree(parent, updates=(), removals=(), source=None):
+            source_tree = source or parent
+            git("read-tree", source_tree)
+            updates, removals = tuple(updates), tuple(removals)
+            batchable = len(updates) + len(removals) >= 3
+            prepared_updates, prepared_removals = [], []
+            if batchable:
+                try:
+                    for path, text, mode in updates:
+                        path_bytes = index_info_path(path)
+                        if path_bytes is None or mode not in {"100644", "100755"}:
+                            batchable = False
+                            break
+                        data = text.encode() if isinstance(text, str) else text
+                        if not isinstance(data, bytes):
+                            batchable = False
+                            break
+                        prepared_updates.append((path, path_bytes, data, mode.encode("ascii")))
+                    if batchable:
+                        for path in removals:
+                            path_bytes = index_info_path(path)
+                            if path_bytes is None:
+                                batchable = False
+                                break
+                            prepared_removals.append((path, path_bytes))
+                except (UnicodeError, TypeError, ValueError, OSError):
+                    batchable = False
+            if batchable:
+                try:
+                    index_raw = subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", "-c",
+                                                         "commit.gpgsign=false", "ls-files", "-z"],
+                                                        stderr=subprocess.PIPE)
+                    if index_raw and not index_raw.endswith(b"\0"):
+                        batchable = False
+                    else:
+                        existing = set(index_raw[:-1].split(b"\0")) if index_raw else set()
+                        touched = [path_bytes for _, path_bytes, _, _ in prepared_updates]
+                        touched.extend(path_bytes for _, path_bytes in prepared_removals)
+                        if index_prefix_collision(touched, existing):
+                            batchable = False
+                except (subprocess.CalledProcessError, OSError):
+                    batchable = False
+            if batchable:
+                records = []
+                for index, (path, path_bytes, data, mode) in enumerate(prepared_updates):
+                    try:
+                        blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                                       input=data, stderr=subprocess.PIPE).strip()
+                    except (subprocess.CalledProcessError, OSError):
+                        if records:
+                            try:
+                                update_index_info(records)
+                            except subprocess.CalledProcessError:
+                                git("read-tree", source_tree)
+                                apply_legacy_index_updates(updates[:index], ())
+                        raise
+                    records.append(mode + b" " + blob + b"\t" + path_bytes + b"\0")
+                zero_oid = b"0" * 40
+                records.extend(b"0 " + zero_oid + b"\t" + path_bytes + b"\0"
+                               for _, path_bytes in prepared_removals)
+                try:
+                    update_index_info(records)
+                except subprocess.CalledProcessError:
+                    git("read-tree", source_tree)
+                    apply_legacy_index_updates(updates, removals)
+            else:
+                apply_legacy_index_updates(updates, removals)
             tree = git("write-tree", "--missing-ok")
             return git("commit-tree", tree, "-p", parent, "-m", "owned full-tree soak scope")
         def fixture_updates(paths):

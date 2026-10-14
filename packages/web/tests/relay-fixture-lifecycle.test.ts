@@ -22,12 +22,13 @@ function alive(pid: number): boolean {
   }
 }
 
-async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
+async function gone(pid: number, timeoutMs = 1000): Promise<boolean> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() <= deadline) {
     if (!alive(pid)) return true;
     await Bun.sleep(10);
   }
-  return false;
+  return !alive(pid);
 }
 
 test('owned fixture cleanup stops API-created daemons, PTY children and real Worker after body failure', async () => {
@@ -203,6 +204,20 @@ test('cleanup invalidates an actual hub setup awaiting Worker readiness', async 
   }
 }, 15000);
 
+test('bounded PID disappearance wait rejects a still-live child', async () => {
+  const child = Bun.spawn([process.execPath, '-e', 'await Bun.sleep(30000);'], {
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+  try {
+    expect(alive(child.pid)).toBe(true);
+    expect(await gone(child.pid, 60)).toBe(false);
+  } finally {
+    child.kill('SIGTERM');
+    await child.exited;
+  }
+}, 5000);
+
 test('real Bun assertion and timeout failures still dispose their owned fixture', async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -236,8 +251,29 @@ test('real Bun assertion and timeout failures still dispose their owned fixture'
           let workerClosed = false;
           try { await fetch(fixture.worker.url, { signal: AbortSignal.timeout(200) }); }
           catch { workerClosed = true; }
-          const gone = pids.every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
-          writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ homeRemoved: !existsSync(fixture.dir), workerClosed, gone }));
+          const snapshot = () => pids.map(pid => {
+            let alive = true;
+            try { process.kill(pid, 0); } catch { alive = false; }
+            let state = null;
+            if (process.platform === 'linux') {
+              try {
+                const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+                const end = stat.lastIndexOf(')');
+                const parsed = end < 0 ? '' : stat.slice(end + 2).trim().split(/\\s+/)[0];
+                state = /^[A-Z]$/.test(parsed) ? parsed : 'unknown';
+              } catch { state = null; }
+            }
+            return { pid, alive, state };
+          });
+          const immediate = snapshot();
+          const deadline = performance.now() + 1000;
+          let processes = immediate;
+          while (processes.some(process => process.alive) && performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            processes = snapshot();
+          }
+          const gone = processes.every(process => !process.alive);
+          writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ homeRemoved: !existsSync(fixture.dir), workerClosed, gone, immediate, processes }));
           await cleanupOwnedRelayFixtures();
         });
       `,
@@ -256,11 +292,18 @@ test('real Bun assertion and timeout failures still dispose their owned fixture'
       try {
         expect(await runner.exited).toBe(1);
         await output;
-        expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual({
-          homeRemoved: true,
-          workerClosed: true,
-          gone: true,
-        });
+        const result = JSON.parse(readFileSync(receipt, 'utf8'));
+        expect(result.homeRemoved).toBe(true);
+        expect(result.workerClosed).toBe(true);
+        if (!result.gone) {
+          const live = (processes: { pid: number; alive: boolean; state: string | null }[]) =>
+            processes
+              .filter((process) => process.alive)
+              .map(({ pid, state }) => String(pid) + ':' + String(state || 'unknown'))
+              .join(',') || 'none';
+          throw new Error('owned fixture PIDs remained; immediate=' + live(result.immediate) +
+            '; after 1s=' + live(result.processes));
+        }
       } finally {
         clearTimeout(timer);
       }
