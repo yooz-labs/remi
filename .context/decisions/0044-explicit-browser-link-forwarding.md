@@ -88,8 +88,16 @@ Use an OS-local per-session capability, distinct from the daemon-wide capability
 Bind it to the live session runtime; no client can mint, replace or learn it.
 The executable shim forwards an argument to a bounded local endpoint and never invokes a browser or network fetch itself.
 Its short failure text excludes URL bytes.
-Before choosing exit behavior, prove the relevant real BROWSER launchers do not fall back to opening a host browser when no receiver exists; document any launcher that ignores the setting.
+The shim exits zero after its bounded forwarding attempt, including a refused or unavailable receiver, so a launcher does not interpret a delivery problem as an instruction to try the host browser.
+Zero acknowledges handling the opener invocation, not candidate delivery or a website opening; a failed attempt prints short URL-free failure text.
+Prove that behavior for each claimed launcher profile and document programs that ignore the setting.
 Do not alter Claude permission judgment, rewrite arbitrary tool commands or widen Codex per-turn environment/policy overrides.
+
+A bounded Mac probe used the actual PTYSession, Claude environment builder and installed Python 3.14.8 webbrowser module on both supported Buns.
+Exit zero passed one exact URL argument and returned success without a native browser-launch attempt.
+Exit one attempted an osascript fallback; the real subprocess audit event observed and refused it before execution, and no browser opened.
+Both owned profiles were removed.
+This establishes that launcher profile and environment seam only, not installed Claude tool execution, Linux launchers, endpoint/client delivery or general interception of open/xdg-open.
 
 ## Implementation order and fixed gates
 
