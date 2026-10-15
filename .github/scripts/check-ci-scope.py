@@ -4467,9 +4467,14 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         diagnostic_inputs = tuple(module["CI_BUN_DIAGNOSTIC_INPUTS"])
         source_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=original).decode().strip()
         git("fetch", "--quiet", "--no-tags", str(original), source_head)
+        # These historical positives predate the two-process runner and its new callers.
+        diagnostic_base = "a5a2b4a84c32747d41612fbdb60d2513fbd5dd7b"
+        git("fetch", "--quiet", "--no-tags", str(original), diagnostic_base)
+        for path, (mode, blob) in module["CI_BUN_DIAGNOSTIC_CALLERS"].items():
+            assert git("ls-tree", diagnostic_base, "--", path) == f"{mode} blob {blob}\t{path}", path
         diagnostic_updates = []
         for path in diagnostic_inputs:
-            source = (original / path).read_bytes()
+            source = subprocess.check_output(["git", "show", f"{diagnostic_base}:{path}"])
             diagnostic_updates.append((path, source + b"\n// owned exact-pair scope control\n", "100644"))
         self_edits = [
             (".github/scripts/ci-scope.py", (original / ".github/scripts/ci-scope.py").read_bytes() +
@@ -4488,7 +4493,6 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             assert result["relay_soak"] is (not skip), (label, result)
             count += 1
 
-        diagnostic_base = source_head
         diagnostic_candidate = soak_tree(diagnostic_base, [*diagnostic_updates, *self_edits])
         diagnostic_assert(diagnostic_base, diagnostic_candidate, "complete pair with approved self-edits/docs", True)
         diagnostic_assert(diagnostic_base, soak_tree(diagnostic_base, diagnostic_updates),
@@ -4536,10 +4540,17 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
 
         closure_path = ".github/scripts/workflow-contracts.json"
         closure_drift = soak_tree(diagnostic_base, [(closure_path,
-            (original / closure_path).read_bytes() + b"\n", "100644")])
+            subprocess.check_output(["git", "show", f"{diagnostic_base}:{closure_path}"]) + b"\n", "100644")])
         diagnostic_assert(closure_drift, soak_tree(closure_drift, diagnostic_updates),
                           "pinned caller drift at all endpoints", False)
         assert count - diagnostic_start == 14, count - diagnostic_start
+        # Current callers are deliberately different; preserve the conservative fallback.
+        current_diagnostic_updates = [(path, subprocess.check_output(
+            ["git", "show", f"{source_head}:{path}"]) + b"\n// owned current-pair scope control\n", "100644")
+            for path in diagnostic_inputs]
+        current_diagnostic = classify(source_head, soak_tree(source_head, current_diagnostic_updates))
+        assert selected(current_diagnostic) == gates and current_diagnostic["relay_soak"], current_diagnostic
+        current_diagnostic_controls = 1
         # Focused parser controls stay separately reported; the established 2,381-control
         # population and ordering above remain unchanged.
         focused_status_controls = 0
@@ -4605,6 +4616,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                           "dormant_codec_controls": codec_controls,
                           "isolated_family_controls": family_controls,
                           "sequential_runner_controls": sequential_runner_controls,
+                          "current_diagnostic_controls": current_diagnostic_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)
