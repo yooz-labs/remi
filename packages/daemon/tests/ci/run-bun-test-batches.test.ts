@@ -75,6 +75,7 @@ async function actual(home: string, files: string[]) {
   return {
     ...result,
     raw: out.text() + err.text(),
+    junit: readFileSync(report, 'utf8'),
     parsed: parseCases(
       readFileSync(report, 'utf8'),
       files.includes('.') ? discoverTests(home) : files,
@@ -117,6 +118,64 @@ test('partition includes target once and every other file exactly once', () => {
   expect(partitionTests(['other.test.ts', TARGET])).toEqual([[TARGET], ['other.test.ts']]);
   for (const files of [[], [TARGET], [TARGET, TARGET], ['other.test.ts']])
     expect(() => partitionTests(files)).toThrow();
+});
+
+test('actual Bun reporter C0 titles retain reported bytes and separate hook assertion accounting', async () => {
+  const home = fixture();
+  const file = 'reporter.test.ts';
+  source(
+    home,
+    file,
+    `import {beforeAll,afterAll,expect,test} from 'bun:test';
+import {writeSync} from 'node:fs';
+const note=(stage:string)=>writeSync(2,'[ci-reporter-hook] '+stage+'\\n');
+beforeAll(()=>{note('beforeAll');expect(1).toBe(1)});
+afterAll(()=>{note('afterAll');expect(1).toBe(1)});
+test(${JSON.stringify('C0 \0\x07\x1b end')},()=>{note('body');expect(1).toBe(1)});\n`,
+  );
+  const run = await actual(home, [file]);
+  expect(run.exitCode).toBe(0);
+  expect(run.cleanupVerified).toBe(true);
+  expect(run.parsed.cases).toHaveLength(1);
+  expect(run.parsed.assertions).toBe(1);
+  const witnesses = [...run.raw.matchAll(/^\[ci-reporter-hook\] (\w+)$/gm)].map(
+    (match) => match[1],
+  );
+  expect(witnesses).toEqual(['beforeAll', 'body', 'afterAll']);
+  const rawExpectCalls = run.raw.match(/^\s*(\d+) expect\(\) calls$/m)?.[1];
+  console.log(
+    `[ci-reporter-regression] ${JSON.stringify({
+      runtime: Bun.revision,
+      rawExpectCalls: rawExpectCalls === undefined ? null : Number(rawExpectCalls),
+      caseAssertions: run.parsed.assertions,
+      witnesses,
+    })}`,
+  );
+  const reported = run.junit.match(/<testcase name="([^"]*)"/)?.[1];
+  expect(reported).toBeDefined();
+  if (reported === undefined) throw new Error('Missing actual reporter title');
+  const decoded = reported
+    .replaceAll('&#0;', '\0')
+    .replaceAll('&#7;', '\x07')
+    .replaceAll('&#27;', '\x1b');
+  expect(run.parsed.cases[0]?.name).toBe(decoded);
+  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+    expect(reported).toContain('&#0;');
+    for (const byte of ['\0', '\x07', '\x1b']) expect(decoded).toContain(byte);
+  }
+  for (const entity of [
+    '&#-1;',
+    '&#1114112;',
+    '&#55296;',
+    '&#xDFFF;',
+    '&#xGG;',
+    '&unknown;',
+    '&#0',
+  ]) {
+    expect(() =>
+      parseCases(run.junit.replace(`name="${reported}"`, `name="${entity}"`), [file]),
+    ).toThrow();
+  }
 });
 
 test('unknown configuration and source links cannot silently shrink discovery', () => {

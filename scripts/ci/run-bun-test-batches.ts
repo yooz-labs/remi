@@ -206,7 +206,8 @@ function decode(value: string): string {
       ? Number.parseInt(entity.slice(2), 16)
       : Number(entity.slice(1));
     requireValue(
-      code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff),
+      // Bun 1.3.11's reporter emits numeric NUL in test titles; retain its reported bytes.
+      code >= 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff),
       'Invalid XML scalar',
     );
     return String.fromCodePoint(code);
