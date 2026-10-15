@@ -1681,6 +1681,162 @@ def isolated_test_controls():
             os.environ.update(inherited)
 
 
+def isolated_family_controls():
+    """Finite real helper graph; unknown old/new transitive consumers restore every gate."""
+    import zlib
+
+    source = SCRIPT.parents[2]
+    prior = Path.cwd()
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        del os.environ[key]
+    count = 0
+    with tempfile.TemporaryDirectory(prefix="remi-isolated-family-") as owned:
+        repo = Path(owned)
+        environment = {**os.environ, "GIT_INDEX_FILE": str(repo / "owned-index")}
+        def actual(*args, data=None, cwd=repo):
+            return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", *args],
+                                           cwd=cwd, env=environment, input=data, stderr=subprocess.PIPE)
+        try:
+            actual("init", "-q")
+            actual("config", "user.name", "Owned finite family control")
+            actual("config", "user.email", "owned@example.invalid")
+            base = "71fc6369d90703e47a98b3d7b53cff9c060447b0"
+            correction = "07a163d1211e70658435c9197fcca42d05aebedb"
+            actual("fetch", "--quiet", "--no-tags", str(source), base, correction)
+            os.chdir(repo)
+            def body(ref, path):
+                return actual("show", f"{ref}:{path}")
+            def tree(parent, updates=(), removals=()):
+                actual("read-tree", parent)
+                for path in removals:
+                    actual("update-index", "--force-remove", "--", path)
+                for path, content, mode in updates:
+                    blob = parent if mode == "160000" else actual(
+                        "hash-object", "-w", "--stdin", data=content).decode().strip()
+                    actual("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+                oid = actual("write-tree").decode().strip()
+                return actual("commit-tree", oid, "-p", parent, "-m", "owned finite family").decode().strip()
+            def check(left, right, label, skip=False):
+                nonlocal count
+                result = module["classify"](left, right)
+                assert selected(result) == (gates - {"relay"} if skip else gates), (label, result)
+                assert result["relay_soak"] is (not skip) and result["typecheck"] is True, (label, result)
+                count += 1
+            inputs = tuple(module["ISOLATED_TEST_FAMILIES"])
+            helper = next(path for path in inputs if "/helpers/" in path)
+            consumers = module["ISOLATED_TEST_FAMILIES"][helper]
+            updates = [(path, body(base, path) + b"\n// owned finite-family edit\n", "100644") for path in inputs]
+            check(base, correction, "actual historical two-file portability/source assertion correction", True)
+            for update in updates:
+                check(base, tree(base, [update]), ("single family producer", update[0]), True)
+            check(base, tree(base, updates), "combined finite producers", True)
+            check(base, tree(base, [*updates, ("docs/owned-family.md", b"inert prose\n", "100644")]),
+                  "family and inert documentation", True)
+            # Observed D3 edges reconstructed as owned Git histories, not an unpublished
+            # commit dependency or a claim to execute that complete production snapshot.
+            d3_edges = {
+                "packages/daemon/tests/helpers/file-download-cli-fixture.ts":
+                    b"import { until } from './browser-link-service-fixture';\n",
+                "packages/daemon/tests/helpers/file-download-ingress-fixture.ts":
+                    b"import { until } from './browser-link-service-fixture.ts';\n",
+                "packages/daemon/tests/helpers/file-download-service-fixture.ts":
+                    b"import { browserFixture, until } from './browser-link-service-fixture';\n",
+                "packages/daemon/tests/integration/file-download-cli.test.ts":
+                    b"import { until } from '../helpers/browser-link-service-fixture';\n",
+                "packages/web/tests/browser/file-download-browser.test.ts":
+                    b"import { until } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';\n",
+            }
+            helper_update = next(update for update in updates if update[0] == helper)
+            for path, content in d3_edges.items():
+                graph = tree(base, [(path, content, "100644")])
+                check(graph, tree(graph, [helper_update]), ("observed D3 extra consumer edge", path))
+            service_fixture = "packages/daemon/tests/helpers/file-download-service-fixture.ts"
+            clock = "scripts/tunnel-download-proof/clock-acceptance.ts"
+            graph = tree(base, [(service_fixture, d3_edges[service_fixture], "100644"),
+                         (clock, (b"import {\n  downloadFixture,\n  until,\n"
+                           b"} from '../../packages/daemon/tests/helpers/file-download-service-fixture';\n"),
+                          "100644")])
+            check(graph, tree(graph, [helper_update]), "observed tracked D3 two-hop clock consumer")
+            for node in (helper, *consumers):
+                stem = Path(node).stem
+                for domain in ("packages/daemon/src", "packages/web/tests", "packages/native", "tests",
+                               "scripts", ".github/workflows", ".github/actions", ".github/scripts", ""):
+                    path = (domain + "/" if domain else "") + "owned-family-reader.ts"
+                    content = f"readFileSync('{stem}.ts');\n".encode()
+                    caller_base = tree(base, [(path, content, "100644")])
+                    check(caller_base, tree(caller_base, updates), ("existing caller", node, domain))
+                    check(caller_base, tree(base, updates), ("base-only divergent caller", node, domain))
+                    check(base, tree(base, [*updates, (path, content, "100644")]),
+                          ("new caller", node, domain))
+                    check(caller_base, tree(caller_base, updates, (path,)), ("removed caller", node, domain))
+            for path in consumers:
+                content = body(base, path)
+                changed = tree(base, [(path, content + b"\n// changed pinned consumer\n", "100644")])
+                check(changed, tree(changed, updates), ("preexisting consumer blob drift", path))
+                check(base, tree(base, [*updates, (path, content + b"\n", "100644")]),
+                      ("consumer changed with producer", path))
+                for mode in ("100755", "120000", "160000"):
+                    changed = tree(base, [(path, content, mode)])
+                    check(changed, tree(changed, updates), ("consumer mode", path, mode))
+            for path, content, _ in updates:
+                absent = tree(base, removals=(path,))
+                check(base, absent, ("producer deletion", path))
+                check(absent, tree(absent, [(path, content, "100644")]), ("producer addition", path))
+                check(base, tree(base, [(path + ".moved", content, "100644")], (path,)),
+                      ("producer rename out", path))
+                moved = tree(base, [(path + ".moved", content, "100644")], (path,))
+                check(moved, tree(moved, [(path, content, "100644")], (path + ".moved",)),
+                      ("producer rename in", path))
+                changed_mode = tree(base, [(path, body(base, path), "100755")])
+                check(changed_mode, tree(changed_mode, [(path, content, "100644")]),
+                      ("producer base mode", path))
+                left = tree(absent, [(path, body(base, path), "100644")])
+                right = tree(absent, [(path, content, "100644")])
+                check(left, right, ("independently added divergent producer", path))
+                for mode in ("100755", "120000", "160000"):
+                    check(base, tree(base, [(path, content, mode)]), ("producer mode", path, mode))
+            for path in (*module["ISOLATED_TEST_RUNNERS"], "package.json", "tsconfig.json",
+                         "packages/daemon/src/cli.ts", "packages/daemon/tests/helpers/unknown.ts",
+                         "packages/daemon/tests/cli/unknown.test.ts", "scripts/owned-proof-clock.ts"):
+                content = body(base, path) if path not in (
+                    "packages/daemon/tests/helpers/unknown.ts", "packages/daemon/tests/cli/unknown.test.ts",
+                    "scripts/owned-proof-clock.ts") else b""
+                changed = tree(base, [(path, content + b"\n// browser-link-service-fixture literal reader\n", "100644")])
+                check(changed, tree(changed, updates), ("preexisting runner/config/source reference", path))
+                check(base, tree(base, [*updates, (path, content + b"\n", "100644")]),
+                      ("mixed execution input", path))
+            one_head = tree(base, [updates[1]])
+            actual("config", "grep.threads", "not-a-number")
+            try:
+                check(base, one_head, "actual reference scanner failure")
+            finally:
+                actual("config", "--unset", "grep.threads")
+            for bad_ref in ("f" * 40, "missing-ref"):
+                check(bad_ref, one_head, "unavailable Git history")
+            # Unique producer body is a new loose object in this owned, non-alternate repository.
+            oid = actual("rev-parse", f"{one_head}:{helper}").decode().strip()
+            object_path = repo / ".git/objects" / oid[:2] / oid[2:]
+            assert not object_path.is_symlink() and object_path.is_file() and object_path.stat().st_nlink == 1
+            assert not (repo / ".git/objects/info/alternates").exists()
+            saved = object_path.read_bytes()
+            saved_mode = object_path.stat().st_mode & 0o777
+            try:
+                object_path.chmod(0o600)
+                object_path.write_bytes(zlib.compress(b"blob 5\0owned"))
+                check(base, one_head, "corrupt actual owned producer object")
+                object_path.unlink()
+                check(base, one_head, "missing actual owned producer object")
+            finally:
+                object_path.write_bytes(saved)
+                object_path.chmod(saved_mode)
+            check(base, one_head, "restored regular family graph", True)
+            return count
+        finally:
+            os.chdir(prior)
+            os.environ.update(inherited)
+
+
 def dormant_codec_controls():
     """Actual complete public trees and conservative refusal histories; never a live soak."""
     prior = Path.cwd()
@@ -4423,11 +4579,13 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         assert not selected(doc_result) and not doc_result["relay_soak"] and not soak_fixture_calls, doc_result
         focused_status_controls += 1
         isolated_controls = isolated_test_controls()
+        family_controls = isolated_family_controls()
         codec_controls = dormant_codec_controls()
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
                           "isolated_test_controls": isolated_controls,
                           "dormant_codec_controls": codec_controls,
+                          "isolated_family_controls": family_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)
