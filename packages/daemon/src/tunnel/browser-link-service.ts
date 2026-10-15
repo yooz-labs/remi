@@ -12,6 +12,12 @@ import {
 } from '@remi/shared';
 import { WebSocketAdapter } from '../adapters/websocket-adapter.ts';
 import type { IdentityStore } from '../auth/identity-store.ts';
+import {
+  type ConnectionDeviceIdentity,
+  connectionDeviceIdentityInsideLock,
+  connectionDeviceKey,
+} from '../auth/relay-chat-authority.ts';
+import type { SecurePushStore } from '../notifications/secure-push-store.ts';
 import type { Connection } from '../server/connection.ts';
 import type { SessionBindingStore } from '../session/session-binding-store.ts';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry.ts';
@@ -22,9 +28,10 @@ export interface BrowserLinkServiceHost {
   readonly sessions: SessionRegistry;
   readonly bindings: SessionBindingStore;
   readonly directAdapter: () => WebSocketAdapter | undefined;
+  readonly relayAuthority?: SecurePushStore;
   readonly producerContextFor: (sessionId: UUID) => BrowserLinkProducerContext | null;
 }
-interface Actor {
+interface Actor extends ConnectionDeviceIdentity {
   readonly connection: Connection;
   readonly publicKey: string;
   readonly fingerprint: string;
@@ -65,7 +72,8 @@ const sameActor = (a: Actor, b: Actor) =>
   a.connection === b.connection &&
   a.publicKey === b.publicKey &&
   a.fingerprint === b.fingerprint &&
-  a.grant === b.grant;
+  a.grant === b.grant &&
+  a.proxy === b.proxy;
 const same = (a: Authority | null, b: Authority | null): boolean =>
   a === b ||
   !!(
@@ -132,19 +140,22 @@ export class BrowserLinkService {
     return connection?.isConnected ? connection : null;
   }
   private actor(connection: Connection, grant: string | null): Actor | null {
-    const publicKey = connection.connectionClientPublicKey;
-    const fingerprint = connection.connectionClientFingerprint;
-    return grant &&
-      publicKey &&
-      fingerprint &&
-      !connection.structuredChatProxyAuthority &&
-      this.connection(connection.id) === connection
-      ? { connection, publicKey, fingerprint, grant }
+    const identity = connectionDeviceIdentityInsideLock(
+      connection,
+      grant,
+      this.host.relayAuthority,
+    );
+    return grant && identity && this.connection(connection.id) === connection
+      ? { connection, ...identity, grant }
       : null;
   }
   /** Runs only inside the existing original-grant lock; never acquires another one. */
   private authority(actor: Actor, sessionId: UUID): Authority | null {
-    if (this.closed || actor.connection.connectionListenerTransport !== 'public-tls') return null;
+    if (
+      this.closed ||
+      (!actor.proxy && actor.connection.connectionListenerTransport !== 'public-tls')
+    )
+      return null;
     const session = this.host.sessions.getSessionForConnection(actor.connection.id);
     const attachment = this.host.sessions.getAttachmentToken(actor.connection.id);
     const binding = this.host.bindings.getIdentity(sessionId);
@@ -256,7 +267,7 @@ export class BrowserLinkService {
   isAvailable(id: UUID): boolean {
     try {
       const connection = this.connection(id);
-      const key = connection?.connectionClientPublicKey;
+      const key = connection ? connectionDeviceKey(connection) : null;
       if (this.closed || !connection || !key) return false;
       return this.withGrant(
         key,
@@ -273,9 +284,9 @@ export class BrowserLinkService {
   }
   handleReceiver(id: UUID, input: BrowserLinkReceiverRequest): void {
     const connection = this.connection(id);
-    const key = connection?.connectionClientPublicKey;
+    const key = connection ? connectionDeviceKey(connection) : null;
     if (!connection) return;
-    if (this.closed || !key || connection.structuredChatProxyAuthority) {
+    if (this.closed || !key) {
       connection.close('Browser links unavailable');
       return;
     }

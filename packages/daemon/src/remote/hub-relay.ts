@@ -585,7 +585,6 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             if (
               !message ||
               MESSAGE_DIRECTION[message.type] === 'd2c' ||
-              message.type === 'browser_link_receiver_request' ||
               message.type === 'file_fetch_begin' ||
               message.type === 'file_fetch_read' ||
               message.type === 'file_fetch_complete' ||
@@ -655,8 +654,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       (message) => {
         this.sendRaw(peer.cid, message);
       },
-      (sessionId, chatOwnerLost) => {
-        if (chatOwnerLost) {
+      (sessionId, stateOwnerLost) => {
+        if (stateOwnerLost) {
           // Child receipt state belongs to this exact logical channel. Reconnect
           // the machine before opening any replacement; never replay old input.
           void this.closePeer(peer, true);

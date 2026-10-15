@@ -1,7 +1,8 @@
 /** Internal hub -> child descriptor. Shape alone grants no device or chat authority. */
 import { createHash } from 'node:crypto';
 import { isSmallOrderPublicKey } from '@remi/shared';
-import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import type { SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store';
+import type { Connection } from '../server/connection';
 import { isAuthorityEpoch } from '../storage/authority-epoch';
 
 export const RELAY_CHAT_AUTHORITY_HEADER = 'x-remi-relay-chat';
@@ -53,4 +54,39 @@ export function encodeRelayChatAuthority(authority: SecurePushAuthority): string
   const value = snapshot(authority);
   if (!value) throw new Error('Invalid relay chat authority');
   return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+/** The historical header name is shared by child services; shape is never a grant. */
+export interface ConnectionDeviceIdentity {
+  readonly publicKey: string;
+  readonly fingerprint: string;
+  readonly proxy: SecurePushAuthority | null;
+}
+export function connectionDeviceKey(connection: Connection): string | null {
+  return (
+    connection.connectionClientPublicKey ??
+    connection.structuredChatProxyAuthority?.publicKey ??
+    null
+  );
+}
+/** Caller already holds the original device grant lock; this never acquires it again. */
+export function connectionDeviceIdentityInsideLock(
+  connection: Connection,
+  grant: string | null,
+  relayAuthority?: SecurePushStore,
+): ConnectionDeviceIdentity | null {
+  if (!grant) return null;
+  const proxy = connection.structuredChatProxyAuthority;
+  if (proxy) {
+    if (
+      connection.connectionClientPublicKey ||
+      connection.connectionClientFingerprint ||
+      !relayAuthority?.isCurrentAuthorityInsideLock(proxy, grant)
+    )
+      return null;
+    return { publicKey: proxy.publicKey, fingerprint: proxy.fingerprint, proxy };
+  }
+  const publicKey = connection.connectionClientPublicKey;
+  const fingerprint = connection.connectionClientFingerprint;
+  return publicKey && fingerprint ? { publicKey, fingerprint, proxy: null } : null;
 }

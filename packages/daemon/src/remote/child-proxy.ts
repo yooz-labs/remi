@@ -30,14 +30,15 @@ export class ChildProxy {
       generation: string;
       ready: Promise<void>;
       hello: HelloAckMessage | undefined;
-      chatOwner: boolean;
+      stateOwner: boolean;
+      helloDelivered: boolean;
     }
   >();
   private closed = false;
   /** A consumed child sequence must never move to a replacement socket on this channel. */
-  private retireChatOwner(sessionId: string, ws?: WebSocket): boolean {
+  private retireStateOwner(sessionId: string, ws?: WebSocket): boolean {
     const child = this.children.get(sessionId);
-    if (!child?.chatOwner || (ws && child.ws !== ws)) return false;
+    if (!child?.stateOwner || (ws && child.ws !== ws)) return false;
     this.close();
     this.failed(sessionId, true);
     return true;
@@ -162,7 +163,7 @@ export class ChildProxy {
     private readonly registry: SessionRegistryFile,
     private readonly deviceId: string,
     private readonly receive: (message: ProtocolMessage) => void,
-    private readonly failed: (sessionId: string, chatOwnerLost?: boolean) => void,
+    private readonly failed: (sessionId: string, stateOwnerLost?: boolean) => void,
     private readonly authorized: () => boolean,
     private readonly relayAuthority?: SecurePushAuthority,
     private readonly listChanged?: () => void,
@@ -178,7 +179,7 @@ export class ChildProxy {
       live.wsPort < 1 ||
       live.wsPort > 65535
     ) {
-      this.retireChatOwner(sessionId);
+      this.retireStateOwner(sessionId);
       throw new Error('SESSION_NOT_FOUND');
     }
     const generation = JSON.stringify([live.pid, live.wsPort, live.startedAt]);
@@ -188,7 +189,7 @@ export class ChildProxy {
     };
     let child = this.children.get(sessionId);
     if (child && child.generation !== generation) {
-      if (this.retireChatOwner(sessionId, child.ws)) throw new Error('CHILD_OWNER_RETIRED');
+      if (this.retireStateOwner(sessionId, child.ws)) throw new Error('CHILD_OWNER_RETIRED');
       child.ws.close();
       this.children.delete(sessionId);
       child = undefined;
@@ -233,14 +234,14 @@ export class ChildProxy {
             !matches() ||
             this.children.get(sessionId)?.ws !== ws
           ) {
-            this.retireChatOwner(sessionId, ws);
+            this.retireStateOwner(sessionId, ws);
             reject(new Error('CHILD_UNAVAILABLE'));
             ws.close();
             return;
           }
           const incoming = typeof event.data === 'string' ? deserialize(event.data) : null;
           if (!incoming || incoming.type === 'auth_challenge' || incoming.type === 'auth_result') {
-            this.retireChatOwner(sessionId, ws);
+            this.retireStateOwner(sessionId, ws);
             reject(new Error('CHILD_UNVERIFIED'));
             ws.close();
             return;
@@ -263,7 +264,21 @@ export class ChildProxy {
             clearTimeout(timer);
             resolve();
           }
-          if (incoming.type === 'hello_ack') return;
+          if (incoming.type === 'hello_ack') {
+            if (incoming.sessionId !== sessionId || !incoming.attachState) {
+              this.retireStateOwner(sessionId, ws);
+              reject(new Error('CHILD_UNVERIFIED'));
+              ws.close();
+              return;
+            }
+            const current = this.children.get(sessionId);
+            if (current) {
+              const refreshed = current.hello !== incoming;
+              current.hello = incoming;
+              if (current.helloDelivered && refreshed) this.receive(incoming);
+            }
+            return;
+          }
           if (incoming.type === 'ping') {
             // The hub is this child's peer. A sessionless remote Pong would
             // reach the machine Connection, not this verified socket (#1202).
@@ -308,12 +323,12 @@ export class ChildProxy {
         };
         ws.onerror = () => {
           clearTimeout(timer);
-          this.retireChatOwner(sessionId, ws);
+          this.retireStateOwner(sessionId, ws);
           reject(new Error('CHILD_UNAVAILABLE'));
         };
         ws.onclose = () => {
           clearTimeout(timer);
-          this.retireChatOwner(sessionId, ws);
+          this.retireStateOwner(sessionId, ws);
           reject(new Error('CHILD_UNAVAILABLE'));
           const current = this.children.get(sessionId)?.ws === ws;
           if (current) this.children.delete(sessionId);
@@ -324,7 +339,15 @@ export class ChildProxy {
           if (!this.closed && current) this.failed(sessionId);
         };
       });
-      child = { ws, port: live.wsPort, generation, ready, hello: undefined, chatOwner: false };
+      child = {
+        ws,
+        port: live.wsPort,
+        generation,
+        ready,
+        hello: undefined,
+        stateOwner: false,
+        helloDelivered: false,
+      };
       this.children.set(sessionId, child);
     }
     await child.ready;
@@ -335,7 +358,7 @@ export class ChildProxy {
       this.children.get(sessionId)?.ws !== child.ws ||
       child.ws.readyState !== WebSocket.OPEN
     ) {
-      this.retireChatOwner(sessionId, child.ws);
+      this.retireStateOwner(sessionId, child.ws);
       throw new Error('CHILD_UNAVAILABLE');
     }
     const pendingAnswer = this.answers.get(message.id);
@@ -343,17 +366,22 @@ export class ChildProxy {
     const pendingList = this.lists.get(message.id);
     if (pendingList) pendingList.ws = child.ws;
     if (message.type === 'hello') {
+      child.helloDelivered = true;
       if (child.hello) this.receive(child.hello);
     } else {
       if (message.type === 'native_answer' && Date.now() >= message.expiresAt * 1000)
         throw new Error('CHILD_PROOF_EXPIRED');
       // Mark before the possible send, including a refused/unavailable writer.
       // A failed send cannot establish non-delivery or grant a replacement counter.
-      if (message.type === 'chat_submit_request') child.chatOwner = true;
+      if (
+        message.type === 'chat_submit_request' ||
+        message.type === 'browser_link_receiver_request'
+      )
+        child.stateOwner = true;
       try {
         child.ws.send(serialize(message));
       } catch (error) {
-        this.retireChatOwner(sessionId, child.ws);
+        this.retireStateOwner(sessionId, child.ws);
         throw error;
       }
     }

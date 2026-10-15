@@ -138,6 +138,10 @@ import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
+  connectionDeviceIdentityInsideLock,
+  connectionDeviceKey,
+} from './auth/relay-chat-authority.ts';
+import {
   type SubagentAlert,
   SubagentAlerter,
   alertBody,
@@ -446,6 +450,7 @@ const cliNoTelegram = parsedArgs.noTelegram;
 const cliMaxBulletLength = parsedArgs.maxBulletLength;
 const cliSignalingUrl = parsedArgs.signalingUrl;
 const cliNoRelay = parsedArgs.noRelay;
+const relayWanted = !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay);
 const cliResume = parsedArgs.resume;
 const cliShowSessions = parsedArgs.showSessions;
 const cliInstall = parsedArgs.install;
@@ -1277,7 +1282,7 @@ const transcriptIndex = new TranscriptIndex();
 const bindingStore = new SessionBindingStore(
   sessionStore,
   transcriptIndex,
-  daemonTls && authEnabled && !serveMode
+  (daemonTls || (relayWanted && harnessId === 'claude')) && authEnabled && !serveMode
     ? {
         beforeWrite: (id) => {
           browserSessionHost?.beforeBindingWrite(id);
@@ -1469,11 +1474,12 @@ const sessionRegistry = new SessionRegistry(
 );
 
 // Own pending startup before public listeners can accept a feature client.
-if (daemonTls && authEnabled && !serveMode && harnessId === 'claude') {
+if ((daemonTls || relayWanted) && authEnabled && !serveMode && harnessId === 'claude') {
   browserSessionHost = new BrowserLinkSessionHost({
     sessions: sessionRegistry,
     bindings: bindingStore,
     service: () => browserLinkService,
+    onReady: (id) => publishSessionReadiness(id, 'browser_links'),
   });
 }
 if (
@@ -2483,12 +2489,18 @@ async function waitForBrowserStartup(id: UUID): Promise<boolean> {
   if (!browserSessionHost) return true;
   const adapter = registry.getAdapter('websocket');
   if (!(adapter instanceof WebSocketAdapter)) return true;
-  return browserSessionHost.waitForConnection(id, adapter, relayTrust);
+  return browserSessionHost.waitForConnection(id, adapter, relayTrust, relayChildAuthority);
 }
 
-/** Refresh only an already attached concrete signed TLS peer; never attach or replay. */
 function publishDownloadReadiness(sessionId: UUID): void {
-  const owner = fileDownloadSessionHost;
+  publishSessionReadiness(sessionId, 'file_download');
+}
+/** Refresh only an attached original actor; browser relay metadata never grants file access. */
+function publishSessionReadiness(
+  sessionId: UUID,
+  feature: 'file_download' | 'browser_links',
+): void {
+  const owner = feature === 'browser_links' ? browserSessionHost : fileDownloadSessionHost;
   const context = owner?.contextFor(sessionId);
   const session = sessionRegistry.getSession(sessionId);
   const adapter = registry.getAdapter('websocket');
@@ -2496,22 +2508,28 @@ function publishDownloadReadiness(sessionId: UUID): void {
   for (const id of session.attachedConnections) {
     try {
       const connection = adapter.getDirectConnection(id);
-      const key = connection?.connectionClientPublicKey;
-      const fingerprint = connection?.connectionClientFingerprint;
+      const key = connection ? connectionDeviceKey(connection) : null;
       const attachment = sessionRegistry.getAttachmentToken(id);
       if (
         !connection?.isConnected ||
-        connection.connectionListenerTransport !== 'public-tls' ||
-        connection.structuredChatProxyAuthority ||
+        ((!connection.structuredChatProxyAuthority || feature === 'file_download') &&
+          connection.connectionListenerTransport !== 'public-tls') ||
+        (feature === 'file_download' && !!connection.structuredChatProxyAuthority) ||
         !key ||
-        !fingerprint ||
         !attachment
       )
         continue;
-      const grant = relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => epoch, true);
+      const original = relayTrust.withAuthorizationEpochNonblocking(
+        key,
+        (grant) => {
+          const actor = connectionDeviceIdentityInsideLock(connection, grant, relayChildAuthority);
+          return actor && grant ? { ...actor, grant } : null;
+        },
+        true,
+      );
       const current = currentOwnedSession();
       const capabilities = capabilitiesForConnection(id);
-      if (!grant || current?.sessionId !== sessionId || !capabilities.includes('file_download'))
+      if (!original || current?.sessionId !== sessionId || !capabilities.includes(feature))
         continue;
       const message = createConnectionHello(
         {
@@ -2529,12 +2547,15 @@ function publishDownloadReadiness(sessionId: UUID): void {
       );
       relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => {
         const identity = bindingStore.getIdentity(sessionId);
+        const actor = connectionDeviceIdentityInsideLock(connection, epoch, relayChildAuthority);
         if (
-          epoch !== grant ||
+          epoch !== original.grant ||
+          !actor ||
+          actor.publicKey !== original.publicKey ||
+          actor.fingerprint !== original.fingerprint ||
+          actor.proxy !== original.proxy ||
           adapter.getDirectConnection(id) !== connection ||
           !connection.isConnected ||
-          connection.connectionClientPublicKey !== key ||
-          connection.connectionClientFingerprint !== fingerprint ||
           sessionRegistry.getSessionForConnection(id) !== session ||
           sessionRegistry.getAttachmentToken(id) !== attachment ||
           owner.contextFor(sessionId) !== context ||
@@ -2742,6 +2763,7 @@ function machineDescriptor(): MachineDescriptor | undefined {
   };
 }
 const relayTrust = new IdentityStore();
+const relayChildAuthority = new SecurePushStore(REMI_DIR, relayTrust);
 let hubRelay: HubRelay | undefined;
 const localRelayControl = serveMode
   ? {
@@ -2882,6 +2904,7 @@ if (browserSessionHost) {
       return adapter instanceof WebSocketAdapter ? adapter : undefined;
     },
     producerContextFor: (id) => browserSessionHost?.contextFor(id) ?? null,
+    relayAuthority: relayChildAuthority,
   });
 }
 if (fileDownloadSessionHost && !(await fileDownloadSessionHost.open(relayTrust))) {
@@ -2925,7 +2948,7 @@ if (
 if (!serveMode && authEnabled && harnessId === 'codex') {
   structuredChatService = new StructuredChatService({
     identityStore: relayTrust,
-    relayAuthority: new SecurePushStore(REMI_DIR, relayTrust),
+    relayAuthority: relayChildAuthority,
     sessions: sessionRegistry,
     bindings: bindingStore,
     harnessFor: (id) => harnessSessions.get(id),
@@ -2954,7 +2977,6 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 }
 
 // Session children and wrappers never own a room. The hub starts it only after PID ownership.
-const relayWanted = !cliNoRelay && (parsedArgs.relay || remiConfig.network.relay);
 if (serveMode && relayWanted && !authenticator)
   console.error('Relay startup refused: enable authentication before using --relay.');
 if (relayWanted && relayIdentity) {

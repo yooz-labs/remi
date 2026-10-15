@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import {
   type ProtocolMessage,
   createAnswer,
   createAnswerResult,
+  createHello,
   createHelloAck,
   createPing,
   createSessionListResponse,
@@ -23,7 +25,7 @@ import { ChildProxy } from '../../packages/daemon/src/remote/child-proxy.ts';
 import { SessionRegistryFile } from '../../packages/daemon/src/session/session-registry-file.ts';
 import { Mailbox } from '../../packages/signaling/tests/e2e/endpoints.ts';
 
-async function fixture() {
+async function fixture(sessionId = 'owned-child') {
   const dir = mkdtempSync(join(tmpdir(), 'remi-r3-child-generation-'));
   chmodSync(dir, 0o700);
   const previous = process.env['REMI_HOME'];
@@ -32,9 +34,11 @@ async function fixture() {
   const requests = new Mailbox<{
     message: ProtocolMessage;
     reply: (message: ProtocolMessage) => void;
+    close: () => void;
   }>();
   const forwarded: ProtocolMessage[] = [];
   const failures: string[] = [];
+  const ownerLosses: boolean[] = [];
   const invalidations: number[] = [];
   let authority = true;
   const server = Bun.serve({
@@ -52,6 +56,7 @@ async function fixture() {
         if (!message) throw new Error('INVALID_FIXTURE_REQUEST');
         requests.push({
           message,
+          close: () => ws.close(),
           reply: (value) => {
             ws.send(serialize(value));
           },
@@ -63,7 +68,7 @@ async function fixture() {
   if (port === undefined) throw new Error('MISSING_FIXTURE_PORT');
   const registry = new SessionRegistryFile(join(dir, 'live'));
   const entry = {
-    sessionId: 'owned-child',
+    sessionId,
     pid: process.pid,
     wsPort: port,
     hookPort: 1,
@@ -76,7 +81,10 @@ async function fixture() {
     registry,
     'owned-device',
     (message) => forwarded.push(message),
-    (id) => failures.push(id),
+    (id, consumed) => {
+      failures.push(id);
+      ownerLosses.push(consumed === true);
+    },
     () => authority,
     undefined,
     () => invalidations.push(1),
@@ -97,6 +105,7 @@ async function fixture() {
     requests,
     forwarded,
     failures,
+    ownerLosses,
     invalidations,
     ack,
     cleanup,
@@ -258,5 +267,76 @@ test('old child frames and delayed close cannot settle or refuse new-generation 
     expect(owned.failures).toHaveLength(0);
   } finally {
     owned.cleanup();
+  }
+}, 3000);
+
+test('child hello refresh is same-session/current, forwarded once after explicit hello and cached fresh', async () => {
+  const f = await fixture(randomUUID());
+  try {
+    const pending = f.proxy.send(
+      f.entry.sessionId,
+      createHello('owned', 'T4', { resumeSessionId: f.entry.sessionId }),
+    );
+    const child = await f.requests.next();
+    child.reply(f.ack());
+    await pending;
+    expect(f.forwarded.filter((m) => m.type === 'hello_ack')).toHaveLength(1);
+    const ready = createHelloAck('owned', f.entry.sessionId, {
+      attachState: 'attached',
+      capabilities: ['browser_links'],
+    });
+    child.reply(ready);
+    await Bun.sleep(40);
+    expect(f.forwarded.filter((m) => m.type === 'hello_ack')).toHaveLength(2);
+    await f.proxy.send(
+      f.entry.sessionId,
+      createHello('owned', 'T4', { resumeSessionId: f.entry.sessionId }),
+    );
+    expect(f.forwarded.at(-1)).toEqual(ready);
+    child.reply(
+      createHelloAck('owned', randomUUID(), {
+        attachState: 'attached',
+        capabilities: ['browser_links'],
+      }),
+    );
+    await Bun.sleep(40);
+    expect(f.forwarded.filter((m) => m.type === 'hello_ack')).toHaveLength(3);
+    expect(f.failures).toEqual([f.entry.sessionId]);
+  } finally {
+    f.cleanup();
+  }
+}, 3000);
+
+test('browser request consumes child ownership before send and actual socket loss forbids replacement', async () => {
+  const f = await fixture(randomUUID());
+  try {
+    const pending = f.proxy.send(
+      f.entry.sessionId,
+      createHello('owned', 'T4', { resumeSessionId: f.entry.sessionId }),
+    );
+    const child = await f.requests.next();
+    child.reply(f.ack());
+    await pending;
+    await f.proxy.send(f.entry.sessionId, {
+      type: 'browser_link_receiver_request',
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      sessionId: f.entry.sessionId,
+      binding: { harness: 'claude', harnessSessionId: randomUUID() },
+      seq: 1,
+      action: 'select',
+    });
+    const receiver = await f.requests.next();
+    expect(receiver.message.type).toBe('browser_link_receiver_request');
+    receiver.close();
+    const end = performance.now() + 500;
+    while (!f.failures.length && performance.now() < end) await Bun.sleep(5);
+    expect(f.ownerLosses).toEqual([true]);
+    await expect(f.proxy.send(f.entry.sessionId, createHello('owned', 'T4'))).rejects.toThrow(
+      'SESSION_NOT_FOUND',
+    );
+    expect(await f.requests.quiet(80)).toBe(true);
+  } finally {
+    f.cleanup();
   }
 }, 3000);
