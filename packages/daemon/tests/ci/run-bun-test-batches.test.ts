@@ -240,17 +240,38 @@ test('the manually reviewed target/helper pins and case multiset cannot drift or
   const contract = JSON.parse(
     readFileSync(path.join(root, 'scripts/ci/remote-new-client-contract.json'), 'utf8'),
   );
-  validateTargetContract(contract, root, {
+  expect(contract.runtime).toBe('af24e281ebacd6ac77c0f14b4206599cf4ae1c9f');
+  expect(() =>
+    validateTargetContract({ ...contract, runtime: 'not-the-current-runtime' }, root, {
+      cases: contract.cases,
+      assertions: contract.assertions,
+    }),
+  ).toThrow('Target/runtime contract differs');
+  if (contract.runtime !== Bun.revision) {
+    expect(() =>
+      validateTargetContract(contract, root, {
+        cases: contract.cases,
+        assertions: contract.assertions,
+      }),
+    ).toThrow('Target/runtime contract differs');
+  }
+  // Only this test fixture uses the current runtime; the committed contract stays pinned.
+  const fixtureContract = { ...contract, runtime: Bun.revision };
+  validateTargetContract(fixtureContract, root, {
     cases: contract.cases,
     assertions: contract.assertions,
   });
   expect(() =>
-    validateTargetContract({ ...contract, cases: [...contract.cases, contract.cases[0]] }, root, {
-      cases: contract.cases,
-      assertions: contract.assertions,
-    }),
+    validateTargetContract(
+      { ...fixtureContract, cases: [...contract.cases, contract.cases[0]] },
+      root,
+      {
+        cases: contract.cases,
+        assertions: contract.assertions,
+      },
+    ),
   ).toThrow('multiset');
-  const altered = structuredClone(contract);
+  const altered = structuredClone(fixtureContract);
   altered.sourcePins[TARGET].sha256 = '0'.repeat(64);
   expect(() =>
     validateTargetContract(altered, root, {
@@ -357,15 +378,47 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
   const err = output();
   const directory = path.join(home, 'coverage/test-lanes');
   const summary = path.join(home, 'test-output.txt');
-  await expect(
-    runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream }),
-  ).rejects.toThrow('lanes failed');
+  const running = runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream });
+  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+    await expect(running).rejects.toThrow('lanes failed');
+  } else {
+    // Bun 1.4.2 writes text inside failure elements, outside the pinned reader schema.
+    await expect(running).rejects.toThrow('Unexpected JUnit text');
+  }
   expect(() => readFileSync(summary)).toThrow();
   const failure = JSON.parse(readFileSync(path.join(directory, 'failure.json'), 'utf8'));
   expect(failure.thresholdRowWritten).toBe(false);
-  expect(failure.evidence).toHaveLength(2);
-  expect(failure.evidence[1].exit).not.toBe(0);
-  expect(failure.evidence[1].cases[0].status).toBe('fail');
+  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+    expect(failure.evidence).toHaveLength(2);
+    expect(failure.evidence[1].exit).not.toBe(0);
+    expect(failure.evidence[1].cases[0].status).toBe('fail');
+  } else {
+    expect(failure.evidence).toHaveLength(1);
+    expect(failure.evidence[0].lane).toBe('target');
+    expect(failure.evidence[0].exit).toBe(0);
+    const report = readFileSync(path.join(directory, 'rest/junit.xml'), 'utf8');
+    expect(report).toContain('failures="1"');
+    expect(report).toContain('<failure type="AssertionError"');
+    expect(report).toContain('>AssertionError: expect(received).toBe(expected)');
+    expect(() => parseCases(report, ['rest.test.ts'])).toThrow('Unexpected JUnit text');
+    const raw = err.text().replace(/\x1b\[[0-9;]*m/g, '');
+    expect(raw).toContain('owned rest');
+    expect(raw).toContain('Expected: 1');
+    expect(raw).toContain('Received: 2');
+    const rawFailureCount = [...raw.matchAll(/^\s*(\d+) fail$/gm)].reduce(
+      (sum, match) => sum + Number(match[1]),
+      0,
+    );
+    expect(rawFailureCount).toBe(1);
+    console.log(
+      `[ci-runtime-refusal] ${JSON.stringify({
+        runtime: Bun.revision,
+        refusal: failure.error,
+        formalCaseCount: failure.evidence.length,
+        rawFailureCount,
+      })}`,
+    );
+  }
 });
 
 test('new, removed and source-mode/discovery changes remain visible, not silently omitted', () => {
@@ -385,8 +438,20 @@ test('new, removed and source-mode/discovery changes remain visible, not silentl
   expect(snapshotSources(home, discoverTests(home))[TARGET]?.mode).not.toBe(snapshot[TARGET]?.mode);
 });
 
-test('the actual checkout reaches production pre-lane preparation with its tracked public env template', () => {
-  const prepared = prepareSuite(root);
+test('actual checkout public-template inputs and partition retain the production runtime guard', () => {
+  const prepared =
+    Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f'
+      ? prepareSuite(root)
+      : (() => {
+          expect(() => prepareSuite(root)).toThrow('Unsupported target contract');
+          // Component input validation is distinct from the refused pinned execution.
+          const files = discoverTests(root);
+          return {
+            files,
+            before: snapshotSources(root, files),
+            lanes: partitionTests(files),
+          };
+        })();
   expect(prepared.files).toContain(TARGET);
   expect(prepared.before['.env.example']?.sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(prepared.lanes[0]).toEqual([TARGET]);
