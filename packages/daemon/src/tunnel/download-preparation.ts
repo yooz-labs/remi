@@ -111,10 +111,16 @@ export async function prepareDownloadCopy(
       await context.yield();
     }
     const expected = context.effect(() => admitted.finish());
+    context.effect(() => {
+      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+    });
+    // Flushing the already-private journal can be slow. It publishes neither a path nor bytes;
+    // reopen only after a fresh locked check so revocation during this fsync cannot be accepted.
+    writerCloseAttempted = true;
+    ownedWriter.close();
+    writerClosed = true;
     const privateReader = context.effect(() => {
-      writerCloseAttempted = true;
-      ownedWriter.close();
-      writerClosed = true;
+      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
       reader = ownedWriter.openRead();
       return reader;
     });
