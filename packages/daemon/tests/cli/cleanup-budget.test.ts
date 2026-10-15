@@ -14,7 +14,7 @@ import { stripComments } from '../helpers/strip-comments.ts';
 const cli = stripComments(readFileSync(join(import.meta.dir, '../../src/cli.ts'), 'utf8'));
 
 function cleanupBody(): string {
-  const from = cli.indexOf('async function cleanup(): Promise<void> {');
+  const from = cli.indexOf('async function performCleanup(): Promise<void> {');
   expect(from).toBeGreaterThan(-1);
   const to = cli.indexOf('\n}\n', from);
   expect(to).toBeGreaterThan(from);
@@ -24,11 +24,15 @@ function cleanupBody(): string {
 test('the push drain runs beside the adapters stopping, within one budget', () => {
   const body = cleanupBody();
   const drainStarts = body.indexOf('const draining = drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);');
-  const stops = body.indexOf('await registry.stopAll();');
-  const drained = body.indexOf('await draining;');
+  const stops = body.indexOf('() => registry.stopAll(),');
+  const drained = body.indexOf('() => draining,');
   expect(drainStarts, 'the drain starts before the adapters stop').toBeGreaterThan(-1);
   expect(stops).toBeGreaterThan(drainStarts);
   expect(drained, 'and is awaited after them').toBeGreaterThan(stops);
+  // The shared cleanup task awaits every callback in order, even after a prior close fails.
+  expect(cli).toContain('cleanupTask ??= performCleanup();');
+  expect(body).toContain('for (const close of [');
+  expect(body.indexOf('await close();')).toBeGreaterThan(drained);
   // The last drain (pushes the session shutdown started) gets what is left of the same budget.
   const last = body.lastIndexOf('drainPushDeliveries(');
   expect(body.slice(last)).toMatch(

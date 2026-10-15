@@ -9,7 +9,9 @@
  * session registration, the `starting` status, `start()` with its
  * `markExited` on failure, and the child pid.
  *
- * Statement order is unchanged inside this function. Only `preAssign` before
+ * TLS browser preparation is awaited before PTY construction (#1170); the CLI
+ * gates signed public-TLS attachment while construction/start is pending.
+ * The existing `preAssign` before
  * `setupHookBridge` is observably load-bearing: `setupHookBridge` reads the
  * binding synchronously (`hook-bridge-setup.ts`, the `preAssignedClaudeId`
  * block) and arms the transcript binder only when one exists, which the launch
@@ -24,10 +26,11 @@
  * tracker, gate handle and binder closer (formerly the `sessionTrackers`,
  * `sessionGateHandles` and `binderClosers` maps, filled mid-launch) is now
  * `cli.ts` storing the returned `HarnessSession` in `harnessSessions` after
- * this returns. Nothing reads those entries while a launch is running (the
+ * this returns. Signed TLS browser clients await the startup barrier; local
+ * utility and TLS-off paths retain their prior behavior. The
  * tracker's own closures read the session's `decisions`, which has no gate
  * until the bridge exists, and the handlers that read the map run only on
- * client messages), so that order is unobservable too.
+ * client messages.
  *
  * Four daemon-wide values are read when a session launches, or later, and not
  * when the harness is built, so they arrive as getters and are read where the
@@ -51,7 +54,10 @@ import { permissionHoldPolicy } from '../cli/hold-policy.ts';
 import { log, logError } from '../cli/logger.ts';
 import { setupHookBridge } from '../cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from '../cli/session-phases/hook-bridge-setup.ts';
-import { createPtySessionForSession } from '../cli/session-phases/pty-session-setup.ts';
+import {
+  buildClaudeChildEnv,
+  createPtySessionForSession,
+} from '../cli/session-phases/pty-session-setup.ts';
 import type { PromptsConfig } from '../config/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -69,6 +75,7 @@ import type {
   SessionStore,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
+import type { BrowserLinkLaunch } from '../tunnel/browser-link-session-host.ts';
 import type { AnswerCommit, AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 import type {
   DecisionChannel,
@@ -118,6 +125,8 @@ export interface ClaudeLaunchDeps {
   /** Fed every chunk forwarded to the wrapper's local terminal (#932). */
   observeLocalPtyOutput: (data: Uint8Array) => void;
   sessionNotifiers: Map<UUID, NotificationDispatcher>;
+  /** TLS-only preparation; ownership is registered before this awaited operation (#1170). */
+  prepareBrowser?: (sessionId: UUID, bindingId: string) => Promise<BrowserLinkLaunch>;
 }
 
 /**
@@ -207,11 +216,11 @@ class ClaudeDecisions implements DecisionChannel {
  *   event?" filters (#914): filled here when a hook bridge exists, emptied by
  *   `dispose()`. `ClaudeHarness.admitsAnySession` reads it.
  */
-export function createClaudeSession(
+export async function createClaudeSession(
   deps: ClaudeLaunchDeps,
   ctx: HarnessLaunchContext,
   admitsBySession: Map<UUID, (input: HookInput) => boolean>,
-): HarnessSession {
+): Promise<HarnessSession> {
   const {
     sessionRegistry,
     sessionStore,
@@ -250,6 +259,7 @@ export function createClaudeSession(
     disposed ? null : sessionRegistry.getQuestion(sessionId, questionId),
   );
   let closeBinder: (() => void) | null = null;
+  let browserLaunch: BrowserLinkLaunch | undefined;
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
@@ -354,121 +364,176 @@ export function createClaudeSession(
   // claudeSessionId Claude will write under BEFORE spawning, so sibling
   // daemons in the same cwd cannot race-claim each other's transcripts
   // through mtime-based discovery.
-  const binding = resolveClaudeBinding(extraArgs, {
-    displayName: `remi:${deps.wsPort()}`,
-  });
-  log(
-    `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
-  );
+  try {
+    const binding = resolveClaudeBinding(extraArgs, {
+      displayName: `remi:${deps.wsPort()}`,
+    });
+    log(
+      `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
+    );
 
-  // Persist the binding before spawn so siblings observing the store
-  // during the race window see our claim immediately.
-  bindingStore.preAssign({
-    remiSessionId: sessionId,
-    claudeSessionId: binding.claudeSessionId,
-    projectPath: workingDirectory,
-    port: deps.currentPort(),
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
+    // Persist the binding before spawn so siblings observing the store
+    // during the race window see our claim immediately.
+    bindingStore.preAssign({
+      remiSessionId: sessionId,
+      claudeSessionId: binding.claudeSessionId,
+      projectPath: workingDirectory,
+      port: deps.currentPort(),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
 
-  const launchHookServer = deps.hookServer();
-  if (launchHookServer) {
-    const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());
-    const hookBridgeHandle = setupHookBridge(
+    browserLaunch = await deps.prepareBrowser?.(sessionId, binding.claudeSessionId);
+    browserLaunch?.check();
+
+    const launchHookServer = deps.hookServer();
+    if (launchHookServer) {
+      const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());
+      const hookBridgeHandle = setupHookBridge(
+        {
+          sessionRegistry,
+          bindingStore,
+          liveSessionsRegistry,
+          transcriptWatchers,
+          transcriptFallbackTimers,
+          currentPort: deps.currentPort,
+          transcriptDiscovery,
+          subagentViews,
+          foreignSessionEscalator,
+          subagentAlerts,
+          // Classify an escalation as binary vs design/plan-mode (#572/#573).
+          alwaysEscalateTools: ALWAYS_ESCALATE_TOOLS,
+          // #585: a held question the gate resolves without a user answer dismisses
+          // its pushed card on every client.
+          broadcastQuestionResolved: onQuestionResolved,
+          // #1126: how long a binary prompt's hook waits for the phone, and
+          // the registered hook timeout an abort is compared with; a wrapper
+          // session hands an unanswered prompt to its terminal, a daemon or
+          // hub session keeps it for the phone (see hold-policy.ts).
+          holdMs: holdPolicy.holdMs,
+          hookTimeoutMs: holdPolicy.hookTimeoutMs,
+          pushTerminalNotice: (sid, question, reason) =>
+            sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
+          dismissTerminalNotice: (sid, questionId) =>
+            sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
+          onHarnessDenied,
+          // #1153: a turn that ended on an API error is one `turn_failed` push
+          // per session through the session's dispatcher, never a card, once per
+          // reason until a later main Stop clears it (`turn-failed.ts`, #1226).
+          pushTurnFailed,
+          dismissTurnFailed,
+        },
+        {
+          hookServer: launchHookServer,
+          sessionId,
+          workingDirectory,
+          messageApi,
+          sendAndRecord,
+          tracker,
+          // #1126: a wrapper session has a local terminal, so a subagent's
+          // prompt is passed to it; a daemon-mode session holds it instead.
+          hasLocalTerminal: holdPolicy.hasLocalTerminal,
+        },
+      );
+      // The binder owns the fallback poll + #452 dir-watch (armed by its start()
+      // inside setupHookBridge); record its teardown so dispose() reaches the
+      // rotation dir-poll interval that the shared transcriptWatchers and
+      // transcriptFallbackTimers cleanup in cli.ts cannot.
+      closeBinder = hookBridgeHandle.closeBinder;
+      // Keep the per-session gate handle (#573) so the answer path and
+      // `remi unstick` reach this exact session's gate (`decisions`).
+      decisions.attach(hookBridgeHandle.gate);
+      // #914: lets the out-of-bridge turn-complete listener apply the same
+      // session filter every in-bridge listener already uses.
+      admitsBySession.set(sessionId, hookBridgeHandle.admits);
+    }
+
+    const ptySession = createPtySessionForSession(
       {
         sessionRegistry,
-        bindingStore,
+        sessionStore,
         liveSessionsRegistry,
-        transcriptWatchers,
-        transcriptFallbackTimers,
-        currentPort: deps.currentPort,
-        transcriptDiscovery,
-        subagentViews,
-        foreignSessionEscalator,
-        subagentAlerts,
-        // Classify an escalation as binary vs design/plan-mode (#572/#573).
-        alwaysEscalateTools: ALWAYS_ESCALATE_TOOLS,
-        // #585: a held question the gate resolves without a user answer dismisses
-        // its pushed card on every client.
-        broadcastQuestionResolved: onQuestionResolved,
-        // #1126: how long a binary prompt's hook waits for the phone, and
-        // the registered hook timeout an abort is compared with; a wrapper
-        // session hands an unanswered prompt to its terminal, a daemon or
-        // hub session keeps it for the phone (see hold-policy.ts).
-        holdMs: holdPolicy.holdMs,
-        hookTimeoutMs: holdPolicy.hookTimeoutMs,
-        pushTerminalNotice: (sid, question, reason) =>
-          sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
-        dismissTerminalNotice: (sid, questionId) =>
-          sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
-        onHarnessDenied,
-        // #1153: a turn that ended on an API error is one `turn_failed` push
-        // per session through the session's dispatcher, never a card, once per
-        // reason until a later main Stop clears it (`turn-failed.ts`, #1226).
-        pushTurnFailed,
-        dismissTurnFailed,
+        outputSink: outputProcessor,
+        ...(browserLaunch && { onConsumerEnded: browserLaunch.consumerEnded }),
+        wsPort: deps.wsPort(),
+        sendMessage,
+        cleanup,
+        // #932 durable fix: feed the wrapper's quiescence + clean-boundary
+        // gate with every chunk actually forwarded to the local terminal, and
+        // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
+        // reset) -- ask the bar to repaint immediately instead of leaving row
+        // N unprotected until the next tick or the heartbeat.
+        observeLocalPtyOutput,
       },
       {
-        hookServer: launchHookServer,
         sessionId,
         workingDirectory,
-        messageApi,
-        sendAndRecord,
-        tracker,
-        // #1126: a wrapper session has a local terminal, so a subagent's
-        // prompt is passed to it; a daemon-mode session holds it instead.
-        hasLocalTerminal: holdPolicy.hasLocalTerminal,
+        extraArgs: binding.args,
+        passThrough,
+        reservedRows,
+        ...(browserLaunch && {
+          launch: {
+            command: 'claude',
+            childEnv: {
+              ...buildClaudeChildEnv(deps.wsPort(), reservedRows),
+              BROWSER: browserLaunch.browserPath,
+            },
+          },
+        }),
       },
     );
-    // The binder owns the fallback poll + #452 dir-watch (armed by its start()
-    // inside setupHookBridge); record its teardown so dispose() reaches the
-    // rotation dir-poll interval that the shared transcriptWatchers and
-    // transcriptFallbackTimers cleanup in cli.ts cannot.
-    closeBinder = hookBridgeHandle.closeBinder;
-    // Keep the per-session gate handle (#573) so the answer path and
-    // `remi unstick` reach this exact session's gate (`decisions`).
-    decisions.attach(hookBridgeHandle.gate);
-    // #914: lets the out-of-bridge turn-complete listener apply the same
-    // session filter every in-bridge listener already uses.
-    admitsBySession.set(sessionId, hookBridgeHandle.admits);
+
+    browserLaunch?.attach(ptySession);
+    return {
+      pty: ptySession,
+      decisions,
+      start: async () => {
+        if (browserLaunch && disposed) throw new Error('Browser link session unavailable');
+        browserLaunch?.starting();
+        try {
+          await ptySession.start();
+          browserLaunch?.started();
+        } catch (error) {
+          try {
+            await browserLaunch?.failed();
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], 'Browser link session startup failed');
+          }
+          throw error;
+        }
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        try {
+          browserLaunch?.dispose();
+        } finally {
+          try {
+            closeBinder?.();
+          } finally {
+            // A closed session must stop admitting turns even if either teardown throws.
+            admitsBySession.delete(sessionId);
+          }
+        }
+      },
+    };
+  } catch (error) {
+    disposed = true;
+    const errors: unknown[] = [error];
+    try {
+      closeBinder?.();
+    } catch (cleanupError) {
+      errors.push(cleanupError);
+    }
+    admitsBySession.delete(sessionId);
+    try {
+      await browserLaunch?.failed();
+    } catch (cleanupError) {
+      errors.push(cleanupError);
+    }
+    if (errors.length > 1) throw new AggregateError(errors, 'Claude session construction failed');
+    throw error;
   }
-
-  const ptySession = createPtySessionForSession(
-    {
-      sessionRegistry,
-      sessionStore,
-      liveSessionsRegistry,
-      outputSink: outputProcessor,
-      wsPort: deps.wsPort(),
-      sendMessage,
-      cleanup,
-      // #932 durable fix: feed the wrapper's quiescence + clean-boundary
-      // gate with every chunk actually forwarded to the local terminal, and
-      // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
-      // reset) -- ask the bar to repaint immediately instead of leaving row
-      // N unprotected until the next tick or the heartbeat.
-      observeLocalPtyOutput,
-    },
-    { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
-  );
-
-  return {
-    pty: ptySession,
-    decisions,
-    start: () => ptySession.start(),
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      try {
-        closeBinder?.();
-      } finally {
-        // #914: a closed session's binder must never keep admitting turns,
-        // even when closing it threw.
-        admitsBySession.delete(sessionId);
-      }
-    },
-  };
 }

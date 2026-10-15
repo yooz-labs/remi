@@ -7,12 +7,14 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
 } from '@remi/shared';
 import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
 import {
   RELAY_CHAT_AUTHORITY_HEADER,
@@ -137,6 +139,7 @@ const MAX_REFUSED_ORIGINS_TRACKED = 64;
 
 /** WebSocket data attached to each connection */
 interface WSData {
+  readonly listenerTransport: import('./connection.ts').ConnectionListenerTransport;
   relayChatAuthority?: SecurePushAuthority;
   relayControl?: boolean;
   connectionId: UUID;
@@ -297,6 +300,11 @@ export class WebSocketServer {
   ): ReturnType<typeof Bun.serve> {
     const path = this.config.path;
     const self = this;
+    const listenerTransport = localControl
+      ? 'private-control'
+      : this.config.tls
+        ? 'public-tls'
+        : 'public-plain';
 
     return Bun.serve<WSData>({
       port,
@@ -342,6 +350,7 @@ export class WebSocketServer {
           if (
             server.upgrade(req, {
               data: {
+                listenerTransport,
                 connectionId: generateId(),
                 peerAddress: peer ?? null,
                 hasCapability,
@@ -383,6 +392,7 @@ export class WebSocketServer {
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
+              listenerTransport,
               connectionId: generateId(),
               peerAddress,
               hasCapability,
@@ -783,6 +793,7 @@ export class WebSocketServer {
       ws.data.connectionId,
       ws.data.peerAddress,
       ws.data.relayChatAuthority,
+      ws.data.listenerTransport,
     );
 
     this.connections.set(ws.data.connectionId, connection);
@@ -791,6 +802,18 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
+      if (typeof message !== 'string' && isFileDownloadCandidate(message)) {
+        connection.handleFileDownloadFrame(message);
+        return;
+      }
+      if (
+        this.events.onBrowserLinkReceiver &&
+        typeof message !== 'string' &&
+        isBrowserLinkCandidate(message)
+      ) {
+        connection.handleBrowserLinkFrame(message);
+        return;
+      }
       if (typeof message !== 'string' && isStructuredChatCandidate(message)) {
         connection.handleStructuredChatFrame(message);
         return;

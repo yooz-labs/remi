@@ -183,5 +183,6 @@ export interface Harness {
    * needs them, and return it unstarted. May throw (the caller lets it
    * propagate, as the inline code did).
    */
-  createSession(ctx: HarnessLaunchContext): HarnessSession;
+  /** Rejected asynchronous construction owns and joins its not-yet-returned resources. */
+  createSession(ctx: HarnessLaunchContext): HarnessSession | Promise<HarnessSession>;
 }

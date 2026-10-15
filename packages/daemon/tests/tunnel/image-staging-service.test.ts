@@ -50,6 +50,7 @@ import {
   type ImageStagingResponse,
   ImageStagingService,
 } from '../../src/tunnel/image-staging-service';
+import { openManagedTunnelStorage } from '../../src/tunnel/managed-tunnel-storage';
 import { Reservations } from '../../src/tunnel/reservations';
 import { findTestPort, pollUntil } from '../integration/hub-test-utils';
 
@@ -1474,4 +1475,26 @@ test('equivalent reordered binding members replay the actual coordinator outcome
     },
   };
   expect(await coordinator.handle(f.owner.id, reordered)).toBe(first);
+});
+
+test('image staging shares exact managed storage scope while native owners close independently', async () => {
+  const f = await fixture();
+  const storage = await openManagedTunnelStorage(f.home);
+  try {
+    expect(storage.hub).toBe(Reflect.get(f.service, 'hub'));
+    const { accepted, bytes } = await start(f);
+    storage.recover();
+    expect(storage.store.inspect().some((row) => row.state === 'active')).toBe(true);
+    storage.close();
+    storage.close();
+    await chunks(f, accepted.transferId, bytes);
+    const result = await invoke(
+      f.service,
+      f.owner.id,
+      operation(f, accepted.transferId, 'image_upload_complete'),
+    );
+    expect(result.type).toBe('image_upload_result');
+  } finally {
+    storage.close();
+  }
 });

@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.17-dev.183'; // REMI_COMPILED_VERSION
+      return '0.7.17-dev.185'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.17-dev.183'; // REMI_COMPILED_VERSION
+    return '0.7.17-dev.185'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -131,6 +131,7 @@ import {
   generateId,
   now,
 } from '@remi/shared';
+import { BROWSER_LINKS_CAPABILITY } from '@remi/shared/browser-links';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import type { WebSocketAdapterConfig } from './adapters/websocket-adapter.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -159,6 +160,7 @@ import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
   createConnectionHandlers,
+  createConnectionHello,
 } from './cli/handlers/connection-events.ts';
 import {
   type CreateSessionHandlers,
@@ -299,6 +301,12 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
+import { BrowserLinkService } from './tunnel/browser-link-service.ts';
+import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
+import {
+  FileDownloadSessionHost,
+  downloadProtectionRoots,
+} from './tunnel/file-download-session-host';
 import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
@@ -1069,6 +1077,8 @@ try {
   console.error('TLS_CONFIG_INVALID: cannot load configured TLS files.');
   process.exit(1);
 }
+const configAuth = remiConfig.auth.enabled;
+const authEnabled = cliAuth ?? configAuth !== false;
 const publicWsScheme = daemonTls ? 'wss' : 'ws';
 
 // ---------------------------------------------------------------------------
@@ -1163,8 +1173,13 @@ let nativeAnswerLedger: NativeAnswerLedger | undefined;
 let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 let structuredChatService: StructuredChatService | undefined;
+let browserLinkService: BrowserLinkService | undefined;
+let browserSessionHost: BrowserLinkSessionHost | undefined;
+let fileDownloadSessionHost: FileDownloadSessionHost | undefined;
 const capabilitiesForConnection = (id: UUID): readonly string[] => [
   ...DAEMON_CAPABILITIES,
+  ...(fileDownloadSessionHost?.service?.isAvailable(id) ? ['file_download'] : []),
+  ...(browserLinkService?.isAvailable(id) ? [BROWSER_LINKS_CAPABILITY] : []),
   ...(imageStagingService?.isAvailable(id)
     ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
     : []),
@@ -1259,7 +1274,24 @@ const subagentViews = new SubagentViewRegistry();
 // for an older session still resolves after the liveness store has dropped it.
 // The binding store mirrors every preAssign/update write into it.
 const transcriptIndex = new TranscriptIndex();
-const bindingStore = new SessionBindingStore(sessionStore, transcriptIndex);
+const bindingStore = new SessionBindingStore(
+  sessionStore,
+  transcriptIndex,
+  daemonTls && authEnabled && !serveMode
+    ? {
+        beforeWrite: (id) => {
+          browserSessionHost?.beforeBindingWrite(id);
+          fileDownloadSessionHost?.beforeBindingWrite(id);
+        },
+        afterCommit: (id, expected, mirrorVerified) => {
+          browserSessionHost?.afterBindingCommit(id, expected, mirrorVerified);
+          fileDownloadSessionHost?.afterClaudeCommit(id, expected, mirrorVerified);
+        },
+        afterHarnessIdentityCommit: (id, harness, expected, committed) =>
+          fileDownloadSessionHost?.afterHarnessIdentityCommit(id, harness, expected, committed),
+      }
+    : undefined,
+);
 
 const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
@@ -1309,6 +1341,9 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       retireSecurePushRuntime(sessionId);
+      browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
+      fileDownloadSessionHost?.retireSession(sessionId);
+      void fileDownloadSessionHost?.closeSession(sessionId);
       void imageStagingService?.invalidateSession(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
       // Resolve any deferred Stop (#641): ack the requester + notify a
@@ -1380,7 +1415,9 @@ const sessionRegistry = new SessionRegistry(
     // some unrelated status change happened to flush. Emitted from the two
     // lines that mutate the set, so it covers every attach path by
     // construction; `refresh()` schedules only on a real change.
-    onAttachStateChanged: () => {
+    onAttachStateChanged: (id) => {
+      fileDownloadSessionHost?.attachmentsChanged(id);
+      browserLinkService?.maintainSession(id);
       statusWriter.refresh();
       void imageStagingService?.maintain();
     },
@@ -1430,6 +1467,43 @@ const sessionRegistry = new SessionRegistry(
     },
   },
 );
+
+// Own pending startup before public listeners can accept a feature client.
+if (daemonTls && authEnabled && !serveMode && harnessId === 'claude') {
+  browserSessionHost = new BrowserLinkSessionHost({
+    sessions: sessionRegistry,
+    bindings: bindingStore,
+    service: () => browserLinkService,
+  });
+}
+if (
+  daemonTls &&
+  authEnabled &&
+  !serveMode &&
+  ((process.platform === 'darwin' && process.arch === 'arm64') ||
+    (process.platform === 'linux' && ['arm64', 'x64'].includes(process.arch)))
+) {
+  fileDownloadSessionHost = new FileDownloadSessionHost({
+    home: REMI_DIR,
+    sessions: sessionRegistry,
+    bindings: bindingStore,
+    runtimeFor: (id) => harnessSessions.get(id),
+    directAdapter: () => {
+      const adapter = registry.getAdapter('websocket');
+      return adapter instanceof WebSocketAdapter ? adapter : undefined;
+    },
+    rootsFor: (workingDirectory) =>
+      downloadProtectionRoots({
+        home: REMI_DIR,
+        userHome: os.homedir(),
+        workingDirectory,
+        harness: harnessId,
+        claudeConfigDirectory: process.env['CLAUDE_CONFIG_DIR'],
+        codexHome: process.env['CODEX_HOME'],
+      }),
+    onReady: (id) => publishDownloadReadiness(id),
+  });
+}
 
 import { SubagentViewRegistry } from './api/subagent-view-registry.ts';
 import { makeCurrentSessionResolver } from './cli/current-session.ts';
@@ -1783,6 +1857,7 @@ async function createNewSession(
   const runtime = securePushContexts.begin(sessionId);
   securePushRuntimes.set(sessionId, runtime);
   try {
+    fileDownloadSessionHost?.beginSession(sessionId, workingDirectory);
     const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
       {
         sessionRegistry,
@@ -1831,7 +1906,7 @@ async function createNewSession(
     // Everything Claude-specific (the question tracker, the PTY output parser,
     // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
     // built behind the harness seam, in `harness/claude-session.ts`.
-    const session = harness.createSession({
+    const session = await harness.createSession({
       sessionId,
       workingDirectory,
       extraArgs,
@@ -1841,7 +1916,9 @@ async function createNewSession(
       sendAndRecord,
       sendMessage,
     });
+    browserSessionHost?.bindSession(sessionId, session);
     harnessSessions.set(sessionId, session);
+    fileDownloadSessionHost?.bindSession(sessionId, session);
     const ptySession = session.pty;
 
     const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1878,6 +1955,7 @@ async function createNewSession(
     // daemon process itself exits.
     try {
       await session.start();
+      fileDownloadSessionHost?.started(sessionId);
     } catch (err) {
       try {
         sessionStore.markExited(sessionId, null);
@@ -1906,8 +1984,16 @@ async function createNewSession(
     // the fallback poll and the #452 rotation dir-watch; calling
     // startTranscriptFallback again here would double-arm the same fallback timer.
 
+    browserSessionHost?.finishStartup(true);
     return ptySession;
   } catch (error) {
+    fileDownloadSessionHost?.retireSession(sessionId);
+    browserSessionHost?.finishStartup(false);
+    try {
+      sessionStore.markExited(sessionId, null);
+    } catch {
+      logError('Session failure bookkeeping unavailable');
+    }
     retireSecurePushRuntime(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
@@ -1917,7 +2003,16 @@ async function createNewSession(
       harnessSessions.delete(sessionId);
       sessionNotifiers.delete(sessionId);
     }
-    void closeSecurePushRuntime(sessionId, runtime);
+    const errors: unknown[] = [error];
+    if (fileDownloadSessionHost && !(await fileDownloadSessionHost.failed(sessionId)))
+      errors.push(new Error('File download cleanup unavailable'));
+    try {
+      await browserSessionHost?.closeSession(sessionId);
+    } catch (cleanupError) {
+      errors.push(cleanupError);
+    }
+    await closeSecurePushRuntime(sessionId, runtime);
+    if (errors.length > 1) throw new AggregateError(errors, 'Session startup cleanup failed');
     throw error;
   }
 }
@@ -2104,6 +2199,13 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
     if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
   },
   sessionNotifiers,
+  ...(browserSessionHost && {
+    prepareBrowser: (id: UUID, binding: string) => {
+      const host = browserSessionHost;
+      if (!host) return Promise.reject(new Error('Browser link session unavailable'));
+      return host.prepare(id, binding);
+    },
+  }),
 });
 
 /**
@@ -2377,8 +2479,80 @@ const hubClientTracker: HubClientTracker | null = serveMode
     })
   : null;
 
+async function waitForBrowserStartup(id: UUID): Promise<boolean> {
+  if (!browserSessionHost) return true;
+  const adapter = registry.getAdapter('websocket');
+  if (!(adapter instanceof WebSocketAdapter)) return true;
+  return browserSessionHost.waitForConnection(id, adapter, relayTrust);
+}
+
+/** Refresh only an already attached concrete signed TLS peer; never attach or replay. */
+function publishDownloadReadiness(sessionId: UUID): void {
+  const owner = fileDownloadSessionHost;
+  const context = owner?.contextFor(sessionId);
+  const session = sessionRegistry.getSession(sessionId);
+  const adapter = registry.getAdapter('websocket');
+  if (!owner || !context || !session || !(adapter instanceof WebSocketAdapter)) return;
+  for (const id of session.attachedConnections) {
+    try {
+      const connection = adapter.getDirectConnection(id);
+      const key = connection?.connectionClientPublicKey;
+      const fingerprint = connection?.connectionClientFingerprint;
+      const attachment = sessionRegistry.getAttachmentToken(id);
+      if (
+        !connection?.isConnected ||
+        connection.connectionListenerTransport !== 'public-tls' ||
+        connection.structuredChatProxyAuthority ||
+        !key ||
+        !fingerprint ||
+        !attachment
+      )
+        continue;
+      const grant = relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => epoch, true);
+      const current = currentOwnedSession();
+      const capabilities = capabilitiesForConnection(id);
+      if (!grant || current?.sessionId !== sessionId || !capabilities.includes('file_download'))
+        continue;
+      const message = createConnectionHello(
+        {
+          machine: machineDescriptor,
+          capabilities,
+          remiVersion: REMI_VERSION,
+          harnesses: () => harnessRegistry.available(),
+        },
+        id,
+        sessionId,
+        {
+          attachState: 'attached',
+          binding: { identity: current.identity, transcriptPath: current.transcriptPath },
+        },
+      );
+      relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => {
+        const identity = bindingStore.getIdentity(sessionId);
+        if (
+          epoch !== grant ||
+          adapter.getDirectConnection(id) !== connection ||
+          !connection.isConnected ||
+          connection.connectionClientPublicKey !== key ||
+          connection.connectionClientFingerprint !== fingerprint ||
+          sessionRegistry.getSessionForConnection(id) !== session ||
+          sessionRegistry.getAttachmentToken(id) !== attachment ||
+          owner.contextFor(sessionId) !== context ||
+          identity?.harness !== current.identity.harness ||
+          identity.harnessSessionId !== current.identity.harnessSessionId
+        )
+          return;
+        sendToConnection(id, message);
+      });
+    } catch {
+      // Best-effort metadata only; failure grants no capability and sends no stale snapshot.
+    }
+  }
+}
+
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   machine: machineDescriptor,
+  beforeAttach: waitForBrowserStartup,
   hubMode: serveMode,
   capabilitiesForConnection,
   sessionRegistry,
@@ -2400,6 +2574,8 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
     ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
     : undefined,
   onConnectionClosed: (id) => {
+    fileDownloadSessionHost?.invalidateConnection(id);
+    browserLinkService?.forgetConnection(id);
     structuredChatService?.forgetConnection(id);
     forgetConnectionToken(id);
     void imageStagingService?.invalidateConnection(id);
@@ -2414,7 +2590,28 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
   send: sendToConnection,
 });
 
-const sharedEvents = {
+let sharedEvents = {
+  ...(fileDownloadSessionHost && {
+    onFileDownload: async (
+      id: UUID,
+      ingress: Exclude<
+        import('@remi/shared').FileDownloadIngressResult,
+        { kind: 'uncorrelatable' }
+      >,
+    ) => {
+      const service = fileDownloadSessionHost?.service;
+      if (ingress.kind === 'request') await service?.handle(id, ingress.request);
+      else service?.refuseMalformed(id, ingress.correlation);
+    },
+  }),
+  ...(browserSessionHost && {
+    onBrowserLinkReceiver: (
+      id: UUID,
+      request: import('@remi/shared/browser-links').BrowserLinkReceiverRequest,
+    ) => {
+      browserLinkService?.handleReceiver(id, request);
+    },
+  }),
   onStructuredChat: async (
     connectionId: UUID,
     request: import('@remi/shared').ChatSubmitRequest,
@@ -2527,8 +2724,6 @@ const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || 
 
 // Determine whether auth should be enabled
 // #873: CLI flag > config file > default (on for every bind).
-const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? configAuth !== false;
 
 let authenticator: Authenticator | undefined;
 /** Stable machine identity for the hub-owned v2 room. */
@@ -2677,6 +2872,23 @@ const websocketConfigFor = (port: number): Partial<WebSocketAdapterConfig> => ({
   ...(localRelayControl && { relayControl: localRelayControl }),
   ...(daemonTls && { tls: daemonTls, localControl: { home: REMI_DIR } }),
 });
+if (browserSessionHost) {
+  browserLinkService = new BrowserLinkService({
+    identityStore: relayTrust,
+    sessions: sessionRegistry,
+    bindings: bindingStore,
+    directAdapter: () => {
+      const adapter = registry.getAdapter('websocket');
+      return adapter instanceof WebSocketAdapter ? adapter : undefined;
+    },
+    producerContextFor: (id) => browserSessionHost?.contextFor(id) ?? null,
+  });
+}
+if (fileDownloadSessionHost && !(await fileDownloadSessionHost.open(relayTrust))) {
+  const { onFileDownload: _unavailableFileDownload, ...ordinaryEvents } = sharedEvents;
+  sharedEvents = ordinaryEvents;
+  console.error('File downloads are unavailable on this host.');
+}
 const wsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
 registry.register(wsAdapter);
 
@@ -2802,10 +3014,16 @@ async function fatalTlsStartup(): Promise<never> {
   process.exit(1);
 }
 
-let cleanupRunning = false;
-async function cleanup(): Promise<void> {
-  if (cleanupRunning) return;
-  cleanupRunning = true;
+let cleanupTask: Promise<void> | undefined;
+function cleanup(): Promise<void> {
+  // Actual PTY exit can reenter cleanup; it must join the original task before process.exit.
+  cleanupTask ??= performCleanup();
+  return cleanupTask;
+}
+async function performCleanup(): Promise<void> {
+  fileDownloadSessionHost?.cancelAll();
+  browserSessionHost?.cancelAll();
+  browserLinkService?.close();
   imageInsertionCoordinator?.close();
   structuredChatService?.close();
   if (imageStagingService && !(await imageStagingService.close()))
@@ -2886,9 +3104,23 @@ async function cleanup(): Promise<void> {
   // flight (#1223) runs beside it, not after it, and both drains share one budget.
   const drainUntil = Date.now() + PUSH_DRAIN_TIMEOUT_MS;
   const draining = drainPushDeliveries(PUSH_DRAIN_TIMEOUT_MS);
-  await registry.stopAll();
-  await draining;
-  await sessionRegistry.shutdown();
+  const shutdownErrors: unknown[] = [];
+  for (const close of [
+    () => registry.stopAll(),
+    () => draining,
+    () => sessionRegistry.shutdown(),
+    () => browserSessionHost?.closeAll(),
+    async () => {
+      if (fileDownloadSessionHost && !(await fileDownloadSessionHost.closeAll()))
+        throw new Error('File download cleanup could not be confirmed.');
+    },
+  ]) {
+    try {
+      await close();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+  }
   cleanupStatusFile();
 
   // Remove from live sessions directory
@@ -2920,6 +3152,7 @@ async function cleanup(): Promise<void> {
   // this one waits for any the session shutdown started, with what is left of
   // the budget.
   await drainPushDeliveries(Math.max(0, drainUntil - Date.now()));
+  if (shutdownErrors.length) throw new AggregateError(shutdownErrors, 'Daemon cleanup failed');
 }
 
 /** How long a shutting-down daemon waits for its pushes in flight (#1223). */

@@ -11,9 +11,19 @@ export function isStructuredChatCandidate(input: string | Uint8Array): boolean {
   return imageOperationCandidate(input, 'chat_submit_');
 }
 
+/** Optional browser service raw routing only; no registry or availability claim. */
+export function isBrowserLinkCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'browser_link_');
+}
+
+/** Optional download route selection only; strict framing and authority remain separate. */
+export function isFileDownloadCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'file_fetch_');
+}
+
 function imageOperationCandidate(
   input: string | Uint8Array,
-  prefix: 'image_upload_' | 'image_insert_' | 'chat_submit_',
+  prefix: 'image_upload_' | 'image_insert_' | 'chat_submit_' | 'browser_link_' | 'file_fetch_',
 ): boolean {
   if (typeof input !== 'string' && !(input instanceof Uint8Array)) return false;
   // Read the received units directly: no input-sized copy, UTF-8/JSON/base64 conversion or cutoff.

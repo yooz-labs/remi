@@ -13,6 +13,8 @@ import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { Lock } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import { BrowserLinks, type BrowserLinksProps } from './BrowserLinks';
+import { FileDownload, type FileDownloadProps } from './FileDownload';
 import { ChatHeader } from './ChatHeader';
 import { ImageUpload } from './ImageUpload';
 import { InputArea } from './InputArea';
@@ -69,6 +71,8 @@ interface ChatViewProps {
   /** Stop (kill) the active session (#637). */
   readonly onEndSession?: () => void;
   readonly showTimestamps?: boolean;
+  readonly browserLinks?: BrowserLinksProps;
+  readonly fileDownload?: FileDownloadProps;
   readonly imageUpload?: {
     readonly enabled: boolean;
     readonly state: ImageUploadState;
@@ -110,6 +114,8 @@ export function ChatView({
   onEndSession,
   showTimestamps = true,
   imageUpload,
+  browserLinks,
+  fileDownload,
   className,
 }: ChatViewProps) {
   // The redesigned chat always uses the rich "chat" rendering (markdown, tool
@@ -223,6 +229,8 @@ export function ChatView({
             {onReconnectChat && <button type="button" onClick={onReconnectChat}
               className="rounded-lg border border-[var(--color-border)] px-3 py-2 font-medium text-[var(--color-text)]">Reconnect</button>}
           </div>}
+          {browserLinks && <BrowserLinks {...browserLinks} />}
+          {fileDownload && <FileDownload key={`file-download:${session.connectionId}:${session.id}`} {...fileDownload} />}
           {imageUpload && session.harness !== 'codex' && <ImageUpload key={`${session.connectionId}:${session.id}`} {...imageUpload} />}
           <InputArea
             onSend={onSend}

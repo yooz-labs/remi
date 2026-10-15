@@ -207,7 +207,7 @@ describe('ClaudeHarness.createSession', () => {
     registries.push(sessionRegistry);
   }
 
-  function launch(
+  async function launch(
     harness: ClaudeHarness,
     opts: { passThrough?: boolean; reservedRows?: number; register?: boolean } = {},
   ) {
@@ -224,7 +224,7 @@ describe('ClaudeHarness.createSession', () => {
       },
       sessionId,
     );
-    const session = harness.createSession({
+    const session = await harness.createSession({
       sessionId,
       workingDirectory: tmpDir,
       extraArgs: [],
@@ -293,7 +293,7 @@ describe('ClaudeHarness.createSession', () => {
     hookServer = newHookServer();
     hookServer.start();
     freshRegistry();
-    const { session, sessionId, messageApi } = launch(newHarness(), {
+    const { session, sessionId, messageApi } = await launch(newHarness(), {
       passThrough,
       register: true,
     });
@@ -310,8 +310,8 @@ describe('ClaudeHarness.createSession', () => {
   }
 
   /** Feed a captured real permission dialog into the session's real tracker. */
-  function visiblePrompt(terminalOnly = false) {
-    const launched = launch(newHarness(), { register: true });
+  async function visiblePrompt(terminalOnly = false) {
+    const launched = await launch(newHarness(), { register: true });
     const tracker = launched.session.decisions.screen;
     if (!(tracker instanceof QuestionPresenceTracker)) throw new Error('no real screen tracker');
     const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
@@ -347,7 +347,7 @@ describe('ClaudeHarness.createSession', () => {
 
   // Causal pins over the actual registry, harness and recipient; no policy substitute.
   test('secure push context audit replacement releases capacity and finish invalidates its exact launch', async () => {
-    const { session, sessionId, question } = visiblePrompt();
+    const { session, sessionId, question } = await visiblePrompt();
     const contexts = new SecurePushContexts(
       {
         questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
@@ -561,7 +561,7 @@ describe('ClaudeHarness.createSession', () => {
   });
 
   test('secure push context capacity refuses another current recipient without evicting the first', async () => {
-    const { session, sessionId, question } = visiblePrompt();
+    const { session, sessionId, question } = await visiblePrompt();
     const contexts = new SecurePushContexts(
       {
         questionFor: (sid, qid) => sessionRegistry.getQuestion(sid, qid),
@@ -1136,7 +1136,7 @@ describe('ClaudeHarness.createSession', () => {
     hookServer = newHookServer();
     hookServer.start();
     const harness = newHarness();
-    const { sessionId, session } = launch(harness, { register: true });
+    const { sessionId, session } = await launch(harness, { register: true });
     const { store, trust, snapshot, pair } = await pushRecipient();
     const machine = await trust.unlock();
     const signer = await relayV2.signerFromKey(
@@ -1380,8 +1380,8 @@ describe('ClaudeHarness.createSession', () => {
     expect(JSON.stringify(await (await response).json())).toContain('"deny"');
   });
 
-  test('push validity: a real hookless prompt requires both its registry entry and current screen, including an unchanged redraw', () => {
-    const { session, sessionId, tracker, question } = visiblePrompt();
+  test('push validity: a real hookless prompt requires both its registry entry and current screen, including an unchanged redraw', async () => {
+    const { session, sessionId, tracker, question } = await visiblePrompt();
     expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'current-prompt' });
     const redraw = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
     if (!redraw) throw new Error('the captured redraw did not parse');
@@ -1400,8 +1400,8 @@ describe('ClaudeHarness.createSession', () => {
     expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
   });
 
-  test('push validity: a held-stamped card with no gate never gains authority from a matching real screen', () => {
-    const { session, sessionId, messageApi, tracker, question } = visiblePrompt();
+  test('push validity: a held-stamped card with no gate never gains authority from a matching real screen', async () => {
+    const { session, sessionId, messageApi, tracker, question } = await visiblePrompt();
     messageApi.handleQuestion(question, { held: true });
     expect(sessionRegistry.getQuestion(sessionId, question.id)?.held).toBe(true);
     expect(tracker.isPromptCurrent(question.id)).toBe(true);
@@ -1409,13 +1409,13 @@ describe('ClaudeHarness.createSession', () => {
     expect(session.decisions.answerValidity(question.id)).toEqual({ kind: 'closed' });
   });
 
-  test('push validity: a terminal-only or answered registry card and a disposed session have no action authority', () => {
-    const terminal = visiblePrompt(true);
+  test('push validity: a terminal-only or answered registry card and a disposed session have no action authority', async () => {
+    const terminal = await visiblePrompt(true);
     expect(terminal.session.decisions.answerValidity(terminal.question.id)).toEqual({
       kind: 'closed',
     });
     freshRegistry();
-    const { session, sessionId, tracker, question } = visiblePrompt();
+    const { session, sessionId, tracker, question } = await visiblePrompt();
     const current = sessionRegistry.getQuestion(sessionId, question.id);
     if (!current) throw new Error('no current card');
     current.isAnswered = true;
@@ -1430,18 +1430,18 @@ describe('ClaudeHarness.createSession', () => {
     expect(session.decisions.answerValidity(generateId())).toEqual({ kind: 'closed' });
   });
 
-  test('a harness built without launch dependencies refuses to create a session', () => {
+  test('a harness built without launch dependencies refuses to create a session', async () => {
     const harness = new ClaudeHarness(new TranscriptDiscovery({ projectsDir: tmpDir }));
-    expect(() => launch(harness)).toThrow('without launch dependencies');
+    await expect(launch(harness)).rejects.toThrow('without launch dependencies');
   });
 
-  test('returns an unstarted session, leaves the notifier to the shell and exposes its screen, and binds the port read at launch', () => {
+  test('returns an unstarted session, leaves the notifier to the shell and exposes its screen, and binds the port read at launch', async () => {
     const harness = newHarness();
     // PORT is reassigned by port probing after the harness exists; the launch
     // must read it when it runs, not when the harness was built.
     port = 19123;
 
-    const { session, sessionId } = launch(harness);
+    const { session, sessionId } = await launch(harness);
 
     expect(session.pty.isRunning).toBe(false);
     expect(session.pty.childPid).toBeNull();
@@ -1458,7 +1458,7 @@ describe('ClaudeHarness.createSession', () => {
     expect(harness.admitsAnySession(stopEventFor(sessionId))).toBe(false);
   });
 
-  test('reads the hook server and the websocket port when it launches, and with a server arms the binder and the turn filter', () => {
+  test('reads the hook server and the websocket port when it launches, and with a server arms the binder and the turn filter', async () => {
     // The daemon builds the harness before the hook server or the websocket
     // port exist; both are read per launch.
     hookServer = null;
@@ -1466,11 +1466,11 @@ describe('ClaudeHarness.createSession', () => {
     const harness = newHarness();
     wsPort = 19999;
 
-    const before = launch(harness);
+    const before = await launch(harness);
     expect(harness.admitsAnySession(stopEventFor(before.sessionId))).toBe(false);
 
     hookServer = newHookServer();
-    const { sessionId } = launch(harness);
+    const { sessionId } = await launch(harness);
 
     // preAssign ran before the bridge read the binding: the binder armed its
     // fallback poll for the pre-assigned id.
@@ -1507,7 +1507,7 @@ describe('ClaudeHarness.createSession', () => {
     setWrapperDetached(false);
     hookServer = newHookServer();
 
-    const { session } = launch(newHarness(), { passThrough: true, reservedRows: 2 });
+    const { session } = await launch(newHarness(), { passThrough: true, reservedRows: 2 });
     await session.start();
 
     // The fake creates `size` when its shell opens the redirect and fills it a
@@ -1586,8 +1586,8 @@ describe('ClaudeHarness.createSession', () => {
     expect(wrapper.decisions.hasOpenHookPrompt()).toBe(false);
   });
 
-  test('a session with no hook server reads as nothing held', () => {
-    const { session } = launch(newHarness());
+  test('a session with no hook server reads as nothing held', async () => {
+    const { session } = await launch(newHarness());
     const { decisions } = session;
 
     expect(decisions.hasMainHold()).toBe(false);
@@ -1599,11 +1599,11 @@ describe('ClaudeHarness.createSession', () => {
     expect(() => decisions.noteTerminalEscape()).not.toThrow();
   });
 
-  test('each session claims only its own events, and dispose releases the binder and the filter (#914)', () => {
+  test('each session claims only its own events, and dispose releases the binder and the filter (#914)', async () => {
     hookServer = newHookServer();
     const harness = newHarness();
-    const a = launch(harness);
-    const b = launch(harness);
+    const a = await launch(harness);
+    const b = await launch(harness);
     const eventA = stopEventFor(a.sessionId);
     const eventB = stopEventFor(b.sessionId);
 
@@ -1631,7 +1631,7 @@ describe('ClaudeHarness.createSession', () => {
     expect(transcriptFallbackTimers.has(b.sessionId)).toBe(true);
   });
 
-  test('a binder that fails to close still loses its turn filter', () => {
+  test('a binder that fails to close still loses its turn filter', async () => {
     // The binder's close looks its fallback timer up first; make that throw.
     let failLookup = false;
     class FlakyTimers extends Map<UUID, ReturnType<typeof setInterval>> {
@@ -1643,7 +1643,7 @@ describe('ClaudeHarness.createSession', () => {
     transcriptFallbackTimers = new FlakyTimers();
     hookServer = newHookServer();
     const harness = newHarness();
-    const { session, sessionId } = launch(harness);
+    const { session, sessionId } = await launch(harness);
     const own = stopEventFor(sessionId);
     expect(harness.admitsAnySession(own)).toBe(true);
 
@@ -1693,9 +1693,14 @@ describe('what cli.ts hands the harness (#1164)', () => {
   });
 
   test('createClaudeSession gives the PTY the context it was handed', () => {
-    expect(claudeSession).toContain(
-      '{ sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },',
-    );
+    for (const field of [
+      'sessionId,',
+      'workingDirectory,',
+      'extraArgs: binding.args,',
+      'passThrough,',
+      'reservedRows,',
+    ])
+      expect(claudeSession).toContain(field);
   });
 
   test('the PTY output callbacks read hookServer when the event fires, not when the session launches', () => {
@@ -1752,7 +1757,9 @@ describe('what cli.ts hands the harness (#1164)', () => {
   });
 
   test('cleanup stops the hook server before it disposes the sessions, and keeps them in the map', () => {
-    const body = functionBody('cleanup');
+    const guard = functionBody('cleanup');
+    expect(guard).toContain('cleanupTask ??= performCleanup()');
+    const body = functionBody('performCleanup');
     const stopped = body.indexOf('hookServer.stop();');
     const disposed = body.indexOf('session.dispose();');
     expect(stopped).toBeGreaterThan(0);

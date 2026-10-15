@@ -582,7 +582,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             const message = deserialize(
               new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
             );
-            if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
+            if (
+              !message ||
+              MESSAGE_DIRECTION[message.type] === 'd2c' ||
+              message.type === 'browser_link_receiver_request' ||
+              message.type === 'file_fetch_begin' ||
+              message.type === 'file_fetch_read' ||
+              message.type === 'file_fetch_complete' ||
+              message.type === 'file_fetch_cancel'
+            )
               throw new Error('RELAY_INVALID_MESSAGE');
             if (peer.pendingApplications >= 32) {
               this.sendRaw(

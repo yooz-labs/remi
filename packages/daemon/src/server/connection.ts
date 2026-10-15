@@ -24,11 +24,13 @@ import {
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeFileDownloadIngress,
   decodeImageInsertionIngress,
   decodeImageStagingIngress,
   decodeStructuredChatFrame,
   deserialize,
   generateId,
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
@@ -59,11 +61,29 @@ import type {
   UnregisterDeviceTokenMessage,
   UserInputMessage,
 } from '@remi/shared';
+import {
+  type BrowserLinkMessage,
+  type BrowserLinkReceiverRequest,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
+import {
+  type FileDownloadMessage,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchComplete,
+  type FileFetchRead,
+  encodeFileDownloadFrame,
+} from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
+
+/** Internal actual listener provenance, never a client assertion or wire field. */
+export type ConnectionListenerTransport = 'public-tls' | 'public-plain' | 'private-control';
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
@@ -71,6 +91,7 @@ export interface ConnectionTransport {
   readonly readyState: number;
   send(data: string): unknown;
   close(): void;
+  getBufferedAmount?(): number;
 }
 
 /**
@@ -186,6 +207,7 @@ export class Connection {
     id?: UUID,
     peerAddress?: string | null,
     relayChatAuthority?: SecurePushAuthority,
+    private readonly listenerTransport: ConnectionListenerTransport = 'public-plain',
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
@@ -272,6 +294,10 @@ export class Connection {
     return this._peerAddress;
   }
 
+  get connectionListenerTransport(): ConnectionListenerTransport {
+    return this.listenerTransport;
+  }
+
   /** Check if connection is active */
   get isConnected(): boolean {
     return this.state === 'connected';
@@ -282,6 +308,16 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isFileDownloadCandidate(data)) {
+      this.handleFileDownloadFrame(data);
+      return;
+    }
+    if (isBrowserLinkCandidate(data)) {
+      if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
+      else if (this.checkAuthorization())
+        this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
     if (isStructuredChatCandidate(data)) {
       this.handleStructuredChatFrame(data);
       return;
@@ -349,6 +385,11 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        file_fetch_begin: () => this.close('Invalid file download route'),
+        file_fetch_read: () => this.close('Invalid file download route'),
+        file_fetch_complete: () => this.close('Invalid file download route'),
+        file_fetch_cancel: () => this.close('Invalid file download route'),
+        browser_link_receiver_request: () => this.close('Invalid browser link route'),
         chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
@@ -431,6 +472,83 @@ export class Connection {
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
       }
+    }
+  }
+
+  /** Original units bypass legacy ACK/dedupe; only the installed service owns effects. */
+  handleFileDownloadFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    if (!this.events.onFileDownload) {
+      this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
+    const ingress = decodeFileDownloadIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid file download frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onFileDownload(ingress);
+      if (pending) void pending.catch(() => this.close('File download unavailable'));
+    } catch {
+      this.close('File download unavailable');
+    }
+  }
+
+  /** Installed service only: original units bypass ordinary ACK/deduplication. */
+  handleBrowserLinkFrame(data: string | Uint8Array): void {
+    if (!this.events.onBrowserLinkReceiver || !this.checkAuthorization()) return;
+    const request = decodeBrowserLinkFrame(data);
+    if (request?.type !== 'browser_link_receiver_request' || !this.isConnected) {
+      this.close('Invalid browser link frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onBrowserLinkReceiver(request);
+      if (pending) void pending.catch(() => this.close('Browser links unavailable'));
+    } catch {
+      this.close('Browser links unavailable');
+    }
+  }
+
+  /** Best effort only: a positive send is not an application delivery or Open acknowledgement. */
+  sendBrowserLinkFrame(message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One bounded send attempt only; positive status is not client receipt or an OS Save. */
+  sendFileDownloadFrame(
+    message: Exclude<
+      FileDownloadMessage,
+      FileFetchBegin | FileFetchRead | FileFetchComplete | FileFetchCancel
+    >,
+  ): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeFileDownloadFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
     }
   }
 

@@ -14,7 +14,7 @@ Its merge tree equals tested source `28ea5daf`; both full Bun suites and the act
 Develop's successor `23df4739` changes only version strings to `0.7.17-dev.42` and is included in this documentation branch.
 The relay backend previously landed through [#1331](https://github.com/yooz-labs/remi/pull/1331) at `b1168126`, whose tree equals tested backend `2858e4bd`; `1d478e07` changes only the development version.
 The initial checks against develop `1d800273`, relay epic `8fb5b88b` and source composite `1e96c688` remain historical provenance.
-No upload, file-fetch or forwarded-browser implementation was found in the daemon, shared protocol or web client.
+At that historical baseline no upload, file-fetch or forwarded-browser implementation was found. Subsequent source continuations below supersede that baseline for their specifically qualified operations.
 `WebSocketAdapter`'s `onClientConnect` callback passes the server-derived fingerprint, `IdentityStore.withAuthorizationEpoch` supplies a grant-incarnation transaction, and `PTYSession.write` queues raw writes without a prompt callback.
 Current chat checks `promptUp` before enqueue and then calls `PTYSession.submitInput`, which appends Enter; neither operation is an attachment insertion implementation.
 
@@ -107,6 +107,12 @@ Deletion is limited to owned transfer artifacts, with failures counted visibly a
 
 Egress comes after ingress and the portable filesystem spike.
 An explicit client request selects one relative file in the session's project directory; there is no directory listing, glob, recursive download or arbitrary absolute-path endpoint.
+
+Protected roots cover the known launch-environment, default and explicitly
+supplied Remi/Claude/Codex locations. Remi does not resolve arbitrary private
+locations from harness-internal settings. Missing active/explicit roots and
+unreadable or replaced protected roots keep downloads unavailable; an inactive
+default is optional only until it has first existed.
 An agent's printed path is merely a suggestion.
 The final UI displays the escaped project-relative name and byte size before export; authentication is still checked on the daemon, independently of that display.
 
@@ -242,8 +248,8 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 | Operation | Candidate frames and effect | Gate and availability |
 |---|---|---|
 | Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. The owner accepted the original expiry in ADR0042. The installed corrected route, direct host and explicit web caller are verified separately; native conformance is still required for native availability. |
-| File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The owner accepted the 10 MiB fields/limits and requires HTTPS/WSS before direct release. Reuse the existing managed journal; no file handler, registered capability or client download is supplied by this document. Native and relay acceptance remain separate. |
-| Link forwarding | Candidate `link_candidate` and a client-local explicit open choice; candidate carries a bounded validated URL, never a host-fetch instruction. | Unavailable until the per-session shim, URL bounds, selected-client routing and actual launch boundary are specified and proven. |
+| File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The current source composes strict original-byte ingress, the managed journal, actual Claude/Codex session lifetimes and an explicit web Save caller on authenticated WSS. Capability readiness belongs to the concrete attached connection and known binding. Coherent runtime, compiled Linux, independent review and fresh hosted gates precede release. Native, operator certificate setup and relay acceptance remain separate. |
+| Link forwarding | Accepted ADR0044: `browser_link_receiver_request/result/ended` and `browser_link_candidate`; exclusive explicit Receive, bounded canonical HTTP(S) destination and a separate client Open choice. | The current source composes an owned BROWSER producer, current-grant selection and the web caller only for a ready signed public-TLS direct Claude session. Source/copied/compiled inert-consumer and opt-in actual App controls qualify local wiring. Independent review and fresh hosted gates precede release. No plaintext fallback; native, relay/Codex producers, installed-consumer and operator PKI acceptance remain separate. |
 | Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
 
 ## Spike plan and Xcode handoff

@@ -103,7 +103,7 @@ def main(proof=None):
     if proof is None:
         proof = {
             "source": Path(__file__).resolve().parent,
-            "files": ("probe.ts", "admission.ts", "admission-probe.ts", "private-copy.ts", "copy-probe.ts", "openat.c", "matrix.py"),
+            "files": ("probe.ts", "admission.ts", "admission-probe.ts", "admitted-read.ts", "private-copy.ts", "copy-probe.ts", "openat.c", "matrix.py"),
             "checks": CHECKS,
             "scope": "Seven primitives plus nine admission and eleven private-copy controls; production helper, quotas, recovery and full T0a remain pending",
         }
