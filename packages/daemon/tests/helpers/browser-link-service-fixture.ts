@@ -8,6 +8,7 @@ import {
   createHelloAck,
   createIdentity,
   createPong,
+  createSessionListResponse,
   fromBase64,
   serialize,
   sign,
@@ -24,11 +25,13 @@ import { MessageAPI } from '../../src/api/message-api.ts';
 import { Authenticator } from '../../src/auth/authenticator.ts';
 import { CAPABILITY_HEADER, loadOrCreateCapabilityToken } from '../../src/auth/capability-token.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
+import { buildSessionList } from '../../src/cli/handlers/session-list-entries.ts';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
+import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import {
   type BrowserLinkProducerContext,
   BrowserLinkProducerRuntime,
@@ -121,6 +124,9 @@ export async function browserFixture(
     });
     const registry = new SessionRegistry();
     const bindings = new SessionBindingStore(new SessionStore(join(files.home, 'sessions.json')));
+    const transcriptDiscovery = new TranscriptDiscovery({
+      projectsDir: join(files.userHome, '.claude', 'projects'),
+    });
     let sessionId: string = randomUUID();
     let bindingId: string = randomUUID();
     let context: BrowserLinkProducerContext = {
@@ -199,6 +205,20 @@ export async function browserFixture(
           registry.detachConnection(id);
           service?.forgetConnection(id);
         },
+        ...(options.relay && {
+          onSessionListRequest(id: string, requestId: string, includeExternal: boolean) {
+            const { own, external } = buildSessionList(
+              {
+                sessionRegistry: registry,
+                bindingStore: bindings,
+                transcriptDiscovery,
+                harness: { transcriptPath: () => null },
+              },
+              includeExternal,
+            );
+            adapter.sendRaw(id, createSessionListResponse([...own, ...external], requestId));
+          },
+        }),
         ...(options.installed !== false && {
           onBrowserLinkReceiver(id: string, request: BrowserLinkReceiverRequest) {
             service.handleReceiver(id, request);
@@ -482,14 +502,22 @@ export async function relayBrowserFixture(
       name: 'owned',
       startedAt: new Date().toISOString(),
     });
-    relay = new HubRelay({
-      relayUrl: worker.wsUrl,
-      identity: machineIdentity,
-      trust: f.trust,
-      dir: f.files.home,
-      registry,
-      log: (message) => logs.push(message),
-    });
+    relay = new HubRelay(
+      {
+        relayUrl: worker.wsUrl,
+        identity: machineIdentity,
+        trust: f.trust,
+        dir: f.files.home,
+        registry,
+        log: (message) => logs.push(message),
+      },
+      {
+        onSessionListRequest(id, requestId) {
+          // This hub owns no session; actual child lists are aggregated by HubRelay.
+          relay?.sendRaw(id, createSessionListResponse([], requestId));
+        },
+      },
+    );
     await relay.start();
     await until(() => logs.includes('Relay control admitted'), 'real relay control', 10000);
     const machinePublicKey = new Uint8Array(Buffer.from(machineIdentity.publicKeyRaw, 'base64'));
