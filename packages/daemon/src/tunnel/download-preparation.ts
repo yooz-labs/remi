@@ -106,7 +106,12 @@ export async function prepareDownloadCopy(
     while (admitted.bytesRead < admitted.byteLength) {
       context.effect(() => {
         if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-        ownedWriter.write(admitted.readNext());
+      });
+      // These bytes remain in the private journal. Do not hold the shared grant lock across
+      // filesystem I/O; confirm the captured authority again before yielding or publishing.
+      ownedWriter.write(admitted.readNext());
+      context.effect(() => {
+        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
       });
       await context.yield();
     }
@@ -129,12 +134,16 @@ export async function prepareDownloadCopy(
     const hash = createHash('sha256');
     for (let position = 0; position < expected.byteLength; position += ADMITTED_READ_CHUNK_SIZE) {
       context.effect(() => {
-        hash.update(
-          privateReader.read(
-            position,
-            Math.min(ADMITTED_READ_CHUNK_SIZE, expected.byteLength - position),
-          ),
-        );
+        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+      });
+      hash.update(
+        privateReader.read(
+          position,
+          Math.min(ADMITTED_READ_CHUNK_SIZE, expected.byteLength - position),
+        ),
+      );
+      context.effect(() => {
+        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
       });
       await context.yield();
     }
