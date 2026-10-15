@@ -1170,6 +1170,15 @@ def hook_test_references_reviewed(base, head):
         return False
 
 
+def isolated_test_runner_matches(path, expected_blob, entry):
+    """Accept one reviewed cache-comment correction without changing historical pins."""
+    return entry == ("100644", expected_blob) or (
+        path == "packages/signaling/tests/e2e/harness.ts" and
+        expected_blob == "df152a92fd95d8dcfd5176e79c3110aa7b500628" and
+        entry == ("100644", "89cdbe0dc2eee5b924b692b3811ebe7b4c7f3cf1")
+    )
+
+
 def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=None):
     """Keep ordinary gates for finite isolated families; unknown consumers restore R7."""
     try:
@@ -1212,7 +1221,7 @@ def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=N
             for producer in producers:
                 pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS.get(producer, {}).items()})
                 pins.update({path: value[0] for path, value in ISOLATED_TEST_FAMILIES.get(producer, {}).items()})
-            if any(tree.get(path) != ("100644", blob) for path, blob in pins.items()):
+            if any(not isolated_test_runner_matches(path, blob, tree.get(path)) for path, blob in pins.items()):
                 return False
             inventories[ref] = tree
         # Git grep alone need not detect a corrupt unreferenced object. Read and hash the

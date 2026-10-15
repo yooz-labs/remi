@@ -777,6 +777,12 @@ policy neither shortens the hour measurement nor qualifies an earlier hosted
 run retroactively. Real Git controls preserve the original all-eleven baseline
 and exercise the exact historical correction plus conservative counterexamples.
 
+The Worker harness runner also accepts the exact reviewed `89cdbe0d` blob when
+its historical pin is `df152a92`, at that path and regular `100644` mode only.
+Those complete blobs differ solely in the cache comment: "once per test file"
+became "once per loaded harness module". The original pin tables remain intact;
+other comment, executable, path or mode changes still restore all gates.
+
 ## Complete Test execution experiment (#1206)
 
 The proposed Test runner discovers the complete filesystem test population using
