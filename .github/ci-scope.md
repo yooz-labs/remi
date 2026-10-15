@@ -21,7 +21,8 @@ always select their existing full gates.
 | Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
 | Exact Bun test diagnostics runner and its test | All normal gates | Skip with pinned coverage/workflow callers |
 | Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
-| Four named isolated unit-test producers | All normal gates | Skip with exact modification, reference and runner proof |
+| Named isolated unit tests and a finite reviewed helper family | All normal gates | Skip with exact modification, reference and runner proof |
+| Exact CLI harness-wiring and secure-push teardown source readers | All normal gates | Skip with exact modification, helper/comment and runner proof |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -750,3 +751,101 @@ execution, with the long/reuse/producer steps explicitly skipped. Uploading the
 short log artifact is expected. It is not a completed soak, reusable producer,
 measured savings, live reuse or release acceptance. Any failed proof keeps the
 existing full gate; push/manual runs remain full.
+
+## Reviewed finite ordinary test/helper families (#1206)
+
+The existing four isolated test rules retain their exact declarations and controls.
+`packages/daemon/tests/cli/cleanup-budget.test.ts` is an additional isolated leaf.
+`packages/daemon/tests/helpers/browser-link-service-fixture.ts` has one finite
+family: the exact unchanged browser-link composition, ingress, service, rendered
+browser and browser-controller test consumers recorded in the classifier. Only
+the two named producers may change; consumer files are not editable exemptions.
+
+Each producer must be an ordinary modification. At target base, PR head and
+merge base, every consumer must retain its reviewed regular-file blob and every
+matching import line must occur exactly as recorded. Each consumer's own stem
+is also scanned for external callers; the family is never a whole-file scan
+exclusion. The existing regular-tree, complete blob reads, runner, preload,
+Worker loader and source-reader pins remain required. Unknown, removed old,
+transitive or script consumers, metadata/object/read failures, and mixed runtime
+or configuration changes restore every gate. The later D3 helper/script graph
+is deliberately outside this family. Literal scans and pinned loader assumptions
+do not prove the absence of arbitrary computed references.
+
+A qualified family change retains all ordinary test, lint, type, notice and Mac
+gates; only relay and its consequent attached-session soak are skipped. This
+policy neither shortens the hour measurement nor qualifies an earlier hosted
+run retroactively. Real Git controls preserve the original all-eleven baseline
+and exercise the exact historical correction plus conservative counterexamples.
+
+The Worker harness runner also accepts the exact reviewed `89cdbe0d` blob when
+its historical pin is `df152a92`, at that path and regular `100644` mode only.
+Those complete blobs differ solely in the cache comment: "once per test file"
+became "once per loaded harness module". The original pin tables remain intact;
+other comment, executable, path or mode changes still restore all gates.
+
+## Complete Test execution experiment (#1206)
+
+The proposed Test runner discovers the complete filesystem test population using
+Bun 1.3.11's pinned suffix/loader/default directory rules and root preloads. It
+runs exactly two sequential processes: `remote-new-client.test.ts` alone, then
+every other discovered file together. No new per-test timeout, filter, skip,
+retry or parallel batch is introduced. The target has a manual exact case
+multiset/assertion and finite test/helper source contract; CI never regenerates
+it. An unconditional synchronous module-body marker must occur once in its
+lane and zero times in the rest process. This proves lane-process loading,
+not hidden child-process imports or general computed-reference absence.
+
+Raw output is retained in `test-batches-output.txt`. Only a complete successful
+population, unchanged source/discovery, proved owned-process cleanup and strict
+canonical LCOV line union publish the one row in `test-output.txt`. The existing
+numeric 60% line threshold reads that separate file unchanged. The union uses
+Bun's unweighted mean of per-source covered/executable line fractions, including
+zero-line files; neither weighted line totals nor batch percentages reproduce
+that metric. Aggregate function/branch identities are unavailable and reported
+as such. Source/map ambiguities fail rather than being omitted or renamed.
+
+The target process is bounded at 300 seconds; the rest is bounded at 1200
+seconds and the remaining 22-minute controller budget minus cleanup. The job
+limit remains 25 minutes. Assertion failures remain failures, even if other
+lanes finish; crashes/timeouts/cleanup/schema/input failures stop with remaining
+files explicitly not run. Evidence uploads include failures. Normal scope rules,
+short relay tests, actual 61-minute R7 bodies and native controls are unchanged.
+This execution change requires real Test acceptance; a tiny line-union control
+is not whole-suite coverage, a performance result or diagnosis of the original
+pre-module stall. The previous unsuccessful controls remain unsuccessful.
+
+The Test coverage step explicitly sets `E2E_BUNDLER=esbuild`, matching the relay
+workflow's existing Worker bundler. In PR #1526's Linux ARM64 diagnostic, the
+same ordered 139-file prefix reached the first secure-push case and timed out
+while awaiting `Bun.build`, before Miniflare construction. With the existing
+esbuild option, that prefix passed 2,500 tests and 8,090 assertions, including
+the original case's 11 assertions. The earlier run bailed at its first failure;
+these populations and timings are not a speed comparison. This is a measured
+CI bundler workaround. The triggering preceding state and original pre-module
+stall remain undiagnosed. Complete hosted Test execution, the remaining test
+population, canonical line union and the unchanged 60% threshold still require
+their actual gates. The workflow validator requires this environment on the
+coverage step only.
+
+## Two CLI source-reader leaves (#1206)
+
+Only exact modifications of `packages/daemon/tests/cli/harness-wiring.test.ts`
+and `packages/daemon/tests/cli-secure-push-teardown.test.ts` join the finite
+isolated-test rule. They read CLI source text through the reviewed pure
+`strip-comments.ts` helper; they do not execute the CLI. Every ordinary gate,
+including the full Bun coverage suite and its 60% threshold, remains selected.
+
+The helper's exact 100644/blob is required at base, head and merge-base, only
+for these producers. Harness-wiring's sole known external match is one exact
+comment at resume-follow.test.ts:10: that file stays fully scanned and
+blob-pinned. Any changed file byte, extra/moved/modified reference, unknown
+consumer, nonregular entry, object/scan failure or runner drift restores all
+gates. This is neither a whole-file comment exclusion nor a computed-reference
+resolver. A mixed runtime/helper/config/unknown path also restores all gates.
+
+The existing R7 command, preloads and helper-entry pins are unchanged.
+Additions, deletions, rename directions and mode changes cannot use this rule.
+Main pushes and manual runs stay full. This only scopes future reviewed
+test-only changes; it does not retroactively qualify an earlier run or repair
+the separately held two-process test-runner experiment.

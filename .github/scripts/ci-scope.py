@@ -50,6 +50,13 @@ HOOK_TEST_COMMENTS = {
 # Exact unit-test producers outside the reviewed R7 runner, never a test-directory exemption (#1516).
 ISOLATED_TEST_INPUTS = {
     "packages/daemon/tests/cli/attach-client.test.ts": {},
+    "packages/daemon/tests/cli/harness-wiring.test.ts": {
+        "packages/web/tests/lib/resume-follow.test.ts": (
+            "3d2b1a55f7d1b6473110bb1ef6482e7d0c1ff129", 10,
+            " * the repo's idiom (see `harness-wiring.test.ts`).",
+        ),
+    },
+    "packages/daemon/tests/cli-secure-push-teardown.test.ts": {},
     "packages/daemon/tests/harness/claude-session.test.ts": {
         "packages/daemon/tests/cli/log-guard-wiring.test.ts": (
             "86546f0dfd548ee9bfcf7a4953f34eec46f5b4cb", 4,
@@ -75,6 +82,47 @@ ISOLATED_TEST_INPUTS = {
         ),
     },
     "packages/web/tests/lib/push-answer-relay.test.ts": {},
+}
+# These source readers share one reviewed pure helper, not a mutable helper exemption (#1206).
+ISOLATED_TEST_HELPER_PINS = {
+    "packages/daemon/tests/cli/harness-wiring.test.ts": {
+        "packages/daemon/tests/helpers/strip-comments.ts": "5b91a9ec79b518a7bc57a12121e5cfbd0b9f4b35",
+    },
+    "packages/daemon/tests/cli-secure-push-teardown.test.ts": {
+        "packages/daemon/tests/helpers/strip-comments.ts": "5b91a9ec79b518a7bc57a12121e5cfbd0b9f4b35",
+    },
+}
+# Finite helper families: consumers are immutable, not additional editable producers (#1206).
+ISOLATED_TEST_FAMILIES = {
+    "packages/daemon/tests/cli/cleanup-budget.test.ts": {},
+    "packages/daemon/tests/helpers/browser-link-service-fixture.ts": {
+        "packages/daemon/tests/integration/browser-link-composition.test.ts": (
+            "e47f7a627f86e0e818330e2a642c4cd3c0edbab3", (
+                (32, "import { until } from '../helpers/browser-link-service-fixture.ts';"),
+            ),
+        ),
+        "packages/daemon/tests/server/browser-link-ingress.test.ts": (
+            "9ff47915942ad097a7a9d60e0e09e5f4a0b129bf", (
+                (12, "} from '../helpers/browser-link-service-fixture.ts';"),
+            ),
+        ),
+        "packages/daemon/tests/tunnel/browser-link-service.test.ts": (
+            "294cb7aba342d3f0dd35251726bfdad6dd430c2e", (
+                (7, "} from '../helpers/browser-link-service-fixture.ts';"),
+            ),
+        ),
+        "packages/web/tests/browser/browser-links-browser.test.ts": (
+            "fba4712bc208fb83642476c87922925418524be9", (
+                (25, "import { browserFixture } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';"),
+                (26, "import { until } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';"),
+            ),
+        ),
+        "packages/web/tests/lib/browser-links.test.ts": (
+            "a6b890424f879c869f9d9f332bc76869101e4ba2", (
+                (6, "import { browserFixture } from '../../../daemon/tests/helpers/browser-link-service-fixture.ts';"),
+            ),
+        ),
+    },
 }
 ISOLATED_TEST_RUNNERS = {
     ".github/workflows/relay-r7.yml": "9fa98da60f588ba52b7af22f6e09db8003e60700",
@@ -1138,10 +1186,19 @@ def hook_test_references_reviewed(base, head):
         return False
 
 
+def isolated_test_runner_matches(path, expected_blob, entry):
+    """Accept one reviewed cache-comment correction without changing historical pins."""
+    return entry == ("100644", expected_blob) or (
+        path == "packages/signaling/tests/e2e/harness.ts" and
+        expected_blob == "df152a92fd95d8dcfd5176e79c3110aa7b500628" and
+        entry == ("100644", "89cdbe0dc2eee5b924b692b3811ebe7b4c7f3cf1")
+    )
+
+
 def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=None):
-    """Keep ordinary gates for exact isolated tests; unknown consumers/metadata restore R7."""
+    """Keep ordinary gates for finite isolated families; unknown consumers restore R7."""
     try:
-        producers = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        producers = set(paths) & (ISOLATED_TEST_INPUTS.keys() | ISOLATED_TEST_FAMILIES.keys())
         self_tools = {".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md"}
         if not producers or any(path not in producers and path not in self_tools and not (
                 ordinary_soak_doc(path) and not path.startswith((".github/", ".rules/"))) for path in paths):
@@ -1178,8 +1235,10 @@ def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=N
                     return False
             pins = dict(ISOLATED_TEST_RUNNERS)
             for producer in producers:
-                pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS[producer].items()})
-            if any(tree.get(path) != ("100644", blob) for path, blob in pins.items()):
+                pins.update(ISOLATED_TEST_HELPER_PINS.get(producer, {}))
+                pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS.get(producer, {}).items()})
+                pins.update({path: value[0] for path, value in ISOLATED_TEST_FAMILIES.get(producer, {}).items()})
+            if any(not isolated_test_runner_matches(path, blob, tree.get(path)) for path, blob in pins.items()):
                 return False
             inventories[ref] = tree
         # Git grep alone need not detect a corrupt unreferenced object. Read and hash the
@@ -1188,17 +1247,24 @@ def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=N
         for ref, tree in inventories.items():
             roots = [f":(literal){path}" for path in tree if "/" not in path]
             for producer in producers:
-                expected = [f"{ref}:{path}:{line}:{text}" for path, (_, line, text) in
-                            ISOLATED_TEST_INPUTS[producer].items()]
-                scan = subprocess.run(
-                    ["git", "grep", "-n", "-F", "--no-textconv", "-e", Path(producer).stem, ref, "--",
-                     *surfaces, *roots, f":(exclude){producer}",
-                     ":(exclude).github/scripts/ci-scope.py", ":(exclude).github/scripts/check-ci-scope.py"],
-                    capture_output=True, check=False,
-                )
-                if (scan.returncode != (0 if expected else 1) or
-                        sorted(scan.stdout.decode("utf-8", "strict").splitlines()) != sorted(expected)):
-                    return False
+                family = ISOLATED_TEST_FAMILIES.get(producer, {})
+                nodes = {producer, *family}
+                occurrences = [(path, line, text) for path, (_, line, text) in
+                               ISOLATED_TEST_INPUTS.get(producer, {}).items()]
+                occurrences.extend((path, line, text) for path, (_, matches) in family.items()
+                                   for line, text in matches)
+                for node in nodes:
+                    expected = [f"{ref}:{path}:{line}:{text}" for path, line, text in occurrences
+                                if Path(node).stem in text and path != node]
+                    scan = subprocess.run(
+                        ["git", "grep", "-n", "-F", "--no-textconv", "-e", Path(node).stem, ref, "--",
+                         *surfaces, *roots, f":(exclude){node}",
+                         ":(exclude).github/scripts/ci-scope.py", ":(exclude).github/scripts/check-ci-scope.py"],
+                        capture_output=True, check=False,
+                    )
+                    if (scan.returncode != (0 if expected else 1) or
+                            sorted(scan.stdout.decode("utf-8", "strict").splitlines()) != sorted(expected)):
+                        return False
         return True
     except (subprocess.CalledProcessError, OSError, ValueError, UnicodeError):
         return False
@@ -2185,7 +2251,7 @@ def classify(base, head):
                     status_state["error"] = True
             return status_state["value"]
 
-        isolated_tests = set(paths) & ISOLATED_TEST_INPUTS.keys()
+        isolated_tests = set(paths) & (ISOLATED_TEST_INPUTS.keys() | ISOLATED_TEST_FAMILIES.keys())
         if isolated_tests and not isolated_test_inputs_reviewed(base, head, merge_base, paths, changed_statuses):
             return all_gates("Isolated test transition, reference or runner proof unavailable; running all gates")
         transition = reviewed_launch_or_decode_only(base, head, merge_base, paths, changed_statuses)

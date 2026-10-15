@@ -72,19 +72,18 @@ describe('CI test step keeps its output for the threshold check', () => {
   test('the suite runs once: its output goes to the file the check reads, and a failure still fails the step', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
     const step = workflowStep('Test with coverage');
-    const command =
-      'bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov';
+    const command = 'bun scripts/ci/run-bun-test-batches.ts';
     expect(step).toContain('set -o pipefail');
-    expect(step).toContain('2>&1 | tee test-output.txt');
+    expect(step).toContain('2>&1 | tee test-batches-output.txt');
+    expect(step).not.toContain('tee test-output.txt');
     expect(step).toContain(command);
+    expect(step).toContain('        env:\n          E2E_BUNDLER: esbuild\n');
+    expect(workflow.split('E2E_BUNDLER: esbuild')).toHaveLength(2);
     expect(workflow.split(command)).toHaveLength(2);
-    const runner = readFileSync(
-      join(repoRoot, 'scripts/ci/run-bun-test-with-diagnostics.ts'),
-      'utf8',
-    );
-    expect(
-      runner.split("runChild([process.execPath, 'test', ...process.argv.slice(2)])"),
-    ).toHaveLength(2);
+    const runner = readFileSync(join(repoRoot, 'scripts/ci/run-bun-test-batches.ts'), 'utf8');
+    expect(runner.split('await runChild(argv,')).toHaveLength(2);
+    expect(runner).toContain('partitionTests(files)');
+    expect(runner).toContain('linkSync(temporary, summary)');
   });
 });
 

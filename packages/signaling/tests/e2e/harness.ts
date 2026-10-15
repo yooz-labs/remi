@@ -81,7 +81,7 @@ async function bundleWithBun(): Promise<string> {
   return output.text();
 }
 
-/** Bundle the test entry (the real Worker plus the debug seams) once per test file. */
+/** Bundle the test entry (the real Worker plus the debug seams) once per loaded harness module. */
 function bundle(): Promise<string> {
   bundled ??= process.env['E2E_BUNDLER'] === 'esbuild' ? bundleWithEsbuild() : bundleWithBun();
   return bundled;
