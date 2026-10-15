@@ -29,7 +29,7 @@ const sites = {
     'onSessionOrphaned:',
   ),
   'the daemon cleaning up': between(
-    'async function cleanup(): Promise<void> {',
+    'async function performCleanup(): Promise<void> {',
     'installProcessGuards(',
   ),
   'a session whose creation failed': between(
@@ -42,6 +42,14 @@ const sites = {
 describe('the secure push runtime outlives the teardown that dismisses its cards', () => {
   for (const [name, text] of Object.entries(sites)) {
     test(`${name}: retired first, finished only after the session is disposed`, () => {
+      if (name === 'the daemon cleaning up') {
+        const entry = between(
+          'function cleanup(): Promise<void> {',
+          'async function performCleanup(): Promise<void> {',
+        );
+        expect(entry).toContain('cleanupTask ??= performCleanup();');
+        expect(entry).toContain('return cleanupTask;');
+      }
       const dispose = text.search(/\.dispose\(\)/);
       expect(dispose, 'the teardown disposes the session').toBeGreaterThan(-1);
       // No call that finishes the runtime may run before the dispose that emits the dismissals.

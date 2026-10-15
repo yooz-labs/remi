@@ -21,7 +21,7 @@ always select their existing full gates.
 | Exact CI coverage threshold shell reader test | All normal gates | Skip without external references |
 | Exact Bun test diagnostics runner and its test | All normal gates | Skip with pinned coverage/workflow callers |
 | Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
-| Four named isolated unit-test producers | All normal gates | Skip with exact modification, reference and runner proof |
+| Named isolated unit tests and a finite reviewed helper family | All normal gates | Skip with exact modification, reference and runner proof |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -750,3 +750,29 @@ execution, with the long/reuse/producer steps explicitly skipped. Uploading the
 short log artifact is expected. It is not a completed soak, reusable producer,
 measured savings, live reuse or release acceptance. Any failed proof keeps the
 existing full gate; push/manual runs remain full.
+
+## Reviewed finite ordinary test/helper families (#1206)
+
+The existing four isolated test rules retain their exact declarations and controls.
+`packages/daemon/tests/cli/cleanup-budget.test.ts` is an additional isolated leaf.
+`packages/daemon/tests/helpers/browser-link-service-fixture.ts` has one finite
+family: the exact unchanged browser-link composition, ingress, service, rendered
+browser and browser-controller test consumers recorded in the classifier. Only
+the two named producers may change; consumer files are not editable exemptions.
+
+Each producer must be an ordinary modification. At target base, PR head and
+merge base, every consumer must retain its reviewed regular-file blob and every
+matching import line must occur exactly as recorded. Each consumer's own stem
+is also scanned for external callers; the family is never a whole-file scan
+exclusion. The existing regular-tree, complete blob reads, runner, preload,
+Worker loader and source-reader pins remain required. Unknown, removed old,
+transitive or script consumers, metadata/object/read failures, and mixed runtime
+or configuration changes restore every gate. The later D3 helper/script graph
+is deliberately outside this family. Literal scans and pinned loader assumptions
+do not prove the absence of arbitrary computed references.
+
+A qualified family change retains all ordinary test, lint, type, notice and Mac
+gates; only relay and its consequent attached-session soak are skipped. This
+policy neither shortens the hour measurement nor qualifies an earlier hosted
+run retroactively. Real Git controls preserve the original all-eleven baseline
+and exercise the exact historical correction plus conservative counterexamples.

@@ -40,7 +40,8 @@ describe('cli.ts passes the harness to its handlers (#1179)', () => {
   });
 
   test('the shared events name the create event; startSession is not a client-message event (#1129)', () => {
-    const start = cli.indexOf('const sharedEvents = {');
+    const start = cli.indexOf('let sharedEvents = {');
+    expect(start, 'the shared event object exists').toBeGreaterThan(-1);
     const block = cli.slice(start, cli.indexOf('\n};', start));
     expect(block).toContain(
       'onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,',
