@@ -1015,6 +1015,9 @@ function App() {
         // degradation is a stated principle, so skip-and-continue preserves it
         // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          // Browser links are live ephemeral frames; never replay or print their destinations.
+          if (replayMsg && typeof replayMsg === 'object' && 'type' in replayMsg &&
+            typeof replayMsg.type === 'string' && replayMsg.type.startsWith('browser_link_')) continue;
           if (!isValidMessage(replayMsg)) {
             console.debug('Skipping unknown message type in replay batch', replayMsg);
             continue;
@@ -1398,7 +1401,8 @@ function App() {
         };
         setMessages((prev) => [...prev, detachedMsg]);
         // On successful detach, clear active session so the UI reflects
-        // the disconnected state. The WebSocket close will handle cleanup.
+        // the detached view. The connection manager invalidates receiver context;
+        // the daemon may keep this WebSocket open.
         if (message.success) {
           setActiveSessionId(null);
         }
@@ -1867,8 +1871,21 @@ function App() {
       case 'image_insert_result':
         break;
 
-      // Direct staging is strictly decoded by WebSocketClient and owned by the
-      // connection manager's ImageUploadController; it never becomes a chat bubble.
+      // Direct tunnel frames are strictly decoded by WebSocketClient and owned by
+      // their connection controllers; they never become chat bubbles.
+      case 'file_fetch_begin':
+      case 'file_fetch_read':
+      case 'file_fetch_complete':
+      case 'file_fetch_cancel':
+      case 'file_fetch_accepted':
+      case 'file_fetch_chunk':
+      case 'file_fetch_result':
+      case 'file_fetch_cancel_result':
+      case 'file_fetch_refused':
+      case 'browser_link_receiver_request':
+      case 'browser_link_receiver_result':
+      case 'browser_link_receiver_ended':
+      case 'browser_link_candidate':
       case 'image_upload_begin':
       case 'image_upload_chunk':
       case 'image_upload_complete':
@@ -2018,6 +2035,9 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    receiveBrowserLinks, stopBrowserLinks, openBrowserLink,
+    downloadFile, cancelFileDownload, dismissFileDownload, saveDownloadedFile,
+    releaseFileDownloadSave,
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
@@ -3452,6 +3472,27 @@ function App() {
       onDetach={handleDetach}
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
+      browserLinks={{
+        state: activeConnection?.sessionId === activeSession.id
+          ? activeConnection.browserLinks ?? {phase: 'unavailable', candidates: []}
+          : {phase: 'unavailable', candidates: []},
+        onReceive: () => receiveBrowserLinks(activeSession.connectionId),
+        onStop: () => stopBrowserLinks(activeSession.connectionId),
+        onOpen: (id) => openBrowserLink(activeSession.connectionId, id),
+      }}
+      fileDownload={{
+        available: activeConnection?.mode === 'direct' && activeConnection.sessionId === activeSession.id &&
+          !!activeConnection.fileDownloadAvailable,
+        canCancel: activeConnection?.fileDownloadSessionId === activeSession.id && !!activeConnection.fileDownloadCanCancel,
+        state: activeConnection?.fileDownloadSessionId === activeSession.id
+          ? activeConnection.fileDownloadState ?? {phase: 'idle'} : {phase: 'idle'},
+        saveMessage: activeConnection?.fileDownloadSessionId === activeSession.id ? activeConnection.fileDownloadSaveMessage : null,
+        onDownload: (path) => downloadFile(activeSession.connectionId, activeSession.id, path),
+        onCancel: () => cancelFileDownload(activeSession.connectionId, activeSession.id),
+        onDismiss: () => dismissFileDownload(activeSession.connectionId, activeSession.id),
+        onSave: () => saveDownloadedFile(activeSession.connectionId, activeSession.id),
+        onReleaseSave: () => releaseFileDownloadSave(activeSession.connectionId),
+      }}
       imageUpload={{
         enabled:
           activeConnection?.mode === 'direct' &&

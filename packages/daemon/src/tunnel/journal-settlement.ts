@@ -12,6 +12,13 @@ import {
 import { RecoveryError, RecoveryIntent, type RecoveryOps } from './recovery';
 import { ReservationError, type Reservations } from './reservations';
 
+/** Only a refused reserveJournal call before any lease/content allocation may produce this type. */
+export class JournalAdmissionBusy extends ReservationError {
+  constructor() {
+    super('busy');
+  }
+}
+
 export type SettlementStage =
   | 'retirement-committed'
   | 'retired-owned'
@@ -176,13 +183,22 @@ export function beginJournal(
   artifactExtension?: JournalBinding['artifactExtension'],
 ): JournalWriter {
   if (!scratch.isCurrent() || !metadata.isCurrent()) throw new RecoveryError('unavailable');
-  const lease = store.reserveJournal(
-    owner,
-    bytes,
-    scratch.identity,
-    metadata.identity,
-    artifactExtension,
-  );
+  const lease = (() => {
+    try {
+      return store.reserveJournal(
+        owner,
+        bytes,
+        scratch.identity,
+        metadata.identity,
+        artifactExtension,
+      );
+    } catch (error) {
+      // Capacity and nonblocking acquisition busy occur before the reservation transaction commits.
+      if (error instanceof ReservationError && error.code === 'busy')
+        throw new JournalAdmissionBusy();
+      throw error; // Atomic publication/unknown failures may already have charged the ledger.
+    }
+  })();
   let intent: RecoveryIntent | undefined;
   let fd = -1;
   try {

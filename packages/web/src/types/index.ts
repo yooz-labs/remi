@@ -79,6 +79,14 @@ export interface ConnectionState {
   /** Harness binding on this connection's latest hello_ack. */
   readonly harness?: HarnessId;
   readonly harnessSessionId?: string | null;
+  /** Ephemeral browser receiver owned by this concrete connection. */
+  readonly browserLinks?: import('@/lib/browser-links').BrowserLinksState;
+  /** Private local download state; available only from this connection's scoped hello. */
+  readonly fileDownloadState?: import('@/lib/file-download').FileDownloadState;
+  readonly fileDownloadSessionId?: UUID | null;
+  readonly fileDownloadAvailable?: boolean;
+  readonly fileDownloadCanCancel?: boolean;
+  readonly fileDownloadSaveMessage?: string | null;
   /** Direct image staging UI state owned by this concrete connection. */
   readonly imageUploadState: ImageUploadState;
   /** Session whose upload status should be displayed, retained across reconnects. */

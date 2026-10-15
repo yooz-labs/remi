@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { isImageStagingCandidate } from '../src/image-staging-ingress.ts';
+import { isBrowserLinkCandidate, isImageStagingCandidate } from '../src/image-staging-ingress.ts';
 import {
   type ImageStagingOperation,
   type ImageStagingRequest,
@@ -22,6 +22,23 @@ const chunk = vectors.positive.find((v) => v.name === 'fixture.jpg:chunk:0');
 if (!begin || !complete || !cancel || !chunk)
   throw new Error('Missing owned image staging fixtures');
 const inputs = (raw: string): (string | Uint8Array)[] => [raw, new TextEncoder().encode(raw)];
+
+test('optional browser prefix scans original escaped/duplicate/late types without capturing nested data', () => {
+  for (const raw of [
+    '{"type":"browser_link_receiver_request"}',
+    '{"t\\u0079pe":"browser\\u005flink_receiver_request"}',
+    '{"type":"hello","type":"browser_link_receiver_request"}',
+    '{"type":"browser_link_receiver_request","type":"hello"}',
+    JSON.stringify({ padding: 'x'.repeat(65536), type: 'browser_link_receiver_request' }),
+  ])
+    for (const input of inputs(raw)) expect(isBrowserLinkCandidate(input)).toBe(true);
+  for (const raw of [
+    '{"type":"hello"}',
+    '{"nested":{"type":"browser_link_receiver_request"}}',
+    '{"url":"browser_link_receiver_request"}',
+  ])
+    for (const input of inputs(raw)) expect(isBrowserLinkCandidate(input)).toBe(false);
+});
 
 describe('actual pure staging candidacy and strict ingress', () => {
   for (const vector of vectors.positive)
