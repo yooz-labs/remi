@@ -22,6 +22,7 @@ always select their existing full gates.
 | Exact Bun test diagnostics runner and its test | All normal gates | Skip with pinned coverage/workflow callers |
 | Exact existing HookServer unit test modification | All normal gates | Skip with reviewed reference provenance |
 | Named isolated unit tests and a finite reviewed helper family | All normal gates | Skip with exact modification, reference and runner proof |
+| Exact CLI harness-wiring and secure-push teardown source readers | All normal gates | Skip with exact modification, helper/comment and runner proof |
 | Root version or host build-target declarations only | Biome, root type check, notices, full coverage | Skip |
 | Named release/admin/macOS workflows, distribution scripts, npm metadata | Biome, root type check, notices, full coverage | Skip |
 | CI routing/classifier/workflow validation changes | Spelling + actual diff corpus/YAML/actionlint | Skip |
@@ -776,3 +777,25 @@ gates; only relay and its consequent attached-session soak are skipped. This
 policy neither shortens the hour measurement nor qualifies an earlier hosted
 run retroactively. Real Git controls preserve the original all-eleven baseline
 and exercise the exact historical correction plus conservative counterexamples.
+
+## Two CLI source-reader leaves (#1206)
+
+Only exact modifications of `packages/daemon/tests/cli/harness-wiring.test.ts`
+and `packages/daemon/tests/cli-secure-push-teardown.test.ts` join the finite
+isolated-test rule. They read CLI source text through the reviewed pure
+`strip-comments.ts` helper; they do not execute the CLI. Every ordinary gate,
+including the full Bun coverage suite and its 60% threshold, remains selected.
+
+The helper's exact 100644/blob is required at base, head and merge-base, only
+for these producers. Harness-wiring's sole known external match is one exact
+comment at resume-follow.test.ts:10: that file stays fully scanned and
+blob-pinned. Any changed file byte, extra/moved/modified reference, unknown
+consumer, nonregular entry, object/scan failure or runner drift restores all
+gates. This is neither a whole-file comment exclusion nor a computed-reference
+resolver. A mixed runtime/helper/config/unknown path also restores all gates.
+
+The existing R7 command, preloads and helper-entry pins are unchanged.
+Additions, deletions, rename directions and mode changes cannot use this rule.
+Main pushes and manual runs stay full. This only scopes future reviewed
+test-only changes; it does not retroactively qualify an earlier run or repair
+the separately held two-process test-runner experiment.
