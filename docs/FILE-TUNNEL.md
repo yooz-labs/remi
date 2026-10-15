@@ -249,7 +249,7 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 |---|---|---|
 | Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. The owner accepted the original expiry in ADR0042. The installed corrected route, direct host and explicit web caller are verified separately; native conformance is still required for native availability. |
 | File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The source composes strict original-byte ingress, the managed journal, actual Claude/Codex session lifetimes and explicit web Save over signed direct WSS and the authenticated encrypted relay channel. Relay readiness is tied to the enrolled device, child attachment and binding. Local Worker/HubRelay/ChildProxy and rendered app checks cover 10 MiB Save, digest verification, cancellation and context loss. Deployed Worker, native-device and physical-device acceptance remain separate. |
-| Link forwarding | Accepted ADR0044: `browser_link_receiver_request/result/ended` and `browser_link_candidate`; exclusive explicit Receive, bounded canonical HTTP(S) destination and a separate client Open choice. | The current source composes an owned BROWSER producer, current-grant selection and the web caller only for a ready signed public-TLS direct Claude session. Source/copied/compiled inert-consumer and opt-in actual App controls qualify local wiring. Independent review and fresh hosted gates precede release. No plaintext fallback; native, relay/Codex producers, installed-consumer and operator PKI acceptance remain separate. |
+| Link forwarding | Accepted ADR0044: `browser_link_receiver_request/result/ended` and `browser_link_candidate`; exclusive explicit Receive, bounded canonical HTTP(S) destination and a separate client Open choice. | The source now composes the Claude BROWSER producer and the explicit web receiver over both the signed public-TLS direct path and the authenticated encrypted relay channel. Relay tests use the source Worker under Miniflare, HubRelay, the child proxy and the actual app; browser checks cover selection, explicit Open, replacement and natural expiry. No plaintext fallback. Deployed Worker, native-device, Codex-producer, installed-consumer and operator PKI acceptance remain separate. |
 | Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
 
 ### Encrypted relay file-download delivery (2026-10-15)
@@ -894,3 +894,19 @@ Production App controls cover PNG/JPEG at 390×844, 1024×768 and 1440×1000, pl
 Compiled host controls cover Apple Silicon Mac and Linux ARM64/x64 on Bun1.3.11/1.4.2; the inert CLI consumes no additional model turn.
 These controls do not establish native conformance, phone battery use, deployed relay attachments or a new 24-hour hardware soak.
 Keep #1170 open for those scopes and the link/download follow-ups.
+
+## Encrypted relay browser-link delivery (2026-10-15)
+
+The relay path now routes a selected child's Claude BROWSER candidates to one
+explicitly selected web receiver over the existing authenticated encrypted
+machine channel. Receiver selection is exclusive; replacing the receiver ends
+the prior lease. The client retains bounded candidates briefly and opens a
+chosen HTTP(S) destination only after a separate user action. The Worker
+forwards opaque channel frames; it does not receive the URL as parsed content.
+
+Local source acceptance constructs the source Worker under Miniflare, HubRelay,
+the child proxy, the actual BROWSER producer and the web app. Rendered browser
+checks cover 390×844, 768×1024 and 1440×900, including natural lease expiry.
+These results do not establish deployed Cloudflare behavior, signed native
+clients, physical-device UI, Codex link production or installed-host browser
+opening. Keep #1170 open for those remaining scopes.
