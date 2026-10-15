@@ -81,6 +81,9 @@ export interface ConnectionState {
   readonly harnessSessionId?: string | null;
   /** Ephemeral browser receiver owned by this concrete connection. */
   readonly browserLinks?: import('@/lib/browser-links').BrowserLinksState;
+  /** Independently owned child browser receivers on the encrypted machine channel. */
+  readonly relayBrowserLinks?: readonly { readonly sessionId: string;
+    readonly state: import('@/lib/browser-links').BrowserLinksState }[];
   /** Private local download state; available only from this connection's scoped hello. */
   readonly fileDownloadState?: import('@/lib/file-download').FileDownloadState;
   readonly fileDownloadSessionId?: UUID | null;

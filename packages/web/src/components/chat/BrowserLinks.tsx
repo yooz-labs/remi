@@ -7,7 +7,7 @@ export interface BrowserLinksProps {
 }
 const labels: Record<BrowserLinksState['phase'], string> = {
   unavailable:
-    'Browser links require a verified direct TLS connection to an attached Claude session in this web app.',
+    'Browser links are unavailable for this session. Connect to a supported Claude session to receive them here.',
   ready: 'Choose where this session sends browser links. Each destination needs your Open click.',
   pending: 'Receiver request pending…',
   receiving: 'Receiving browser links here. Destinations expire after two minutes.',

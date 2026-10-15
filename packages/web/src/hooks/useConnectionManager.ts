@@ -27,6 +27,7 @@ import type {
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import { ImageUploadController, type ImageUploadContext } from '@/lib/image-upload';
 import { BrowserLinkController } from '@/lib/browser-links';
+import { RelayBrowserLinks } from '@/lib/relay-browser-links';
 import { FileDownloadController } from '@/lib/file-download';
 import { FileDownloadSave } from '@/lib/file-download-save';
 import type { FileDownloadBinding } from '../../../shared/src/file-download.ts';
@@ -108,6 +109,7 @@ interface ManagedConnection {
   imageUploadController?: ImageUploadController;
   structuredChatController?: StructuredChatController;
   browserLinkController?: BrowserLinkController;
+  relayBrowserLinks?: RelayBrowserLinks;
   fileDownloadController?: FileDownloadController;
   fileDownloadSave?: FileDownloadSave;
   fileDownloadBinding?: FileDownloadBinding;
@@ -171,6 +173,7 @@ function disposeFileDownload(mc: ManagedConnection | undefined) {
 
 /** Stop a captured identity context and publish that close synchronously. */
 function invalidateIdentityConnection(mc: ManagedConnection, message = 'Identity changed. Reconnect with the current identity.') {
+  mc.relayBrowserLinks?.disconnect();
   mc.imageUploadAuthenticated = false;
   invalidateFileDownload(mc);
   mc.browserStopRequests?.clear();
@@ -239,9 +242,9 @@ export interface UseConnectionManagerReturn {
   dismissFileDownload: (connectionId: ConnectionId, sessionId: UUID) => void;
   saveDownloadedFile: (connectionId: ConnectionId, sessionId: UUID) => void;
   releaseFileDownloadSave: (connectionId: ConnectionId) => void;
-  receiveBrowserLinks: (connectionId: ConnectionId) => void;
-  stopBrowserLinks: (connectionId: ConnectionId) => void;
-  openBrowserLink: (connectionId: ConnectionId, id: string) => void;
+  receiveBrowserLinks: (connectionId: ConnectionId, sessionId?: UUID) => void;
+  stopBrowserLinks: (connectionId: ConnectionId, sessionId?: UUID) => void;
+  openBrowserLink: (connectionId: ConnectionId, id: string, sessionId?: UUID) => void;
   submitStructuredChat: (connectionId: ConnectionId, sessionId: UUID, threadId: string,
     content: string, id: UUID) => Promise<ChatSubmitOutcome>;
   /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
@@ -330,6 +333,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     harness: mc.harness,
     harnessSessionId: mc.harnessSessionId,
     browserLinks: mc.browserLinkController?.state,
+    relayBrowserLinks: mc.relayBrowserLinks?.states,
     fileDownloadState: mc.fileDownloadController?.state,
     fileDownloadSessionId: mc.fileDownloadSessionId,
     fileDownloadAvailable: mc.fileDownloadController?.available ?? false,
@@ -398,7 +402,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
       }
     }
     if (unlockedIdentity) {
@@ -410,7 +414,7 @@ export function useConnectionManager(
           mc.imageUploadAuthenticated = false;
           mc.browserStopRequests?.clear();
           mc.browserStopSaturatedSession = undefined;
-          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
           mc.approval.reset();
           mc.authAttempt = null;
           mc.pendingChallenge = null;
@@ -429,7 +433,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
         mc.approval.reset();
         mc.authAttempt = null;
         if (usesNativeIdentity() || mc.mode === 'relay') invalidateIdentityConnection(mc);
@@ -754,7 +758,7 @@ export function useConnectionManager(
               mc.browserStopRequests?.clear();
               mc.browserStopSaturatedSession = undefined;
             }
-            mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+            mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
             mc.browserAttachment = message.sessionId && message.attachState === 'attached' &&
               mc.browserStopSaturatedSession !== message.sessionId ? {} : undefined;
             const nextHarness = message.harness ?? 'claude';
@@ -780,7 +784,7 @@ export function useConnectionManager(
               capabilitiesChanged ||
               !Object.is(mc.protocolVersion, nextProtocolVersion)
             ) {
-              mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+              mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
             }
             mc.sessionId = message.sessionId;
             mc.attachState = message.attachState;
@@ -803,7 +807,7 @@ export function useConnectionManager(
           mc.mode === 'direct' &&
           mc.sessionId === message.sessionId
         ) {
-          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+          mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
           mc.harness = 'claude';
           mc.harnessSessionId = message.newClaudeSessionId;
           syncState();
@@ -818,7 +822,7 @@ export function useConnectionManager(
           (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId) ||
           (message.type === 'kill_session_response' && message.success && browserStop?.sessionId === mc.sessionId)) {
           mc.browserAttachment = undefined;
-          mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+          mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
           if (message.type !== 'detach_session_ack') mc.browserStopRequests?.clear();
           syncState();
         }
@@ -877,6 +881,8 @@ export function useConnectionManager(
         if (message.type === 'error' && message.code === 'SESSION_ENDED' && mc.sessionId) {
           mc.imageUploadController?.endSession(mc.sessionId);
         }
+
+        if (mc.mode === 'relay' && mc.relayBrowserLinks?.receive(message)) return;
 
         // Forward to app handler with connectionId context
         onMessageRef.current?.(connectionId, message);
@@ -965,7 +971,7 @@ export function useConnectionManager(
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
-        existing.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); disposeFileDownload(existing);
+        existing.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); existing?.relayBrowserLinks?.dispose(); disposeFileDownload(existing);
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
         // Free its stagger slot: this connection may be recreated repeatedly
@@ -1046,7 +1052,7 @@ export function useConnectionManager(
             mc.imageUploadAuthenticated = false;
             mc.browserStopRequests?.clear();
             mc.browserStopSaturatedSession = undefined;
-            mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+            mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
             mc.sessionId = null;
             mc.attachState = undefined;
             mc.harness = undefined;
@@ -1245,7 +1251,7 @@ export function useConnectionManager(
     const connectionId = makeConnectionId(`relay:${pin.machinePublicKey}`);
     const existing = connectionsMapRef.current.get(connectionId);
     if (existing && !isConnectionReplaceable(existing.status)) { await first?.close(); return connectionId; }
-    existing?.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); disposeFileDownload(existing);
+    existing?.imageUploadController?.dispose(); existing?.structuredChatController?.dispose(); existing?.browserLinkController?.dispose(); existing?.relayBrowserLinks?.dispose(); disposeFileDownload(existing);
     existing?.relayCancel?.(); existing?.relayRequests?.closed(); existing?.client.disconnect();
     const mc: ManagedConnection = {
       client: null as unknown as ConnectionTransport, connectionId, url: pin.relayUrl, mode: 'relay',
@@ -1312,6 +1318,7 @@ export function useConnectionManager(
         cancelNativeAttempt();
         if (connectionsMapRef.current.get(connectionId) === mc) {
           mc.relayRequests?.closed(); mc.structuredChatController?.disconnect(); mc.relayChatSessions?.clear();
+          mc.relayBrowserLinks?.disconnect();
         }
       },
       onStatus: status => {
@@ -1325,6 +1332,7 @@ export function useConnectionManager(
         }
         if (status !== 'connected') {
           mc.structuredChatController?.disconnect();
+          mc.relayBrowserLinks?.disconnect();
           mc.relayChatSessions?.clear();
           mc.sessionAttachments?.clear();
         }
@@ -1343,11 +1351,23 @@ export function useConnectionManager(
         return {generation,sessionId,threadId};
       },
     });
+    mc.relayBrowserLinks = new RelayBrowserLinks({
+      context: () => {
+        const generation = mc.client.structuredChatGeneration;
+        if (!alive() || isNative() || usesNativeIdentity() || 'kind' in signedIdentity ||
+          mc.status !== 'connected' || !generation) return null;
+        return { connection: mc, generation, identityRevision: revision,
+          identityKey: signedIdentity.publicKeyRaw };
+      },
+      send: (request, generation) => alive() && generation === mc.client.structuredChatGeneration &&
+        mc.client.send(request),
+    }, syncState);
     connectionsMapRef.current.set(connectionId, mc);
     if (signal && typeof tokenOrPin === 'string') {
       const cancel = () => {
         cancelNativeAttempt();
         mc.relayCancel?.();
+        mc.relayBrowserLinks?.dispose();
         mc.relayRequests?.closed(); mc.client.disconnect();
         void first?.close(); first = null; tokenOrPin = pin;
         if (connectionsMapRef.current.get(connectionId) === mc) connectionsMapRef.current.delete(connectionId);
@@ -1425,7 +1445,7 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
-      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); mc.relayBrowserLinks?.dispose(); disposeFileDownload(mc);
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1440,7 +1460,7 @@ export function useConnectionManager(
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
-      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
+      mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); mc.relayBrowserLinks?.dispose(); disposeFileDownload(mc);
       mc.relayCancel?.();
       mc.relayRequests?.closed();
       mc.client.disconnect();
@@ -1460,6 +1480,7 @@ export function useConnectionManager(
         return false;
       }
       if (mc.mode === 'relay' && message.type === 'answer') return mc.relayRequests?.answer(message) ?? false;
+      if (mc.mode === 'relay') mc.relayBrowserLinks?.beforeSend(message);
       const sent = mc.client.send(message);
       if (sent && message.type === 'kill_session_request' &&
         message.sessionId === mc.sessionId && mc.browserAttachment) {
@@ -1469,7 +1490,7 @@ export function useConnectionManager(
           pending.clear();
           mc.browserStopSaturatedSession = message.sessionId;
           mc.browserAttachment = undefined;
-          mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+          mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
           syncState();
         } else {
           pending.set(message.id, { sessionId: message.sessionId, attachment: mc.browserAttachment });
@@ -1644,7 +1665,7 @@ export function useConnectionManager(
         mc.imageUploadAuthenticated = false;
         mc.browserStopRequests?.clear();
         mc.browserStopSaturatedSession = undefined;
-        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); invalidateFileDownload(mc);
+        mc.imageUploadController?.disconnect(); mc?.structuredChatController?.disconnect(); mc.browserLinkController?.disconnect(); mc.relayBrowserLinks?.disconnect(); invalidateFileDownload(mc);
       }
       if (identityRef.current?.publicKeyRaw !== identity.publicKeyRaw) {
         for (const mc of connectionsMapRef.current.values()) {
@@ -1844,7 +1865,7 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
-        mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); disposeFileDownload(mc);
+        mc.imageUploadController?.dispose(); mc?.structuredChatController?.dispose(); mc.browserLinkController?.dispose(); mc.relayBrowserLinks?.dispose(); disposeFileDownload(mc);
         mc.relayCancel?.();
         mc.relayRequests?.closed();
         mc.client.disconnect();
@@ -1902,9 +1923,21 @@ export function useConnectionManager(
       syncState();
     },
     releaseFileDownloadSave: (id) => connectionsMapRef.current.get(id)?.fileDownloadSave?.clear(),
-    receiveBrowserLinks: (id) => connectionsMapRef.current.get(id)?.browserLinkController?.receiveHere(),
-    stopBrowserLinks: (id) => connectionsMapRef.current.get(id)?.browserLinkController?.stop(),
-    openBrowserLink: (id, candidateId) => connectionsMapRef.current.get(id)?.browserLinkController?.open(candidateId),
+    receiveBrowserLinks: (id, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (mc?.mode === 'relay') { if (sessionId) mc.relayBrowserLinks?.receiveHere(sessionId); }
+      else mc?.browserLinkController?.receiveHere();
+    },
+    stopBrowserLinks: (id, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (mc?.mode === 'relay') { if (sessionId) mc.relayBrowserLinks?.stop(sessionId); }
+      else mc?.browserLinkController?.stop();
+    },
+    openBrowserLink: (id, candidateId, sessionId) => {
+      const mc = connectionsMapRef.current.get(id);
+      if (mc?.mode === 'relay') { if (sessionId) mc.relayBrowserLinks?.open(sessionId, candidateId); }
+      else mc?.browserLinkController?.open(candidateId);
+    },
     submitStructuredChat,
     requestBulletExpand,
     requestSessionList,

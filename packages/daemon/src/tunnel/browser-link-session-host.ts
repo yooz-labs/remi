@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import type { UUID } from '@remi/shared';
 import type { WebSocketAdapter } from '../adapters/websocket-adapter.ts';
 import type { IdentityStore } from '../auth/identity-store.ts';
+import {
+  connectionDeviceIdentityInsideLock,
+  connectionDeviceKey,
+} from '../auth/relay-chat-authority.ts';
 import type { HarnessSession } from '../harness/types.ts';
+import type { SecurePushStore } from '../notifications/secure-push-store.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
 import type { SessionBindingStore } from '../session/session-binding-store.ts';
 import type { SessionRegistry } from '../session/session-registry.ts';
@@ -55,6 +60,7 @@ export class BrowserLinkSessionHost {
       readonly bindings: SessionBindingStore;
       readonly service: () => BrowserLinkService | undefined;
       readonly temporaryRoot?: string;
+      readonly onReady?: (id: UUID) => void;
     },
   ) {
     this.startup = new Promise((resolve) => {
@@ -73,39 +79,46 @@ export class BrowserLinkSessionHost {
     this.startupSucceeded = ready && !this.closing;
     this.resolveStartup(this.startupSucceeded);
   }
-  /** Startup readiness only; the same original signed grant and concrete socket must survive. */
+  /** Startup readiness only; the original direct or enrolled proxy actor must survive. */
   async waitForConnection(
     id: UUID,
     adapter: WebSocketAdapter,
     identityStore: IdentityStore,
+    relayAuthority?: SecurePushStore,
   ): Promise<boolean> {
     const connection = adapter.getDirectConnection(id);
-    const key = connection?.connectionClientPublicKey;
-    const fingerprint = connection?.connectionClientFingerprint;
     if (
       !connection ||
-      connection.connectionListenerTransport !== 'public-tls' ||
-      !key ||
-      !fingerprint
+      (!connection.structuredChatProxyAuthority &&
+        connection.connectionListenerTransport !== 'public-tls')
     )
-      return true; // Existing local-capability/query, relay, hub and nonselected paths.
-    if (!this.pending) {
-      if (this.startupSucceeded && !this.closing) return true;
-      connection.close('Browser link session startup failed');
-      return false;
-    }
+      return true;
+    const key = connectionDeviceKey(connection);
+    if (!key) return true; // Existing local-capability/query path has no device actor.
     try {
-      const grant = identityStore.withAuthorizationEpochNonblocking(key, (epoch) => epoch, true);
-      const ready = await this.waitForStartup();
-      const current = identityStore.withAuthorizationEpochNonblocking(key, (epoch) => epoch);
+      const capture = (migrate = false) =>
+        identityStore.withAuthorizationEpochNonblocking(
+          key,
+          (grant) => {
+            const actor = connectionDeviceIdentityInsideLock(connection, grant, relayAuthority);
+            return actor && grant ? { ...actor, grant } : null;
+          },
+          migrate,
+        );
+      const original = capture(true);
+      const ready = this.pending ? await this.waitForStartup() : this.startupSucceeded;
+      const current = capture();
       if (
         ready &&
-        grant &&
-        current === grant &&
+        !this.closing &&
+        original &&
+        current &&
+        original.grant === current.grant &&
+        original.publicKey === current.publicKey &&
+        original.fingerprint === current.fingerprint &&
+        original.proxy === current.proxy &&
         connection.isConnected &&
-        adapter.getDirectConnection(id) === connection &&
-        connection.connectionClientPublicKey === key &&
-        connection.connectionClientFingerprint === fingerprint
+        adapter.getDirectConnection(id) === connection
       )
         return true;
     } catch {}
@@ -220,6 +233,7 @@ export class BrowserLinkSessionHost {
         )
           throw new Error(FAILURE);
         record.ready = record.context;
+        this.host.onReady?.(id);
       },
       consumerEnded: () => {
         record.consumerEnded = true;
@@ -290,6 +304,7 @@ export class BrowserLinkSessionHost {
       record.context = context;
       record.invalidated = false;
       record.ready = running ? context : null;
+      if (running) this.host.onReady?.(id);
     } catch {
       throw new Error(FAILURE);
     }

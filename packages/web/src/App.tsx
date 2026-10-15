@@ -3473,12 +3473,14 @@ function App() {
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
       browserLinks={{
-        state: activeConnection?.sessionId === activeSession.id
+        state: activeConnection?.mode === 'relay'
+          ? activeConnection.relayBrowserLinks?.find((entry) => entry.sessionId === activeSession.id)?.state ?? {phase: 'unavailable', candidates: []}
+          : activeConnection?.sessionId === activeSession.id
           ? activeConnection.browserLinks ?? {phase: 'unavailable', candidates: []}
           : {phase: 'unavailable', candidates: []},
-        onReceive: () => receiveBrowserLinks(activeSession.connectionId),
-        onStop: () => stopBrowserLinks(activeSession.connectionId),
-        onOpen: (id) => openBrowserLink(activeSession.connectionId, id),
+        onReceive: () => receiveBrowserLinks(activeSession.connectionId, activeSession.id),
+        onStop: () => stopBrowserLinks(activeSession.connectionId, activeSession.id),
+        onOpen: (id) => openBrowserLink(activeSession.connectionId, id, activeSession.id),
       }}
       fileDownload={{
         available: activeConnection?.mode === 'direct' && activeConnection.sessionId === activeSession.id &&

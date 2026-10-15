@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  encodeRelayChatAuthority,
+} from '../../src/auth/relay-chat-authority.ts';
+import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
+import {
   type BrowserFixture,
   browserFixture,
   until,
@@ -351,3 +356,65 @@ test('rolling clock: ten offers, no recipient/rate reset, actual60s expiry and z
     endpoint.stop(true);
   }
 }, 65000);
+
+for (const retirement of ['enrollment', 'grant'] as const)
+  test(`relay receiver retains original ${retirement}, never revives after remove/regrant`, async () => {
+    const f = await browserFixture({ relay: true, tls: false });
+    fixtures.push(f);
+    const devices = new RelayDeviceStore(f.files.home, f.trust);
+    await devices.add(f.identity.publicKeyRaw, 'owned enrolled receiver');
+    const authority = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+    if (!authority) throw Error('Missing actual enrolled authority');
+    const peer = await f.client({
+      capability: true,
+      headers: {
+        [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority),
+      },
+    });
+    expect(peer.connection()?.connectionClientPublicKey).toBeNull();
+    expect(f.service.isAvailable(peer.id)).toBe(true);
+    expect((await peer.submit(peer.request(1))).outcome).toBe('selected');
+    if (retirement === 'enrollment') devices.remove(f.identity.fingerprint);
+    else await f.trust.removeAuthorizedKey(f.identity.fingerprint);
+    expect(f.service.isAvailable(peer.id)).toBe(false);
+    expect(f.service.offer(f.context(), 'https://example.test/must-not-deliver')).toBe(false);
+    if (retirement === 'enrollment') await devices.add(f.identity.publicKeyRaw, 'new enrollment');
+    else await f.trust.addAuthorizedKey(f.identity.publicKeyRaw, 'new grant');
+    expect(f.service.isAvailable(peer.id)).toBe(false);
+    expect(f.service.offer(f.context(), 'https://example.test/still-retired')).toBe(false);
+    peer.ws.send(JSON.stringify(peer.request(2)));
+    await until(() => peer.ws.readyState === WebSocket.CLOSED, 'old proxy actor closed');
+    expect(peer.browser.some((m) => m.type === 'browser_link_candidate')).toBe(false);
+    const fresh = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+    if (!fresh) throw Error('Missing new actual authority');
+    const next = await f.client({
+      capability: true,
+      headers: {
+        [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(fresh),
+      },
+    });
+    expect((await next.submit(next.request(1))).outcome).toBe('selected');
+  }, 15000);
+
+test('relay-enabled plaintext child still rejects signed-direct, bare capability and spoofed relay descriptor', async () => {
+  const f = await browserFixture({ relay: true, tls: false });
+  fixtures.push(f);
+  const direct = await f.client();
+  expect(f.service.isAvailable(direct.id)).toBe(false);
+  expect((await direct.submit(direct.request(1))).outcome).toBe('refused');
+  const local = await f.client({ capability: true });
+  expect(f.service.isAvailable(local.id)).toBe(false);
+  local.ws.send(JSON.stringify(local.request(1)));
+  await until(() => local.ws.readyState === WebSocket.CLOSED, 'capability has no browser actor');
+  const devices = new RelayDeviceStore(f.files.home, f.trust);
+  await devices.add(f.identity.publicKeyRaw, 'owned descriptor');
+  const authority = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+  if (!authority) throw Error('Missing actual enrolled authority');
+  await expect(
+    f.client({
+      headers: {
+        [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority),
+      },
+    }),
+  ).rejects.toThrow('Owned browser peer failed');
+}, 15000);

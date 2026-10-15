@@ -17,10 +17,17 @@ import {
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter.ts';
 import { MessageAPI } from '../../src/api/message-api.ts';
 import { Authenticator } from '../../src/auth/authenticator.ts';
+import { CAPABILITY_HEADER, loadOrCreateCapabilityToken } from '../../src/auth/capability-token.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
+import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  encodeRelayChatAuthority,
+} from '../../src/auth/relay-chat-authority.ts';
 import { createConnectionHandlers } from '../../src/cli/handlers/connection-events.ts';
 import { setPrimarySessionId } from '../../src/cli/session-state.ts';
+import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
+import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
@@ -550,8 +557,16 @@ test('shipping TLS-off mirror write failure keeps the legacy fail-soft launch be
   }
 }, 15000);
 
-for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel'] as const)
-  test(`actual pending Host + signed TLS attachment barrier: ${action}`, async () => {
+for (const { action, relay } of [
+  ...(['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel'] as const).map((action) => ({
+    action,
+    relay: false,
+  })),
+  ...(['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel', 'reenroll'] as const).map(
+    (action) => ({ action, relay: true }),
+  ),
+])
+  test(`actual pending Host + ${relay ? 'enrolled relay' : 'signed TLS'} attachment barrier: ${action}`, async () => {
     const f = core();
     let adapter: WebSocketAdapter | undefined;
     let ws: WebSocket | undefined;
@@ -560,6 +575,10 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
       await trust.generate();
       const identity = await unlockIdentity(await createIdentity());
       await trust.addAuthorizedKey(identity.publicKeyRaw, 'owned barrier');
+      const relayAuthority = new SecurePushStore(f.files.home, trust);
+      const devices = new RelayDeviceStore(f.files.home, trust);
+      if (relay) await devices.add(identity.publicKeyRaw, 'owned barrier relay');
+      const authority = relay ? relayAuthority.captureAuthority(identity.publicKeyRaw) : null;
       const holder = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
@@ -582,7 +601,7 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
         harnessId: 'claude',
         hubMode: false,
         harnesses: () => ['claude'],
-        beforeAttach: (id) => f.host.waitForConnection(id, actual, trust),
+        beforeAttach: (id) => f.host.waitForConnection(id, actual, trust, relayAuthority),
         trackConnection: () => {},
         untrackConnection: () => {},
         onConnectionAdded: () => {},
@@ -595,7 +614,8 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
         {
           host: '127.0.0.1',
           port,
-          tls: f.files.tls,
+          ...(!relay && { tls: f.files.tls }),
+          capabilityToken: 'owned-startup-capability',
           authenticator: new Authenticator({
             identity: await trust.unlock(),
             identityStore: trust,
@@ -617,10 +637,19 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
       await actual.start();
       setPrimarySessionId(f.id);
       if (action === 'late_cancel') f.host.cancelAll();
-      const peer = new WebSocket(`wss://127.0.0.1:${port}/ws`, {
-        tls: { ca: f.files.ca },
+      const peer = new WebSocket(`${relay ? 'ws' : 'wss'}://127.0.0.1:${port}/ws`, {
+        ...(!relay && { tls: { ca: f.files.ca } }),
+        ...(authority && {
+          headers: {
+            [CAPABILITY_HEADER]: 'owned-startup-capability',
+            [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority),
+          },
+        }),
       } as never);
       ws = peer;
+      if (relay)
+        peer.onopen = () =>
+          peer.send(serialize(createHello(crypto.randomUUID(), 'pending-relay-barrier')));
       peer.onmessage = async (e) => {
         const m = JSON.parse(String(e.data)) as ProtocolMessage;
         received.push(m);
@@ -657,6 +686,10 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
           peer.close();
           await until(() => peer.readyState === WebSocket.CLOSED, 'pending peer closed');
         }
+        if (action === 'reenroll') {
+          devices.remove(identity.fingerprint);
+          await devices.add(identity.publicKeyRaw, 'same key new enrollment');
+        }
         if (action === 'regrant') {
           await trust.removeAuthorizedKey(identity.fingerprint);
           await trust.addAuthorizedKey(identity.publicKeyRaw, 'same key new grant');
@@ -690,3 +723,213 @@ for (const action of ['ready', 'cancel', 'disconnect', 'regrant', 'late_cancel']
       await f.close();
     }
   }, 15000);
+
+for (const mode of ['flag', 'config', 'disabled'] as const)
+  test(`shipping plaintext Claude relay-only producer activation: ${mode}`, async () => {
+    const f = directTlsFixture();
+    let proc: Bun.Subprocess | undefined;
+    let browserPath = '';
+    let ws: WebSocket | undefined;
+    const diagnostic: string[] = [];
+    try {
+      fs.writeFileSync(
+        f.configPath,
+        f.config
+          .replace(f.tlsTable, '')
+          .replace('relay=false', `relay=${mode === 'config' || mode === 'disabled'}`),
+      );
+      const trust = new IdentityStore(f.home);
+      await trust.generate();
+      const device = await unlockIdentity(await createIdentity());
+      await trust.addAuthorizedKey(device.publicKeyRaw, 'owned relay-only peer');
+      await new RelayDeviceStore(f.home, trust).add(device.publicKeyRaw, 'owned relay-only peer');
+      const authority = new SecurePushStore(f.home, trust).captureAuthority(device.publicKeyRaw);
+      if (!authority) throw Error('No owned relay-only authority');
+      const token = loadOrCreateCapabilityToken(join(f.home, 'capability.key'));
+      const bin = join(f.directory, 'bin');
+      fs.mkdirSync(bin);
+      const marker = join(f.directory, 'browser-path');
+      fs.writeFileSync(
+        join(bin, 'claude'),
+        `#!/bin/sh\nprintf '%s' "$BROWSER" > '${marker}'\nwhile [ ! -e '${join(f.directory, 'release')}' ]; do sleep 0.02; done\n`,
+        { mode: 0o700 },
+      );
+      const holder = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch: () => new Response('held'),
+      });
+      const port = holder.port;
+      holder.stop(true);
+      proc = Bun.spawn(
+        [
+          process.execPath,
+          '--no-env-file',
+          entry,
+          '--daemon',
+          '--port',
+          String(port),
+          '--dir',
+          f.work,
+          '--no-mdns',
+          '--no-telegram',
+          ...(mode === 'flag' ? ['--relay'] : mode === 'disabled' ? ['--no-relay'] : []),
+        ],
+        {
+          cwd: f.work,
+          env: { ...f.env, PATH: `${bin}:/opt/homebrew/bin:/usr/bin:/bin` },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      );
+      for (const stream of [proc.stdout, proc.stderr])
+        if (stream && typeof stream !== 'number')
+          void (async () => {
+            for await (const chunk of stream) diagnostic.push(new TextDecoder().decode(chunk));
+          })();
+      await until(
+        () => fs.existsSync(marker) || proc?.exitCode !== null,
+        'relay-only actual consumer',
+        10000,
+      );
+      expect(proc.exitCode).toBeNull();
+      browserPath = fs.readFileSync(marker, 'utf8');
+      if (mode === 'disabled') expect(browserPath).toBe('');
+      else {
+        expect(browserPath.length).toBeGreaterThan(0);
+        expect(fs.existsSync(browserPath)).toBe(true);
+        const received: ProtocolMessage[] = [];
+        ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+          headers: {
+            [CAPABILITY_HEADER]: token,
+            [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority),
+          },
+        } as never);
+        ws.onopen = () => ws?.send(serialize(createHello(crypto.randomUUID(), 'relay-only')));
+        ws.onmessage = (e) => received.push(JSON.parse(String(e.data)));
+        await until(() => received.some((m) => m.type === 'hello_ack'), 'relay-only scoped hello');
+        const hello = received.find((m) => m.type === 'hello_ack');
+        if (!hello?.sessionId || !hello.harnessSessionId) throw Error('No relay-only binding');
+        expect(hello.capabilities).toContain('browser_links');
+        expect(hello.capabilities).not.toContain('file_download');
+        expect(hello.machine?.capabilities).toEqual(hello.capabilities);
+        ws.send(
+          JSON.stringify({
+            type: 'browser_link_receiver_request',
+            id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            sessionId: hello.sessionId,
+            binding: { harness: 'claude', harnessSessionId: hello.harnessSessionId },
+            seq: 1,
+            action: 'select',
+          }),
+        );
+        await until(
+          () => received.some((m) => m.type === 'browser_link_receiver_result'),
+          'relay-only selected receiver',
+        );
+        expect(received.find((m) => m.type === 'browser_link_receiver_result')?.outcome).toBe(
+          'selected',
+        );
+        const producer = Bun.spawn([browserPath, 'https://example.test/selected-relay'], {
+          env: f.env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(await producer.exited).toBe(0);
+        expect(await new Response(producer.stdout).text()).toBe('');
+        expect(await new Response(producer.stderr).text()).toBe('');
+        await until(
+          () => received.some((m) => m.type === 'browser_link_candidate'),
+          'shipping relay-only producer offer',
+        );
+        expect(received.find((m) => m.type === 'browser_link_candidate')?.url).toBe(
+          'https://example.test/selected-relay',
+        );
+        const live = JSON.parse(
+          fs.readFileSync(join(f.home, 'live-sessions', `${hello.sessionId}.json`), 'utf8'),
+        );
+        const nextBinding = crypto.randomUUID();
+        const transcript = join(f.directory, `${nextBinding}.jsonl`);
+        fs.writeFileSync(
+          transcript,
+          JSON.stringify({
+            type: 'user',
+            sessionId: nextBinding,
+            cwd: f.work,
+            message: { role: 'user', content: 'owned lifecycle' },
+            uuid: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+          }),
+        );
+        for (const payload of [
+          {
+            hook_event_name: 'Notification',
+            session_id: hello.harnessSessionId,
+            transcript_path: '',
+            notification_type: 'idle_prompt',
+            message: 'owned initial lifecycle',
+          },
+          {
+            hook_event_name: 'SessionEnd',
+            session_id: hello.harnessSessionId,
+            transcript_path: '',
+            reason: 'clear',
+          },
+          {
+            hook_event_name: 'Notification',
+            session_id: nextBinding,
+            transcript_path: transcript,
+            notification_type: 'idle_prompt',
+            message: 'owned lifecycle',
+          },
+        ]) {
+          const response = await fetch(`http://127.0.0.1:${live.hookPort}/hooks`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...payload, cwd: f.work, permission_mode: 'default' }),
+          });
+          expect(response.status).toBe(200);
+        }
+        expect(
+          new SessionStore(join(f.home, 'sessions.json')).findByRemiSessionId(hello.sessionId)
+            ?.claudeSessionId,
+          diagnostic.join(''),
+        ).toBe(nextBinding);
+        try {
+          await until(
+            () =>
+              received.some((m) => m.type === 'hello_ack' && m.harnessSessionId === nextBinding),
+            'fresh event-driven own scoped hello',
+          );
+        } catch (error) {
+          throw new Error(
+            `Owned refresh: ${JSON.stringify(received.filter((m) => m.type === 'hello_ack'))}; ${diagnostic.join('')}`,
+            { cause: error },
+          );
+        }
+
+        const fresh = received.filter((m) => m.type === 'hello_ack').at(-1);
+        expect(fresh?.sessionId).toBe(hello.sessionId);
+        expect(fresh?.attachState).toBe('attached');
+        expect(fresh?.capabilities).toContain('browser_links');
+        expect(fresh?.machine?.capabilities).toEqual(fresh?.capabilities);
+        expect(received.filter((m) => m.type === 'browser_link_receiver_result')).toHaveLength(1);
+      }
+      fs.writeFileSync(join(f.directory, 'release'), 'exit');
+      await until(
+        () => proc?.exitCode !== null,
+        'actual relay-only consumer and daemon exit',
+        10000,
+      );
+      expect(proc.exitCode).toBe(0);
+      if (browserPath) expect(fs.existsSync(browserPath)).toBe(false);
+    } finally {
+      ws?.close();
+      if (proc && proc.exitCode === null) {
+        proc.kill('SIGTERM');
+        await proc.exited;
+      }
+      f.cleanup();
+    }
+  }, 20000);

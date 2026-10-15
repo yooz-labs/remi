@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { deserialize } from '@remi/shared';
 import { resumed } from '../../../../tests/integration/relay-r3-fixture.ts';
 import { encodeBrowserLinkFrame } from '../../../shared/src/browser-links.ts';
 import {
@@ -247,7 +248,7 @@ test('unidentified BOM/invalid UTF8 keeps generic parse rejection, with no brows
   ).toBe(false);
 }, 15000);
 
-test('actual enrolled relay refuses browser frames and cannot displace a direct TLS lease', async () => {
+test('actual enrolled relay refuses an unregistered child without displacing a direct TLS lease', async () => {
   const f = await fixture();
   const direct = await f.client();
   await direct.submit(direct.request(1));
@@ -260,7 +261,15 @@ test('actual enrolled relay refuses browser frames and cannot displace a direct 
   });
   try {
     await remote.channel.send(new TextEncoder().encode(encodeBrowserLinkFrame(direct.request(1))));
-    await until(() => remote.socket.isClosed, 'actual relay unavailable browser refusal');
+    const bytes = await remote.channel.receive(await remote.socket.binary());
+    const response = bytes
+      ? deserialize(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes))
+      : null;
+    expect(response?.type === 'error' && response.code).toBe('SESSION_NOT_FOUND');
+    expect(response?.type === 'error' && response.details?.['sessionId']).toBe(
+      direct.request(1).sessionId,
+    );
+    expect(remote.socket.isClosed).toBe(false);
     expect(invoked).toBe(0);
     expect(f.service.isAvailable(remote.cid)).toBe(false);
     expect(f.service.offer(f.context(), 'https://example.invalid/still-direct')).toBe(true);
