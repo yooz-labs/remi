@@ -152,6 +152,8 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
       - name: Test with coverage
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        env:
+          E2E_BUNDLER: esbuild
         # #1206: target alone, then every other discovered file in one shared Bun cache.
         # Raw logs are separate from the one validated line-union threshold row.
         # pipefail preserves test/discovery/coverage/cleanup failures through tee.

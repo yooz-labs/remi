@@ -29,10 +29,13 @@ COVERAGE_TEST_RUN = (
 )
 WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts"
 WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
+COVERAGE_TEST_ENV = {"E2E_BUNDLER": "esbuild"}
 TEST_MEASUREMENT_PROVENANCE = {
     "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "wrapped_command": WRAPPED_TEST_COMMAND,
     "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+    "environment": COVERAGE_TEST_ENV,
+    "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
     "threshold_input": "test-output.txt contains one validated line-only union row",
     "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
     "bounds_ms": {"target": 300000, "rest": 1200000, "controller": 1320000},
@@ -248,10 +251,17 @@ def validate():
         run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
                    if step.get("name") == name)
         assert hashlib.sha256(run.encode()).hexdigest() == expected, key
-    coverage_step = next(step["run"] for step in ci["jobs"]["test"]["steps"]
+    coverage_step = next(step for step in ci["jobs"]["test"]["steps"]
                          if step.get("name") == "Test with coverage")
     assert ci["jobs"]["test"]["steps"].count(TEST_EVIDENCE) == 1
-    assert coverage_step == COVERAGE_TEST_RUN
+    assert coverage_step["run"] == COVERAGE_TEST_RUN
+    assert coverage_step.get("env") == COVERAGE_TEST_ENV, "coverage Worker bundler environment changed"
+    assert "E2E_BUNDLER" not in ci.get("env", {}), "Worker bundler must stay on the coverage step"
+    for job in ci["jobs"].values():
+        assert "E2E_BUNDLER" not in job.get("env", {}), "Worker bundler must stay on the coverage step"
+        for step in job.get("steps", []):
+            if step is not coverage_step:
+                assert "E2E_BUNDLER" not in step.get("env", {}), "Worker bundler leaked to another step"
     assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
     runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
     assert runner.count(f"runChild({WRAPPED_TEST_ARGV})") == 1

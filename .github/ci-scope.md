@@ -807,3 +807,16 @@ short relay tests, actual 61-minute R7 bodies and native controls are unchanged.
 This execution change requires real Test acceptance; a tiny line-union control
 is not whole-suite coverage, a performance result or diagnosis of the original
 pre-module stall. The previous unsuccessful controls remain unsuccessful.
+
+The Test coverage step explicitly sets `E2E_BUNDLER=esbuild`, matching the relay
+workflow's existing Worker bundler. In PR #1526's Linux ARM64 diagnostic, the
+same ordered 139-file prefix reached the first secure-push case and timed out
+while awaiting `Bun.build`, before Miniflare construction. With the existing
+esbuild option, that prefix passed 2,500 tests and 8,090 assertions, including
+the original case's 11 assertions. The earlier run bailed at its first failure;
+these populations and timings are not a speed comparison. This is a measured
+CI bundler workaround. The triggering preceding state and original pre-module
+stall remain undiagnosed. Complete hosted Test execution, the remaining test
+population, canonical line union and the unchanged 60% threshold still require
+their actual gates. The workflow validator requires this environment on the
+coverage step only.

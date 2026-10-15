@@ -11,6 +11,10 @@
       "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
       "wrapped_command": "bun scripts/ci/run-bun-test-batches.ts",
       "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+      "environment": {
+        "E2E_BUNDLER": "esbuild"
+      },
+      "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
       "threshold_input": "test-output.txt contains one validated line-only union row",
       "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
       "bounds_ms": {
