@@ -28,6 +28,7 @@ import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-cli
 import { ImageUploadController, type ImageUploadContext } from '@/lib/image-upload';
 import { BrowserLinkController } from '@/lib/browser-links';
 import { RelayBrowserLinks } from '@/lib/relay-browser-links';
+import { RelayFileDownloads } from '@/lib/relay-file-download';
 import { FileDownloadController } from '@/lib/file-download';
 import { FileDownloadSave } from '@/lib/file-download-save';
 import type { FileDownloadBinding } from '../../../shared/src/file-download.ts';
@@ -91,6 +92,7 @@ interface ManagedConnection {
   relayChatSessions?: Map<string, {
     harness: string; threadId: string | null; capabilities: readonly string[];
     protocolVersion: unknown; attachState: 'attached' | 'queued' | undefined;
+    readonly helloId: string; readonly attachment: object;
   }>;
   /** Explicit session selection to reattach after a fresh verified machine channel. */
   relayResumeSessionId?: string;
@@ -110,6 +112,7 @@ interface ManagedConnection {
   structuredChatController?: StructuredChatController;
   browserLinkController?: BrowserLinkController;
   relayBrowserLinks?: RelayBrowserLinks;
+  relayFileDownloads?: RelayFileDownloads;
   fileDownloadController?: FileDownloadController;
   fileDownloadSave?: FileDownloadSave;
   fileDownloadBinding?: FileDownloadBinding;
@@ -163,12 +166,14 @@ interface ManagedConnection {
 function invalidateFileDownload(mc: ManagedConnection) {
   mc.fileDownloadSave?.clear();
   mc.fileDownloadSaveMessage = null;
-  mc.fileDownloadController?.disconnect();
+  if (mc.relayFileDownloads) mc.relayFileDownloads.disconnect();
+  else mc.fileDownloadController?.disconnect();
 }
 
 function disposeFileDownload(mc: ManagedConnection | undefined) {
   mc?.fileDownloadSave?.dispose();
-  mc?.fileDownloadController?.dispose();
+  if (mc?.relayFileDownloads) mc.relayFileDownloads.dispose();
+  else mc?.fileDownloadController?.dispose();
 }
 
 /** Stop a captured identity context and publish that close synchronously. */
@@ -337,6 +342,8 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     fileDownloadState: mc.fileDownloadController?.state,
     fileDownloadSessionId: mc.fileDownloadSessionId,
     fileDownloadAvailable: mc.fileDownloadController?.available ?? false,
+    relayFileDownloadSessions: mc.relayFileDownloads?.availableSessions,
+    relayFileDownloadBusySessionId: mc.relayFileDownloads?.busySessionId,
     fileDownloadCanCancel: mc.fileDownloadController?.canCancel ?? false,
     fileDownloadSaveMessage: mc.fileDownloadSaveMessage,
     imageUploadState: mc.imageUploadState,
@@ -735,14 +742,18 @@ export function useConnectionManager(
           if (mc.mode === 'relay') {
             if (message.sessionId && message.attachState) mc.sessionAttachments?.set(message.sessionId, message.attachState);
             if (message.sessionId) {
+              const previous = mc.relayChatSessions?.get(message.sessionId);
               const next = {
+                helloId: message.id,
+                // Selecting an already attached child returns its cached verified hello.
+                // Only a new source hello establishes a new file attachment lifetime.
+                attachment: previous?.helloId === message.id ? previous.attachment : {},
                 harness: message.harness ?? 'claude',
                 threadId: message.harnessSessionId ?? message.claudeSessionId ?? null,
                 capabilities: Array.isArray(message.capabilities) ? message.capabilities.filter((c): c is string => typeof c === 'string') : [],
                 protocolVersion: message.protocolVersion as unknown,
                 attachState: message.attachState,
               };
-              const previous = mc.relayChatSessions?.get(message.sessionId);
               if (previous && (previous.threadId !== next.threadId || previous.harness !== next.harness ||
                 previous.attachState !== next.attachState || previous.protocolVersion !== next.protocolVersion ||
                 JSON.stringify(previous.capabilities) !== JSON.stringify(next.capabilities)))
@@ -882,6 +893,7 @@ export function useConnectionManager(
           mc.imageUploadController?.endSession(mc.sessionId);
         }
 
+        if (mc.mode === 'relay' && mc.relayFileDownloads?.receive(message)) return;
         if (mc.mode === 'relay' && mc.relayBrowserLinks?.receive(message)) return;
 
         // Forward to app handler with connectionId context
@@ -1319,6 +1331,7 @@ export function useConnectionManager(
         if (connectionsMapRef.current.get(connectionId) === mc) {
           mc.relayRequests?.closed(); mc.structuredChatController?.disconnect(); mc.relayChatSessions?.clear();
           mc.relayBrowserLinks?.disconnect();
+          invalidateFileDownload(mc);
         }
       },
       onStatus: status => {
@@ -1333,6 +1346,7 @@ export function useConnectionManager(
         if (status !== 'connected') {
           mc.structuredChatController?.disconnect();
           mc.relayBrowserLinks?.disconnect();
+          invalidateFileDownload(mc);
           mc.relayChatSessions?.clear();
           mc.sessionAttachments?.clear();
         }
@@ -1362,12 +1376,33 @@ export function useConnectionManager(
       send: (request, generation) => alive() && generation === mc.client.structuredChatGeneration &&
         mc.client.send(request),
     }, syncState);
+    mc.fileDownloadSave = new FileDownloadSave();
+    mc.relayFileDownloads = new RelayFileDownloads({
+      context: () => {
+        const generation = mc.client.structuredChatGeneration;
+        if (!alive() || isNative() || usesNativeIdentity() || 'kind' in signedIdentity ||
+          mc.status !== 'connected' || !generation) return null;
+        return { connection: mc, generation, identityRevision: revision,
+          identityKey: signedIdentity.publicKeyRaw };
+      },
+      proof: (sessionId) => mc.relayChatSessions?.get(sessionId)?.attachment,
+      proofs: () => [...mc.relayChatSessions ?? []].map(([id, value]) => [id, value.attachment] as const),
+      webSocketUrl: pin.relayUrl,
+      send: (request, generation) => alive() && generation === mc.client.structuredChatGeneration &&
+        mc.client.send(request),
+    }, () => {
+      mc.fileDownloadSaveMessage = null;
+      if (mc.fileDownloadController?.state.phase !== 'ready') mc.fileDownloadSave?.clear();
+      syncState();
+    });
+    mc.fileDownloadController = mc.relayFileDownloads.controller;
     connectionsMapRef.current.set(connectionId, mc);
     if (signal && typeof tokenOrPin === 'string') {
       const cancel = () => {
         cancelNativeAttempt();
         mc.relayCancel?.();
         mc.relayBrowserLinks?.dispose();
+        disposeFileDownload(mc);
         mc.relayRequests?.closed(); mc.client.disconnect();
         void first?.close(); first = null; tokenOrPin = pin;
         if (connectionsMapRef.current.get(connectionId) === mc) connectionsMapRef.current.delete(connectionId);
@@ -1480,7 +1515,10 @@ export function useConnectionManager(
         return false;
       }
       if (mc.mode === 'relay' && message.type === 'answer') return mc.relayRequests?.answer(message) ?? false;
-      if (mc.mode === 'relay') mc.relayBrowserLinks?.beforeSend(message);
+      if (mc.mode === 'relay') {
+        mc.relayBrowserLinks?.beforeSend(message);
+        mc.relayFileDownloads?.beforeSend(message);
+      }
       const sent = mc.client.send(message);
       if (sent && message.type === 'kill_session_request' &&
         message.sessionId === mc.sessionId && mc.browserAttachment) {
@@ -1896,7 +1934,17 @@ export function useConnectionManager(
     sendMessage,
     downloadFile: (id, sessionId, relativePath) => {
       const mc = connectionsMapRef.current.get(id);
-      if (!mc || mc.sessionId !== sessionId || !mc.fileDownloadController?.canDownload) return;
+      if (!mc || (mc.mode === 'direct' && mc.sessionId !== sessionId)) return;
+      if (mc.mode === 'relay') {
+        if (!mc.relayFileDownloads?.availableSessions.includes(sessionId)) return;
+        if (mc.relayFileDownloads.start(sessionId, relativePath)) {
+          mc.fileDownloadSave?.clear();
+          mc.fileDownloadSessionId = sessionId;
+          syncState();
+        }
+        return;
+      }
+      if (!mc.fileDownloadController?.canDownload) return;
       mc.fileDownloadSave?.clear();
       mc.fileDownloadSessionId = sessionId;
       mc.fileDownloadController.start(relativePath);
@@ -1915,7 +1963,7 @@ export function useConnectionManager(
     },
     saveDownloadedFile: (id, sessionId) => {
       const mc = connectionsMapRef.current.get(id);
-      if (!mc || mc.sessionId !== sessionId || mc.fileDownloadSessionId !== sessionId ||
+      if (!mc || (mc.mode === 'direct' && mc.sessionId !== sessionId) || mc.fileDownloadSessionId !== sessionId ||
         !mc.fileDownloadController || !mc.fileDownloadSave) return;
       mc.fileDownloadSaveMessage = mc.fileDownloadSave.request(mc.fileDownloadController)
         ? 'Download requested. Check your browser’s downloads.'

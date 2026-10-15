@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { FileDownloadState } from '@/lib/file-download';
 
 export interface FileDownloadProps {
-  /** Current authenticated secure-direct transport and capability readiness. */
+  /** Current authenticated transport, child attachment and capability readiness. */
   readonly available: boolean;
   readonly canCancel: boolean;
   readonly unavailableMessage?: string;
@@ -108,7 +108,7 @@ export function FileDownload({
 
       {!available && !busy && state.phase !== 'ready' && (
         <p className="mt-2 text-[11px] leading-4 text-[var(--color-text-muted)]">
-          {unavailableMessage ?? 'Downloads need a secure connection to this machine.'}
+          {unavailableMessage ?? 'File downloads are unavailable for this session.'}
         </p>
       )}
 

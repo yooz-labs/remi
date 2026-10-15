@@ -88,6 +88,8 @@ export interface ConnectionState {
   readonly fileDownloadState?: import('@/lib/file-download').FileDownloadState;
   readonly fileDownloadSessionId?: UUID | null;
   readonly fileDownloadAvailable?: boolean;
+  readonly relayFileDownloadSessions?: readonly string[];
+  readonly relayFileDownloadBusySessionId?: string | null;
   readonly fileDownloadCanCancel?: boolean;
   readonly fileDownloadSaveMessage?: string | null;
   /** Direct image staging UI state owned by this concrete connection. */

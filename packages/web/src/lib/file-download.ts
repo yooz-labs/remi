@@ -15,8 +15,8 @@ export type FileDownloadRequest = Extract<
   { type: 'file_fetch_begin' | 'file_fetch_read' | 'file_fetch_complete' | 'file_fetch_cancel' }
 >;
 
-/** Supplied only by the owner of the actual authenticated, attached direct WebSocket. */
-export interface FileDownloadContext {
+/** Supplied only by the owner of the actual authenticated socket or encrypted relay channel. */
+interface FileDownloadContextFields {
   readonly connection: object;
   readonly generation: object;
   readonly attachment: object;
@@ -29,6 +29,12 @@ export interface FileDownloadContext {
   readonly protocolVersion: unknown;
   readonly capabilities: readonly string[];
 }
+
+export type FileDownloadContext = FileDownloadContextFields &
+  (
+    | { readonly transport?: 'direct'; readonly relayChannel?: never }
+    | { readonly transport: 'relay'; readonly relayChannel: object }
+  );
 
 export interface FileDownloadTransport {
   readonly context: () => FileDownloadContext | null;
@@ -116,14 +122,35 @@ function secureUrl(input: string): boolean {
   }
 }
 
-function capture(context: FileDownloadContext | null): FileDownloadContext | null {
+function secureTransport(context: FileDownloadContext): boolean {
+  if (context.transport !== 'relay') return secureUrl(context.webSocketUrl);
+  // The channel owner supplies this opaque, verified crypto generation. The carrier URL
+  // is not evidence of encryption; source Worker fixtures also use ws:// locally.
+  if (!context.relayChannel || context.relayChannel !== context.generation) return false;
+  try {
+    const url = new URL(context.webSocketUrl);
+    return (
+      (url.protocol === 'ws:' || url.protocol === 'wss:') &&
+      !!url.hostname &&
+      !url.username &&
+      !url.password &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function captureFileDownloadContext(
+  context: FileDownloadContext | null,
+): FileDownloadContext | null {
   if (
     !context ||
     !context.connection ||
     !context.generation ||
     !context.attachment ||
     context.authenticated !== true ||
-    !secureUrl(context.webSocketUrl) ||
+    !secureTransport(context) ||
     !Number.isSafeInteger(context.identityRevision) ||
     context.identityRevision < 0 ||
     typeof context.identityKey !== 'string' ||
@@ -156,7 +183,9 @@ function sameContext(current: FileDownloadContext | null, saved: FileDownloadCon
   return (
     !!current &&
     current.authenticated === true &&
-    secureUrl(current.webSocketUrl) &&
+    secureTransport(current) &&
+    (current.transport ?? 'direct') === (saved.transport ?? 'direct') &&
+    current.relayChannel === saved.relayChannel &&
     current.connection === saved.connection &&
     current.generation === saved.generation &&
     current.attachment === saved.attachment &&
@@ -209,12 +238,12 @@ export class FileDownloadController {
       (!this.download ||
         this.currentState.phase === 'failed' ||
         this.currentState.phase === 'cancelled') &&
-      capture(this.transport.context()) !== null
+      captureFileDownloadContext(this.transport.context()) !== null
     );
   }
 
   get available(): boolean {
-    return !this.disposed && capture(this.transport.context()) !== null;
+    return !this.disposed && captureFileDownloadContext(this.transport.context()) !== null;
   }
 
   /** Keeps an explicit cancellation available after uncertain delivery too. */
@@ -225,7 +254,7 @@ export class FileDownloadController {
   /** A fresh operation is started only by an explicit Download action. */
   start(relativePath: string): void {
     if (!this.canDownload) return;
-    const context = capture(this.transport.context());
+    const context = captureFileDownloadContext(this.transport.context());
     if (!context) return;
     const request: FileDownloadRequest = {
       type: 'file_fetch_begin',
@@ -262,7 +291,7 @@ export class FileDownloadController {
     this.issue(active, request, 'file_fetch_accepted');
   }
 
-  /** Only original strict file frames are forwarded here by the direct transport. */
+  /** Direct originals, or canonical frames already strictly decoded on the encrypted channel. */
   receive(raw: string | Uint8Array): void {
     const active = this.download;
     const pending = this.pending;
