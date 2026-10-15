@@ -1499,11 +1499,17 @@ def isolated_test_controls():
                 assert result["relay_soak"] is (not skip), (label, result)
                 controls += 1
 
-            inputs = tuple(module["ISOLATED_TEST_INPUTS"])
+            # Preserve the original singleton populations and grouped controls.
+            inputs = (
+                "packages/daemon/tests/cli/attach-client.test.ts",
+                "packages/daemon/tests/harness/claude-session.test.ts",
+                "packages/daemon/tests/server/origin-policy.test.ts",
+                "packages/web/tests/lib/push-answer-relay.test.ts",
+            )
             bodies = {path: actual("show", f"{source_head}:{path}") for path in inputs}
             updates = [(path, bodies[path] + b"\n// owned isolated modification\n", "100644") for path in inputs]
-            comments = {path: pin for values in module["ISOLATED_TEST_INPUTS"].values()
-                        for path, pin in values.items()}
+            comments = {path: pin for producer in inputs
+                        for path, pin in module["ISOLATED_TEST_INPUTS"][producer].items()}
             for update in updates:
                 head = tree(source_head, [update])
                 check(source_head, head, ("single producer", update[0]), True)
@@ -2020,6 +2026,244 @@ def dormant_codec_controls():
         finally:
             os.chdir(prior)
             os.environ.update(inherited)
+
+
+def source_reader_controls():
+    """Two finite CLI source readers over published and owned real Git histories."""
+    import ast
+    import stat
+    import zlib
+
+    source, prior = SCRIPT.parents[2], Path.cwd()
+    inherited = {key: value for key, value in os.environ.items() if key.startswith("GIT_")}
+    for key in inherited:
+        del os.environ[key]
+    count, witnesses = 0, []
+    with tempfile.TemporaryDirectory(prefix="remi-source-readers-") as owned:
+        repo = Path(owned)
+        environment = {**os.environ, "GIT_INDEX_FILE": str(repo / "owned-index")}
+
+        def actual(*args, data=None, cwd=repo):
+            return subprocess.check_output(
+                ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", *args],
+                cwd=cwd, env=environment, input=data, stderr=subprocess.PIPE)
+
+        try:
+            actual("init", "-q")
+            actual("config", "user.name", "Owned source reader control")
+            actual("config", "user.email", "owned@example.invalid")
+            original = "647c35ebeea40a72f72cb1557ad5d0f036cf893b"
+            corrected = "1fc4b0d0bdf8a6ae336e37be0b421ac7d7cdfc92"
+            actual("fetch", "--quiet", "--no-tags", str(source), original, corrected)
+            os.chdir(repo)
+
+            def body(ref, path):
+                return actual("show", f"{ref}:{path}")
+
+            def tree(parent, updates=(), removals=()):
+                actual("read-tree", parent)
+                for path in removals:
+                    actual("update-index", "--force-remove", "--", path)
+                for path, content, mode in updates:
+                    blob = parent if mode == "160000" else actual(
+                        "hash-object", "-w", "--stdin", data=content).decode().strip()
+                    actual("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+                oid = actual("write-tree").decode().strip()
+                return actual("commit-tree", oid, "-p", parent, "-m",
+                              "owned source reader control").decode().strip()
+
+            def check(left, right, label, skip=False):
+                nonlocal count
+                result = classify(left, right)
+                assert selected(result) == (gates - {"relay"} if skip else gates), (label, result)
+                assert result["relay_soak"] is (not skip) and result["typecheck"] is True, (label, result)
+                count += 1
+
+            inputs = tuple(module["ISOLATED_TEST_HELPER_PINS"])
+            assert len(inputs) == 2
+            helper = "packages/daemon/tests/helpers/strip-comments.ts"
+            comment = "packages/web/tests/lib/resume-follow.test.ts"
+            pinned_comment = module["ISOLATED_TEST_INPUTS"][inputs[0]][comment]
+            updates = [(path, body(corrected, path) + b"\n// owned source-reader edit\n",
+                        "100644") for path in inputs]
+            check(original, corrected, "actual published two-reader correction", True)
+            for update in updates:
+                check(corrected, tree(corrected, [update]), ("single source reader", update[0]), True)
+            check(corrected, tree(corrected, updates), "both source readers", True)
+            check(corrected, tree(corrected, [*updates, ("docs/owned-reader.md", b"inert prose\n",
+                  "100644")]), "readers and inert docs", True)
+            self_tools = [(path, body(corrected, path) + b"\n", "100644") for path in
+                          (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py",
+                           ".github/ci-scope.md")]
+            check(corrected, tree(corrected, [*updates, *self_tools]), "readers and self-tools", True)
+
+            domains = ("packages/daemon/src", "packages/shared/src", "packages/signaling/src",
+                       "packages/web/src", "packages/native", "tests", "scripts",
+                       ".github/workflows", ".github/actions", ".github/scripts", "")
+            divergence = None
+            for path, content, _ in updates:
+                absent = tree(corrected, removals=(path,))
+                check(absent, tree(absent, [(path, content, "100644")]), ("addition", path))
+                check(corrected, absent, ("deletion", path))
+                renamed = path + ".moved"
+                moved = tree(corrected, [(renamed, content, "100644")], (path,))
+                check(corrected, moved, ("rename out", path))
+                check(moved, tree(moved, [(path, content, "100644")], (renamed,)), ("rename in", path))
+                left = tree(absent, [(path, body(corrected, path), "100644")])
+                right = tree(absent, [(path, content, "100644")])
+                check(left, right, ("divergent independent additions", path))
+                divergence = (left, right)
+                for mode in ("100755", "120000", "160000"):
+                    check(corrected, tree(corrected, [(path, content, mode)]), ("producer mode", path, mode))
+                    bad = tree(corrected, [(path, body(corrected, path), mode)])
+                    check(bad, tree(bad, [(path, content, "100644")]), ("base producer mode", path, mode))
+                stem = Path(path).stem
+                for domain in domains:
+                    caller = (domain + "/" if domain else "") + "owned-reader-consumer.ts"
+                    reference = f"import './{stem}.ts';\n".encode()
+                    bad = tree(corrected, [(caller, reference, "100644")])
+                    check(bad, tree(bad, [(path, content, "100644")]), ("unchanged reference", path, domain))
+                    check(corrected, tree(corrected, [(path, content, "100644"),
+                          (caller, reference, "100644")]), ("new reference", path, domain))
+                    check(bad, tree(bad, [(path, content, "100644")], (caller,)),
+                          ("removed reference", path, domain))
+                    check(bad, tree(corrected, [(path, content, "100644")]),
+                          ("divergent base-only reference", path, domain))
+                for expression in (f"require('./{stem}.ts');\n", f"readFileSync('{stem}.ts');\n",
+                                   f"Bun.spawn(['bun','test','{stem}.ts']);\n", f"// {stem}\n"):
+                    bad = tree(corrected, [("tests/owned-reader.ts", expression.encode(), "100644")])
+                    check(bad, tree(bad, [(path, content, "100644")]), ("reference syntax", path, expression))
+
+            comment_body = body(corrected, comment)
+            for changed in (comment_body + b"\n// unrelated byte\n", b"\n" + comment_body,
+                            comment_body + (pinned_comment[2] + "\n").encode(),
+                            comment_body.replace(pinned_comment[2].encode(), b" * changed provenance")):
+                bad = tree(corrected, [(comment, changed, "100644")])
+                check(bad, tree(bad, updates), "known comment blob/occurrence drift")
+            comment_bad = tree(corrected, [(comment, comment_body + b"\n// unrelated byte\n", "100644")])
+            for ref, updates_here in ((corrected, [*updates, (comment, comment_body +
+                    b"\nimport './harness-wiring.test.ts';\n", "100644")]),):
+                check(ref, tree(ref, updates_here), "new executable reference in known commentary file")
+            helper_bad = tree(corrected, [(helper, body(corrected, helper) + b"\n// changed helper\n", "100644")])
+            check(helper_bad, tree(helper_bad, updates), "pre-existing helper byte drift")
+            check(corrected, tree(corrected, [*updates, (helper,
+                  body(corrected, helper) + b"\n// mixed helper\n", "100644")]), "mixed helper edit")
+            for mode in ("100755", "120000", "160000"):
+                for path in (helper, comment):
+                    bad = tree(corrected, [(path, body(corrected, path), mode)])
+                    check(bad, tree(bad, updates), ("immutable dependency mode", path, mode))
+            for path in (helper, comment):
+                bad = tree(corrected, removals=(path,))
+                check(bad, tree(bad, updates), ("immutable dependency missing", path))
+            for path in module["ISOLATED_TEST_RUNNERS"]:
+                bad = tree(corrected, [(path, body(corrected, path) + b"\n// changed runner\n", "100644")])
+                check(bad, tree(bad, updates), ("pre-existing runner drift", path))
+            for path in ("packages/daemon/src/cli.ts", "packages/shared/src/owned.ts",
+                         "packages/signaling/src/owned.ts", "packages/web/src/owned.ts",
+                         "packages/daemon/tests/cli/unknown-reader.test.ts", helper, "package.json",
+                         "tsconfig.owned.json", "bunfig.toml", ".github/workflows/relay-r7.yml",
+                         ".github/actions/owned/action.yml", ".github/scripts/workflow-contracts.json",
+                         ".rules/testing.md", "docs/PROVISIONING.md", "docs/relay-r7-gates.md"):
+                check(corrected, tree(corrected, [*updates, (path, b"owned mixed input\n", "100644")]),
+                      ("mixed source/config/unknown", path))
+            for domain in domains:
+                path = (domain + "/" if domain else "") + "owned-link"
+                for mode in ("120000", "160000"):
+                    bad = tree(corrected, [(path, b"hidden-target", mode)])
+                    check(bad, tree(bad, updates), ("nonregular scanned entry", domain, mode))
+            single = tree(corrected, [updates[0]])
+            actual("config", "grep.threads", "not-a-number")
+            try:
+                check(corrected, single, "actual grep command failure")
+            finally:
+                actual("config", "--unset", "grep.threads")
+            check("f" * 40, single, "missing Git history")
+            raw = actual("diff", "--no-ext-diff", "--no-renames", "--name-status", "-z",
+                         corrected, single, "--")
+            for malformed in (raw[:-1], raw + raw, raw.replace(b"M\0", b"T\0", 1), b"M\0\xff\0"):
+                def lookup(malformed=malformed):
+                    return module["parse_name_status"](malformed, [inputs[0]])
+                assert not module["isolated_test_inputs_reviewed"](
+                    corrected, single, corrected, [inputs[0]], lookup)
+                count += 1
+
+            # Mutate actual shipping guard source, retaining the same actual Git inputs.
+            node = next(n for n in ast.parse(SCRIPT.read_text()).body if isinstance(n, ast.FunctionDef)
+                        and n.name == "isolated_test_inputs_reviewed")
+            guard_source = ast.get_source_segment(SCRIPT.read_text(), node)
+            globals_ = classify.__globals__
+            original_guard = globals_["isolated_test_inputs_reviewed"]
+
+            def witness(edits, left, right, label):
+                nonlocal count
+                mutant = guard_source
+                for before, after in edits:
+                    assert mutant.count(before) == 1, (label, before)
+                    mutant = mutant.replace(before, after, 1)
+                namespace = dict(globals_)
+                exec(compile(mutant, "<owned source-reader guard mutation>", "exec"), namespace)  # noqa: S102
+                globals_["isolated_test_inputs_reviewed"] = namespace["isolated_test_inputs_reviewed"]
+                try:
+                    try:
+                        check(left, right, label)
+                    except AssertionError:
+                        count += 1
+                        witnesses.append(label)
+                    else:
+                        raise AssertionError(("removed guard was not discriminated", label))
+                finally:
+                    globals_["isolated_test_inputs_reviewed"] = original_guard
+
+            witness([("                pins.update(ISOLATED_TEST_HELPER_PINS.get(producer, {}))\n", "")],
+                    helper_bad, tree(helper_bad, updates), "removed helper pin rejects actual helper drift")
+            witness([("for path, blob in pins.items()", 'for path, blob in pins.items() if path != "' + comment + '"')],
+                    comment_bad, tree(comment_bad, updates), "removed comment blob pin rejects unrelated byte drift")
+            # M status and triple-tree producer presence overlap on additions. Remove both
+            # for this divergence witness; do not claim the status check alone is necessary.
+            witness([('if not diff_status_matches(status_lookup, base, head, merge_base, path, "M"):',
+                      "if False:"),
+                     ('if tree.get(path, (None,))[0] != "100644":', "if False:")],
+                    *divergence, "removed transition/presence guards reject divergent additions")
+            caller = tree(corrected, [("tests/owned-existing-reader.ts",
+                          b"import './harness-wiring.test.ts';\n", "100644")])
+            witness([(('if (scan.returncode != (0 if expected else 1) or\n'
+                       '                            sorted(scan.stdout.decode("utf-8", "strict").splitlines()) != sorted(expected)):'),
+                      "if False:")], caller, tree(caller, updates),
+                    "removed reference guard rejects unknown consumer")
+
+            # Missing/corrupt bodies affect only private, singly-linked loose Git objects.
+            object_head = tree(corrected, [(inputs[0], b"// unique owned object witness\n", "100644")])
+            packed = actual("pack-objects", "--stdout", "--revs", data=(object_head + "\n").encode())
+            (repo / ".git/objects").rename(repo / ".git/owned-original-objects")
+            (repo / ".git/objects").mkdir()
+            actual("unpack-objects", data=packed)
+            assert not (repo / ".git/objects/info/alternates").exists()
+            for path in (inputs[0], helper, comment):
+                oid = actual("rev-parse", f"{object_head}:{path}").decode().strip()
+                obj = repo / ".git/objects" / oid[:2] / oid[2:]
+                metadata = obj.lstat()
+                assert stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and not obj.is_symlink()
+                saved = obj.read_bytes()
+                try:
+                    obj.chmod(0o600)
+                    obj.write_bytes(zlib.compress(b"blob 5\0owned"))
+                    check(corrected, object_head, ("corrupt private object", path))
+                    obj.unlink()
+                    check(corrected, object_head, ("missing private object", path))
+                finally:
+                    obj.write_bytes(saved)
+                    obj.chmod(stat.S_IMODE(metadata.st_mode))
+            check(corrected, object_head, "private object restoration", True)
+            print(json.dumps({"source_reader_guard_witnesses": witnesses}))
+            return count
+        finally:
+            os.chdir(prior)
+            os.environ.update(inherited)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--source-readers-only"]:
+    print(json.dumps({"source_reader_controls": source_reader_controls(), "failed": 0}))
+    raise SystemExit(0)
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--codecs-only"]:
@@ -3894,6 +4138,24 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]))
+        # #1206 execution change: preserve the historical population/count, report new
+        # actual-Git routing/measurement refusal controls separately.
+        sequential_start = count
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Test with coverage").update(
+                        run="bun scripts/ci/run-bun-test-batches.ts | tee test-output.txt\n"))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Upload test evidence").update(if_="true"))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Upload test evidence")["with"].update(path="~/.remi/\n"))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test"].update(steps=[s for s in
+                        w["jobs"]["test"]["steps"] if s.get("name") != "Upload test evidence"]))
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write("scripts/ci/run-bun-test-batches.ts", "export const owned = true;\n")
+        assert selected(classify(base, commit())) == gates
+        count += 1
+        sequential_runner_controls = count - sequential_start
+        count = sequential_start
         for filename, job, name in (("ci.yml", "test", "Test with coverage"),
                                    ("ci.yml", "test", "Check coverage threshold"),
                                    ("relay-r7.yml", "local-relay", "Existing actual wire and authority controls"),
@@ -4449,9 +4711,14 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         diagnostic_inputs = tuple(module["CI_BUN_DIAGNOSTIC_INPUTS"])
         source_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=original).decode().strip()
         git("fetch", "--quiet", "--no-tags", str(original), source_head)
+        # These historical positives predate the two-process runner and its new callers.
+        diagnostic_base = "a5a2b4a84c32747d41612fbdb60d2513fbd5dd7b"
+        git("fetch", "--quiet", "--no-tags", str(original), diagnostic_base)
+        for path, (mode, blob) in module["CI_BUN_DIAGNOSTIC_CALLERS"].items():
+            assert git("ls-tree", diagnostic_base, "--", path) == f"{mode} blob {blob}\t{path}", path
         diagnostic_updates = []
         for path in diagnostic_inputs:
-            source = (original / path).read_bytes()
+            source = subprocess.check_output(["git", "show", f"{diagnostic_base}:{path}"])
             diagnostic_updates.append((path, source + b"\n// owned exact-pair scope control\n", "100644"))
         self_edits = [
             (".github/scripts/ci-scope.py", (original / ".github/scripts/ci-scope.py").read_bytes() +
@@ -4470,7 +4737,6 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
             assert result["relay_soak"] is (not skip), (label, result)
             count += 1
 
-        diagnostic_base = source_head
         diagnostic_candidate = soak_tree(diagnostic_base, [*diagnostic_updates, *self_edits])
         diagnostic_assert(diagnostic_base, diagnostic_candidate, "complete pair with approved self-edits/docs", True)
         diagnostic_assert(diagnostic_base, soak_tree(diagnostic_base, diagnostic_updates),
@@ -4518,10 +4784,17 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
 
         closure_path = ".github/scripts/workflow-contracts.json"
         closure_drift = soak_tree(diagnostic_base, [(closure_path,
-            (original / closure_path).read_bytes() + b"\n", "100644")])
+            subprocess.check_output(["git", "show", f"{diagnostic_base}:{closure_path}"]) + b"\n", "100644")])
         diagnostic_assert(closure_drift, soak_tree(closure_drift, diagnostic_updates),
                           "pinned caller drift at all endpoints", False)
         assert count - diagnostic_start == 14, count - diagnostic_start
+        # Current callers are deliberately different; preserve the conservative fallback.
+        current_diagnostic_updates = [(path, subprocess.check_output(
+            ["git", "show", f"{source_head}:{path}"]) + b"\n// owned current-pair scope control\n", "100644")
+            for path in diagnostic_inputs]
+        current_diagnostic = classify(source_head, soak_tree(source_head, current_diagnostic_updates))
+        assert selected(current_diagnostic) == gates and current_diagnostic["relay_soak"], current_diagnostic
+        current_diagnostic_controls = 1
         # Focused parser controls stay separately reported; the established 2,381-control
         # population and ordering above remain unchanged.
         focused_status_controls = 0
@@ -4581,11 +4854,15 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         isolated_controls = isolated_test_controls()
         family_controls = isolated_family_controls()
         codec_controls = dormant_codec_controls()
+        reader_controls = source_reader_controls()
         print(json.dumps({"controls": count, "passed": count, "failed": 0,
                           "focused_status_controls": focused_status_controls,
                           "isolated_test_controls": isolated_controls,
                           "dormant_codec_controls": codec_controls,
                           "isolated_family_controls": family_controls,
+                          "sequential_runner_controls": sequential_runner_controls,
+                          "current_diagnostic_controls": current_diagnostic_controls,
+                          "source_reader_controls": reader_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)

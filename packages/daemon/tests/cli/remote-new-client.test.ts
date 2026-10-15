@@ -25,6 +25,17 @@ import type { CreateSessionExtra } from '../../src/server/client-message-events.
 import { CLI_TS } from '../integration/hub-test-utils.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
+// #1206: actual lane-process ownership, independent of Bun's entry-file JUnit attribution.
+// Missing correlation is emitted too; it must never silently disable the ownership check.
+fs.writeSync(
+  2,
+  `\n[ci-target-module-owner] ${JSON.stringify({
+    pid: process.pid,
+    url: import.meta.url,
+    token: process.env['CI_TEST_OWNER_TOKEN'] ?? null,
+  })}\n`,
+);
+
 type RemoteNewClientStage =
   | 'module-body'
   | 'before-all:entered'
