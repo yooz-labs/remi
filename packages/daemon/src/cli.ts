@@ -304,6 +304,7 @@ import {
 import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
+import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
@@ -1282,7 +1283,7 @@ const transcriptIndex = new TranscriptIndex();
 const bindingStore = new SessionBindingStore(
   sessionStore,
   transcriptIndex,
-  (daemonTls || (relayWanted && harnessId === 'claude')) && authEnabled && !serveMode
+  (daemonTls || relayWanted) && authEnabled && !serveMode
     ? {
         beforeWrite: (id) => {
           browserSessionHost?.beforeBindingWrite(id);
@@ -1483,7 +1484,7 @@ if ((daemonTls || relayWanted) && authEnabled && !serveMode && harnessId === 'cl
   });
 }
 if (
-  daemonTls &&
+  (daemonTls || relayWanted) &&
   authEnabled &&
   !serveMode &&
   ((process.platform === 'darwin' && process.arch === 'arm64') ||
@@ -2495,7 +2496,41 @@ async function waitForBrowserStartup(id: UUID): Promise<boolean> {
 function publishDownloadReadiness(sessionId: UUID): void {
   publishSessionReadiness(sessionId, 'file_download');
 }
-/** Refresh only an attached original actor; browser relay metadata never grants file access. */
+const readinessGrantGraceWord = new Int32Array(new SharedArrayBuffer(4));
+/** Retry only acquisition; a readiness callback may already have sent its scoped hello. */
+function withReadinessGrant<T>(
+  key: string,
+  operation: (epoch: string | null) => T,
+  migrate = false,
+): T {
+  const deadline = performance.now() + 50;
+  for (let attempt = 0; ; attempt++) {
+    let callbackEntered = false;
+    try {
+      return relayTrust.withAuthorizationEpochNonblocking(
+        key,
+        (epoch) => {
+          callbackEntered = true;
+          return operation(epoch);
+        },
+        migrate,
+      );
+    } catch (error) {
+      const remaining = deadline - performance.now();
+      if (
+        callbackEntered ||
+        !(error instanceof InterprocessFileLockError) ||
+        !error.retryable ||
+        attempt === 50 ||
+        remaining <= 0
+      )
+        throw error;
+      Atomics.wait(readinessGrantGraceWord, 0, 0, Math.min(1, remaining));
+      if (performance.now() >= deadline) throw error;
+    }
+  }
+}
+/** Refresh only an attached original actor with current service-specific readiness. */
 function publishSessionReadiness(
   sessionId: UUID,
   feature: 'file_download' | 'browser_links',
@@ -2512,14 +2547,13 @@ function publishSessionReadiness(
       const attachment = sessionRegistry.getAttachmentToken(id);
       if (
         !connection?.isConnected ||
-        ((!connection.structuredChatProxyAuthority || feature === 'file_download') &&
+        (!connection.structuredChatProxyAuthority &&
           connection.connectionListenerTransport !== 'public-tls') ||
-        (feature === 'file_download' && !!connection.structuredChatProxyAuthority) ||
         !key ||
         !attachment
       )
         continue;
-      const original = relayTrust.withAuthorizationEpochNonblocking(
+      const original = withReadinessGrant(
         key,
         (grant) => {
           const actor = connectionDeviceIdentityInsideLock(connection, grant, relayChildAuthority);
@@ -2545,7 +2579,7 @@ function publishSessionReadiness(
           binding: { identity: current.identity, transcriptPath: current.transcriptPath },
         },
       );
-      relayTrust.withAuthorizationEpochNonblocking(key, (epoch) => {
+      withReadinessGrant(key, (epoch) => {
         const identity = bindingStore.getIdentity(sessionId);
         const actor = connectionDeviceIdentityInsideLock(connection, epoch, relayChildAuthority);
         if (
@@ -2907,7 +2941,10 @@ if (browserSessionHost) {
     relayAuthority: relayChildAuthority,
   });
 }
-if (fileDownloadSessionHost && !(await fileDownloadSessionHost.open(relayTrust))) {
+if (
+  fileDownloadSessionHost &&
+  !(await fileDownloadSessionHost.open(relayTrust, relayChildAuthority))
+) {
   const { onFileDownload: _unavailableFileDownload, ...ordinaryEvents } = sharedEvents;
   sharedEvents = ordinaryEvents;
   console.error('File downloads are unavailable on this host.');

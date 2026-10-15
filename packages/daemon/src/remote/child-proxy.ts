@@ -170,6 +170,18 @@ export class ChildProxy {
     private readonly localHome?: string,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
+    return this.sendToChild(sessionId, { kind: 'message', message });
+  }
+  /** Original units only; the strict child service owns syntax and all transfer effects. */
+  async sendFileDownload(sessionId: string, original: string): Promise<void> {
+    return this.sendToChild(sessionId, { kind: 'file', original });
+  }
+  private async sendToChild(
+    sessionId: string,
+    input:
+      | { readonly kind: 'message'; readonly message: ProtocolMessage }
+      | { readonly kind: 'file'; readonly original: string },
+  ): Promise<void> {
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
     if (
       this.closed ||
@@ -361,6 +373,18 @@ export class ChildProxy {
       this.retireStateOwner(sessionId, child.ws);
       throw new Error('CHILD_UNAVAILABLE');
     }
+    if (input.kind === 'file') {
+      // Consume before the possible raw send, including correlatable malformed/uncertain input.
+      child.stateOwner = true;
+      try {
+        child.ws.send(input.original);
+      } catch (error) {
+        this.retireStateOwner(sessionId, child.ws);
+        throw error;
+      }
+      return;
+    }
+    const message = input.message;
     const pendingAnswer = this.answers.get(message.id);
     if (pendingAnswer) pendingAnswer.ws = child.ws;
     const pendingList = this.lists.get(message.id);

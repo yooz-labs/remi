@@ -5,6 +5,7 @@ import type { HarnessId, UUID } from '@remi/shared';
 import type { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
 import type { HarnessSession } from '../harness/types';
+import type { SecurePushStore } from '../notifications/secure-push-store';
 import type { SessionBindingStore } from '../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry';
 import type { StoredSession } from '../session/session-store';
@@ -98,7 +99,7 @@ export class FileDownloadSessionHost {
     return this.activeService;
   }
 
-  open(identityStore: IdentityStore): Promise<boolean> {
+  open(identityStore: IdentityStore, relayAuthority?: SecurePushStore): Promise<boolean> {
     if (this.stopped) return Promise.resolve(false);
     this.opening ??= (async () => {
       try {
@@ -107,6 +108,7 @@ export class FileDownloadSessionHost {
         const service = await FileDownloadService.open({
           home: this.host.home,
           identityStore,
+          ...(relayAuthority && { relayAuthority }),
           sessions: this.host.sessions,
           bindings: this.host.bindings,
           directAdapter: this.host.directAdapter,

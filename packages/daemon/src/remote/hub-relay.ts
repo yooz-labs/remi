@@ -1,6 +1,8 @@
 /** Hub-owned v2 room. The Worker admits sockets; this host alone grants application authority. */
 import {
   type AgentStatus,
+  type FileDownloadIngressResult,
+  type FileFetchRefused,
   MESSAGE_DIRECTION,
   type MachineDescriptor,
   type Message,
@@ -19,9 +21,11 @@ import {
   createSessionListRequest,
   createSessionListResponse,
   createSessionUpdate,
+  decodeFileDownloadIngress,
   deserialize,
   fromBase64,
   generateId,
+  isFileDownloadCandidate,
   now,
   relayV2,
   serialize,
@@ -39,11 +43,15 @@ import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import { normalizeSecureRegistration } from '../storage/secure-push-subscriptions.ts';
 import { ChildProxy } from './child-proxy.ts';
 import { RelayDeviceStore } from './relay-device-store.ts';
 import { legacyRelayUrlNotice, relayWorkerUrl } from './relay-url.ts';
 import { WorkerControl } from './worker-control.ts';
+
+const AUTHORITY_GRACE_WORD = new Int32Array(new SharedArrayBuffer(4));
+const AUTHORITY_GRACE_MS = 50;
 
 type Offer = {
   id: string;
@@ -300,8 +308,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   /**
    * Whether the peer's captured authority is still current (#1201). A revoked grant and an
-   * unreadable store (lock contention, a damaged file) both answer false, and both close the
-   * admitted READY peer through `current`. That is deliberate for the store fault too:
+   * unreadable store both answer false and close the admitted READY peer through `current`.
+   * Only retryable lock contention gets a bounded50ms fresh-read grace, never cached authority.
+   * That is deliberate for a persistent store fault too:
    * the channel is ordered and complete, so refusing one frame and staying open would drop it
    * silently and leave the client's state diverged, while a close makes the client reconnect
    * and resync. A reconnect re-captures authority under the same lock, so a persistent fault
@@ -311,10 +320,22 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private authorityCurrent(peer: Peer, authority: SecurePushAuthority): boolean {
     let fault: unknown;
     let faulted = false;
-    const current = this.subscriptions.isCurrentAuthority(authority, (error) => {
-      faulted = true;
-      fault = error;
-    });
+    const deadline = performance.now() + AUTHORITY_GRACE_MS;
+    let current = false;
+    for (let attempt = 0; attempt < 51; attempt++) {
+      if (attempt > 0 && performance.now() >= deadline) break;
+      faulted = false;
+      fault = undefined;
+      current = this.subscriptions.isCurrentAuthority(authority, (error) => {
+        faulted = true;
+        fault = error;
+      });
+      if (current || !faulted || !(fault instanceof InterprocessFileLockError) || !fault.retryable)
+        break;
+      const remaining = deadline - performance.now();
+      if (attempt === 50 || remaining <= 0) break;
+      Atomics.wait(AUTHORITY_GRACE_WORD, 0, 0, Math.min(1, remaining));
+    }
     const verdict = current ? undefined : faulted ? 'fault' : 'revoked';
     if (verdict !== peer.authorityVerdict) {
       peer.authorityVerdict = verdict;
@@ -578,31 +599,37 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               await this.closePeer(peer, true);
               return;
             }
-            // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).
-            const message = deserialize(
-              new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+            // Classify and decode original decrypted units before generic parse/ACK/ID tracking.
+            const file = isFileDownloadCandidate(bytes) ? decodeFileDownloadIngress(bytes) : null;
+            if (file?.kind === 'uncorrelatable') throw new Error('RELAY_INVALID_MESSAGE');
+            const original = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+              bytes,
             );
-            if (
-              !message ||
-              MESSAGE_DIRECTION[message.type] === 'd2c' ||
-              message.type === 'file_fetch_begin' ||
-              message.type === 'file_fetch_read' ||
-              message.type === 'file_fetch_complete' ||
-              message.type === 'file_fetch_cancel'
-            )
-              throw new Error('RELAY_INVALID_MESSAGE');
+            let requestId: string;
+            let application: () => Promise<void>;
+            if (file) {
+              requestId = file.kind === 'request' ? file.request.id : file.correlation.requestId;
+              application = () => this.routeFileDownload(peer, file, original);
+            } else {
+              // Preserve a leading BOM so strict JSON sees the original bytes (#1201).
+              const message = deserialize(original);
+              if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
+                throw new Error('RELAY_INVALID_MESSAGE');
+              requestId = message.id;
+              application = () => this.route(peer, message);
+            }
             if (peer.pendingApplications >= 32) {
               this.sendRaw(
                 peer.cid,
                 createError('BUSY', 'Relay application request capacity reached', {
-                  requestId: message.id,
+                  requestId,
                 }),
               );
               return;
             }
             peer.pendingApplications++;
             // Decrypt in order; read-only queries/child waits cannot hold up decisions.
-            void this.route(peer, message)
+            void application()
               .catch(() => {
                 void this.closePeer(peer);
               })
@@ -819,6 +846,36 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     if (current >= Number.MAX_SAFE_INTEGER) throw new Error('RELAY_REQUEST_CAPACITY');
     peer.pushMutation = current + 1;
     return peer.pushMutation;
+  }
+  private async routeFileDownload(
+    peer: Peer,
+    ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>,
+    original: string,
+  ): Promise<void> {
+    if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
+      throw new Error('RELAY_REVOKED');
+    const sessionId =
+      ingress.kind === 'request' ? ingress.request.sessionId : ingress.correlation.sessionId;
+    try {
+      if (!peer.proxy) throw new Error('CHILD_UNAVAILABLE');
+      await peer.proxy.sendFileDownload(sessionId, original);
+    } catch {
+      // sendFileDownload consumes ownership before ws.send. A send throw retires that owner
+      // and synchronously cancels this peer via install's failed callback. Only a still-current
+      // peer can report a failure before the file send; a consumed uncertain send stays retired.
+      if (!this.current(peer)) return;
+      const refused: FileFetchRefused = {
+        type: 'file_fetch_refused',
+        id: generateId(),
+        timestamp: now(),
+        sessionId,
+        requestId: ingress.kind === 'request' ? ingress.request.id : ingress.correlation.requestId,
+        operation:
+          ingress.kind === 'request' ? ingress.request.type : ingress.correlation.operation,
+        code: 'unavailable',
+      };
+      this.sendRaw(peer.cid, refused);
+    }
   }
   private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
     if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))

@@ -1,17 +1,16 @@
 /** Real Worker/HubRelay/ChildProxy -> actual browser service/producer; no web acceptance claim. */
 import { expect, test } from 'bun:test';
-import { createHello, createIdentity, deserialize, unlockIdentity } from '@remi/shared';
+import { createHello, createIdentity, unlockIdentity } from '@remi/shared';
 import { relayBrowserFixture, until } from '../helpers/browser-link-service-fixture.ts';
 
 test('enrolled encrypted relay receiver selects actual child producer and explicitly releases', async () => {
   const f = await relayBrowserFixture();
   try {
-    const { send, next, socket, channel } = await f.connect();
-    await send(createHello('owned-device', '2.0.0'));
-    const machineReceipt = await channel.receive(await socket.binary());
-    expect(machineReceipt && deserialize(new TextDecoder().decode(machineReceipt))?.type).toBe(
-      'ack',
-    );
+    const { send, next, machineHello } = await f.connect();
+    expect(machineHello.acknowledgment).toMatchObject({
+      type: 'ack',
+      ack: { messageId: machineHello.requestId, state: 'delivered' },
+    });
     await send(createHello('owned-device', '2.0.0', { resumeSessionId: f.sessionId }));
     const hello = await next();
     expect(hello.type).toBe('hello_ack');
@@ -98,7 +97,7 @@ test('two enrolled relay devices have exclusive receiver ownership, then consume
 }, 30000);
 
 for (const kind of ['malformed-browser', 'host-direction', 'file-download'] as const)
-  test(`encrypted relay preserves strict refusal of ${kind} after browser route adoption`, async () => {
+  test(`encrypted relay preserves unavailable browser-child behavior for ${kind}`, async () => {
     const f = await relayBrowserFixture();
     try {
       const peer = await f.connect();
@@ -134,9 +133,16 @@ for (const kind of ['malformed-browser', 'host-direction', 'file-download'] as c
               };
       // Send original encrypted bytes, without serializer repair or unknown-field dropping.
       await peer.channel.send(new TextEncoder().encode(JSON.stringify(message)));
-      await until(() => peer.socket.isClosed, 'strict encrypted refusal');
+      if (kind === 'file-download') {
+        const response = await peer.next();
+        expect(response.type === 'error' && response.code).toBe('INVALID_MESSAGE');
+        expect(peer.socket.isClosed).toBe(false);
+        expect(f.relay.connectionCount).toBe(1);
+      } else {
+        await until(() => peer.socket.isClosed, 'strict encrypted refusal');
+        expect(f.relay.connectionCount).toBe(0);
+      }
       expect(f.service.offer(f.context(), 'https://example.test/denied')).toBe(false);
-      expect(f.relay.connectionCount).toBe(0);
     } finally {
       await f.close();
     }

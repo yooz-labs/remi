@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type AckMessage,
   createAuthResponse,
   createHello,
   createHelloAck,
@@ -440,50 +441,74 @@ export async function browserFixture(
 }
 export type BrowserFixture = Awaited<ReturnType<typeof browserFixture>>;
 
-/** Full owned Worker/Hub/actual child fixture, also reusable by client integration. */
-export async function relayBrowserFixture(
+/** Owned actual child; shape grants no device or transfer authority. */
+export interface OwnedRelayChild {
+  readonly files: { readonly home: string; readonly work: string };
+  readonly trust: IdentityStore;
+  readonly identity: import('@remi/shared').UnlockedIdentity;
+  readonly storedIdentity: import('@remi/shared').RemiIdentity;
+  readonly sessionId: string;
+  readonly port: number;
+  readonly pid?: number;
+  close(): Promise<unknown>;
+}
+/** Full owned Worker/Hub/child transport; caller supplies the real child authority owner. */
+export async function relayMachineFixture<T extends OwnedRelayChild>(
+  f: T,
   additionalDevices: readonly import('@remi/shared').UnlockedIdentity[] = [],
 ) {
-  const [
-    { relayV2, deserialize },
-    { Socket, admit, clientUrl },
-    { startWorker },
-    { HubRelay },
-    { RelayDeviceStore },
-    { SessionRegistryFile },
-  ] = await Promise.all([
-    import('@remi/shared'),
-    import('../../../signaling/tests/e2e/endpoints.ts'),
-    import('../../../signaling/tests/e2e/harness.ts'),
-    import('../../src/remote/hub-relay.ts'),
-    import('../../src/remote/relay-device-store.ts'),
-    import('../../src/session/session-registry-file.ts'),
-  ]);
-  const f = await browserFixture({ relay: true, tls: false });
-  let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
-  let relay: InstanceType<typeof HubRelay> | undefined;
+  let worker: import('../../../signaling/tests/e2e/harness.ts').TestWorker | undefined;
+  let relay: import('../../src/remote/hub-relay.ts').HubRelay | undefined;
   const peers: {
-    socket: Awaited<ReturnType<typeof Socket.open>>;
+    socket: import('../../../signaling/tests/e2e/endpoints.ts').Socket;
     channel?: import('@remi/shared').relayV2.Channel;
   }[] = [];
   const logs: string[] = [];
-  async function close() {
-    const errors: unknown[] = [];
-    const attempt = async (fn: () => unknown) => {
-      try {
-        await fn();
-      } catch (e) {
-        errors.push(e);
-      }
-    };
-    for (const peer of peers) await attempt(() => peer.socket.close());
-    await attempt(() => relay?.stop());
-    for (const peer of peers) await attempt(() => peer.channel?.transportClosed());
-    await attempt(() => worker?.stop());
-    await attempt(() => f.close());
-    if (errors.length) throw new AggregateError(errors, 'Owned relay browser cleanup failed');
+  const authorityFaults: string[] = [];
+  type CloseReceipt = Awaited<ReturnType<T['close']>>;
+  let closeTask: Promise<CloseReceipt> | undefined;
+  function close(): Promise<CloseReceipt> {
+    const existing = closeTask;
+    if (existing) return existing;
+    const task: Promise<CloseReceipt> = (async (): Promise<CloseReceipt> => {
+      const errors: unknown[] = [];
+      const attempt = async (fn: () => unknown) => {
+        try {
+          await fn();
+        } catch (e) {
+          errors.push(e);
+        }
+      };
+      for (const peer of peers) await attempt(() => peer.socket.close());
+      await attempt(() => relay?.stop());
+      for (const peer of peers) await attempt(() => peer.channel?.transportClosed());
+      await attempt(() => worker?.stop());
+      let result: unknown;
+      await attempt(async () => {
+        result = await f.close();
+      });
+      if (errors.length) throw new AggregateError(errors, 'Owned relay browser cleanup failed');
+      return result as CloseReceipt;
+    })();
+    closeTask = task;
+    return task;
   }
   try {
+    const [
+      { relayV2, deserialize },
+      { Socket, admit, clientUrl },
+      { startWorker },
+      { HubRelay },
+      { RelayDeviceStore },
+      { SessionRegistryFile },
+    ] = await Promise.all([
+      import('@remi/shared'),
+      import('../../../signaling/tests/e2e/endpoints.ts'),
+      import('../../../signaling/tests/e2e/harness.ts'),
+      import('../../src/remote/hub-relay.ts'),
+      import('../../src/remote/relay-device-store.ts'),
+      import('../../src/session/session-registry-file.ts'),
+    ]);
     worker = await startWorker();
     const machineIdentity = await f.trust.unlock();
     const devices = new RelayDeviceStore(f.files.home, f.trust);
@@ -495,7 +520,7 @@ export async function relayBrowserFixture(
     const registry = new SessionRegistryFile(join(f.files.home, 'live'));
     registry.register({
       sessionId: f.sessionId,
-      pid: process.pid,
+      pid: f.pid ?? process.pid,
       wsPort: f.port,
       hookPort: 1,
       projectPath: f.files.work,
@@ -509,7 +534,16 @@ export async function relayBrowserFixture(
         trust: f.trust,
         dir: f.files.home,
         registry,
-        log: (message) => logs.push(message),
+        log: (message) => {
+          logs.push(message);
+          if (message.includes('InterprocessFileLockError') && authorityFaults.length < 4)
+            authorityFaults.push(
+              new Error('Owned actual authority caller').stack
+                ?.split('\n')
+                .slice(0, 16)
+                .join('\n') ?? 'Owned stack unavailable',
+            );
+        },
       },
       {
         onSessionListRequest(id, requestId) {
@@ -546,14 +580,40 @@ export async function relayBrowserFixture(
         close: (code) => socket.close(code),
       });
       peer.channel = channel;
+      // Shipping manager initializes the sessionless hub before selecting a child.
+      const initialHubControl: Uint8Array[] = [];
+      const hubHello = createHello('owned-machine', 'T4');
+      await channel.send(new TextEncoder().encode(serialize(hubHello)));
+      const hubDeadline = performance.now() + 3000;
+      let hubHelloAcknowledgment: AckMessage | undefined;
+      for (let i = 0; i < 64; i++) {
+        const bytes = await channel.receive(
+          await socket.binary(Math.max(1, hubDeadline - performance.now())),
+        );
+        if (!bytes) throw Error('Owned relay closed before machine hello acknowledgment');
+        const control = deserialize(
+          new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+        );
+        if (control?.type === 'ack' && control.ack.messageId === hubHello.id) {
+          if (control.ack.state !== 'delivered') throw Error('Owned machine hello not delivered');
+          hubHelloAcknowledgment = control;
+          break;
+        }
+        // These units are already opened; never replay ciphertext through the channel.
+        initialHubControl.push(bytes);
+        if (performance.now() >= hubDeadline) break;
+      }
+      if (!hubHelloAcknowledgment) throw Error('Owned machine hello acknowledgment absent');
       return {
         socket,
         channel,
+        machineHello: { requestId: hubHello.id, acknowledgment: hubHelloAcknowledgment },
         send: (message: Parameters<typeof serialize>[0]) =>
           channel.send(new TextEncoder().encode(serialize(message))),
-        next: async () => {
+        next: async (timeoutMs = 3000) => {
           for (let i = 0; i < 8; i++) {
-            const bytes = await channel.receive(await socket.binary());
+            const bytes =
+              initialHubControl.shift() ?? (await channel.receive(await socket.binary(timeoutMs)));
             if (!bytes) throw Error('Owned relay closed before browser result');
             const message = deserialize(
               new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
@@ -564,11 +624,58 @@ export async function relayBrowserFixture(
         },
       };
     }
+    function observeChildFrames() {
+      const rows: {
+        order: number;
+        at: number;
+        type: string | null;
+        id: string | null;
+        bytes: number;
+      }[] = [];
+      if (!relay) throw Error('Owned relay unavailable');
+      const current = Reflect.get(relay, 'peers') as Map<
+        string,
+        { proxy?: { children: Map<string, { ws: WebSocket }> } }
+      >;
+      for (const peer of current.values()) {
+        const children =
+          peer.proxy &&
+          (Reflect.get(peer.proxy, 'children') as Map<string, { ws: WebSocket }> | undefined);
+        if (!children) continue;
+        for (const child of children.values())
+          child.ws.addEventListener('message', (event) => {
+            if (rows.length >= 16) return;
+            const raw = event.data;
+            let type: string | null = null;
+            let id: string | null = null;
+            const bytes =
+              typeof raw === 'string'
+                ? Buffer.byteLength(raw)
+                : raw instanceof ArrayBuffer
+                  ? raw.byteLength
+                  : ArrayBuffer.isView(raw)
+                    ? raw.byteLength
+                    : raw instanceof Blob
+                      ? raw.size
+                      : 0;
+            if (typeof raw === 'string' && bytes <= 65536)
+              try {
+                const value = JSON.parse(raw);
+                type = typeof value.type === 'string' ? value.type.slice(0, 96) : null;
+                id = typeof value.id === 'string' ? value.id.slice(0, 96) : null;
+              } catch {}
+            rows.push({ order: rows.length + 1, at: performance.now(), type, id, bytes });
+          });
+      }
+      return rows;
+    }
     return {
       ...f,
       worker,
       relay,
       logs,
+      authorityFaults,
+      observeChildFrames,
       liveRegistry: registry,
       machineIdentity,
       machinePublicKey,
@@ -585,4 +692,12 @@ export async function relayBrowserFixture(
     }
     throw error;
   }
+}
+
+/** Existing browser wrapper retains its child, generated identity and cleanup API. */
+export async function relayBrowserFixture(
+  additionalDevices: readonly import('@remi/shared').UnlockedIdentity[] = [],
+) {
+  const f = await browserFixture({ relay: true, tls: false });
+  return relayMachineFixture(f, additionalDevices);
 }

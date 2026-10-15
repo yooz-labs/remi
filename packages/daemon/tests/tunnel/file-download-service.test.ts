@@ -4,9 +4,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { FileDownloadMessage, FileFetchAccepted } from '@remi/shared';
-import { withInterprocessFileLockNonblocking } from '../../src/storage/interprocess-file-lock';
+import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  encodeRelayChatAuthority,
+} from '../../src/auth/relay-chat-authority';
+import { RelayDeviceStore } from '../../src/remote/relay-device-store';
+import {
+  InterprocessFileLockError,
+  withInterprocessFileLockNonblocking,
+} from '../../src/storage/interprocess-file-lock';
 import { ImageStagingService } from '../../src/tunnel/image-staging-service';
 import { openManagedTunnelStorage } from '../../src/tunnel/managed-tunnel-storage';
+import { makeFileDownloadIngressFixture } from '../helpers/file-download-ingress-fixture';
 import {
   type DownloadFixture,
   type DownloadPeer,
@@ -65,6 +74,56 @@ async function pull(peer: DownloadPeer, value: FileFetchAccepted) {
   return Buffer.concat(chunks);
 }
 const records = (f: DownloadFixture) => (f.service as unknown as { records: Set<unknown> }).records;
+
+test('original grant never retries a nested retryable lock error after its effect entered', async () => {
+  const f = await fixture();
+  const nested = join(f.files.directory, 'owned-nested-lock');
+  fs.mkdirSync(nested, { mode: 0o700 });
+  const holder = Bun.spawn(
+    [
+      process.execPath,
+      '--no-env-file',
+      resolve(import.meta.dir, '../lock-holder-worker.ts'),
+      nested,
+      '2600',
+    ],
+    {
+      env: { HOME: nested, TMPDIR: process.env['TMPDIR'] ?? '/tmp', PATH: '/usr/bin:/bin' },
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'pipe',
+    },
+  );
+  const stderr = new Response(holder.stderr).text();
+  try {
+    await until(() => fs.existsSync(join(nested, 'lock-held')), 'actual nested writer acquired');
+    let effects = 0;
+    const marker = join(nested, 'actual-effects');
+    const grant = Reflect.get(f.service, 'grant') as (
+      key: string,
+      effect: (epoch: string | null) => void,
+    ) => void;
+    let failure: unknown;
+    try {
+      grant.call(f.service, f.base.identity.publicKeyRaw, () => {
+        effects++;
+        fs.appendFileSync(marker, 'x', { mode: 0o600 });
+        withInterprocessFileLockNonblocking(join(nested, 'authorized_keys.json'), () => {});
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(InterprocessFileLockError);
+    expect((failure as InterprocessFileLockError).retryable).toBe(true);
+    expect(effects).toBe(1);
+    expect(fs.readFileSync(marker, 'utf8')).toBe('x');
+  } finally {
+    if (holder.exitCode === null) holder.kill('SIGKILL');
+    await holder.exited;
+    expect(() => process.kill(holder.pid, 0)).toThrow();
+    expect(await stderr).toBe('');
+  }
+}, 10000);
 
 for (const harness of ['claude', 'codex'] as const)
   test(`actual signed TLS ${harness} binding pulls only validated private bytes and confirms settlement`, async () => {
@@ -724,3 +783,104 @@ test('overlapping reads terminate sequence while joining the original read witho
   expect(records(f).size).toBe(0);
   settled(f);
 });
+
+for (const retirement of ['grant', 'enrollment'] as const)
+  test(`file relay actor retains original ${retirement} through remove/regrant and fresh actor never inherits transfer`, async () => {
+    const f = await makeFileDownloadIngressFixture({ relay: true, tls: false });
+    try {
+      const devices = new RelayDeviceStore(f.files.home, f.trust);
+      await devices.add(f.identity.publicKeyRaw, 'owned file relay');
+      const original = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+      if (!original) throw Error('Actual original relay actor absent');
+      const peer = await f.client({
+        capability: true,
+        headers: { [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(original) },
+      });
+      f.write('owned original actor bytes');
+      const value = accepted(await peer.send(peer.begin()));
+      if (retirement === 'grant') {
+        await f.trust.removeAuthorizedKey(f.identity.fingerprint);
+        await f.trust.addAuthorizedKey(f.identity.publicKeyRaw, 'new actual grant');
+      } else {
+        devices.remove(f.identity.fingerprint);
+        await devices.add(f.identity.publicKeyRaw, 'new actual enrollment');
+      }
+      expect(f.service.isAvailable(peer.id as string)).toBe(false);
+      const read = {
+        ...peer.envelope(),
+        type: 'file_fetch_read' as const,
+        transferId: value.transferId,
+        seq: 0,
+        receivedBytes: 0,
+      };
+      peer.ws.send(JSON.stringify(read));
+      await until(() => {
+        const state = JSON.parse(
+          fs.readFileSync(
+            join(f.files.home, 'image-staging', 'ledger', 'reservations.json'),
+            'utf8',
+          ),
+        );
+        if (state.version !== 1 || !Array.isArray(state.records))
+          throw Error('Owned ledger observation invalid');
+        return state.records.every(
+          (row: { state: string; charge: number }) => row.state === 'settled' && row.charge === 0,
+        );
+      }, 'retired original relay file settled');
+      expect(peer.frames.some((frame) => frame.type === 'file_fetch_chunk')).toBe(false);
+      const authority = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+      if (!authority) throw Error('Fresh actual relay actor absent');
+      const fresh = await f.client({
+        capability: true,
+        headers: { [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority) },
+      });
+      expect(
+        await fresh.send({
+          ...fresh.envelope(),
+          type: 'file_fetch_read',
+          transferId: value.transferId,
+          seq: 0,
+          receivedBytes: 0,
+        }),
+      ).toMatchObject({ type: 'file_fetch_refused', code: 'unavailable' });
+      const next = accepted(await fresh.send(fresh.begin()));
+      expect(next.type).toBe('file_fetch_accepted');
+      expect(
+        await fresh.send({
+          ...fresh.envelope(),
+          type: 'file_fetch_cancel',
+          beginId: next.requestId,
+        }),
+      ).toMatchObject({ outcome: 'cancelled' });
+    } finally {
+      await f.close();
+    }
+  }, 15000);
+
+test('relay-enabled plaintext file service denies signed-direct, capability-only and capabilityless descriptor', async () => {
+  const f = await makeFileDownloadIngressFixture({ relay: true, tls: false });
+  try {
+    f.write('owned plain refusal');
+    for (const capability of [false, true]) {
+      const peer = await f.client({ capability });
+      expect(f.service.isAvailable(peer.id as string)).toBe(false);
+      peer.ws.send(JSON.stringify(peer.begin()));
+      await Bun.sleep(50);
+      expect(
+        peer.frames.some((m) => m.type === 'file_fetch_accepted' || m.type === 'file_fetch_chunk'),
+      ).toBe(false);
+    }
+    await new RelayDeviceStore(f.files.home, f.trust).add(
+      f.identity.publicKeyRaw,
+      'owned descriptor',
+    );
+    const authority = f.relayAuthority.captureAuthority(f.identity.publicKeyRaw);
+    if (!authority) throw Error('Actual relay authority absent');
+    await expect(
+      f.client({ headers: { [RELAY_CHAT_AUTHORITY_HEADER]: encodeRelayChatAuthority(authority) } }),
+    ).rejects.toThrow('Owned raw peer failed');
+    expect(f.ledger().inspect()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 15000);

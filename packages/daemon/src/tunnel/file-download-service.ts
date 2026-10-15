@@ -1,4 +1,4 @@
-/** Dormant ADR0045 core. No raw route, capability advertisement or production root discovery. */
+/** ADR0045 download authority; CLI composes strict direct/relay routes and scoped readiness. */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   FILE_DOWNLOAD_LIMITS,
@@ -16,9 +16,16 @@ import {
 } from '@remi/shared';
 import { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
+import {
+  type ConnectionDeviceIdentity,
+  connectionDeviceIdentityInsideLock,
+  connectionDeviceKey,
+} from '../auth/relay-chat-authority';
+import type { SecurePushStore } from '../notifications/secure-push-store';
 import type { Connection } from '../server/connection';
 import type { SessionBindingStore } from '../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry';
+import { InterprocessFileLockError } from '../storage/interprocess-file-lock';
 import { DirectoryRoot, FileAdmission } from './admission';
 import {
   DownloadPreparationError,
@@ -45,8 +52,9 @@ export interface FileDownloadServiceHost {
   readonly bindings: SessionBindingStore;
   readonly directAdapter: () => WebSocketAdapter | undefined;
   readonly contextFor: (sessionId: UUID) => FileDownloadHostContext | null;
+  readonly relayAuthority?: SecurePushStore;
 }
-interface Actor {
+interface Actor extends ConnectionDeviceIdentity {
   readonly connection: Connection;
   readonly publicKey: string;
   readonly fingerprint: string;
@@ -95,6 +103,8 @@ const fail = (code: FileDownloadRefusalCode): never => {
 const totalLifetime = 300_000;
 const idleLifetime = 30_000;
 const recordLimit = 128;
+const grantGraceWord = new Int32Array(new SharedArrayBuffer(4));
+const grantGraceMs = 50;
 const yieldLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 const envelope = (request: Pick<FileDownloadRequest, 'id' | 'sessionId'>) => ({
   id: randomUUID(),
@@ -107,6 +117,7 @@ const sameActor = (a: Actor, b: Actor) =>
   a.publicKey === b.publicKey &&
   a.fingerprint === b.fingerprint &&
   a.epoch === b.epoch &&
+  a.proxy === b.proxy &&
   a.session === b.session &&
   a.pty === b.pty &&
   a.attachment === b.attachment;
@@ -147,32 +158,53 @@ export class FileDownloadService {
   }
   private grant<T>(key: string, effect: (epoch: string | null) => T, migrate = false): T {
     if (this.grantHeld) return fail('unavailable');
-    return this.host.identityStore.withAuthorizationEpochNonblocking(
-      key,
-      (epoch) => {
-        this.grantHeld = true;
-        try {
-          return effect(epoch);
-        } finally {
-          this.grantHeld = false;
-        }
-      },
-      migrate,
-    );
+    const deadline = performance.now() + grantGraceMs;
+    for (let attempt = 0; ; attempt++) {
+      let callbackEntered = false;
+      try {
+        return this.host.identityStore.withAuthorizationEpochNonblocking(
+          key,
+          (epoch) => {
+            callbackEntered = true;
+            this.grantHeld = true;
+            try {
+              return effect(epoch);
+            } finally {
+              this.grantHeld = false;
+            }
+          },
+          migrate,
+        );
+      } catch (error) {
+        // Acquisition alone may retry. A callback or release error can follow an effect.
+        const remaining = deadline - performance.now();
+        if (
+          callbackEntered ||
+          !(error instanceof InterprocessFileLockError) ||
+          !error.retryable ||
+          attempt === 50 ||
+          remaining <= 0
+        )
+          throw error;
+        Atomics.wait(grantGraceWord, 0, 0, Math.min(1, remaining));
+        if (performance.now() >= deadline) throw error;
+      }
+    }
   }
   /** Caller holds the one original-grant lock. No storage or another grant lock is acquired here. */
   private actor(connection: Connection, sessionId: UUID, epoch: string | null): Actor {
-    const publicKey = connection.connectionClientPublicKey;
-    const fingerprint = connection.connectionClientFingerprint;
+    const identity = connectionDeviceIdentityInsideLock(
+      connection,
+      epoch,
+      this.host.relayAuthority,
+    );
     const session = this.host.sessions.getSessionForConnection(connection.id);
     const attachment = this.host.sessions.getAttachmentToken(connection.id);
     if (
       this.closed ||
       !epoch ||
-      !publicKey ||
-      !fingerprint ||
-      connection.connectionListenerTransport !== 'public-tls' ||
-      connection.structuredChatProxyAuthority ||
+      !identity ||
+      (!identity.proxy && connection.connectionListenerTransport !== 'public-tls') ||
       this.direct(connection.id) !== connection ||
       !session ||
       session.sessionId !== sessionId ||
@@ -180,7 +212,7 @@ export class FileDownloadService {
       !attachment
     )
       return fail('unavailable');
-    return { connection, publicKey, fingerprint, epoch, session, pty: session.pty, attachment };
+    return { connection, ...identity, epoch, session, pty: session.pty, attachment };
   }
   private authority(actor: Actor): Authority {
     const binding = this.host.bindings.getIdentity(actor.session.sessionId);
@@ -211,9 +243,9 @@ export class FileDownloadService {
   private capture(id: UUID, sessionId: UUID): Authority {
     if (this.closed || this.poisoned) return fail('unavailable');
     const connection = this.direct(id);
-    const key = connection?.connectionClientPublicKey;
+    const key = connection ? connectionDeviceKey(connection) : null;
     if (!connection || !key) return fail('unavailable');
-    // Explicit legacy epoch migration applies only to an already-authorized exact signed key.
+    // Explicit legacy epoch migration applies only to an already-authorized exact original device key.
     return this.grant(
       key,
       (epoch) => this.authority(this.actor(connection, sessionId, epoch)),
@@ -372,7 +404,7 @@ export class FileDownloadService {
       if (authority) this.current(authority, () => send(authority), false);
       else {
         const connection = this.direct(id);
-        const key = connection?.connectionClientPublicKey;
+        const key = connection ? connectionDeviceKey(connection) : null;
         if (!connection || !key) return;
         this.grant(key, (epoch) => send(this.actor(connection, request.sessionId, epoch)));
       }
