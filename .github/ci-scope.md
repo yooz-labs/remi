@@ -776,3 +776,34 @@ gates; only relay and its consequent attached-session soak are skipped. This
 policy neither shortens the hour measurement nor qualifies an earlier hosted
 run retroactively. Real Git controls preserve the original all-eleven baseline
 and exercise the exact historical correction plus conservative counterexamples.
+
+## Complete Test execution experiment (#1206)
+
+The proposed Test runner discovers the complete filesystem test population using
+Bun 1.3.11's pinned suffix/loader/default directory rules and root preloads. It
+runs exactly two sequential processes: `remote-new-client.test.ts` alone, then
+every other discovered file together. No new per-test timeout, filter, skip,
+retry or parallel batch is introduced. The target has a manual exact case
+multiset/assertion and finite test/helper source contract; CI never regenerates
+it. An unconditional synchronous module-body marker must occur once in its
+lane and zero times in the rest process. This proves lane-process loading,
+not hidden child-process imports or general computed-reference absence.
+
+Raw output is retained in `test-batches-output.txt`. Only a complete successful
+population, unchanged source/discovery, proved owned-process cleanup and strict
+canonical LCOV line union publish the one row in `test-output.txt`. The existing
+numeric 60% line threshold reads that separate file unchanged. The union uses
+Bun's unweighted mean of per-source covered/executable line fractions, including
+zero-line files; neither weighted line totals nor batch percentages reproduce
+that metric. Aggregate function/branch identities are unavailable and reported
+as such. Source/map ambiguities fail rather than being omitted or renamed.
+
+The target process is bounded at 300 seconds; the rest is bounded at 1200
+seconds and the remaining 22-minute controller budget minus cleanup. The job
+limit remains 25 minutes. Assertion failures remain failures, even if other
+lanes finish; crashes/timeouts/cleanup/schema/input failures stop with remaining
+files explicitly not run. Evidence uploads include failures. Normal scope rules,
+short relay tests, actual 61-minute R7 bodies and native controls are unchanged.
+This execution change requires real Test acceptance; a tiny line-union control
+is not whole-suite coverage, a performance result or diagnosis of the original
+pre-module stall. The previous unsuccessful controls remain unsuccessful.

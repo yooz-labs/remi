@@ -1,18 +1,24 @@
 {
   "source_commit": "d2e90a89cc92c3ab9e6550265bca9372ea33239f",
   "measurement_sha256": {
-    "ci.yml/test/Test with coverage": "2a803dfa8a7709f694f20035688491f8d888343adf6bff8d8cb69d305178a38f",
+    "ci.yml/test/Test with coverage": "c907b53be2f9a68977d8098ec0faf672feae85533c205844e1f3b5bac8998a92",
     "ci.yml/test/Check coverage threshold": "7014458938cc5124d84339467e759c3fe0291d8bac11640437bcf639d21b3b2e",
     "relay-r7.yml/local-relay/Existing actual wire and authority controls": "c29611f2846d7edf06765b403f4a264b9bb918dae88358dba64d84fde54caaaa",
     "relay-r7.yml/local-relay/Same attached session for 61 actual minutes": "34d0b295f1c1b80b3a4f2ee2d885cebefec8f50dc78af473160873ca5995c0d3"
   },
   "measurement_provenance": {
     "ci.yml/test/Test with coverage": {
-      "previous_command": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
-      "wrapped_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
-      "coverage_pipeline": "2>&1 | tee test-output.txt",
-      "wrapper_argv": "[process.execPath, 'test', ...process.argv.slice(2)]",
-      "reason": "PR #1492 wraps the unchanged Bun test invocation with bounded quiet-period diagnostics."
+      "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
+      "wrapped_command": "bun scripts/ci/run-bun-test-batches.ts",
+      "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+      "threshold_input": "test-output.txt contains one validated line-only union row",
+      "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
+      "bounds_ms": {
+        "target": 300000,
+        "rest": 1200000,
+        "controller": 1320000
+      },
+      "reason": "#1206: two sequential fresh processes with explicit target ownership and a manual case/source contract; original stall root cause remains unknown."
     }
   },
   "scope_action": {

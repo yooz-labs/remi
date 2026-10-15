@@ -3894,6 +3894,24 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         routing_refusal("ci.yml", lambda w: w["jobs"]["scope"]["outputs"].update(test="${{ steps.scope.outputs.relay }}"))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(**{"if": "true"}))
         routing_refusal("ci.yml", lambda w: w["jobs"]["auto-release"].update(needs=["spelling"]))
+        # #1206 execution change: preserve the historical population/count, report new
+        # actual-Git routing/measurement refusal controls separately.
+        sequential_start = count
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Test with coverage").update(
+                        run="bun scripts/ci/run-bun-test-batches.ts | tee test-output.txt\n"))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Upload test evidence").update(if_="true"))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+                        if s.get("name") == "Upload test evidence")["with"].update(path="~/.remi/\n"))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test"].update(steps=[s for s in
+                        w["jobs"]["test"]["steps"] if s.get("name") != "Upload test evidence"]))
+        git("reset", "--hard", base); git("clean", "-fdq")
+        write("scripts/ci/run-bun-test-batches.ts", "export const owned = true;\n")
+        assert selected(classify(base, commit())) == gates
+        count += 1
+        sequential_runner_controls = count - sequential_start
+        count = sequential_start
         for filename, job, name in (("ci.yml", "test", "Test with coverage"),
                                    ("ci.yml", "test", "Check coverage threshold"),
                                    ("relay-r7.yml", "local-relay", "Existing actual wire and authority controls"),
@@ -4586,6 +4604,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                           "isolated_test_controls": isolated_controls,
                           "dormant_codec_controls": codec_controls,
                           "isolated_family_controls": family_controls,
+                          "sequential_runner_controls": sequential_runner_controls,
                           "scope": "owned real git diffs and event inputs"}))
     finally:
         os.chdir(original)

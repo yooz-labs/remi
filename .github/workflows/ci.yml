@@ -133,8 +133,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [scope]
     if: ${{ !cancelled() }}
-    # A normal run takes about 4 minutes. A hung `bun test` spins until the job limit (#1206), so
-    # cap it well above a slow run instead of the 360-minute default.
+    # #1206: previous runs stopped before module-body entry; no root cause is established.
+    # Keep the 25-minute job bound, above the runner's 22-minute controller budget.
     timeout-minutes: 25
     steps:
       - name: Fail unvalidated scope
@@ -152,12 +152,12 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
       - name: Test with coverage
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
-        # The output is kept for the threshold check below, so the suite runs once, not twice
-        # (a second run doubled the job time and the exposure to the #1206 hang).
-        # pipefail keeps a failing `bun test` failing the step through `tee`.
+        # #1206: target alone, then every other discovered file in one shared Bun cache.
+        # Raw logs are separate from the one validated line-union threshold row.
+        # pipefail preserves test/discovery/coverage/cleanup failures through tee.
         run: |
           set -o pipefail
-          bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov 2>&1 | tee test-output.txt
+          bun scripts/ci/run-bun-test-batches.ts 2>&1 | tee test-batches-output.txt
       - name: Check coverage threshold
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         run: |
@@ -177,6 +177,18 @@ jobs:
             echo "Coverage ${COVERAGE}% is below 60% threshold"
             exit 1
           fi
+
+      - name: Upload test evidence
+        if: always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/test-lanes/
+            test-batches-output.txt
+            test-output.txt
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Report scoped skip
         if: needs.scope.result == 'success' && needs.scope.outputs.test == 'false'

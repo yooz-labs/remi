@@ -25,20 +25,26 @@ SOAK_SKIP_PREVIOUS = {**SOAK_SKIP, "run": SOAK_SKIP["run"].replace(
 
 COVERAGE_TEST_RUN = (
     "set -o pipefail\n"
-    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
-    "--coverage-reporter=lcov 2>&1 | tee test-output.txt\n"
+    "bun scripts/ci/run-bun-test-batches.ts 2>&1 | tee test-batches-output.txt\n"
 )
-WRAPPED_TEST_COMMAND = (
-    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
-    "--coverage-reporter=lcov"
-)
+WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts"
 WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
 TEST_MEASUREMENT_PROVENANCE = {
-    "previous_command": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "wrapped_command": WRAPPED_TEST_COMMAND,
-    "coverage_pipeline": "2>&1 | tee test-output.txt",
-    "wrapper_argv": WRAPPED_TEST_ARGV,
-    "reason": "PR #1492 wraps the unchanged Bun test invocation with bounded quiet-period diagnostics.",
+    "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+    "threshold_input": "test-output.txt contains one validated line-only union row",
+    "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
+    "bounds_ms": {"target": 300000, "rest": 1200000, "controller": 1320000},
+    "reason": "#1206: two sequential fresh processes with explicit target ownership and a manual case/source contract; original stall root cause remains unknown.",
+}
+TEST_EVIDENCE = {
+    "name": "Upload test evidence",
+    "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+    "uses": "actions/upload-artifact@v4",
+    "with": {"name": "test-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+             "path": "coverage/test-lanes/\ntest-batches-output.txt\ntest-output.txt\n",
+             "if-no-files-found": "error", "retention-days": "14"},
 }
 
 
@@ -207,6 +213,8 @@ def validate():
                 assert job_name == "local-relay" and step == SOAK_SKIP
             elif step.get("name") == "Report scoped skip":
                 assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
+            elif step.get("name") == "Upload test evidence":
+                assert workflow is ci and job_name == "test" and step == TEST_EVIDENCE
             elif step.get("name") in {"Check completed soak evidence", "Record actual soak producer"}:
                 assert job_name == "local-relay" and step in CONTRACTS["relay_reuse_job"]["steps"]
             else:
@@ -242,6 +250,7 @@ def validate():
         assert hashlib.sha256(run.encode()).hexdigest() == expected, key
     coverage_step = next(step["run"] for step in ci["jobs"]["test"]["steps"]
                          if step.get("name") == "Test with coverage")
+    assert ci["jobs"]["test"]["steps"].count(TEST_EVIDENCE) == 1
     assert coverage_step == COVERAGE_TEST_RUN
     assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
     runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
