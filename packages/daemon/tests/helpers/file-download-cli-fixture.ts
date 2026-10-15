@@ -242,7 +242,12 @@ await new Promise<void>((resolve)=>{
       `#!/bin/sh\nexec '${process.execPath}' '${consumer}' "$@"\n`,
       { mode: 0o700 },
     );
-    if (harness === 'codex') server = FakeAppServer.start();
+    if (harness === 'codex') {
+      server = FakeAppServer.start();
+      // Download acceptance is independent of transcript history; model an empty Codex history
+      // instead of surfacing the fake server's unrelated method-not-found warning in the App.
+      server.onRequest('thread/items/list', () => ({ data: [], nextCursor: null }));
+    }
     const trust = new IdentityStore(files.home);
     await trust.generate();
     const identity = await createIdentity();
