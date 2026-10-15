@@ -320,3 +320,37 @@ test('settles a delayed diagnostic write error before returning the child result
     'runChild rejected',
   ]);
 });
+
+test('explicit child deadline kills and reaps a stubborn owned process without changing per-test timeouts', async () => {
+  const out = sink();
+  const err = sink();
+  const start = performance.now();
+  await expect(
+    runChild(
+      bun(
+        "process.on('SIGTERM',()=>{});console.log('deadline-pid='+process.pid);await Bun.sleep(30000);",
+      ),
+      { stdout: out.stream, stderr: err.stream, timeoutMs: 100 },
+    ),
+  ).rejects.toThrow('deadline');
+  const match = /deadline-pid=(\d+)/.exec(out.text());
+  expect(match).not.toBeNull();
+  expect(performance.now() - start).toBeLessThan(5_000);
+  if (match?.[1]) expect(() => process.kill(Number(match[1]), 0)).toThrow();
+}, 8_000);
+
+test('a dead leader with a pipe-holding descendant is not a completed batch', async () => {
+  const out = sink();
+  const err = sink();
+  const grandchild =
+    "process.on('SIGTERM',()=>{});console.log('grandchild-pid='+process.pid);await Bun.sleep(30000);";
+  const code = `Bun.spawn([process.execPath,'-e',${JSON.stringify(grandchild)}],{stdout:'inherit',stderr:'inherit'});await Bun.sleep(100);process.exit(0);`;
+  const start = performance.now();
+  await expect(
+    runChild(bun(code), { stdout: out.stream, stderr: err.stream, timeoutMs: 300 }),
+  ).rejects.toThrow();
+  const match = /grandchild-pid=(\d+)/.exec(out.text());
+  expect(match).not.toBeNull();
+  expect(performance.now() - start).toBeLessThan(6_000);
+  if (match?.[1]) expect(() => process.kill(Number(match[1]), 0)).toThrow();
+}, 10_000);

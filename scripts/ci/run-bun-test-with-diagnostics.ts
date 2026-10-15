@@ -11,10 +11,20 @@ type RunOptions = {
   diagnosticAfterMs?: number;
   diagnosticEveryMs?: number;
   procSampler?: (pid: number) => Promise<ProcSample>;
+  timeoutMs?: number;
+  cwd?: string;
+  env?: Record<string, string | undefined>;
 };
 
-type RunResult = { exitCode: number; lastTestFile: string | null };
-type HeaderState = { last: string | null };
+type RunResult = {
+  pid: number;
+  cleanupVerified: boolean;
+  exitCode: number;
+  lastTestFile: string | null;
+  testFiles: string[];
+  ownerLines: string[];
+};
+type HeaderState = { last: string | null; files: string[]; ownerLines: string[] };
 type StreamForwardState = {
   bytesRead: number;
   // Bytes whose destination write callback and any required drain both completed.
@@ -38,7 +48,8 @@ type StreamForwardSnapshot = {
 };
 type ForwardSnapshot = { stdout: StreamForwardSnapshot; stderr: StreamForwardSnapshot };
 
-const TEST_HEADER = /(?:^|\s)((?:packages|tests)\/[^\s:]+\.test\.[cm]?[jt]sx?):/;
+const TEST_HEADER =
+  /^(?:::group::)?((?:[A-Za-z0-9_.-]+\/)*[^\s:]+(?:\.test|_test|\.spec|_spec)\.[cm]?[jt]sx?):$/;
 const PROC_STATE = /^[RSDZTWtXxKWPPI]$/;
 
 class HeaderTracker {
@@ -71,7 +82,11 @@ class HeaderTracker {
     const plain = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/^::group::/, '');
     const match = TEST_HEADER.exec(plain);
     const path = match?.[1];
-    if (path) this.state.last = path;
+    if (path) {
+      this.state.last = path;
+      this.state.files.push(path);
+    }
+    if (plain.startsWith('[ci-target-module-owner] ')) this.state.ownerLines.push(plain);
   }
 }
 
@@ -283,6 +298,16 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
 function diagnosticLine(
   pid: number,
   elapsedMs: number,
@@ -322,8 +347,20 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     throw new RangeError('diagnostic intervals must be positive finite milliseconds');
   }
 
-  const child = Bun.spawn(command, { stdout: 'pipe', stderr: 'pipe', detached: true });
-  const headerState: HeaderState = { last: null };
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1)
+  ) {
+    throw new RangeError('child timeout must be positive finite milliseconds');
+  }
+  const child = Bun.spawn(command, {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    detached: true,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  });
+  const headerState: HeaderState = { last: null, files: [], ownerLines: [] };
   const stdoutTracker = new HeaderTracker(headerState);
   const stderrTracker = new HeaderTracker(headerState);
   const streamForwardState = {
@@ -364,31 +401,56 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
   });
 
   const startCleanup = (signal: NodeJS.Signals): Promise<void> => {
-    if (childWorkFinished || child.exitCode !== null) return Promise.resolve();
+    if (childWorkFinished && options.timeoutMs === undefined) return Promise.resolve();
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
-      try {
-        signalGroup(child.pid, signal);
-      } catch {
-        /* best effort for an exiting or already-exited owned group */
-      }
+      signalGroup(child.pid, signal);
       let graceTimer: ReturnType<typeof setTimeout> | undefined;
       const grace = new Promise<boolean>((resolve) => {
         graceTimer = setTimeout(() => resolve(false), 2_000);
       });
       const settledWithinGrace = await Promise.race([workSettled, grace]);
       if (graceTimer) clearTimeout(graceTimer);
-      if (!settledWithinGrace && child.exitCode === null) {
+      if (!settledWithinGrace || (options.timeoutMs !== undefined && groupAlive(child.pid))) {
+        signalGroup(child.pid, 'SIGKILL');
+        let reapTimer: ReturnType<typeof setTimeout> | undefined;
         try {
-          signalGroup(child.pid, 'SIGKILL');
-        } catch {
-          /* best effort for an exiting or already-exited owned group */
+          await Promise.race([
+            workSettled,
+            new Promise<never>((_, reject) => {
+              reapTimer = setTimeout(
+                () => reject(new Error('Owned child/pipe cleanup exceeded 2 seconds')),
+                2_000,
+              );
+            }),
+          ]);
+        } finally {
+          if (reapTimer) clearTimeout(reapTimer);
         }
-        await workSettled;
+      }
+      if (options.timeoutMs !== undefined) {
+        const end = Date.now() + 2_000;
+        while (groupAlive(child.pid) && Date.now() < end) await Bun.sleep(10);
+        if (groupAlive(child.pid))
+          throw new Error('Owned process group still exists after cleanup');
       }
     })();
     return cleanupPromise;
   };
+
+  let deadlineExpired = false;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    if (options.timeoutMs !== undefined) {
+      deadlineTimer = setTimeout(() => {
+        deadlineExpired = true;
+        void startCleanup('SIGTERM').then(
+          () => reject(new Error('CI child deadline exceeded')),
+          (error: unknown) => reject(error),
+        );
+      }, options.timeoutMs);
+    }
+  });
 
   const stopSignals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM'];
   const onSignal = (signal: NodeJS.Signals) => {
@@ -467,26 +529,62 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
   timer.unref();
 
   const stopDiagnostics = async () => {
+    if (diagnosticsStopped) return;
     diagnosticsStopped = true;
     clearInterval(timer);
     const activeTask = diagnosticTask;
-    if (activeTask) await activeTask;
+    if (activeTask) {
+      if (options.timeoutMs === undefined) await activeTask;
+      else {
+        let joinTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            activeTask,
+            new Promise<never>((_, reject) => {
+              joinTimer = setTimeout(
+                () => reject(new Error('Diagnostic forwarding did not join')),
+                2_000,
+              );
+            }),
+          ]);
+        } finally {
+          if (joinTimer) clearTimeout(joinTimer);
+        }
+      }
+    }
   };
 
   try {
-    const [exitCode] = await Promise.all([child.exited, forwardStdout, forwardStderr]);
+    const [exitCode] = await Promise.race([
+      Promise.all([child.exited, forwardStdout, forwardStderr]),
+      deadline,
+    ]);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    if (deadlineExpired) {
+      await startCleanup('SIGTERM');
+      throw new Error('CI child deadline exceeded');
+    }
     await stopDiagnostics();
     if (cleanupPromise) await cleanupPromise;
     if (diagnosticWriteError) throw diagnosticWriteError;
+    if (options.timeoutMs !== undefined && groupAlive(child.pid)) {
+      await startCleanup('SIGTERM');
+      throw new Error('Child left an owned descendant after exit');
+    }
     return {
+      pid: child.pid,
+      cleanupVerified: options.timeoutMs !== undefined && !groupAlive(child.pid),
       exitCode: interruptedBy ? 128 + (interruptedBy === 'SIGINT' ? 2 : 15) : (exitCode ?? 1),
       lastTestFile: headerState.last,
+      testFiles: headerState.files,
+      ownerLines: headerState.ownerLines,
     };
   } catch (error) {
     await startCleanup('SIGTERM');
     await stopDiagnostics();
     throw error;
   } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
     await stopDiagnostics();
     for (const signal of stopSignals) process.off(signal, onSignal);
   }
