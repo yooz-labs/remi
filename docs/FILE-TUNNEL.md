@@ -248,9 +248,39 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 | Operation | Candidate frames and effect | Gate and availability |
 |---|---|---|
 | Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. The owner accepted the original expiry in ADR0042. The installed corrected route, direct host and explicit web caller are verified separately; native conformance is still required for native availability. |
-| File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The current source composes strict original-byte ingress, the managed journal, actual Claude/Codex session lifetimes and an explicit web Save caller on authenticated WSS. Capability readiness belongs to the concrete attached connection and known binding. Coherent runtime, compiled Linux, independent review and fresh hosted gates precede release. Native, operator certificate setup and relay acceptance remain separate. |
+| File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The source composes strict original-byte ingress, the managed journal, actual Claude/Codex session lifetimes and explicit web Save over signed direct WSS and the authenticated encrypted relay channel. Relay readiness is tied to the enrolled device, child attachment and binding. Local Worker/HubRelay/ChildProxy and rendered app checks cover 10 MiB Save, digest verification, cancellation and context loss. Deployed Worker, native-device and physical-device acceptance remain separate. |
 | Link forwarding | Accepted ADR0044: `browser_link_receiver_request/result/ended` and `browser_link_candidate`; exclusive explicit Receive, bounded canonical HTTP(S) destination and a separate client Open choice. | The source now composes the Claude BROWSER producer and the explicit web receiver over both the signed public-TLS direct path and the authenticated encrypted relay channel. Relay tests use the source Worker under Miniflare, HubRelay, the child proxy and the actual app; browser checks cover selection, explicit Open, replacement and natural expiry. No plaintext fallback. Deployed Worker, native-device, Codex-producer, installed-consumer and operator PKI acceptance remain separate. |
 | Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
+
+### Encrypted relay file-download delivery (2026-10-15)
+
+The file-fetch frames now travel through the existing v2 encrypted machine
+channel to the actual child daemon. The relay Worker forwards opaque encrypted
+frames and transport metadata; it does not parse the file contents. The hub
+preserves the original frame bytes until the child’s strict ingress validates
+the operation, and a possible child send stays owned by that channel so a lost
+child cannot make the download request replay on a replacement.
+
+Local source acceptance constructs the source Worker under Miniflare, HubRelay,
+ChildProxy, actual Remi daemon/PTY children with owned Claude- and Codex-shaped
+test consumers, and the actual web app. Both harnesses transfer and save a 10
+MiB file after independent digest verification. Rendered
+browser checks cover 390×844, 768×1024 and 1440×900, with cancellation, explicit
+Save, refusal, busy-session and lost-context states. No transfer automatically
+opens or saves a downloaded file; the browser download starts only after the
+user clicks Save.
+
+The local source suite also exposed authorization-lock contention during
+private-copy I/O. Bounded private read/write and digest chunks now run outside
+the grant lock, with a fresh authority check before and after each chunk. The
+final journal flush also runs outside the lock; a fresh check precedes opening
+the private reader. This staging interval exposes no path or sends no file bytes,
+and relay authority checks can proceed while it runs.
+The focused relay/link/download source population passed 143 tests across 11
+files with zero failures, including held-No responsiveness during an active
+10 MiB pull. These results do not establish deployed Cloudflare behavior, Swift
+conformance, physical-device UI, empty-file support or larger payloads. Keep
+#1170 open for those scopes.
 
 ## Spike plan and Xcode handoff
 

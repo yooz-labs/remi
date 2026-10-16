@@ -3483,8 +3483,13 @@ function App() {
         onOpen: (id) => openBrowserLink(activeSession.connectionId, id, activeSession.id),
       }}
       fileDownload={{
-        available: activeConnection?.mode === 'direct' && activeConnection.sessionId === activeSession.id &&
-          !!activeConnection.fileDownloadAvailable,
+        available: activeConnection?.mode === 'relay'
+          ? !!activeConnection.relayFileDownloadSessions?.includes(activeSession.id)
+          : activeConnection?.sessionId === activeSession.id && !!activeConnection.fileDownloadAvailable,
+        unavailableMessage: activeConnection?.mode === 'relay' &&
+          activeConnection.relayFileDownloadBusySessionId &&
+          activeConnection.relayFileDownloadBusySessionId !== activeSession.id
+          ? 'A download is active in another session. Finish or discard it there.' : undefined,
         canCancel: activeConnection?.fileDownloadSessionId === activeSession.id && !!activeConnection.fileDownloadCanCancel,
         state: activeConnection?.fileDownloadSessionId === activeSession.id
           ? activeConnection.fileDownloadState ?? {phase: 'idle'} : {phase: 'idle'},

@@ -6,12 +6,19 @@ import { join } from 'node:path';
 import {
   type FileDownloadMessage,
   type FileFetchAccepted,
+  type ProtocolMessage,
+  createHello,
+  decodeFileDownloadFrame,
+  deserialize,
   encodeFileDownloadFrame,
 } from '@remi/shared';
 import { resumed } from '../../../../tests/integration/relay-r3-fixture.ts';
+import { loadOrCreateCapabilityToken } from '../../src/auth/capability-token';
+import { SessionRegistryFile } from '../../src/session/session-registry-file';
 import {
   type FileDownloadIngressResources,
   makeFileDownloadIngressFixture,
+  relayFileDownloadFixture,
   until,
 } from '../helpers/file-download-ingress-fixture.ts';
 const cleanups: (() => Promise<void>)[] = [];
@@ -413,56 +420,170 @@ test('raw original grant epoch, attachment and runtime loss cannot send a specif
   }
 }, 15000);
 
-test('actual enrolled relay rejects all four download client types at its invalid-message boundary', async () => {
-  for (const type of [
-    'file_fetch_begin',
-    'file_fetch_read',
-    'file_fetch_complete',
-    'file_fetch_cancel',
-  ] as const) {
-    const f = await fixture();
-    let invoked = 0;
-    const remote = await resumed({
-      onFileDownload() {
-        invoked++;
-      },
-    });
-    try {
-      const envelope = {
-        id: randomUUID(),
-        timestamp: new Date().toISOString(),
-        sessionId: f.sessionId,
-      };
-      const request =
-        type === 'file_fetch_begin'
-          ? { ...envelope, type, binding: f.binding, relativePath: 'sample.bin' }
-          : type === 'file_fetch_cancel'
-            ? { ...envelope, type, beginId: randomUUID() }
-            : type === 'file_fetch_read'
-              ? {
-                  ...envelope,
-                  type,
-                  transferId: Buffer.alloc(16).toString('base64url'),
-                  seq: 0,
-                  receivedBytes: 0,
-                }
-              : {
-                  ...envelope,
-                  type,
-                  transferId: Buffer.alloc(16).toString('base64url'),
-                  receivedBytes: 1,
-                  digest: Buffer.alloc(32).toString('base64url'),
-                };
-      await remote.channel.send(new TextEncoder().encode(encodeFileDownloadFrame(request)));
-      await until(() => remote.socket.isClosed || invoked > 0, 'relay unsupported download');
-      expect(remote.socket.isClosed, 'relay rejects download before virtual dispatch').toBe(true);
-      expect(invoked).toBe(0);
-      expect(f.ledger().inspect()).toEqual([]);
-    } finally {
-      await remote.cleanup();
+test('actual enrolled relay correlates all four terminal refusals for unknown and unverified children without ACK or effects', async () => {
+  for (const childState of ['unknown', 'unverified'] as const) {
+    for (const type of [
+      'file_fetch_begin',
+      'file_fetch_read',
+      'file_fetch_complete',
+      'file_fetch_cancel',
+    ] as const) {
+      const f = await fixture({ tls: false });
+      let invoked = 0;
+      const remote = await resumed({
+        onFileDownload() {
+          invoked++;
+        },
+      });
+      try {
+        if (childState === 'unverified') {
+          // A real source child receives a different owned capability and must challenge/refuse
+          // this proxy. Its actual file handler must never receive the original request.
+          loadOrCreateCapabilityToken(join(remote.dir, 'capability.key'));
+          new SessionRegistryFile(join(remote.dir, 'live')).register({
+            sessionId: f.sessionId,
+            pid: process.pid,
+            wsPort: f.port,
+            hookPort: 1,
+            projectPath: f.files.work,
+            name: 'owned-unverified',
+            startedAt: new Date().toISOString(),
+          });
+        }
+        const envelope = {
+          id: randomUUID(),
+          timestamp: new Date().toISOString(),
+          sessionId: f.sessionId,
+        };
+        const request =
+          type === 'file_fetch_begin'
+            ? { ...envelope, type, binding: f.binding, relativePath: 'sample.bin' }
+            : type === 'file_fetch_cancel'
+              ? { ...envelope, type, beginId: randomUUID() }
+              : type === 'file_fetch_read'
+                ? {
+                    ...envelope,
+                    type,
+                    transferId: Buffer.alloc(16).toString('base64url'),
+                    seq: 0,
+                    receivedBytes: 0,
+                  }
+                : {
+                    ...envelope,
+                    type,
+                    transferId: Buffer.alloc(16).toString('base64url'),
+                    receivedBytes: 1,
+                    digest: Buffer.alloc(32).toString('base64url'),
+                  };
+        await remote.channel.send(new TextEncoder().encode(encodeFileDownloadFrame(request)));
+        const received: ProtocolMessage[] = [];
+        let terminal: FileDownloadMessage | null = null;
+        for (let i = 0; i < 8 && !terminal; i++) {
+          const bytes = await remote.channel.receive(await remote.socket.binary());
+          if (!bytes) throw Error('Owned relay closed before correlated terminal');
+          const message = deserialize(
+            new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+          );
+          if (!message) throw Error('Owned relay response absent');
+          received.push(message);
+          terminal = decodeFileDownloadFrame(bytes);
+          if (!terminal) {
+            // ChildProxy may separately announce the unverified socket's close.
+            expect(message.type === 'error' && message.code).toBe('SESSION_NOT_FOUND');
+            expect(message.type === 'error' && message.details?.['sessionId']).toBe(f.sessionId);
+          }
+        }
+        expect(terminal).toMatchObject({
+          type: 'file_fetch_refused',
+          requestId: envelope.id,
+          operation: type,
+          sessionId: f.sessionId,
+          code: 'unavailable',
+        });
+        const late = await remote.socket.next(80).catch(() => undefined);
+        if (late) {
+          const bytes = await remote.channel.receive(late);
+          const message = bytes
+            ? deserialize(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes))
+            : null;
+          if (!message) throw Error('Owned late child close notice absent');
+          received.push(message);
+          expect(message.type === 'error' && message.code).toBe('SESSION_NOT_FOUND');
+          expect(message.type === 'error' && message.details?.['sessionId']).toBe(f.sessionId);
+        }
+        expect(received.some((message) => message.type === 'ack')).toBe(false);
+        expect(remote.socket.isClosed).toBe(false);
+        expect(invoked).toBe(0);
+        expect(f.invocations).toEqual([]);
+        expect(f.ledger().inspect()).toEqual([]);
+      } finally {
+        await remote.cleanup();
+      }
     }
   }
 }, 30000);
+
+test('actual consumed file child loss ends the relay instead of claiming a pre-send refusal', async () => {
+  const f = await relayFileDownloadFixture();
+  try {
+    const peer = await f.connect();
+    await peer.send(createHello('owned-file-loss', 'T4', { resumeSessionId: f.sessionId }));
+    expect((await peer.next()).type).toBe('hello_ack');
+    f.write('owned consumed file bytes');
+    const begin = {
+      type: 'file_fetch_begin' as const,
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      sessionId: f.sessionId,
+      binding: f.binding,
+      relativePath: 'sample.bin',
+    };
+    await peer.channel.send(new TextEncoder().encode(encodeFileDownloadFrame(begin)));
+    const value = await peer.next();
+    expect(value.type).toBe('file_fetch_accepted');
+    expect('requestId' in value && value.requestId).toBe(begin.id);
+    const owners = [
+      ...(
+        Reflect.get(f.relay, 'peers') as Map<
+          string,
+          { proxy: { children: Map<string, { stateOwner: boolean }> } }
+        >
+      ).values(),
+    ].flatMap((owner) => [...owner.proxy.children.values()].map((child) => child.stateOwner));
+    expect(owners).toEqual([true]);
+    await f.adapter.stop(); // Real already-consumed child socket; never move to a replacement.
+    await until(() => peer.socket.isClosed, 'consumed file owner channel retired');
+    const close = await peer.socket.closed;
+    const tailTypes: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const frame = await peer.socket.next(80).catch(() => undefined);
+      if (!frame) break;
+      const bytes = await peer.channel.receive(frame);
+      if (!bytes) {
+        tailTypes.push('authenticated-bye');
+        break;
+      }
+      const message = deserialize(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+      );
+      if (!message) throw Error('Owned closing frame invalid');
+      tailTypes.push(message.type);
+      expect(message.type).not.toBe('file_fetch_refused');
+    }
+    expect(tailTypes.length).toBeLessThan(8);
+    console.info('Owned consumed file-loss transport', JSON.stringify({ close, tailTypes }));
+    expect(f.relay.connectionCount).toBe(0);
+    await f.service.maintain();
+    expect(
+      f
+        .ledger()
+        .inspect()
+        .every((row) => row.state === 'settled' && row.charge === 0),
+    ).toBe(true);
+  } finally {
+    await f.close();
+  }
+}, 15000);
 
 test('unrecognized BOM and invalid-leading UTF8 preserve generic INVALID_MESSAGE without a download effect', async () => {
   const f = await fixture();

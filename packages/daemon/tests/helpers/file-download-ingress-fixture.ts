@@ -7,8 +7,10 @@ import {
   type FileDownloadMessage,
   createAuthResponse,
   createHello,
+  createHelloAck,
   createIdentity,
   createPong,
+  createSessionListResponse,
   decodeFileDownloadFrame,
   fromBase64,
   serialize,
@@ -18,15 +20,18 @@ import {
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter.ts';
 import { MessageAPI } from '../../src/api/message-api.ts';
 import { Authenticator } from '../../src/auth/authenticator.ts';
-import { CAPABILITY_HEADER } from '../../src/auth/capability-token.ts';
+import { CAPABILITY_HEADER, loadOrCreateCapabilityToken } from '../../src/auth/capability-token.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
+import { buildSessionList } from '../../src/cli/handlers/session-list-entries.ts';
+import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
+import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import { FileDownloadService } from '../../src/tunnel/file-download-service.ts';
 import { Reservations } from '../../src/tunnel/reservations.ts';
-import { until } from './browser-link-service-fixture.ts';
+import { relayMachineFixture, until } from './browser-link-service-fixture.ts';
 import { directTlsFixture } from './direct-tls-fixture.ts';
 export { until };
 export interface FileDownloadIngressResources {
@@ -40,6 +45,7 @@ export interface FileDownloadIngressResources {
 export async function makeFileDownloadIngressFixture(
   options: {
     tls?: boolean;
+    relay?: boolean;
     installed?: boolean;
     harness?: 'claude' | 'codex';
     callbackFailure?: boolean | 'async';
@@ -91,13 +97,20 @@ export async function makeFileDownloadIngressFixture(
       throw new AggregateError(errors, 'Owned raw download fixture cleanup failed');
   }
   try {
-    const trust = new IdentityStore(join(files.home, 'auth'));
+    const trust = new IdentityStore(options.relay ? files.home : join(files.home, 'auth'));
     await trust.generate();
+    const relayAuthority = new SecurePushStore(files.home, trust);
+    const capability = options.relay
+      ? loadOrCreateCapabilityToken(join(files.home, 'capability.key'))
+      : 'owned-download-capability';
     const authenticator = new Authenticator({
       identity: await trust.unlock(),
       identityStore: trust,
     });
     const registry = new SessionRegistry();
+    const transcriptDiscovery = new TranscriptDiscovery({
+      projectsDir: join(files.userHome, '.claude', 'projects'),
+    });
     const sessionId = randomUUID();
     const binding = { harness: options.harness ?? 'claude', harnessSessionId: randomUUID() };
     consumerExit = new Promise<void>((resolve) => {
@@ -145,14 +158,37 @@ export async function makeFileDownloadIngressFixture(
         host: '127.0.0.1',
         port,
         authenticator,
-        capabilityToken: 'owned-download-capability',
+        capabilityToken: capability,
         ...(options.tls !== false && { tls: files.tls, localControl: { home: files.home } }),
       },
       {
         onConnect(id) {
           registry.attachConnection(sessionId, id);
           connectionIds.push(id);
+          if (options.relay)
+            adapter?.sendRaw(
+              id,
+              createHelloAck('owned', sessionId, {
+                attachState: 'attached',
+                binding: { identity: binding, transcriptPath: null },
+                capabilities: service?.isAvailable(id) ? ['file_download'] : [],
+              }),
+            );
         },
+        ...(options.relay && {
+          onSessionListRequest(id: string, requestId: string, includeExternal: boolean) {
+            const { own, external } = buildSessionList(
+              {
+                sessionRegistry: registry,
+                bindingStore: bindings,
+                transcriptDiscovery,
+                harness: { transcriptPath: () => null },
+              },
+              includeExternal,
+            );
+            adapter?.sendRaw(id, createSessionListResponse([...own, ...external], requestId));
+          },
+        }),
         onDisconnect(id) {
           const work = service?.invalidateConnection(id);
           if (work) {
@@ -192,14 +228,21 @@ export async function makeFileDownloadIngressFixture(
       bindings,
       directAdapter: () => realAdapter,
       contextFor: (id) => (id === sessionId ? context : null),
+      ...(options.relay && { relayAuthority }),
     });
     const core = service;
     options.observe?.({ files, pty: ownedPTY, consumerExit, adapter: realAdapter, service: core });
     await adapter.start();
-    const identity = await unlockIdentity(await createIdentity());
+    const storedIdentity = await createIdentity();
+    const identity = await unlockIdentity(storedIdentity);
     await trust.addAuthorizedKey(identity.publicKeyRaw, 'owned download peer');
     async function client(
-      extra: { private?: boolean; capability?: boolean; unsigned?: boolean } = {},
+      extra: {
+        private?: boolean;
+        capability?: boolean;
+        unsigned?: boolean;
+        headers?: Record<string, string>;
+      } = {},
     ) {
       const endpoint = extra.private
         ? JSON.parse(fs.readFileSync(join(files.home, 'local-endpoints', `${port}.json`), 'utf8'))
@@ -208,7 +251,7 @@ export async function makeFileDownloadIngressFixture(
       const secure = !extra.private && options.tls !== false;
       const ws = new WebSocket(`${secure ? 'wss' : 'ws'}://127.0.0.1:${endpoint}/ws`, {
         ...(secure && { tls: { ca: files.ca } }),
-        headers: extra.capability ? { [CAPABILITY_HEADER]: 'owned-download-capability' } : {},
+        headers: { ...extra.headers, ...(extra.capability && { [CAPABILITY_HEADER]: capability }) },
       } as never);
       sockets.push(ws);
       const frames: FileDownloadMessage[] = [];
@@ -354,6 +397,8 @@ export async function makeFileDownloadIngressFixture(
       files,
       trust,
       identity,
+      storedIdentity,
+      relayAuthority,
       registry,
       bindings,
       binding,
@@ -382,3 +427,9 @@ export async function makeFileDownloadIngressFixture(
 }
 
 export type FileDownloadIngressFixture = Awaited<ReturnType<typeof makeFileDownloadIngressFixture>>;
+
+/** Actual strict file service child behind the same owned relay machine transport. */
+export async function relayFileDownloadFixture(options: { harness?: 'claude' | 'codex' } = {}) {
+  const f = await makeFileDownloadIngressFixture({ ...options, tls: false, relay: true });
+  return relayMachineFixture(f);
+}

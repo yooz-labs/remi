@@ -12,6 +12,7 @@ import type { SecurePushStore } from '../notifications/secure-push-store.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
 import type { SessionBindingStore } from '../session/session-binding-store.ts';
 import type { SessionRegistry } from '../session/session-registry.ts';
+import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import {
   type BrowserLinkProducerContext,
   BrowserLinkProducerRuntime,
@@ -19,6 +20,7 @@ import {
 import type { BrowserLinkService } from './browser-link-service.ts';
 
 const FAILURE = 'Browser link session unavailable';
+const admissionGrantGraceWord = new Int32Array(new SharedArrayBuffer(4));
 interface RecordState {
   readonly id: UUID;
   readonly producer: BrowserLinkProducerRuntime;
@@ -96,15 +98,36 @@ export class BrowserLinkSessionHost {
     const key = connectionDeviceKey(connection);
     if (!key) return true; // Existing local-capability/query path has no device actor.
     try {
-      const capture = (migrate = false) =>
-        identityStore.withAuthorizationEpochNonblocking(
-          key,
-          (grant) => {
-            const actor = connectionDeviceIdentityInsideLock(connection, grant, relayAuthority);
-            return actor && grant ? { ...actor, grant } : null;
-          },
-          migrate,
-        );
+      const capture = (migrate = false) => {
+        const deadline = performance.now() + 50;
+        for (let attempt = 0; ; attempt++) {
+          let callbackEntered = false;
+          try {
+            return identityStore.withAuthorizationEpochNonblocking(
+              key,
+              (grant) => {
+                callbackEntered = true;
+                const actor = connectionDeviceIdentityInsideLock(connection, grant, relayAuthority);
+                return actor && grant ? { ...actor, grant } : null;
+              },
+              migrate,
+            );
+          } catch (error) {
+            // Wait for acquisition only; never repeat an entered authorization callback.
+            const remaining = deadline - performance.now();
+            if (
+              callbackEntered ||
+              !(error instanceof InterprocessFileLockError) ||
+              !error.retryable ||
+              attempt === 50 ||
+              remaining <= 0
+            )
+              throw error;
+            Atomics.wait(admissionGrantGraceWord, 0, 0, Math.min(1, remaining));
+            if (performance.now() >= deadline) throw error;
+          }
+        }
+      };
       const original = capture(true);
       const ready = this.pending ? await this.waitForStartup() : this.startupSucceeded;
       const current = capture();

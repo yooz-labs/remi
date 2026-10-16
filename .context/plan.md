@@ -1,6 +1,6 @@
 # Plan: the roadmap
 
-Updated 2026-10-14.
+Updated 2026-10-15.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
@@ -13,6 +13,7 @@ The work itself lives in GitHub milestones and issues; standing decisions live i
 - **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
   later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
   and future distribution scope.
+- **Relay file-download follow-up (#1170 T3):** accepted ADR0045 fetches now route through the existing encrypted relay channel for Claude and Codex child sessions, with an explicit Save after client digest verification. Local source Worker/HubRelay/ChildProxy and rendered app checks cover 10 MiB transfers. Deployed Worker behavior, native clients, physical-device acceptance, empty files and larger limits remain separate.
 - **Released on GitHub:** [0.7.16](https://github.com/yooz-labs/remi/releases/tag/v0.7.16), published 2026-10-07.
 - **On develop (0.7.17-dev), ahead of the stable release:**
   - no local judge: Claude Code decides permissions, remi relays them (#1125, ADR 0030);

@@ -15,7 +15,7 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import { IdentityStore } from '../../src/auth/identity-store';
-import { until } from './browser-link-service-fixture';
+import { relayMachineFixture, until } from './browser-link-service-fixture';
 import { threadStartedFrame, threadStatusFrame } from './codex-threads';
 import { directTlsFixture } from './direct-tls-fixture';
 import { installFakeAgents } from './fake-agent-clis';
@@ -26,8 +26,11 @@ export async function fileDownloadCliFixture(
     harness?: 'claude' | 'codex';
     known?: boolean;
     tls?: boolean;
+    relay?: 'flag' | 'config' | 'off';
     mode?: 'daemon' | 'wrapper';
     command?: readonly string[];
+    projectName?: string;
+    threadNamespace?: string;
     port?: number;
     observe?: (owned: {
       readonly files: ReturnType<typeof directTlsFixture>;
@@ -36,6 +39,24 @@ export async function fileDownloadCliFixture(
   } = {},
 ) {
   const files = directTlsFixture();
+  if (options.threadNamespace !== undefined && !/^[0-9a-f]{8}$/u.test(options.threadNamespace)) {
+    files.cleanup();
+    throw new Error('Owned Codex thread namespace invalid');
+  }
+  if (options.projectName !== undefined) {
+    if (!/^[a-z][a-z0-9-]{0,63}$/u.test(options.projectName)) {
+      files.cleanup();
+      throw new Error('Owned download project basename invalid');
+    }
+    try {
+      const work = join(files.directory, options.projectName);
+      fs.renameSync(files.work, work);
+      files.work = work;
+    } catch (error) {
+      files.cleanup();
+      throw error;
+    }
+  }
   const sockets = new Set<WebSocket>();
   let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'> | undefined;
   let server: FakeAppServer | undefined;
@@ -180,8 +201,11 @@ export async function fileDownloadCliFixture(
     fs.mkdirSync(join(files.userHome, harness === 'claude' ? '.claude' : '.codex'), {
       mode: 0o700,
     });
-    if (options.tls === false)
-      fs.writeFileSync(files.configPath, files.config.replace(files.tlsTable, ''));
+    let configuration =
+      options.tls === false ? files.config.replace(files.tlsTable, '') : files.config;
+    if (options.relay === 'config' || options.relay === 'off')
+      configuration = configuration.replace('relay=false', 'relay=true');
+    fs.writeFileSync(files.configPath, configuration);
     const agents = installFakeAgents(files.directory, { [harness]: true });
     completedArgv = join(agents.codexDir, 'argv');
     const bin = agents.env['PATH']?.split(':')[0];
@@ -218,7 +242,12 @@ await new Promise<void>((resolve)=>{
       `#!/bin/sh\nexec '${process.execPath}' '${consumer}' "$@"\n`,
       { mode: 0o700 },
     );
-    if (harness === 'codex') server = FakeAppServer.start();
+    if (harness === 'codex') {
+      server = FakeAppServer.start();
+      // Download acceptance is independent of transcript history; model an empty Codex history
+      // instead of surfacing the fake server's unrelated method-not-found warning in the App.
+      server.onRequest('thread/items/list', () => ({ data: [], nextCursor: null }));
+    }
     const trust = new IdentityStore(files.home);
     await trust.generate();
     const identity = await createIdentity();
@@ -247,7 +276,11 @@ await new Promise<void>((resolve)=>{
         '--dir',
         files.work,
         '--no-mdns',
-        '--no-relay',
+        ...(options.relay === 'flag'
+          ? ['--relay']
+          : options.relay === 'config'
+            ? []
+            : ['--no-relay']),
         '--no-telegram',
       ],
       {
@@ -286,7 +319,7 @@ await new Promise<void>((resolve)=>{
       if (!server) throw new Error('Owned Codex server absent');
       if (currentThread)
         server.emit(threadStatusFrame(currentThread, { type: 'idle' }), { broadcast: true });
-      const id = `01950000-0000-7000-8000-${(thread++).toString(16).padStart(12, '0')}`;
+      const id = `${options.threadNamespace ?? '01950000'}-0000-7000-8000-${(thread++).toString(16).padStart(12, '0')}`;
       server.emit(
         threadStartedFrame('tui', {
           id,
@@ -378,6 +411,41 @@ await new Promise<void>((resolve)=>{
       await close();
     } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Owned download CLI startup failed');
+    }
+    throw error;
+  }
+}
+
+/** Actual shipping source CLI child on the same owned encrypted relay transport. */
+export async function relayFileDownloadCliFixture(
+  options: NonNullable<Parameters<typeof fileDownloadCliFixture>[0]> = {},
+) {
+  const f = await fileDownloadCliFixture({
+    ...options,
+    tls: false,
+    relay: options.relay ?? 'flag',
+  });
+  let delegated = false;
+  try {
+    const monitoring = await f.peer();
+    const sessionId = monitoring.hello().sessionId;
+    if (!sessionId) throw Error('Owned CLI session absent');
+    const identity = await unlockIdentity(f.identity);
+    delegated = true;
+    return await relayMachineFixture({
+      ...f,
+      identity,
+      storedIdentity: f.identity,
+      sessionId,
+      pid: f.proc.pid,
+    });
+  } catch (error) {
+    if (!delegated) {
+      try {
+        await f.close();
+      } catch (cleanup) {
+        throw new AggregateError([error, cleanup], 'Owned relay CLI startup cleanup failed');
+      }
     }
     throw error;
   }

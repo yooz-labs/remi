@@ -14,6 +14,7 @@ import {
   createSessionUpdate,
   createUserInput,
   deserialize,
+  encodeFileDownloadFrame,
   generateId,
   serialize,
 } from '@remi/shared';
@@ -33,6 +34,7 @@ async function fixture(sessionId = 'owned-child') {
   const token = loadOrCreateCapabilityToken(join(dir, 'capability.key'));
   const requests = new Mailbox<{
     message: ProtocolMessage;
+    raw: string;
     reply: (message: ProtocolMessage) => void;
     close: () => void;
   }>();
@@ -56,6 +58,7 @@ async function fixture(sessionId = 'owned-child') {
         if (!message) throw new Error('INVALID_FIXTURE_REQUEST');
         requests.push({
           message,
+          raw: String(data),
           close: () => ws.close(),
           reply: (value) => {
             ws.send(serialize(value));
@@ -335,6 +338,88 @@ test('browser request consumes child ownership before send and actual socket los
     await expect(f.proxy.send(f.entry.sessionId, createHello('owned', 'T4'))).rejects.toThrow(
       'SESSION_NOT_FOUND',
     );
+    expect(await f.requests.quiet(80)).toBe(true);
+  } finally {
+    f.cleanup();
+  }
+}, 3000);
+
+for (const operation of [
+  'file_fetch_begin',
+  'file_fetch_read',
+  'file_fetch_complete',
+  'file_fetch_cancel',
+] as const)
+  test(`original raw ${operation} consumes child state before possible send and socket loss`, async () => {
+    const f = await fixture(randomUUID());
+    try {
+      const envelope = {
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        sessionId: f.entry.sessionId,
+      };
+      const request =
+        operation === 'file_fetch_begin'
+          ? {
+              ...envelope,
+              type: operation,
+              binding: { harness: 'claude' as const, harnessSessionId: randomUUID() },
+              relativePath: 'owned.bin',
+            }
+          : operation === 'file_fetch_cancel'
+            ? { ...envelope, type: operation, beginId: randomUUID() }
+            : operation === 'file_fetch_read'
+              ? {
+                  ...envelope,
+                  type: operation,
+                  transferId: Buffer.alloc(16).toString('base64url'),
+                  seq: 0,
+                  receivedBytes: 0,
+                }
+              : {
+                  ...envelope,
+                  type: operation,
+                  transferId: Buffer.alloc(16).toString('base64url'),
+                  receivedBytes: 1,
+                  digest: Buffer.alloc(32).toString('base64url'),
+                };
+      const original = `  ${encodeFileDownloadFrame(request)}\n`;
+      const pending = f.proxy.sendFileDownload(f.entry.sessionId, original);
+      const child = await f.requests.next();
+      child.reply(f.ack());
+      await pending;
+      const sent = await f.requests.next();
+      expect(sent.raw).toBe(original);
+      expect(sent.message.type).toBe(operation);
+      sent.close();
+      const end = performance.now() + 500;
+      while (!f.ownerLosses.length && performance.now() < end) await Bun.sleep(5);
+      expect(f.ownerLosses).toEqual([true]);
+      await expect(f.proxy.sendFileDownload(f.entry.sessionId, original)).rejects.toThrow(
+        'SESSION_NOT_FOUND',
+      );
+      expect(await f.requests.quiet(80)).toBe(true);
+    } finally {
+      f.cleanup();
+    }
+  }, 3000);
+
+test('raw file send rechecks actual actor after held child hello before original units are sent', async () => {
+  const f = await fixture(randomUUID());
+  try {
+    const original = encodeFileDownloadFrame({
+      type: 'file_fetch_cancel',
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      sessionId: f.entry.sessionId,
+      beginId: randomUUID(),
+    });
+    const pending = f.proxy.sendFileDownload(f.entry.sessionId, original);
+    void pending.catch(() => {});
+    const child = await f.requests.next();
+    f.revoke();
+    child.reply(f.ack());
+    await expect(pending).rejects.toThrow('CHILD_UNAVAILABLE');
     expect(await f.requests.quiet(80)).toBe(true);
   } finally {
     f.cleanup();
