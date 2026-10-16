@@ -343,7 +343,7 @@ struct MacLiveRootView: View {
     }
 
     private var selectedMachine: MachineState? {
-        store.machines.first { $0.id == selectedMachineID } ?? store.machines.first
+        store.machine(withIdentifier: selectedMachineID) ?? store.machines.first
     }
 
     private func presentNewSession(repository: String? = nil) {
@@ -392,7 +392,7 @@ struct MacLiveRootView: View {
 
     private func reconcileNavigation() {
         if let destination = notificationDestination {
-            guard let machine = store.machines.first(where: { $0.id == destination.machineID }) else {
+            guard let machine = store.machine(withIdentifier: destination.machineID) else {
                 return
             }
             selectedMachineID = machine.id
@@ -405,7 +405,7 @@ struct MacLiveRootView: View {
             ).column
             return
         }
-        if !store.machines.contains(where: { $0.id == selectedMachineID }) {
+        if store.machine(withIdentifier: selectedMachineID) == nil {
             selectedMachineID = store.machines.first?.id ?? ""
         }
         guard selectedMachine?.hasLoadedSessions == true else { return }
@@ -426,6 +426,7 @@ struct MacLiveRootView: View {
     private func machinePresentation(_ machine: MachineState) -> RemiMachineSummary {
         RemiMachineSummary(
             id: machine.id,
+            machineIdentityID: machine.machineDescriptor?.id,
             name: machine.displayName,
             address: machine.endpoint.displayAddress,
             reachability: reachability(machine.status),
@@ -499,6 +500,7 @@ struct MacLiveRootView: View {
             return RemiSessionSummary(
                 id: session.sessionId,
                 machineID: machine.id,
+                machineIdentityID: session.machineId ?? machine.machineDescriptor?.id,
                 machineName: machine.displayName,
                 name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                 harness: session.harness ?? "claude",
@@ -529,7 +531,7 @@ struct MacLiveRootView: View {
     }
 
     private func resume(_ session: RemiSessionSummary) {
-        guard let machine = store.machines.first(where: { $0.id == session.machineID }) else { return }
+        guard let machine = store.machine(withIdentifier: session.machineID) else { return }
         selectedMachineID = machine.id
         selectedSessionID = session.id
         pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: session.id)
@@ -572,6 +574,7 @@ struct MacLiveRootView: View {
                 text: question.text,
                 detail: question.detail,
                 machineID: machine.id,
+                machineIdentityID: machine.machineDescriptor?.id,
                 machineName: machine.displayName,
                 sessionID: message.sessionId,
                 sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
@@ -2018,7 +2021,6 @@ private var workspacePreviewMachine: MachineState {
     )
     .frame(width: 620, height: 720)
     .environment(\.dynamicTypeSize, .accessibility5)
-    .environment(\.accessibilityReduceTransparency, true)
 }
 
 private var workspacePreviewSessions: [RemiSessionSummary] {
@@ -2052,7 +2054,7 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     ]
 }
 
-private var rejectedRelayMachineDraft: AddMachineDraft {
+@MainActor private var rejectedRelayMachineDraft: AddMachineDraft {
     struct Rejected: Error {}
     let draft = AddMachineDraft { _ in throw Rejected() }
     draft.mode = .relay

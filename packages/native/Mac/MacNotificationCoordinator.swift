@@ -185,7 +185,7 @@ enum MacNotificationCoordinator {
                 ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
                 : QuestionNotificationSummarizer.fallback(for: body)
         }
-        guard store.machines.first(where: { $0.id == destination.machineID })?.questions.contains(message) == true else { return }
+        guard store.machine(withIdentifier: destination.machineID)?.questions.contains(message) == true else { return }
         let content = UNMutableNotificationContent()
         content.title = PushDisplayText.escape(title)
         content.body = PushDisplayText.escape(summarizedBody)

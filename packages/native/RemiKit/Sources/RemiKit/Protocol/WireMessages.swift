@@ -86,6 +86,7 @@ public struct HelloAckMessage: Decodable, Sendable, Equatable {
     public let nextBulletId: Int?
     public let attachState: String?
     public let daemonVersion: String?
+    public let machine: MachineDescriptor?
 }
 
 public struct AuthChallengeMessage: Decodable, Sendable, Equatable {

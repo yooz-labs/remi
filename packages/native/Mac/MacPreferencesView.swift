@@ -358,7 +358,7 @@ struct MacPreferencesView: View {
     }
 
     private var selectedMachine: MachineState? {
-        store.machines.first { $0.id == selectedMachineID }
+        selectedMachineID.flatMap { store.machine(withIdentifier: $0) }
     }
 
     private var renamePresentation: Binding<Bool> {
@@ -374,7 +374,7 @@ struct MacPreferencesView: View {
     }
 
     private func selectAvailableMachine() {
-        if !store.machines.contains(where: { $0.id == selectedMachineID }) {
+        if selectedMachineID.flatMap({ store.machine(withIdentifier: $0) }) == nil {
             selectedMachineID = store.machines.first?.id
         }
     }
@@ -406,7 +406,8 @@ struct MacPreferencesView: View {
 
     private func persistDisplayNames() {
         let names = store.machines.reduce(into: [String: String]()) { result, machine in
-            result[machine.id] = machine.displayName
+            // Endpoint-keyed aliases remain loadable before a legacy/current daemon first answers.
+            result[machine.endpoint.id] = machine.displayName
         }
         MachineConfigurationStore.shared.saveDisplayNames(names)
     }
