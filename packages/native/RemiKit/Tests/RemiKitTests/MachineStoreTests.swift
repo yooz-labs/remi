@@ -98,6 +98,23 @@ struct MachineStoreTests {
         #expect(endpoint.webSocketURL?.absoluteString == "ws://127.0.0.1:18765/ws")
     }
 
+    @Test func machineStateUsesVerifiedDescriptorAndLegacyEndpointFallback() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        var state = MachineState(endpoint: endpoint, displayName: endpoint.displayAddress)
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == endpoint.id)
+        state.apply(MachineDescriptor(
+            id: "00112233445566778899aabbccddeeff",
+            name: "Remi Workstation",
+            platform: "darwin",
+            remiVersion: "0.7.4",
+            harnesses: ["claude"],
+            capabilities: []))
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == "00112233445566778899aabbccddeeff")
+        #expect(state.displayName == "Remi Workstation")
+    }
+
     @Test @MainActor func storeStartsWithEveryConfiguredMachine() {
         let endpoints = [
             MachineEndpoint(host: "127.0.0.1", port: 18765),

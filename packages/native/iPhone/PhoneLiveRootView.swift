@@ -127,6 +127,7 @@ struct PhoneLiveRootView: View {
         store.machines.map { machine in
             RemiMachineSummary(
                 id: machine.id,
+                machineIdentityID: machine.machineDescriptor?.id,
                 name: machine.displayName,
                 address: machine.endpoint.displayAddress,
                 reachability: reachability(machine.status),
@@ -145,6 +146,7 @@ struct PhoneLiveRootView: View {
                 return RemiSessionSummary(
                     id: session.sessionId,
                     machineID: machine.id,
+                    machineIdentityID: session.machineId ?? machine.machineDescriptor?.id,
                     machineName: machine.displayName,
                     name: session.name ?? URL(fileURLWithPath: session.projectPath).lastPathComponent,
                     harness: session.harness ?? "claude",
@@ -180,7 +182,7 @@ struct PhoneLiveRootView: View {
             machine.questions.map { presentation($0, machine: machine) }
         }
         let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
-            guard let machine = store.machines.first(where: { $0.id == record.machineID }) else {
+            guard let machine = store.machine(withIdentifier: record.machineID) else {
                 return nil
             }
             return presentation(
@@ -212,7 +214,7 @@ struct PhoneLiveRootView: View {
         }
         let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
             guard record.message.sessionId == sessionId,
-                  let machine = store.machines.first(where: { $0.id == record.machineID })
+                  let machine = store.machine(withIdentifier: record.machineID)
             else { return nil }
             return presentation(
                 record.message,
@@ -241,6 +243,7 @@ struct PhoneLiveRootView: View {
             text: question.text,
             detail: question.detail,
             machineID: machine.id,
+            machineIdentityID: machine.machineDescriptor?.id,
             machineName: machine.displayName,
             sessionID: message.sessionId,
             sessionName: machine.sessions.first(where: { $0.sessionId == message.sessionId })?.name
@@ -381,7 +384,7 @@ struct PhoneLiveRootView: View {
     }
 
     private func removeMachine(_ machineID: String) {
-        guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
+        guard let machine = store.machine(withIdentifier: machineID) else { return }
         relayNotifications.machineWillChange(machine.endpoint)
         if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
         MachineConfigurationStore.shared.save(store.persistableEndpoints)
@@ -409,7 +412,7 @@ struct PhoneLiveRootView: View {
     }
 
     private func resumeSession(machineID: String, sessionID: String) {
-        guard let machine = store.machines.first(where: { $0.id == machineID }) else { return }
+        guard let machine = store.machine(withIdentifier: machineID) else { return }
         pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: sessionID)
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }

@@ -101,18 +101,40 @@ struct FixtureConformanceTests {
         #expect(list.daemonPorts == [19924, 19925])
     }
 
+    @Test func machineFixturesDecodeWithStableIdentity() throws {
+        let hello = try JSONDecoder().decode(
+            HelloAckMessage.self, from: Self.fixture("hello_ack_machine"))
+        #expect(hello.machine?.id == "00112233445566778899aabbccddeeff")
+        #expect(hello.machine?.name == "Remi Workstation")
+
+        let list = try JSONDecoder().decode(
+            SessionListResponse.self, from: Self.fixture("session_list_response_machine"))
+        #expect(list.machine?.id == hello.machine?.id)
+        #expect(list.sessions.first?.machineId == hello.machine?.id)
+    }
+
+    @Test func legacyHelloOmitsMachineWithoutBreakingDecode() throws {
+        let message = try JSONDecoder().decode(
+            HelloAckMessage.self, from: Self.fixture("hello_ack_legacy"))
+        #expect(message.machine == nil)
+    }
+
     @Test(arguments: [
-        "hello_ack", "hello_ack_legacy", "auth_challenge", "auth_result", "ping",
+        "hello_ack", "hello_ack_legacy", "hello_ack_machine", "auth_challenge", "auth_result", "ping",
         "question_resolved", "question_snapshot", "transcript_content",
         "transcript_load_complete", "session_views", "create_session_response",
         "resume_session_response", "resume_session_response_child",
-        "kill_session_response", "error", "session_update"
+        "kill_session_response", "error", "session_update", "session_list_response_machine"
     ])
     func inboundLiveMessageDecodes(_ name: String) throws {
         let data = try Self.fixture(name)
         switch name {
         case "hello_ack", "hello_ack_legacy":
             _ = try JSONDecoder().decode(HelloAckMessage.self, from: data)
+        case "hello_ack_machine":
+            _ = try JSONDecoder().decode(HelloAckMessage.self, from: data)
+        case "session_list_response_machine":
+            _ = try JSONDecoder().decode(SessionListResponse.self, from: data)
         case "auth_challenge":
             _ = try JSONDecoder().decode(AuthChallengeMessage.self, from: data)
         case "auth_result":

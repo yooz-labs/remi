@@ -81,6 +81,7 @@ public enum RemiPendingQuestionPresentation {
             text: question.text,
             detail: question.detail,
             machineID: machine.id,
+            machineIdentityID: machine.machineDescriptor?.id,
             machineName: machine.displayName,
             sessionID: message.sessionId,
             sessionName: sessionName,

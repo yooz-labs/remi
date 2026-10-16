@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import RemiPush
 
-/// Temporary machine identity until the protocol ships a durable machine object (#1234).
-/// Keeping it behind this value type prevents `host:port` from leaking through app UI APIs.
+/// A configured transport endpoint plus its optional authenticated machine descriptor (#1531).
+/// Legacy daemons still use `host:port` until their descriptor arrives.
 public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
     public var id: String {
         if let relayPin { return "relay:\(relayPin.machinePublicKey)@\(relayPin.relayURL)" }
@@ -116,10 +116,13 @@ public enum MachineConnectionStatus: Sendable, Equatable {
 }
 
 public struct MachineState: Sendable, Equatable, Identifiable {
+    /// Route identity remains the configured endpoint. A stable authenticated machine ID is
+    /// exposed separately so direct and relay routes are not grouped before #1532.
     public var id: String { endpoint.id }
 
     public let endpoint: MachineEndpoint
     public var displayName: String
+    public private(set) var machineDescriptor: MachineDescriptor?
     public var status: MachineConnectionStatus
     public var sessions: [DiscoverableSession]
     public var hasLoadedSessions: Bool
@@ -128,15 +131,27 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
-    public init(endpoint: MachineEndpoint, displayName: String) {
+    public init(endpoint: MachineEndpoint, displayName: String, configuredDisplayName: Bool = false) {
         self.endpoint = endpoint
         self.displayName = displayName
+        machineDescriptor = nil
+        usesConfiguredDisplayName = configuredDisplayName
         status = .disconnected
         sessions = []
         hasLoadedSessions = false
         questions = []
         capabilities = []
         harnesses = ["claude"]
+    }
+
+    /// Stable identity supplied by the authenticated daemon, or the endpoint for legacy peers.
+    public var machineID: String { machineDescriptor?.id ?? endpoint.id }
+
+    var usesConfiguredDisplayName: Bool
+
+    mutating func apply(_ descriptor: MachineDescriptor) {
+        machineDescriptor = descriptor
+        if !usesConfiguredDisplayName { displayName = descriptor.name }
     }
 }
 
@@ -488,7 +503,8 @@ public final class MachineStore {
         machines = endpoints.map {
             MachineState(
                 endpoint: $0.publicConfiguration,
-                displayName: displayNames[$0.id] ?? $0.displayAddress
+                displayName: displayNames[$0.id] ?? $0.displayAddress,
+                configuredDisplayName: displayNames[$0.id] != nil
             )
         }
         for endpoint in endpoints {
@@ -559,7 +575,11 @@ public final class MachineStore {
             relayPairingContexts[publicEndpoint] = (secret, endpoint.relayPairingExpiresAt)
             pushTrustIntents.insert(publicEndpoint)
         }
-        machines.append(MachineState(endpoint: publicEndpoint, displayName: displayName ?? endpoint.displayAddress))
+        machines.append(MachineState(
+            endpoint: publicEndpoint,
+            displayName: displayName ?? endpoint.displayAddress,
+            configuredDisplayName: displayName != nil
+        ))
         connect(publicEndpoint, parent: publicEndpoint)
     }
 
@@ -568,6 +588,7 @@ public final class MachineStore {
         guard !name.isEmpty, name.count <= 80,
               let index = machines.firstIndex(where: { $0.endpoint == endpoint }) else { return }
         machines[index].displayName = name
+        machines[index].usesConfiguredDisplayName = true
     }
 
     @discardableResult public func removeMachine(_ endpoint: MachineEndpoint) -> Bool {
@@ -590,16 +611,17 @@ public final class MachineStore {
         for requestID in resumeRequestIDs {
             finishResume(requestID: requestID, error: nil)
         }
-        resumeErrorsBySession = resumeErrorsBySession.filter { $0.key.machineID != endpoint.id }
-        if resumedSessionDestination?.machineID == endpoint.id {
+        let removedMachine = machines.first { $0.endpoint == endpoint }
+        let machineIDs = Set([endpoint.id, removedMachine?.machineID].compactMap { $0 })
+        resumeErrorsBySession = resumeErrorsBySession.filter { !machineIDs.contains($0.key.machineID) }
+        if let destination = resumedSessionDestination, machineIDs.contains(destination.machineID) {
             resumedSessionDestination = nil
         }
-        let resolvedIDs = recentlyResolvedQuestions.filter { $0.machineID == endpoint.id }.map(\.id)
-        recentlyResolvedQuestions.removeAll { $0.machineID == endpoint.id }
+        let resolvedIDs = recentlyResolvedQuestions.filter { machineIDs.contains($0.machineID) }.map(\.id)
+        recentlyResolvedQuestions.removeAll { machineIDs.contains($0.machineID) }
         for id in resolvedIDs {
             resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
         }
-        let removedMachine = machines.first { $0.endpoint == endpoint }
         let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
         let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
         let endpoints = parentByConnection.compactMap { connection, parent in
@@ -639,7 +661,7 @@ public final class MachineStore {
         for viewID in viewIDs {
             transcriptsBySession[viewID] = nil
         }
-        recentRepositoriesByMachine[endpoint.id] = nil
+        for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
         return true
     }
 
@@ -651,6 +673,12 @@ public final class MachineStore {
     public func retryConnection(for endpoint: MachineEndpoint) {
         guard endpoint.relayPin == nil, let connection = connections[endpoint] else { return }
         Task { await connection.retry() }
+    }
+
+    /// Resolves either the stable authenticated ID or the legacy endpoint ID. This keeps
+    /// persisted notification/navigation destinations usable across the descriptor transition.
+    public func machine(withIdentifier identifier: String) -> MachineState? {
+        machines.first { $0.id == identifier || $0.machineID == identifier }
     }
 
     public func clearLatestError() {
@@ -714,7 +742,7 @@ public final class MachineStore {
     }
 
     public func localQuestionNotification(for destination: RemiNavigationDestination) -> LocalQuestionNotificationPlan? {
-        guard let machine = machines.first(where: { $0.id == destination.machineID }),
+        guard let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[destination.sessionID], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
@@ -730,7 +758,7 @@ public final class MachineStore {
                                         identifier: String) async -> LocalNotificationAnswerOutcome {
         let destination = plan.destination
         guard !Task.isCancelled,
-              let machine = machines.first(where: { $0.id == destination.machineID }),
+              let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[destination.sessionID], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
@@ -824,14 +852,16 @@ public final class MachineStore {
         guard endpoint.relayPin == nil else {
             let reason = "Resume is unavailable over the relay. Resume this session on the machine."
             latestOperationError = reason
-            resumeErrorsBySession[ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)] = reason
+            let machineID = machine(withIdentifier: endpoint.id)?.id ?? endpoint.id
+            resumeErrorsBySession[ResumeSessionKey(machineID: machineID, sessionID: sessionId)] = reason
             return
         }
         guard let connection = connections[endpoint] else {
             latestOperationError = "Cannot resume session: its machine is unavailable."
             return
         }
-        let key = ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)
+        let key = ResumeSessionKey(machineID: machine(withIdentifier: endpoint.id)?.id ?? endpoint.id,
+            sessionID: sessionId)
         guard !resumingSessions.contains(key) else { return }
 
         latestOperationError = nil
@@ -1017,6 +1047,9 @@ public final class MachineStore {
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment):
+            if let descriptor = acknowledgment.machine {
+                machines[index].apply(descriptor)
+            }
             if endpoint == parent {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
@@ -1033,6 +1066,9 @@ public final class MachineStore {
             }
             requestSessions(from: endpoint)
         case .sessions(let response):
+            if let descriptor = response.machine {
+                machines[index].apply(descriptor)
+            }
             for session in response.sessions {
                 routeBySession[session.sessionId] = endpoint
             }
@@ -1059,14 +1095,14 @@ public final class MachineStore {
             machines[index].questions.removeAll { $0.question.id == message.question.id }
             machines[index].questions.append(message)
             let resolvedID = Self.resolvedQuestionID(
-                machineID: parent.id,
+                machineID: machines[index].id,
                 sessionID: message.sessionId,
                 questionID: message.question.id
             )
             recentlyResolvedQuestions.removeAll { $0.id == resolvedID }
             resolvedQuestionRemovalTasks.removeValue(forKey: resolvedID)?.cancel()
         case .questionResolved(let message):
-            resolveQuestion(message, machineIndex: index, machineID: parent.id)
+            resolveQuestion(message, machineIndex: index, machineID: machines[index].id)
         case .questionSnapshot(let snapshot):
             machines[index] = Self.reconcilingQuestionSnapshot(
                 in: machines[index],
@@ -1088,7 +1124,7 @@ public final class MachineStore {
             }
         case .recentRepositories(let response):
             guard endpoint == parent else { return }
-            recentRepositoriesByMachine[parent.id] = response.repositories
+            recentRepositoriesByMachine[machines[index].id] = response.repositories
         case .createSessionResponse(let response):
             if response.success {
                 latestOperationNotice = response.notice
@@ -1182,7 +1218,7 @@ public final class MachineStore {
         guard let attempt = resumeAttemptsByRequest[requestID] else { return }
         resumedSessionDestination = ResumedSessionDestination(
             id: UUID(),
-            machineID: attempt.parent.id,
+            machineID: machine(withIdentifier: attempt.parent.id)?.id ?? attempt.parent.id,
             requestedSessionID: attempt.requestedSessionID,
             sessionID: sessionID
         )
@@ -1201,7 +1237,7 @@ public final class MachineStore {
         resumeTimeoutTasks.removeValue(forKey: requestID)?.cancel()
         resumeRequestByChild = resumeRequestByChild.filter { $0.value != requestID }
         let key = ResumeSessionKey(
-            machineID: attempt.parent.id,
+            machineID: machine(withIdentifier: attempt.parent.id)?.id ?? attempt.parent.id,
             sessionID: attempt.requestedSessionID
         )
         resumingSessions.remove(key)
