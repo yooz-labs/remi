@@ -239,8 +239,8 @@ struct MacLiveRootView: View {
         .task {
             reconcileNavigation()
         }
-        .onChange(of: store.persistableEndpoints) { _, endpoints in
-            MachineConfigurationStore.shared.save(endpoints)
+        .onChange(of: store.persistableProfiles) { _, profiles in
+            MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
@@ -279,7 +279,7 @@ struct MacLiveRootView: View {
                     relayNotifications.didForget(existing.endpoint)
                 }
                 store.addMachine(endpoint)
-                MachineConfigurationStore.shared.save(store.persistableEndpoints)
+                MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
             }
         }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
@@ -318,7 +318,7 @@ struct MacLiveRootView: View {
                 relayNotifications.machineWillChange(machine.endpoint)
                 if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
                 relayNotifications.reconcileEndpoints()
-                MachineConfigurationStore.shared.save(store.persistableEndpoints)
+                MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
                 pendingMachineRemoval = nil
                 reconcileNavigation()
             }

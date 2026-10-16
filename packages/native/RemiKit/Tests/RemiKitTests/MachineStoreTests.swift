@@ -271,6 +271,61 @@ struct MachineStoreTests {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
+    @Test func legacyEndpointConfigurationMigratesToUnboundProfiles() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let endpoints = [
+            MachineEndpoint(host: "100.64.0.8", port: 18765),
+            MachineEndpoint(host: "127.0.0.1", port: 28765),
+        ]
+        persistence.save(endpoints)
+
+        let profiles = persistence.loadProfiles()
+
+        #expect(profiles.map(\.machineID) == [nil, nil])
+        #expect(profiles.map(\.routes) == endpoints.map { [$0] })
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test @MainActor func authenticatedProfilePrefersDirectAndPreservesRelayPinAndAlias() throws {
+        let key = Data(repeating: 7, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.8", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let machineID = try MachineIdentityVerifier.machineID(forPublicKey: key)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: machineID, routes: [relay, direct], displayName: "Build Mac")],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        let machine = try #require(store.machines.first)
+        #expect(machine.endpoint == direct)
+        #expect(machine.routes == [direct, relay])
+        #expect(machine.displayName == "Build Mac")
+        #expect(store.persistableProfiles.first?.machineID == machineID)
+        #expect(store.persistableProfiles.first?.routes == [direct, relay])
+    }
+
+    @Test @MainActor func tamperedProfileCannotGroupRoutesByUnverifiedStoredID() throws {
+        let key = Data(repeating: 9, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.9", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: "00112233445566778899aabbccddeeff", routes: [direct, relay])],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        #expect(store.machines.count == 2)
+        #expect(store.machines.allSatisfy { $0.routes.count == 1 })
+    }
+
     @Test func machineDisplayNamesPersistSeparatelyFromEndpoints() {
         let key = "remi.machine-store-tests.\(UUID().uuidString)"
         let persistence = MachineConfigurationStore(key: key)

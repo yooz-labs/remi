@@ -154,12 +154,15 @@ public final class NativeRelayNotifications {
                     currentIdentity = nil
                 }
                 let identity = try currentIdentity ?? identityStore.loadOrCreate()
-                let saved = MachineConfigurationStore.shared.load()
-                let current = MachineStore(endpoints: Self.startupEndpoints(from: saved),
+                let saved = MachineConfigurationStore.shared.loadProfiles()
+                let startup = saved.map { profile in
+                    MachineRouteProfile(machineID: profile.machineID,
+                        routes: Self.startupEndpoints(from: profile.routes), displayName: profile.displayName)
+                }.filter { !$0.routes.isEmpty }
+                let current = MachineStore(profiles: startup,
                     identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-                    clientId: clientID(), pushStore: pushStore,
-                    displayNames: MachineConfigurationStore.shared.loadDisplayNames())
+                    clientId: clientID(), pushStore: pushStore)
                 // A preference cannot install missing or revoked SQLite trust.
                 for endpoint in current.persistableEndpoints where intents.contains(endpoint.id) {
                     current.restoreRelayNotificationIntent(on: endpoint)
