@@ -43,6 +43,9 @@ public enum RemiConnectionState: Sendable, Equatable {
     case awaitingRelayConfirmation(fingerprint: String)
     case connected(sessionId: String?)
     case retrying(attempt: Int, delaySeconds: Double)
+    /// The socket could not be reached after bounded attempts. Authentication and
+    /// identity failures use `rejected` and must never be treated as reachability.
+    case reachabilityFailed(attempt: Int)
     case rejected(reason: String)
 }
 
@@ -229,7 +232,7 @@ public actor RemiConnection {
         switch state {
         case .stopped, .awaitingLocalApproval, .rejected:
             true
-        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying:
+        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying, .reachabilityFailed:
             false
         }
     }
@@ -306,6 +309,16 @@ public actor RemiConnection {
                     shouldRun = false
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
+                }
+                if configuration.relayPin == nil && !Self.isDirectReachabilityFailure(error) {
+                    shouldRun = false
+                    transition(to: .rejected(
+                        reason: "The direct connection failed authentication or protocol validation."
+                    ))
+                    return
+                }
+                if configuration.relayPin == nil && attempt == 3 {
+                    transition(to: .reachabilityFailed(attempt: attempt))
                 }
             }
 
@@ -667,6 +680,31 @@ public actor RemiConnection {
 
     public nonisolated static func reconnectDelay(forAttempt attempt: Int) -> Double {
         min(pow(2, Double(max(0, attempt - 1))), 30)
+    }
+
+    /// Only network reachability failures may activate a relay fallback. TLS trust,
+    /// authentication, decoding, and protocol failures deliberately fail closed.
+    static func isDirectReachabilityFailure(_ error: any Error) -> Bool {
+        if let error = error as? URLError {
+            return [
+                .timedOut,
+                .cannotFindHost,
+                .cannotConnectToHost,
+                .dnsLookupFailed,
+                .networkConnectionLost,
+                .notConnectedToInternet,
+            ].contains(error.code)
+        }
+        let error = error as NSError
+        return error.domain == NSPOSIXErrorDomain && [
+            ECONNREFUSED,
+            ECONNRESET,
+            ENETDOWN,
+            ENETUNREACH,
+            EHOSTDOWN,
+            EHOSTUNREACH,
+            ETIMEDOUT,
+        ].contains(Int32(error.code))
     }
 
     public nonisolated static func shouldRetryAuthentication(_ code: String?) -> Bool {

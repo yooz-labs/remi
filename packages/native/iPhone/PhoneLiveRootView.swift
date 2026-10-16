@@ -52,8 +52,8 @@ struct PhoneLiveRootView: View {
                 notificationDestination(destination)
             }
         }
-        .onChange(of: store.persistableEndpoints) { _, endpoints in
-            MachineConfigurationStore.shared.save(endpoints)
+        .onChange(of: store.persistableProfiles) { _, profiles in
+            MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
@@ -380,14 +380,14 @@ struct PhoneLiveRootView: View {
             relayNotifications.didForget(existing.endpoint)
         }
         store.addMachine(endpoint)
-        MachineConfigurationStore.shared.save(store.persistableEndpoints)
+        MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
     }
 
     private func removeMachine(_ machineID: String) {
         guard let machine = store.machine(withIdentifier: machineID) else { return }
         relayNotifications.machineWillChange(machine.endpoint)
         if store.removeMachine(machine.endpoint) { relayNotifications.didForget(machine.endpoint) }
-        MachineConfigurationStore.shared.save(store.persistableEndpoints)
+        MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
     }
 
     private func createSession(

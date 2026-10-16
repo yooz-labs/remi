@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RemiKit
 
@@ -7,6 +8,16 @@ struct RemiConnectionTests {
         #expect(RemiConnection.reconnectDelay(forAttempt: 2) == 2)
         #expect(RemiConnection.reconnectDelay(forAttempt: 6) == 30)
         #expect(RemiConnection.reconnectDelay(forAttempt: 20) == 30)
+    }
+
+    @Test func relayFallbackAcceptsReachabilityFailuresOnly() {
+        #expect(RemiConnection.isDirectReachabilityFailure(URLError(.cannotConnectToHost)))
+        #expect(RemiConnection.isDirectReachabilityFailure(URLError(.networkConnectionLost)))
+        #expect(!RemiConnection.isDirectReachabilityFailure(URLError(.serverCertificateUntrusted)))
+        #expect(!RemiConnection.isDirectReachabilityFailure(
+            AuthenticationHandshakeError.invalidServerSignature
+        ))
+        #expect(!RemiConnection.isDirectReachabilityFailure(RemiConnectionError.malformedMessage))
     }
 
     @Test func authErrorsDoNotClaimEveryFailureIsPendingApproval() {
@@ -33,5 +44,6 @@ struct RemiConnectionTests {
         #expect(!RemiConnection.allowsManualRetry(.awaitingRelayConfirmation(fingerprint: "host")))
         #expect(!RemiConnection.allowsManualRetry(.connected(sessionId: nil)))
         #expect(!RemiConnection.allowsManualRetry(.retrying(attempt: 2, delaySeconds: 2)))
+        #expect(!RemiConnection.allowsManualRetry(.reachabilityFailed(attempt: 3)))
     }
 }

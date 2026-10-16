@@ -396,7 +396,7 @@ struct MacPreferencesView: View {
         relayNotifications.machineWillChange(machine.endpoint)
         if store.removeMachine(machine.endpoint) {
             relayNotifications.didForget(machine.endpoint)
-            MachineConfigurationStore.shared.save(store.persistableEndpoints)
+            MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
             persistDisplayNames()
         }
         relayNotifications.reconcileEndpoints()
