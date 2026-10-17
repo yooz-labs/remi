@@ -128,6 +128,8 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let text: String
     public let detail: String?
     public let machineID: String
+    /// Authenticated machine identity, distinct from the route ID until #1532 groups routes.
+    public let machineIdentityID: String?
     public let machineName: String
     public let sessionID: String
     public let sessionName: String
@@ -138,13 +140,14 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let answerPath: RemiAnswerPath?
     public let state: RemiQuestionState
 
-    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionID: String, sessionName: String, agentID: String? = nil, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
+    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineIdentityID: String? = nil, machineName: String, sessionID: String, sessionName: String, agentID: String? = nil, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
         self.id = id
         self.questionID = questionID ?? id
         self.kind = kind
         self.text = text
         self.detail = detail
         self.machineID = machineID ?? machineName
+        self.machineIdentityID = machineIdentityID
         self.machineName = machineName
         self.sessionID = sessionID
         self.sessionName = sessionName
@@ -166,6 +169,8 @@ public enum RemiSessionStatus: Sendable, Equatable { case needsYou, working, idl
 public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let id: String
     public let machineID: String
+    /// Authenticated machine identity, distinct from the route ID until #1532 groups routes.
+    public let machineIdentityID: String?
     public let machineName: String
     public let name: String
     public let harness: String
@@ -182,9 +187,10 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let resumeIdentity: String?
     public let resumeError: String?
 
-    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, projectPath: String? = nil, lastActivity: String? = nil, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, isLive: Bool? = nil, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
+    public init(id: String, machineID: String? = nil, machineIdentityID: String? = nil, machineName: String, name: String, harness: String, project: String, projectPath: String? = nil, lastActivity: String? = nil, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, isLive: Bool? = nil, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
         self.id = id
         self.machineID = machineID ?? machineName
+        self.machineIdentityID = machineIdentityID
         self.machineName = machineName
         self.name = name
         self.harness = harness
@@ -208,6 +214,8 @@ public enum RemiTransport: String, Sendable, Equatable { case local, direct, rel
 
 public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     public let id: String
+    /// Authenticated machine identity, if the daemon supplied a descriptor.
+    public let machineIdentityID: String?
     public let name: String
     public let address: String
     public let reachability: RemiMachineReachability
@@ -217,6 +225,7 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
 
     public init(
         id: String,
+        machineIdentityID: String? = nil,
         name: String,
         address: String,
         reachability: RemiMachineReachability,
@@ -225,6 +234,7 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
         openQuestionCount: Int = 0
     ) {
         self.id = id
+        self.machineIdentityID = machineIdentityID
         self.name = name
         self.address = address
         self.reachability = reachability

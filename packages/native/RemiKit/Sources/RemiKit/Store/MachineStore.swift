@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import RemiPush
 
-/// Temporary machine identity until the protocol ships a durable machine object (#1234).
-/// Keeping it behind this value type prevents `host:port` from leaking through app UI APIs.
+/// A configured transport endpoint plus its optional authenticated machine descriptor (#1531).
+/// Legacy daemons still use `host:port` until their descriptor arrives.
 public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
     public var id: String {
         if let relayPin { return "relay:\(relayPin.machinePublicKey)@\(relayPin.relayURL)" }
@@ -116,10 +116,15 @@ public enum MachineConnectionStatus: Sendable, Equatable {
 }
 
 public struct MachineState: Sendable, Equatable, Identifiable {
-    public var id: String { endpoint.id }
+    /// Stable local profile identity. Authenticated wire identity remains `machineID`,
+    /// so navigation keys do not change when the active route or descriptor changes.
+    public var id: String { routes[0].id }
 
-    public let endpoint: MachineEndpoint
+    public private(set) var routes: [MachineEndpoint]
+    public private(set) var endpoint: MachineEndpoint
     public var displayName: String
+    public private(set) var machineDescriptor: MachineDescriptor?
+    private var persistedMachineID: String?
     public var status: MachineConnectionStatus
     public var sessions: [DiscoverableSession]
     public var hasLoadedSessions: Bool
@@ -128,15 +133,49 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
-    public init(endpoint: MachineEndpoint, displayName: String) {
+    public init(endpoint: MachineEndpoint, displayName: String, configuredDisplayName: Bool = false) {
         self.endpoint = endpoint
+        routes = [endpoint]
         self.displayName = displayName
+        machineDescriptor = nil
+        persistedMachineID = nil
+        usesConfiguredDisplayName = configuredDisplayName
         status = .disconnected
         sessions = []
         hasLoadedSessions = false
         questions = []
         capabilities = []
         harnesses = ["claude"]
+    }
+
+    /// Stable identity supplied by the authenticated daemon, or the endpoint for legacy peers.
+    public var machineID: String { machineDescriptor?.id ?? endpoint.id }
+
+    var usesConfiguredDisplayName: Bool
+
+    mutating func apply(_ descriptor: MachineDescriptor) {
+        machineDescriptor = descriptor
+        persistedMachineID = descriptor.id
+        if !usesConfiguredDisplayName { displayName = descriptor.name }
+    }
+
+
+    mutating func bindPersistedMachineID(_ machineID: String) {
+        persistedMachineID = machineID
+    }
+
+    var durableMachineID: String? { persistedMachineID }
+
+
+    mutating func addRoute(_ route: MachineEndpoint) {
+        guard !routes.contains(where: { $0.id == route.id }) else { return }
+        routes.append(route)
+        routes.sort { ($0.relayPin == nil ? 0 : 1) < ($1.relayPin == nil ? 0 : 1) }
+    }
+
+    mutating func activate(_ route: MachineEndpoint) {
+        guard routes.contains(where: { $0.id == route.id }) else { return }
+        endpoint = route
     }
 }
 
@@ -207,6 +246,7 @@ public final class MachineStore {
     @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
+    @ObservationIgnored private var connectedRoutes: Set<MachineEndpoint> = []
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
@@ -223,7 +263,18 @@ public final class MachineStore {
 
     /// Pending relay pairings are not durable trust. Both app roots save this list after READY.
     public var persistableEndpoints: [MachineEndpoint] {
-        machines.map(\.endpoint).filter { !pendingRelayIDs.contains($0.id) }
+        machines.flatMap(\.routes).filter { !pendingRelayIDs.contains($0.id) }
+    }
+
+
+    public var persistableProfiles: [MachineRouteProfile] {
+        machines.map { machine in
+            MachineRouteProfile(
+                machineID: machine.durableMachineID,
+                routes: machine.routes.filter { !pendingRelayIDs.contains($0.id) },
+                displayName: machine.usesConfiguredDisplayName ? machine.displayName : nil
+            )
+        }.filter { !$0.routes.isEmpty }
     }
 
     public var publicIdentity: PublicClientIdentity { identity.publicIdentity }
@@ -488,7 +539,8 @@ public final class MachineStore {
         machines = endpoints.map {
             MachineState(
                 endpoint: $0.publicConfiguration,
-                displayName: displayNames[$0.id] ?? $0.displayAddress
+                displayName: displayNames[$0.id] ?? $0.displayAddress,
+                configuredDisplayName: displayNames[$0.id] != nil
             )
         }
         for endpoint in endpoints {
@@ -500,10 +552,53 @@ public final class MachineStore {
         }
     }
 
+    public init(
+        profiles: [MachineRouteProfile],
+        identity: ClientIdentity,
+        clientVersion: String,
+        clientId: String,
+        pushStore: RemiPushStore? = nil
+    ) {
+        self.identity = identity
+        self.clientVersion = clientVersion
+        self.clientId = clientId
+        self.pushStore = pushStore
+        let safeProfiles = profiles.flatMap { profile -> [MachineRouteProfile] in
+            guard profile.routes.count > 1, let machineID = profile.machineID,
+                  let pin = profile.routes.compactMap(\.relayPin).first,
+                  (try? MachineIdentityVerifier.machineID(forRelayPin: pin)) == machineID else {
+                return profile.routes.map { MachineRouteProfile(machineID: nil, routes: [$0], displayName: profile.displayName) }
+            }
+            return [profile]
+        }
+        machines = safeProfiles.compactMap { profile in
+            guard let first = profile.routes.first else { return nil }
+            var state = MachineState(
+                endpoint: first.publicConfiguration,
+                displayName: profile.displayName ?? first.displayAddress,
+                configuredDisplayName: profile.displayName != nil
+            )
+            for route in profile.routes.dropFirst() { state.addRoute(route.publicConfiguration) }
+            if let machineID = profile.machineID { state.bindPersistedMachineID(machineID) }
+            if let direct = state.routes.first(where: { $0.relayPin == nil }) { state.activate(direct) }
+            return state
+        }
+        for profile in safeProfiles {
+            for endpoint in profile.routes {
+                guard let secret = endpoint.relayPairingSecret else { continue }
+                pendingRelayIDs.insert(endpoint.id)
+                relayPairingContexts[endpoint.publicConfiguration] = (secret, endpoint.relayPairingExpiresAt)
+                pushTrustIntents.insert(endpoint.publicConfiguration)
+            }
+        }
+    }
+
     public func start() {
         running = true
         for machine in machines {
-            connect(machine.endpoint, parent: machine.endpoint)
+            let directRoutes = machine.routes.filter { $0.relayPin == nil }
+            let initialRoutes = directRoutes.isEmpty ? Array(machine.routes.prefix(1)) : directRoutes
+            for route in initialRoutes { connect(route, parent: machine.routes[0]) }
         }
     }
 
@@ -550,7 +645,7 @@ public final class MachineStore {
 
     public func addMachine(_ endpoint: MachineEndpoint, displayName: String? = nil) {
         running = true
-        if let existing = machines.first(where: { $0.id == endpoint.id }) {
+        if let existing = machines.first(where: { $0.routes.contains(where: { $0.id == endpoint.id }) }) {
             guard removeMachine(existing.endpoint) else { return }
         }
         let publicEndpoint = endpoint.publicConfiguration
@@ -559,7 +654,11 @@ public final class MachineStore {
             relayPairingContexts[publicEndpoint] = (secret, endpoint.relayPairingExpiresAt)
             pushTrustIntents.insert(publicEndpoint)
         }
-        machines.append(MachineState(endpoint: publicEndpoint, displayName: displayName ?? endpoint.displayAddress))
+        machines.append(MachineState(
+            endpoint: publicEndpoint,
+            displayName: displayName ?? endpoint.displayAddress,
+            configuredDisplayName: displayName != nil
+        ))
         connect(publicEndpoint, parent: publicEndpoint)
     }
 
@@ -568,42 +667,50 @@ public final class MachineStore {
         guard !name.isEmpty, name.count <= 80,
               let index = machines.firstIndex(where: { $0.endpoint == endpoint }) else { return }
         machines[index].displayName = name
+        machines[index].usesConfiguredDisplayName = true
     }
 
     @discardableResult public func removeMachine(_ endpoint: MachineEndpoint) -> Bool {
         registrationEpoch.replace(); answerEpoch.replace()
-        if let pin = endpoint.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
-           verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
-        pushTrustIntents.remove(endpoint)
-        pendingRelayIDs.remove(endpoint.id)
-        relayPairingContexts.removeValue(forKey: endpoint)
-        let answerIDs = pendingAnswers.compactMap { id, answer in
-            parentByConnection[routeBySession[answer.sessionId] ?? endpoint] == endpoint ? id : nil
+        let removedMachine = machines.first { $0.routes.contains(where: { $0.id == endpoint.id }) }
+        let configuredRoutes = removedMachine?.routes ?? [endpoint]
+        for route in configuredRoutes {
+            if let pin = route.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
+               verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
+            pushTrustIntents.remove(route)
+            pendingRelayIDs.remove(route.id)
+            relayPairingContexts.removeValue(forKey: route)
+        }
+        let answerIDs: [String] = pendingAnswers.compactMap { id, answer in
+            let route = routeBySession[answer.sessionId] ?? endpoint
+            guard let parent = parentByConnection[route],
+                  configuredRoutes.contains(where: { $0.id == parent.id }) else { return nil }
+            return id
         }
         for id in answerIDs {
             pendingAnswers.removeValue(forKey: id)
             answerTimeoutTasks.removeValue(forKey: id)?.cancel()
         }
         let resumeRequestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
-            attempt.parent == endpoint ? requestID : nil
+            configuredRoutes.contains(where: { $0.id == attempt.parent.id }) ? requestID : nil
         }
         for requestID in resumeRequestIDs {
             finishResume(requestID: requestID, error: nil)
         }
-        resumeErrorsBySession = resumeErrorsBySession.filter { $0.key.machineID != endpoint.id }
-        if resumedSessionDestination?.machineID == endpoint.id {
+        let machineIDs = Set(configuredRoutes.map(\.id) + [removedMachine?.machineID].compactMap { $0 })
+        resumeErrorsBySession = resumeErrorsBySession.filter { !machineIDs.contains($0.key.machineID) }
+        if let destination = resumedSessionDestination, machineIDs.contains(destination.machineID) {
             resumedSessionDestination = nil
         }
-        let resolvedIDs = recentlyResolvedQuestions.filter { $0.machineID == endpoint.id }.map(\.id)
-        recentlyResolvedQuestions.removeAll { $0.machineID == endpoint.id }
+        let resolvedIDs = recentlyResolvedQuestions.filter { machineIDs.contains($0.machineID) }.map(\.id)
+        recentlyResolvedQuestions.removeAll { machineIDs.contains($0.machineID) }
         for id in resolvedIDs {
             resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
         }
-        let removedMachine = machines.first { $0.endpoint == endpoint }
         let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
         let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
         let endpoints = parentByConnection.compactMap { connection, parent in
-            parent == endpoint ? connection : nil
+            configuredRoutes.contains(where: { $0.id == parent.id }) ? connection : nil
         }
         for child in endpoints {
             if let key = brokerKey(child), let generation = connectionGenerations[child] {
@@ -616,18 +723,23 @@ public final class MachineStore {
             parentByConnection[child] = nil
         }
         // Callback/reconnect authority is invalidated before durable forget.
-        if let pin = endpoint.relayPin, let pushStore {
-            do { try pushStore.forgetMachine(room: RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey))) }
-            catch {
+        if let pushStore {
+            do {
+                for pin in configuredRoutes.compactMap(\.relayPin) {
+                    try pushStore.forgetMachine(room: RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)))
+                }
+            } catch {
                 latestOperationError = "The relay notification trust could not be removed. Try Forget again."
-                if let index = machines.firstIndex(where: { $0.endpoint == endpoint }) {
+                if let index = machines.firstIndex(where: {
+                    $0.routes.contains(where: { $0.id == endpoint.id })
+                }) {
                     machines[index].status = .unavailable(reason: latestOperationError)
                 }
                 return false
             }
         }
-        machines.removeAll { $0.endpoint == endpoint }
-        pushEnabled.remove(endpoint.id)
+        machines.removeAll { state in state.routes.contains(where: { $0.id == endpoint.id }) }
+        for route in configuredRoutes { pushEnabled.remove(route.id) }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
         sessionByKillRequest = sessionByKillRequest.filter { _, sessionID in
             !sessionIDs.contains(sessionID)
@@ -639,7 +751,7 @@ public final class MachineStore {
         for viewID in viewIDs {
             transcriptsBySession[viewID] = nil
         }
-        recentRepositoriesByMachine[endpoint.id] = nil
+        for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
         return true
     }
 
@@ -651,6 +763,12 @@ public final class MachineStore {
     public func retryConnection(for endpoint: MachineEndpoint) {
         guard endpoint.relayPin == nil, let connection = connections[endpoint] else { return }
         Task { await connection.retry() }
+    }
+
+    /// Resolves either the stable authenticated ID or the legacy endpoint ID. This keeps
+    /// persisted notification/navigation destinations usable across the descriptor transition.
+    public func machine(withIdentifier identifier: String) -> MachineState? {
+        machines.first { $0.id == identifier || $0.machineID == identifier }
     }
 
     public func clearLatestError() {
@@ -714,7 +832,7 @@ public final class MachineStore {
     }
 
     public func localQuestionNotification(for destination: RemiNavigationDestination) -> LocalQuestionNotificationPlan? {
-        guard let machine = machines.first(where: { $0.id == destination.machineID }),
+        guard let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[destination.sessionID], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
@@ -730,7 +848,7 @@ public final class MachineStore {
                                         identifier: String) async -> LocalNotificationAnswerOutcome {
         let destination = plan.destination
         guard !Task.isCancelled,
-              let machine = machines.first(where: { $0.id == destination.machineID }),
+              let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[destination.sessionID], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
@@ -824,14 +942,16 @@ public final class MachineStore {
         guard endpoint.relayPin == nil else {
             let reason = "Resume is unavailable over the relay. Resume this session on the machine."
             latestOperationError = reason
-            resumeErrorsBySession[ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)] = reason
+            let machineID = machine(withIdentifier: endpoint.id)?.id ?? endpoint.id
+            resumeErrorsBySession[ResumeSessionKey(machineID: machineID, sessionID: sessionId)] = reason
             return
         }
         guard let connection = connections[endpoint] else {
             latestOperationError = "Cannot resume session: its machine is unavailable."
             return
         }
-        let key = ResumeSessionKey(machineID: endpoint.id, sessionID: sessionId)
+        let key = ResumeSessionKey(machineID: machine(withIdentifier: endpoint.id)?.id ?? endpoint.id,
+            sessionID: sessionId)
         guard !resumingSessions.contains(key) else { return }
 
         latestOperationError = nil
@@ -979,31 +1099,125 @@ public final class MachineStore {
         connect(endpoint, parent: endpoint)
     }
 
+    private func machineIndex(containing route: MachineEndpoint) -> Int? {
+        machines.firstIndex { $0.routes.contains(where: { $0.id == route.id }) }
+    }
+
+    /// Grouping is reached only after RemiConnection has verified the descriptor
+    /// against this route's authenticated key (#1531). Names and addresses never enter it.
+    @discardableResult
+    private func consolidateRoute(_ endpoint: MachineEndpoint, parent: MachineEndpoint,
+                                  descriptor: MachineDescriptor, fallbackIndex: Int) -> Int {
+        guard let other = machines.firstIndex(where: {
+            $0.machineDescriptor?.id == descriptor.id && !$0.routes.contains(where: { $0.id == endpoint.id })
+        }), other != fallbackIndex else { return fallbackIndex }
+
+        var target = machines[other]
+        let source = machines[fallbackIndex]
+        for route in source.routes { target.addRoute(route) }
+        if !target.usesConfiguredDisplayName && source.usesConfiguredDisplayName {
+            target.displayName = source.displayName
+            target.usesConfiguredDisplayName = true
+        }
+        target.sessions = mergeSessions(target.sessions, with: source.sessions)
+        for question in source.questions where !target.questions.contains(where: { $0.question.id == question.question.id }) {
+            target.questions.append(question)
+        }
+        if endpoint.relayPin == nil { target.activate(endpoint) }
+        machines[other] = target
+        let removed = fallbackIndex
+        machines.remove(at: removed)
+        let finalIndex = other > removed ? other - 1 : other
+        let anchor = machines[finalIndex].routes[0]
+        for (route, owner) in parentByConnection where source.routes.contains(where: { $0.id == owner.id }) {
+            parentByConnection[route] = anchor
+        }
+        return finalIndex
+    }
+
+    private func routeDidConnect(_ endpoint: MachineEndpoint, machineIndex: Int) {
+        connectedRoutes.insert(endpoint)
+        guard endpoint.relayPin == nil else {
+            if !connectedRoutes.contains(where: { route in
+                route.relayPin == nil && machines[machineIndex].routes.contains(where: { $0.id == route.id })
+            }) { machines[machineIndex].activate(endpoint) }
+            return
+        }
+        machines[machineIndex].activate(endpoint)
+        // Once direct is authenticated, retire the relay generation before closing it;
+        // late relay events therefore cannot duplicate state or operations.
+        for relay in machines[machineIndex].routes where relay.relayPin != nil {
+            connectedRoutes.remove(relay)
+            guard let connection = connections.removeValue(forKey: relay) else { continue }
+            connectionGenerations[relay] = nil
+            parentByConnection[relay] = nil
+            Task { await connection.stop() }
+        }
+    }
+
+    private func directRouteBecameUnreachable(_ endpoint: MachineEndpoint, machineIndex: Int) {
+        guard endpoint.relayPin == nil else { return }
+        connectedRoutes.remove(endpoint)
+        guard let relay = machines[machineIndex].routes.first(where: { $0.relayPin != nil }) else {
+            machines[machineIndex].status = .unavailable(reason: "The direct route is unreachable.")
+            return
+        }
+        machines[machineIndex].activate(relay)
+        machines[machineIndex].status = .connecting
+        connect(relay, parent: machines[machineIndex].routes[0])
+    }
+
+    private func failClosed(_ endpoint: MachineEndpoint, machineIndex: Int, reason: String) {
+        machines[machineIndex].status = .unavailable(reason: reason)
+        guard endpoint.relayPin == nil else { return }
+        for route in machines[machineIndex].routes where route.relayPin != nil {
+            connectedRoutes.remove(route)
+            if let connection = connections.removeValue(forKey: route) { Task { await connection.stop() } }
+            connectionGenerations[route] = nil
+            parentByConnection[route] = nil
+        }
+    }
+
     func receive(_ state: RemiConnectionState, from endpoint: MachineEndpoint, generation: UUID) {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
-              let index = machines.firstIndex(where: { $0.endpoint == parent })
+              let index = machineIndex(containing: parent)
         else { return }
 
         switch state {
         case .stopped:
             machines[index].status = .disconnected
         case .connecting, .authenticating, .retrying:
-            machines[index].status = .connecting
+            if machines[index].endpoint == endpoint { machines[index].status = .connecting }
         case .connected:
+            routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
         case .awaitingRelayConfirmation(let fingerprint):
             machines[index].status = .waitingForRelayConfirmation(fingerprint: fingerprint)
         case .rejected(let reason):
-            machines[index].status = .unavailable(reason: reason)
+            failClosed(endpoint, machineIndex: index, reason: reason)
+        case .reachabilityFailed:
+            directRouteBecameUnreachable(endpoint, machineIndex: index)
         }
     }
 
     func receive(_ event: RemiInboundEvent, from endpoint: MachineEndpoint, generation: UUID) {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
-              let index = machines.firstIndex(where: { $0.endpoint == parent })
+              let initialIndex = machineIndex(containing: parent)
         else { return }
+
+        var index = initialIndex
+
+        if machines[index].machineDescriptor != nil,
+           machines[index].endpoint.id != endpoint.id {
+            switch event {
+            case .hello, .sessions:
+                break
+            default:
+                return
+            }
+        }
 
         switch event {
         case .relayStreamEnded(let clean):
@@ -1017,6 +1231,10 @@ public final class MachineStore {
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment):
+            if let descriptor = acknowledgment.machine {
+                index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
+                machines[index].apply(descriptor)
+            }
             if endpoint == parent {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
@@ -1033,6 +1251,10 @@ public final class MachineStore {
             }
             requestSessions(from: endpoint)
         case .sessions(let response):
+            if let descriptor = response.machine {
+                index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
+                machines[index].apply(descriptor)
+            }
             for session in response.sessions {
                 routeBySession[session.sessionId] = endpoint
             }
@@ -1059,14 +1281,14 @@ public final class MachineStore {
             machines[index].questions.removeAll { $0.question.id == message.question.id }
             machines[index].questions.append(message)
             let resolvedID = Self.resolvedQuestionID(
-                machineID: parent.id,
+                machineID: machines[index].id,
                 sessionID: message.sessionId,
                 questionID: message.question.id
             )
             recentlyResolvedQuestions.removeAll { $0.id == resolvedID }
             resolvedQuestionRemovalTasks.removeValue(forKey: resolvedID)?.cancel()
         case .questionResolved(let message):
-            resolveQuestion(message, machineIndex: index, machineID: parent.id)
+            resolveQuestion(message, machineIndex: index, machineID: machines[index].id)
         case .questionSnapshot(let snapshot):
             machines[index] = Self.reconcilingQuestionSnapshot(
                 in: machines[index],
@@ -1088,7 +1310,7 @@ public final class MachineStore {
             }
         case .recentRepositories(let response):
             guard endpoint == parent else { return }
-            recentRepositoriesByMachine[parent.id] = response.repositories
+            recentRepositoriesByMachine[machines[index].id] = response.repositories
         case .createSessionResponse(let response):
             if response.success {
                 latestOperationNotice = response.notice
@@ -1182,7 +1404,7 @@ public final class MachineStore {
         guard let attempt = resumeAttemptsByRequest[requestID] else { return }
         resumedSessionDestination = ResumedSessionDestination(
             id: UUID(),
-            machineID: attempt.parent.id,
+            machineID: machine(withIdentifier: attempt.parent.id)?.id ?? attempt.parent.id,
             requestedSessionID: attempt.requestedSessionID,
             sessionID: sessionID
         )
@@ -1201,7 +1423,7 @@ public final class MachineStore {
         resumeTimeoutTasks.removeValue(forKey: requestID)?.cancel()
         resumeRequestByChild = resumeRequestByChild.filter { $0.value != requestID }
         let key = ResumeSessionKey(
-            machineID: attempt.parent.id,
+            machineID: machine(withIdentifier: attempt.parent.id)?.id ?? attempt.parent.id,
             sessionID: attempt.requestedSessionID
         )
         resumingSessions.remove(key)

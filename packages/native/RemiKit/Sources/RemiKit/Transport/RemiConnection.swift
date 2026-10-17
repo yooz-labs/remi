@@ -43,6 +43,9 @@ public enum RemiConnectionState: Sendable, Equatable {
     case awaitingRelayConfirmation(fingerprint: String)
     case connected(sessionId: String?)
     case retrying(attempt: Int, delaySeconds: Double)
+    /// The socket could not be reached after bounded attempts. Authentication and
+    /// identity failures use `rejected` and must never be treated as reachability.
+    case reachabilityFailed(attempt: Int)
     case rejected(reason: String)
 }
 
@@ -102,6 +105,8 @@ public actor RemiConnection {
     private var socket: URLSessionWebSocketTask?
     private var runTask: Task<Void, Never>?
     private var pendingAuthentication: PendingAuthentication?
+    /// The key that authenticated this direct connection. Relay authority comes from the pin.
+    private var authenticatedServerPublicKey: Data?
     private var initialDirectHelloPending = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
@@ -227,7 +232,7 @@ public actor RemiConnection {
         switch state {
         case .stopped, .awaitingLocalApproval, .rejected:
             true
-        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying:
+        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying, .reachabilityFailed:
             false
         }
     }
@@ -304,6 +309,16 @@ public actor RemiConnection {
                     shouldRun = false
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
+                }
+                if configuration.relayPin == nil && !Self.isDirectReachabilityFailure(error) {
+                    shouldRun = false
+                    transition(to: .rejected(
+                        reason: "The direct connection failed authentication or protocol validation."
+                    ))
+                    return
+                }
+                if configuration.relayPin == nil && attempt == 3 {
+                    transition(to: .reachabilityFailed(attempt: attempt))
                 }
             }
 
@@ -399,11 +414,13 @@ public actor RemiConnection {
                 return
             }
             try AuthenticationHandshake.verify(result, pending: pendingAuthentication)
+            authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
             try await sendHello(on: task)
         case "hello_ack":
             initialDirectHelloPending = false
             let message = try decoder.decode(HelloAckMessage.self, from: data)
+            guard acceptMachineIdentity(descriptor: message.machine) else { return }
             transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message))
         case "ping":
@@ -414,7 +431,9 @@ public actor RemiConnection {
                 pingId: ping.id
             ))
         case "session_list_response":
-            eventHandler(.sessions(try decoder.decode(SessionListResponse.self, from: data)))
+            let message = try decoder.decode(SessionListResponse.self, from: data)
+            guard acceptMachineIdentity(descriptor: message.machine, sessions: message.sessions) else { return }
+            eventHandler(.sessions(message))
         case "question":
             eventHandler(.question(try decoder.decode(QuestionMessage.self, from: data)))
         case "question_resolved":
@@ -495,6 +514,7 @@ public actor RemiConnection {
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }
         for id in Array(rpcWaiters.keys) { finishRPC(id, result: .failure(RelayFailure.closed)) }
         pendingAuthentication = nil
+        authenticatedServerPublicKey = nil
         initialDirectHelloPending = false
         relayDeadline?.cancel()
         relayDeadline = nil
@@ -506,6 +526,33 @@ public actor RemiConnection {
         sendTail = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+    }
+
+    /// A bad descriptor is an authentication failure, not an ordinary protocol event. In
+    /// particular, it must not trigger direct-to-relay fallback or let a claimed name/id reach UI.
+    private func acceptMachineIdentity(
+        descriptor: MachineDescriptor?,
+        sessions: [DiscoverableSession] = []
+    ) -> Bool {
+        let authority: Data?
+        if let pin = configuration.relayPin {
+            authority = try? RelayCrypto.unb64(pin.machinePublicKey)
+        } else {
+            authority = authenticatedServerPublicKey
+        }
+        do {
+            try MachineIdentityVerifier.verify(
+                descriptor: descriptor,
+                sessions: sessions,
+                authorityPublicKey: authority
+            )
+            return true
+        } catch {
+            shouldRun = false
+            closeSocket()
+            transition(to: .rejected(reason: "The machine identity did not match its authenticated key."))
+            return false
+        }
     }
 
     private func connectRelayAndReceive(_ pin: RelayMachinePin) async throws {
@@ -633,6 +680,31 @@ public actor RemiConnection {
 
     public nonisolated static func reconnectDelay(forAttempt attempt: Int) -> Double {
         min(pow(2, Double(max(0, attempt - 1))), 30)
+    }
+
+    /// Only network reachability failures may activate a relay fallback. TLS trust,
+    /// authentication, decoding, and protocol failures deliberately fail closed.
+    static func isDirectReachabilityFailure(_ error: any Error) -> Bool {
+        if let error = error as? URLError {
+            return [
+                .timedOut,
+                .cannotFindHost,
+                .cannotConnectToHost,
+                .dnsLookupFailed,
+                .networkConnectionLost,
+                .notConnectedToInternet,
+            ].contains(error.code)
+        }
+        let error = error as NSError
+        return error.domain == NSPOSIXErrorDomain && [
+            ECONNREFUSED,
+            ECONNRESET,
+            ENETDOWN,
+            ENETUNREACH,
+            EHOSTDOWN,
+            EHOSTUNREACH,
+            ETIMEDOUT,
+        ].contains(Int32(error.code))
     }
 
     public nonisolated static func shouldRetryAuthentication(_ code: String?) -> Bool {
