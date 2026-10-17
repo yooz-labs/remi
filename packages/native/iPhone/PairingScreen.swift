@@ -185,6 +185,7 @@ private struct PairingIntroduction: View {
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
+                .accessibilityRepresentation { EmptyView() }
             Text("Keep the terminal nearby")
                 .font(.headline)
             Text("A new phone is never trusted automatically. Remi waits for you to approve its key on the machine.")
