@@ -5,12 +5,19 @@ different checkout, build, or simulator does not satisfy this gate.
 
 ## Before capturing
 
-1. Record `git rev-parse HEAD` from the feature worktree.
-2. Build that worktree's `RemiNative.xcodeproj` and confirm the installed app is
-   from the same build.
-3. Use an iPhone simulator at a standard text size, then repeat the affected
+1. Commit the native changes. Exact acceptance rejects a dirty native tree.
+2. Run `packages/native/scripts/build-exact-native.sh --expected <commit>`. It
+   builds both schemes from that worktree, embeds the full commit in each app,
+   verifies both bundles, and writes `acceptance-receipt.txt` with the source,
+   Xcode, scheme, destination, and bundle hashes.
+3. For iPhone runtime acceptance, boot the intended simulator and add
+   `--simulator <device-identifier>`. The verifier installs the built app and independently
+   checks the commit embedded in the installed bundle before evidence is used.
+4. Use `packages/native/scripts/open-exact-xcode.sh --expected <commit>` when
+   opening Xcode. This refuses a different or dirty native checkout.
+5. Use an iPhone simulator at a standard text size, then repeat the affected
    screen at Accessibility 5. Test both light and dark appearances.
-4. Repeat affected translucent surfaces with Reduce Transparency enabled and
+6. Repeat affected translucent surfaces with Reduce Transparency enabled and
    animated state changes with Reduce Motion enabled.
 
 ## Interaction checks
@@ -29,5 +36,7 @@ different checkout, build, or simulator does not satisfy this gate.
 ## Required evidence
 
 Capture the changed screen at standard size and its highest-risk variant (long
-content, Accessibility 5, or reduced effects). Record the commit, device, OS,
-appearance, text size, result, and any accepted limitation in the pull request.
+content, Accessibility 5, or reduced effects). Attach the generated receipt and
+record the screenshot filename, device, OS, appearance, text size, result, and
+any accepted limitation in the pull request. Evidence without a matching bundle
+commit and receipt is stale and must be rejected.
