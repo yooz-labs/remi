@@ -11,8 +11,10 @@ different checkout, build, or simulator does not satisfy this gate.
    verifies both bundles, and writes `acceptance-receipt.txt` with the source,
    Xcode, scheme, destination, and bundle hashes.
 3. For iPhone runtime acceptance, boot the intended simulator and add
-   `--simulator <device-identifier>`. The verifier installs the built app and independently
-   checks the commit embedded in the installed bundle before evidence is used.
+   `--simulator <device-identifier>`. The verifier uses Xcode's local simulator
+   signing so Keychain-backed startup works, installs the built app, and
+   independently checks the commit embedded in the installed bundle before
+   evidence is used.
 4. Use `packages/native/scripts/open-exact-xcode.sh --expected <commit>` when
    opening Xcode. This refuses a different or dirty native checkout.
 5. Use an iPhone simulator at a standard text size, then repeat the affected
