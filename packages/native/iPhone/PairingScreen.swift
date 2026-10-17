@@ -37,8 +37,8 @@ struct PairingScreen: View {
             }
 
             Section {
-                PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand)
-                PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand)
+                PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand, copyLabel: "Copy remi start command", copiedLabel: "remi start command copied")
+                PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand, copyLabel: "Copy remi pair command", copiedLabel: "remi pair command copied")
 
                 Button {
                     showingScanner = true
@@ -104,8 +104,8 @@ struct PairingScreen: View {
 
             if draft.mode == .direct {
                 Section("Authorize a manual connection") {
-                    PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand)
-                    PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand)
+                    PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand, copyLabel: "Copy remi keys command", copiedLabel: "remi keys command copied")
+                    PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand, copyLabel: "Copy authorization command", copiedLabel: "Authorization command copied")
                 }
             } else {
                 Section("Terminal confirmation") {
@@ -184,6 +184,7 @@ private struct PairingIntroduction: View {
             Image(systemName: "desktopcomputer.and.macbook")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             Text("Keep the terminal nearby")
                 .font(.headline)
             Text("A new phone is never trusted automatically. Remi waits for you to approve its key on the machine.")
@@ -201,12 +202,16 @@ private struct PairingStep: View {
     let title: LocalizedStringKey
     let detail: LocalizedStringKey
     let command: String?
+    let copyLabel: LocalizedStringKey
+    let copiedLabel: LocalizedStringKey
 
-    init(number: Int, title: LocalizedStringKey, detail: LocalizedStringKey, command: String? = nil) {
+    init(number: Int, title: LocalizedStringKey, detail: LocalizedStringKey, command: String? = nil, copyLabel: LocalizedStringKey = "Copy command", copiedLabel: LocalizedStringKey = "Command copied") {
         self.number = number
         self.title = title
         self.detail = detail
         self.command = command
+        self.copyLabel = copyLabel
+        self.copiedLabel = copiedLabel
     }
 
     var body: some View {
@@ -232,7 +237,7 @@ private struct PairingStep: View {
                                 .frame(width: 44, height: 44)
                                 .contentShape(.rect)
                         }
-                        .accessibilityLabel(copied ? "Command copied" : "Copy command")
+                        .accessibilityLabel(copied ? copiedLabel : copyLabel)
                         .animation(.snappy, value: copied)
                     }
                     .padding(10)
