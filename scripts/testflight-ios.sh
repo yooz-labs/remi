@@ -41,6 +41,9 @@ expect_file "$CONFIG" "release config"
 expect_file "$PROJECT/project.pbxproj" "native Xcode project"
 expect_file "$PROJECT/xcshareddata/xcschemes/$SCHEME.xcscheme" "shared $SCHEME scheme"
 
+echo "[0/7] Validating native store assets"
+"$REPO_ROOT/scripts/test-native-store-assets.sh"
+
 MARKETING=$(sed -nE 's/.*"marketingVersion"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$CONFIG")
 BUILD="${REMI_BUILD_NUMBER:-$(sed -nE 's/.*"buildNumber"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$CONFIG")}"
 [[ "$MARKETING" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid marketing version in $CONFIG"
@@ -62,7 +65,7 @@ expect_contains "$PBXPROJ" "INFOPLIST_KEY_NSCameraUsageDescription" "camera usag
 expect_contains "$PBXPROJ" "INFOPLIST_KEY_NSLocalNetworkUsageDescription" "local-network usage description is missing"
 expect_contains "$SCHEME_FILE" 'buildConfiguration = "Release"' "$SCHEME has no Release archive action"
 
-echo "[1/6] Checking native Release build settings"
+echo "[1/7] Checking native Release build settings"
 OVERRIDES=(MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD"
   INFOPLIST_KEY_CFBundleDisplayName=Remi REMI_SOURCE_COMMIT="$SOURCE_COMMIT"
   CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$TEAM_ID")
@@ -99,7 +102,7 @@ ARCHIVE_PATH="$OUT_DIR/Remi-${MARKETING}-build${BUILD}.xcarchive"
 EXPORT_PATH="$OUT_DIR/Remi-${MARKETING}-build${BUILD}-AppStore"
 mkdir -p "$OUT_DIR"
 
-echo "[2/6] Archiving native $SCHEME"
+echo "[2/7] Archiving native $SCHEME"
 SIGNING_ARGS=()
 if [ "$UNSIGNED_ARCHIVE" = true ]; then
   SIGNING_ARGS=(CODE_SIGNING_ALLOWED=NO)
@@ -116,6 +119,10 @@ APP="$ARCHIVE_PATH/Products/Applications/Remi.app"
 APP_INFO="$APP/Info.plist"
 EXTENSION="$APP/PlugIns/PhonePushService.appex"
 expect_file "$APP_INFO" "archived app Info.plist"
+expect_file "$APP/PrivacyInfo.xcprivacy" "archived app privacy manifest"
+expect_file "$APP/Assets.car" "compiled app assets"
+expect_file "$APP/RemiKit_RemiPush.bundle/PrivacyInfo.xcprivacy" "archived app RemiPush privacy manifest"
+expect_file "$EXTENSION/RemiKit_RemiPush.bundle/PrivacyInfo.xcprivacy" "archived extension RemiPush privacy manifest"
 [ -d "$EXTENSION" ] || fail "PhonePushService.appex is not embedded"
 [ "$(plist_value "$APP_INFO" CFBundleIdentifier)" = "$APP_ID" ] || fail "archived app bundle ID mismatch"
 [ "$(plist_value "$APP_INFO" CFBundleDisplayName)" = "Remi" ] || fail "archived display name mismatch"
@@ -144,14 +151,14 @@ if [ "$UNSIGNED_ARCHIVE" = true ]; then
   exit 0
 fi
 
-echo "[3/6] Verifying archive signing and entitlements"
+echo "[3/7] Verifying archive signing and entitlements"
 codesign --verify --deep --strict "$APP" || fail "archived app signature verification failed"
 ARCHIVE_ENTITLEMENTS=$(codesign -d --entitlements :- "$APP" 2>/dev/null)
 grep -Fq 'group.live.yooz.remi' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing its app group"
 grep -Fq 'live.yooz.remi.secure-push' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing the shared push keychain group"
 grep -Fq '<string>production</string>' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is not using production APNS"
 
-echo "[4/6] Exporting App Store IPA"
+echo "[4/7] Exporting App Store IPA"
 EXPORT_OPTIONS=$(mktemp /tmp/remi-native-export.XXXXXX.plist)
 VERIFY_DIR=""
 trap 'rm -f "$EXPORT_OPTIONS"; [ -z "$VERIFY_DIR" ] || rm -rf "$VERIFY_DIR"' EXIT
@@ -175,7 +182,7 @@ EXPORTED_APP="$VERIFY_DIR/Payload/Remi.app"
 [ -d "$EXPORTED_APP/PlugIns/PhonePushService.appex" ] || fail "IPA does not contain PhonePushService.appex"
 codesign --verify --deep --strict "$EXPORTED_APP" || fail "exported app signature verification failed"
 
-echo "[5/6] Writing release receipt"
+echo "[5/7] Writing release receipt"
 RECEIPT="$EXPORT_PATH/acceptance-receipt.txt"
 {
   echo "source_commit=$SOURCE_COMMIT"
@@ -189,7 +196,7 @@ RECEIPT="$EXPORT_PATH/acceptance-receipt.txt"
   echo "ipa_sha256=$(shasum -a 256 "$IPA" | awk '{print $1}')"
 } > "$RECEIPT"
 
-echo "[6/6] Upload"
+echo "[6/7] Upload"
 if [ "$DO_UPLOAD" = true ]; then
   [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] || fail "set ASC_KEY_ID and ASC_ISSUER_ID before --upload"
   expect_file "${AUTH_KEY_PATH:-}" "App Store Connect API key"
