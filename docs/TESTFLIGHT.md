@@ -1,8 +1,10 @@
 # Shipping Remi to TestFlight (local upload)
 
-Remi ships to TestFlight from a **local archive + upload**, the same path as
-`yooz-whisper` — no Xcode Cloud. You build and upload from your Mac with a single
-script. Apple team `9DQ459HAZB`, bundle id `live.yooz.remi`.
+Remi ships its native iPhone app to TestFlight from a **local archive + upload**.
+There is no Xcode Cloud path. The script archives `packages/native/Remi.xcodeproj`
+with the shared `RemiPhone` scheme. Apple team `9DQ459HAZB`; app bundle identifier
+`live.yooz.remi`; push extension bundle identifier
+`live.yooz.remi.native-push-service`.
 
 ## The one command
 
@@ -15,24 +17,22 @@ bun run testflight:ios
 ASC_KEY_ID=XXXX ASC_ISSUER_ID=uuid ./scripts/testflight-ios.sh --upload
 ```
 
-`scripts/testflight-ios.sh` does, in order:
+`scripts/testflight-ios.sh` validates the native release contract, resolves the
+configured version and exact source commit, archives `RemiPhone` for a generic iOS
+device, checks the embedded `PhonePushService` extension and signed entitlements,
+exports exactly one IPA, writes an acceptance receipt, and uploads only when
+`--upload` is explicit. `--preflight-only` and `--unsigned-archive` provide
+non-upload validation paths used by CI.
 
-1. Stamp the app version into the Xcode project (`scripts/sync-app-version.mjs`).
-2. `bun run build` (in `packages/web`) + `bunx cap sync ios`.
-3. `xcodebuild archive` the workspace `packages/web/ios/App/App.xcworkspace`
-   (scheme `App`, Release, `generic/platform=iOS`, automatic signing).
-4. `xcodebuild -exportArchive` with App Store options → a `.ipa`.
-5. With `--upload`: `xcrun altool --upload-app -t ios` using an App Store Connect
-   API key.
-
-Output lands in `build/ios/` (gitignored; override with `REMI_ARCHIVE_DIR`).
+Output lands in `build/ios-native/` (gitignored; override with
+`REMI_ARCHIVE_DIR`).
 
 ## Versioning
 
 The app has its **own** version line in `config/app-release.json`
 (`marketingVersion`, `buildNumber`), decoupled from the daemon/npm version. The
-Info.plist already reads `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)`, so
-only the pbxproj is stamped.
+release script passes both values as archive build settings; it does not rewrite
+the Xcode project.
 
 - Marketing version: edit `marketingVersion` in `config/app-release.json`.
 - Build number: **bump before every upload** (App Store Connect rejects a
@@ -44,7 +44,8 @@ only the pbxproj is stamped.
   ```bash
   REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) ./scripts/testflight-ios.sh --upload
   ```
-- `bun run app:version` stamps the pbxproj from config without bumping.
+- `bun run app:version` updates the release configuration used by the repository's
+  release tooling. The native archive receives the resolved values explicitly.
 
 ## App Store Connect API key (for `--upload`)
 
@@ -71,10 +72,8 @@ let it manage certificates, then run the script.
 Push is split by build configuration so local testing and TestFlight each get the
 right APNS environment:
 
-- **Debug** → `App/App.entitlements` (`aps-environment = development`) — local
-  sandbox push testing keeps working.
-- **Release** → `App/AppRelease.entitlements` (`aps-environment = production`) —
-  what the archive/TestFlight build uses.
+- **Debug** requests the development APNS environment.
+- **Release** requests the production APNS environment used by TestFlight.
 
 The only prerequisite is registering the **Push Notifications** capability on the
 App ID `live.yooz.remi` so the distribution provisioning profile carries the
@@ -84,26 +83,30 @@ the sandbox/prod token split).
 
 ## One-time App Store Connect setup
 
-- The App ID `live.yooz.remi` is auto-registered on the first archive (automatic
-  signing + the API key). Enable the **Push Notifications** capability on it so
-  the production-APNS entitlement is allowed.
+- Ensure the App ID `live.yooz.remi` and extension identifier
+  `live.yooz.remi.native-push-service` exist with the capabilities required by the
+  checked-in entitlements. Enable **Push Notifications** so the production APNS
+  entitlement is allowed.
 - **Create the App Store Connect app record (iOS)** in the web UI — My Apps → +
   → New App, bundle id `live.yooz.remi`. This is **required before the first
   upload** and the App Store Connect API cannot do it; until it exists `altool`
   fails with `Cannot determine the Apple ID from Bundle ID 'live.yooz.remi'`.
 - TestFlight: add internal/external test groups; complete export-compliance.
 
-The script passes the ASC API key to `xcodebuild` itself
-(`-authenticationKey*`), so the archive/export create the App ID and the App
-Store distribution profile headlessly — no signed-in Xcode account needed.
+The script passes an available ASC API key to `xcodebuild` itself
+(`-authenticationKey*`) for archive/export provisioning. This does not replace
+the one-time App Store Connect app record and capability setup.
 
 ## Preflight checklist
 
 - [ ] `config/app-release.json` build number bumped + committed.
 - [ ] Push Notifications capability registered on the App ID (production entitlement is already wired in the Release config).
-- [ ] App icons present (`packages/web/ios/App/App/Assets.xcassets/AppIcon.appiconset`).
+- [ ] Native app icons and privacy manifests pass `bun run test:native-assets`.
 - [ ] Distribution cert in keychain; `ASC_KEY_ID` / `ASC_ISSUER_ID` exported for `--upload`.
 - [ ] Device family as intended (currently iPhone-only, `TARGETED_DEVICE_FAMILY = 1`).
+
+The live backend/relay, owner and physical-device checklist is
+[`packages/native/handoff/testflight-backend.md`](../packages/native/handoff/testflight-backend.md).
 
 ## macOS
 
