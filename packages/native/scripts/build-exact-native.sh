@@ -66,21 +66,33 @@ build() {
     destination=$2
     derived=$3
     log=$4
-    xcodebuild -project "$project" -scheme "$scheme" -destination "$destination" \
-        -derivedDataPath "$derived" CODE_SIGNING_ALLOWED=NO \
-        REMI_SOURCE_COMMIT="$head_commit" build >"$log" 2>&1 || {
-        tail -80 "$log" >&2
-        exit 1
-    }
+    signing=$5
+    if [ "$signing" = local ]; then
+        xcodebuild -project "$project" -scheme "$scheme" -destination "$destination" \
+            -derivedDataPath "$derived" REMI_SOURCE_COMMIT="$head_commit" \
+            build >"$log" 2>&1 || {
+            tail -80 "$log" >&2
+            exit 1
+        }
+    else
+        xcodebuild -project "$project" -scheme "$scheme" -destination "$destination" \
+            -derivedDataPath "$derived" CODE_SIGNING_ALLOWED=NO \
+            REMI_SOURCE_COMMIT="$head_commit" build >"$log" 2>&1 || {
+            tail -80 "$log" >&2
+            exit 1
+        }
+    fi
 }
 
-build RemiMac 'platform=macOS' "$mac_derived" "$mac_log"
+build RemiMac 'platform=macOS' "$mac_derived" "$mac_log" unsigned
 if [ -n "$simulator" ]; then
     phone_destination="platform=iOS Simulator,id=$simulator"
+    phone_signing=local
 else
     phone_destination='generic/platform=iOS Simulator'
+    phone_signing=unsigned
 fi
-build RemiPhone "$phone_destination" "$phone_derived" "$phone_log"
+build RemiPhone "$phone_destination" "$phone_derived" "$phone_log" "$phone_signing"
 
 mac_app="$mac_derived/Build/Products/Debug/Remi.app"
 phone_app="$phone_derived/Build/Products/Debug-iphonesimulator/Remi.app"

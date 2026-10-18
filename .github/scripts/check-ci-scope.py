@@ -4701,7 +4701,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         assert count - image_entry_start == 26, count - image_entry_start
         # END #1170 image-worker entry transition controls.
         # The registered helper adds two existing generic inventory controls; old bodies/order stay fixed.
-        assert count == 2293, count
+        assert count == 2295, count
         reuse_start = count
         reuse_controls()
         assert count - reuse_start == 74, count - reuse_start
