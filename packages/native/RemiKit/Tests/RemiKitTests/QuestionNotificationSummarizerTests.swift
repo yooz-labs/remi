@@ -34,9 +34,15 @@ struct QuestionNotificationSummarizerTests {
     }
 
     @Test func timeoutFallsBackWithoutWaitingForGeneration() async {
+        let timeout = ControlledSuspension()
+        let starts = Counter()
         let cancellations = Counter()
-        let summarizer = QuestionNotificationSummarizer(deadline: .milliseconds(20)) { _ in
-            try await withTaskCancellationHandler {
+        let summarizer = QuestionNotificationSummarizer(
+            deadline: .seconds(30),
+            sleeper: { _ in await timeout.suspend() }
+        ) { _ in
+            await starts.increment()
+            return try await withTaskCancellationHandler {
                 try await Task.sleep(for: .seconds(30))
                 return "Too late"
             } onCancel: {
@@ -44,8 +50,14 @@ struct QuestionNotificationSummarizerTests {
             }
         }
         let input = String(repeating: "A long question that needs a concise notification. ", count: 4)
+        let pending = Task {
+            await summarizer.summary(questionID: "timeout", text: input)
+        }
 
-        let summary = await summarizer.summary(questionID: "timeout", text: input)
+        while await starts.value == 0 { await Task.yield() }
+        await timeout.waitUntilSuspended()
+        await timeout.resume()
+        let summary = await pending.value
 
         #expect(summary == QuestionNotificationSummarizer.fallback(for: input))
         while await cancellations.value == 0 { await Task.yield() }
