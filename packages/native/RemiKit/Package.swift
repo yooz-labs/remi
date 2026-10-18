@@ -14,7 +14,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "NativeAPNsRuntime", publicHeadersPath: "include"),
-        .target(name: "RemiPush", dependencies: ["NativeAPNsRuntime"]),
+        .target(
+            name: "RemiPush",
+            dependencies: ["NativeAPNsRuntime"],
+            resources: [.process("PrivacyInfo.xcprivacy")]
+        ),
         .target(name: "RemiKit", dependencies: ["RemiPush"]),
         .target(
             name: "RemiUI",

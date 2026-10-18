@@ -28,6 +28,9 @@
     "app:version": "bun scripts/sync-app-version.mjs",
     "build:macos-web": "bash scripts/stage-macos-web.sh",
     "testflight:ios": "bash scripts/testflight-ios.sh",
+    "test:testflight-ios": "bash scripts/test-testflight-ios.sh",
+    "test:native-ci": "bash scripts/test-native-ci-workflow.sh",
+    "test:native-assets": "bash scripts/test-native-store-assets.sh",
     "testflight:macos": "bash scripts/testflight-macos.sh",
     "prepare": "lefthook install"
   },

@@ -1,0 +1,106 @@
+name: Native Apps
+
+on:
+  pull_request:
+    branches: [main, develop, "feature/**"]
+    paths:
+      - "packages/native/**"
+      - "scripts/testflight-ios.sh"
+      - "scripts/test-testflight-ios.sh"
+      - "scripts/test-native-ci-workflow.sh"
+      - ".github/workflows/native-app.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-test:
+    name: Build and Test (Native)
+    runs-on: xcode-27
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify hosted toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version | tee "$RUNNER_TEMP/xcode-version.txt"
+          swift --version | tee "$RUNNER_TEMP/swift-version.txt"
+          grep -Eq '^Xcode 27([. ]|$)' "$RUNNER_TEMP/xcode-version.txt"
+          grep -Eq 'Swift version (6\.[2-9]|[7-9]\.)' "$RUNNER_TEMP/swift-version.txt"
+
+      - name: Test shared native package
+        working-directory: packages/native/RemiKit
+        run: swift test
+
+      - name: Build native Mac app (Debug)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project packages/native/Remi.xcodeproj \
+            -scheme RemiMac \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/remi-mac-debug.log"
+
+      - name: Build native Mac app (Release)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project packages/native/Remi.xcodeproj \
+            -scheme RemiMac \
+            -configuration Release \
+            -destination "platform=macOS" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/remi-mac-release.log"
+
+      - name: Build native iPhone app (Debug simulator)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project packages/native/Remi.xcodeproj \
+            -scheme RemiPhone \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/remi-phone-debug.log"
+
+      - name: Build native iPhone app (Release device)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project packages/native/Remi.xcodeproj \
+            -scheme RemiPhone \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/remi-phone-release.log"
+
+      - name: Verify TestFlight contract
+        run: scripts/test-testflight-ios.sh
+
+      - name: Archive and inspect unsigned native payload
+        env:
+          REMI_ARCHIVE_DIR: ${{ runner.temp }}/remi-native-archive
+        run: |
+          set -o pipefail
+          scripts/testflight-ios.sh --unsigned-archive | tee "$RUNNER_TEMP/remi-archive.log"
+
+      - name: Ensure validation did not mutate tracked sources
+        run: git diff --exit-code
+
+      - name: Upload native CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/*.txt
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/remi-native-archive/**/acceptance-receipt.txt
