@@ -43,7 +43,9 @@ afterEach(async () => {
   __resetLoggerForTests();
 });
 
-async function fixture(options: { beforeApply?: () => void } = {}) {
+async function fixture(
+  options: { beforeApply?: () => void; submitDelay?: () => Promise<void> } = {},
+) {
   const logs: string[] = [];
   configureLogger({ writeLog: (line) => logs.push(line) });
   const directory = mkdtempSync(join(tmpdir(), 'remi-native-ledger-'));
@@ -87,6 +89,7 @@ async function fixture(options: { beforeApply?: () => void } = {}) {
         output += data;
       },
     },
+    options.submitDelay ? { submitDelay: options.submitDelay } : {},
   );
   const questions: Question[] = [];
   const resolved: string[] = [];
@@ -534,7 +537,15 @@ test(
 test(
   'native ledger never evicts a real queued PTY answer after proof retention expires',
   async () => {
-    const f = await fixture();
+    const delayEntered = Promise.withResolvers<void>();
+    const releaseDelay = Promise.withResolvers<void>();
+    const f = await fixture({
+      submitDelay: async () => {
+        delayEntered.resolve();
+        await releaseDelay.promise;
+      },
+    });
+    cleanups.push(async () => releaseDelay.resolve());
     for (let index = 0; index < 1023; index++) {
       if (index > 0 && index % 32 === 0) f.restart();
       const held = await f.hold();
@@ -545,18 +556,15 @@ test(
     const question = await f.terminal();
     const completeProof = await f.proof(question, 'y');
     const proof = await f.sign({ ...completeProof, expiresAt: completeProof.issuedAt + 2 });
-    // The real FIFO's 50ms-per-input sequence keeps the accepted answer pending
-    // past expiresAt+5 without substituting an apply function or a fake clock.
-    const queue = Array.from({ length: 180 }, (_, index) =>
-      f.pty.submitInput(`owned-ahead-${index}`),
-    );
     // Both callers verify asynchronously, so either can claim the queued effect first.
     const first = f.ledger.answer(proof);
     const second = f.ledger.answer(proof);
     const pending = Promise.all([first, second]);
     cleanups.push(async () => {
-      await Promise.allSettled([...queue, pending]);
+      releaseDelay.resolve();
+      await Promise.allSettled([pending]);
     });
+    await delayEntered.promise;
     expect(await Promise.race([first, second])).toBe('uncertain');
     expect(f.output()).not.toContain('y\r');
     const held = await f.hold();
@@ -565,8 +573,8 @@ test(
     expect(f.output()).not.toContain('y\r');
     expect(await f.ledger.answer(excess)).toBe('busy');
     expect(f.gate.isHeld(held.question.id)).toBe(true);
+    releaseDelay.resolve();
     expect((await pending).sort()).toEqual(['delivered', 'uncertain']);
-    await Promise.all(queue);
     const outputDeadline = Date.now() + 2000;
     while (!f.output().includes('y\r') && Date.now() < outputDeadline) await Bun.sleep(2);
     expect(f.output()).toContain('y\r');
