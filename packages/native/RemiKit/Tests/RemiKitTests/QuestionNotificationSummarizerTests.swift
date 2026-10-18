@@ -34,34 +34,47 @@ struct QuestionNotificationSummarizerTests {
     }
 
     @Test func timeoutFallsBackWithoutWaitingForGeneration() async {
+        let cancellations = Counter()
         let summarizer = QuestionNotificationSummarizer(deadline: .milliseconds(20)) { _ in
-            try await Task.sleep(for: .seconds(2))
-            return "Too late"
+            try await withTaskCancellationHandler {
+                try await Task.sleep(for: .seconds(30))
+                return "Too late"
+            } onCancel: {
+                Task { await cancellations.increment() }
+            }
         }
         let input = String(repeating: "A long question that needs a concise notification. ", count: 4)
 
-        let clock = ContinuousClock()
-        let started = clock.now
         let summary = await summarizer.summary(questionID: "timeout", text: input)
 
         #expect(summary == QuestionNotificationSummarizer.fallback(for: input))
-        #expect(started.duration(to: clock.now) < .seconds(1))
+        while await cancellations.value == 0 { await Task.yield() }
+        #expect(await cancellations.value == 1)
     }
 
     @Test func timeoutDoesNotWaitForCancellationIgnoringGeneration() async {
-        let summarizer = QuestionNotificationSummarizer(deadline: .milliseconds(20)) { _ in
-            let end = ContinuousClock.now.advanced(by: .milliseconds(300))
-            while ContinuousClock.now < end { await Task.yield() }
+        let timeout = ControlledSuspension()
+        let generation = ControlledSuspension()
+        let summarizer = QuestionNotificationSummarizer(
+            deadline: .seconds(30),
+            sleeper: { _ in await timeout.suspend() }
+        ) { _ in
+            await generation.suspend()
             return "Too late"
         }
         let input = String(repeating: "A long request that must not hold a notification. ", count: 4)
-        let clock = ContinuousClock()
-        let started = clock.now
+        let pending = Task {
+            await summarizer.summary(questionID: "ignores-cancellation", text: input)
+        }
 
-        let summary = await summarizer.summary(questionID: "ignores-cancellation", text: input)
+        await generation.waitUntilSuspended()
+        await timeout.waitUntilSuspended()
+        await timeout.resume()
+        let summary = await pending.value
 
         #expect(summary == QuestionNotificationSummarizer.fallback(for: input))
-        #expect(started.duration(to: clock.now) < .milliseconds(150))
+        #expect(await generation.isSuspended)
+        await generation.resume()
     }
 
     @Test func concurrentRequestsForOneQuestionShareGeneration() async {
@@ -142,4 +155,23 @@ private actor Counter {
 private actor CapturedInput {
     private(set) var value: String?
     func set(_ value: String) { self.value = value }
+}
+
+private actor ControlledSuspension {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var isSuspended: Bool { continuation != nil }
+
+    func suspend() async {
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilSuspended() async {
+        while continuation == nil { await Task.yield() }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
 }
