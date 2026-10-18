@@ -52,6 +52,11 @@ export interface PTYSessionConfig {
   readonly size?: TerminalSize;
 }
 
+/** Injectable scheduling boundary for the text-to-Enter pause. Production uses a 50 ms delay. */
+export interface PTYSessionDependencies {
+  readonly submitDelay?: () => Promise<void>;
+}
+
 /** Synchronous caller validity at each queued submission effect (#1488). */
 export type SubmitInputGuard = (phase: 'text' | 'enter') => boolean;
 
@@ -84,15 +89,22 @@ export class PTYSession {
   private state: SessionState = 'created';
   private readonly config: Required<PTYSessionConfig>;
   private readonly events: Partial<PTYSessionEvents>;
+  private readonly submitDelay: () => Promise<void>;
 
   private process: ReturnType<typeof Bun.spawn> | null = null;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
 
-  constructor(config: PTYSessionConfig = {}, events: Partial<PTYSessionEvents> = {}) {
+  constructor(
+    config: PTYSessionConfig = {},
+    events: Partial<PTYSessionEvents> = {},
+    dependencies: PTYSessionDependencies = {},
+  ) {
     this.id = generateId();
     this.createdAt = now();
     this.events = events;
+    this.submitDelay =
+      dependencies.submitDelay ?? (() => new Promise((resolve) => setTimeout(resolve, 50)));
 
     this.config = {
       command: config.command ?? DEFAULT_COMMAND,
@@ -291,7 +303,7 @@ export class PTYSession {
       this.termWrite(text);
 
       // Small delay to let Claude Code process the text
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.submitDelay();
 
       if (this.state !== 'running' || !this.process?.terminal) {
         throw new Error(`Cannot write to session in state: ${this.state}`);
