@@ -6,8 +6,10 @@ public actor QuestionNotificationSummarizer {
     public static let preferenceKey = "remi.notification-question-summaries"
 
     typealias Generator = @Sendable (String) async throws -> String
+    typealias Sleeper = @Sendable (Duration) async -> Void
 
     private let generator: Generator
+    private let sleeper: Sleeper
     private let deadline: Duration
     private var cache: [String: String] = [:]
     private var cacheOrder: [String] = []
@@ -17,11 +19,17 @@ public actor QuestionNotificationSummarizer {
 
     public init() {
         generator = Self.generateOnDevice
+        sleeper = Self.sleep
         deadline = .milliseconds(900)
     }
 
     init(deadline: Duration, generator: @escaping Generator) {
+        self.init(deadline: deadline, sleeper: Self.sleep, generator: generator)
+    }
+
+    init(deadline: Duration, sleeper: @escaping Sleeper, generator: @escaping Generator) {
         self.generator = generator
+        self.sleeper = sleeper
         self.deadline = deadline
     }
 
@@ -38,10 +46,16 @@ public actor QuestionNotificationSummarizer {
         }
 
         let generator = self.generator
+        let sleeper = self.sleeper
         let deadline = self.deadline
         let input = String(text.prefix(2_000))
         let task = Task {
-            let generated = await Self.raceGeneration(input, generator: generator, deadline: deadline)
+            let generated = await Self.raceGeneration(
+                input,
+                generator: generator,
+                sleeper: sleeper,
+                deadline: deadline
+            )
             return generated.flatMap(Self.sanitizedGeneratedSummary) ?? fallback
         }
         inFlight[questionID] = task
@@ -70,6 +84,7 @@ public actor QuestionNotificationSummarizer {
     private static func raceGeneration(
         _ input: String,
         generator: @escaping Generator,
+        sleeper: @escaping Sleeper,
         deadline: Duration
     ) async -> String? {
         let race = SummaryRace()
@@ -78,7 +93,7 @@ public actor QuestionNotificationSummarizer {
             catch { await race.resolve(nil) }
         }
         let timeout = Task {
-            try? await Task.sleep(for: deadline)
+            await sleeper(deadline)
             guard !Task.isCancelled else { return }
             await race.resolve(nil)
         }
@@ -86,6 +101,10 @@ public actor QuestionNotificationSummarizer {
         generation.cancel()
         timeout.cancel()
         return result
+    }
+
+    private static func sleep(for duration: Duration) async {
+        try? await Task.sleep(for: duration)
     }
 
     private static func shouldGenerate(for text: String) -> Bool {
