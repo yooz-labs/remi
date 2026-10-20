@@ -165,6 +165,37 @@ test('secure lease expiry and restart preserve the push-key version floor', asyn
   expect(restarted.listCurrent()[0]?.subscriptionEpoch).not.toBe(snapshot?.subscriptionEpoch);
 });
 
+test('secure lease malformed dormant markers fail closed without repair', async () => {
+  await registered();
+  for (const invalid of [false, null, 0, 'expired']) {
+    const data = read();
+    data.subscriptions[0].leaseExpired = invalid;
+    fs.writeFileSync(file(), JSON.stringify(data));
+    const before = fs.readFileSync(file(), 'utf8');
+    expect(() => store().listCurrent()).toThrow('SECURE_PUSH_STORE_ERROR');
+    expect(fs.readFileSync(file(), 'utf8')).toBe(before);
+  }
+});
+
+test('secure dormant epochs cannot revive after a longer lease, disabling expiry or clock rollback', async () => {
+  const { subscriptions, authority, registration, snapshot } = await registered();
+  seen(Date.now() - 1001);
+  expect(subscriptions.withCurrentSubscription(snapshot, () => 'old effect')).toBeNull();
+  expect(read().subscriptions[0].leaseExpired).toBe(true);
+  for (const leaseMs of [10_000, 0]) {
+    expect(store(leaseMs).listCurrent()).toEqual([]);
+    expect(store(leaseMs).withCurrentSubscription(snapshot, () => 'revived')).toBeNull();
+    expect(store(leaseMs).renew(authority)).toBe(false);
+  }
+  seen(Date.now() + 10_000_000);
+  const restarted = store(10_000);
+  expect(restarted.listCurrent()).toEqual([]);
+  expect(read().subscriptions[0].leaseExpired).toBe(true);
+  expect(await restarted.register(authority, registration)).toMatchObject({ success: true });
+  expect(restarted.listCurrent()[0]?.subscriptionEpoch).not.toBe(snapshot.subscriptionEpoch);
+  expect(restarted.withCurrentSubscription(snapshot, () => 'late')).toBeNull();
+});
+
 test('secure dormant rows retain the physical 64-row bound without evicting key history', async () => {
   const { subscriptions, registration } = await registered();
   // Real keys, enrollments and registrations; no fabricated persisted authority.

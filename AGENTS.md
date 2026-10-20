@@ -739,9 +739,11 @@ those two are both exactly `{token, title, body}`.
   unregistered subscription is never
   recreated by renewal. A new registration has a new subscription generation,
   so it cannot revive a prepared old push or answer. Expired subscriptions remain
-  dormant to preserve the push-key version floor until explicit unregister or
+  dormant with a durable expiry marker to preserve the push-key version floor until explicit unregister or
   revoke. The file keeps at most 64 total rows; a full dormant file refuses a
-  new device with `CAPACITY` until a row is explicitly removed.
+  new device with `CAPACITY` until a row is explicitly removed. A longer lease,
+  disabling expiry or a clock rollback cannot reactivate a marked epoch; fresh
+  registration is required.
   Pre-lease secure records receive one lease from their first locked read;
   future sightings are clamped and persisted once. Timestamped records require
   the upgraded daemon reader; stop older daemons sharing the same remi home.

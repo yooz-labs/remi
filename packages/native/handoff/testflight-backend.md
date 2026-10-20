@@ -30,12 +30,13 @@ Work these as their own reviewed changes; do not fold them into release signing.
    All secure store consumers and the hub use `push_lease_hours` (24 hours by
    default; 0 never expires). The hub renews on registration, ready, periodic
    current connection checks and close. Fan-out, prepared sends and native-answer
-   commits reject expiry under the store lock. Expired records remain dormant
+   commits reject expiry under the store lock. Expired records retain a monotonic dormant marker
    within the 64-row file bound to retain their push-key version floor; explicit
    unregister/revoke frees a row. Fresh registration rotates the subscription
    generation. Old records receive one migration lease. Review identified and
    corrected a stale-key rollback after expiry; regressions cover restart,
-   physical capacity, actual HTTP send and a real held-hook commit. Final
+   physical capacity, clock/config changes, actual HTTP send and a real held-hook
+   commit. Final
    exact-head CI and R7 remain merge gates, not implied by these source changes.
 2. **#1225 — the fix already landed.** Reviewed #1271 (`5cb6c49f`) is an ancestor
    of current develop. The hub preserves its authenticated BYE with a bounded

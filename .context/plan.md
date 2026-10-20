@@ -900,7 +900,9 @@ worktrees; backend changes run in `agents/secure-push-leases`.
   enrollment and subscription generations. No protocol or native UI changes.
 - Apply the already-decided push lease to all secure store consumers and the
   source hub: register/connected/close renewal, locked expiry at fan-out and
-  final invocation, 0 disables expiry, one migration lease for old records.
+  final invocation, 0 disables new expiry, one migration lease for old records.
+  Preserve dormant key floors within 64 total records; persist observed expiry
+  so clock/config changes cannot revive a previous subscription epoch.
 - Require real-store and source hub/Worker regression checks, both Bun gates,
   mutation checks, independent review and exact-head CI/R7 before landing.
 - #1225's reviewed #1271 fix is already an ancestor of develop. Verify current
@@ -910,3 +912,14 @@ worktrees; backend changes run in `agents/secure-push-leases`.
   #1386; battery improvement remains unmeasured.
 - Apple distribution signing/upload and deployed Cloudflare measurements are
   still the owner's gates. Relay remains opt-in.
+
+The two-round review identified automatic-expiry key rollback and clock/config
+revival of dormant epochs. Both are fixed on the same branch; the driver
+verified the final marker fix, with no third review. Final mutation controls
+failed as expected in all 28 cases (14 semantic changes on each supported Bun).
+Earlier whole-suite attempts are preserved as superseded: the first exposed
+canonical TMPDIR/color-environment requirements; subsequent runs were stopped
+for the accepted review corrections. Final complete gates use a canonical
+owned TMPDIR and no contradictory color variables. Receipts are retained under
+`/private/tmp/remi-1272-validation/`; they do not imply Apple/device/deployment
+acceptance.

@@ -230,7 +230,10 @@ export class SecurePushStore {
     return this.subscriptionsInsideLock().filter((entry) => this.leaseCurrent(entry));
   }
   private leaseCurrent(entry: StoredSecurePushSubscription): boolean {
-    return this.leaseMs === 0 || Date.now() - (entry.lastSeenAt ?? 0) < this.leaseMs;
+    return (
+      !entry.leaseExpired &&
+      (this.leaseMs === 0 || Date.now() - (entry.lastSeenAt ?? 0) < this.leaseMs)
+    );
   }
   private subscriptionsInsideLock(): StoredSecurePushSubscription[] {
     const stored = readSecurePushSubscriptions(this.directory);
@@ -245,10 +248,21 @@ export class SecurePushStore {
       // Existing v1 records get one migration lease, not an unlimited historical registration.
       // Persist clock rollback clamping once, so re-reads cannot repeatedly extend the lease.
       const lastSeenAt = Math.min(entry.lastSeenAt ?? now, now);
+      const leaseExpired =
+        entry.leaseExpired === true || (this.leaseMs > 0 && now - lastSeenAt >= this.leaseMs);
       // Retain expired rows (at most 64 total) to keep their push-key version floor.
       // Only explicit unregister/revoke resets that floor; a fresh registration rotates epoch.
-      changed ||= entry.lastSeenAt !== lastSeenAt;
-      current.push(entry.lastSeenAt === lastSeenAt ? entry : { ...entry, lastSeenAt });
+      const rowChanged = entry.lastSeenAt !== lastSeenAt || leaseExpired !== !!entry.leaseExpired;
+      changed ||= rowChanged;
+      current.push(
+        rowChanged
+          ? {
+              ...entry,
+              lastSeenAt,
+              ...(leaseExpired ? { leaseExpired: true as const } : {}),
+            }
+          : entry,
+      );
     }
     if (changed) writeSecurePushSubscriptions(this.directory, current);
     return current;
