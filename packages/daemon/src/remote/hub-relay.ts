@@ -142,6 +142,8 @@ export interface HubRelayConfig {
    * the existence of the secure push service (`cli.ts`); absent, registration is not gated.
    */
   securePushSender?: () => boolean;
+  /** Shared notifications.push_lease_hours, in milliseconds (#1272). */
+  pushLeaseMs?: number;
   random?: relayV2.Rng;
   ephemeral?: () => Promise<relayV2.EcPair>;
   log?: (message: string) => void;
@@ -164,6 +166,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private reconnect: ReturnType<typeof setTimeout> | undefined;
   private stable: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
+  private pushLeaseTimer: ReturnType<typeof setInterval> | undefined;
   constructor(
     private readonly cfg: HubRelayConfig,
     private readonly events: Partial<AdapterEvents> = {},
@@ -176,7 +179,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     )
       throw new Error('RELAY_PRODUCTION_CRYPTO_REQUIRED');
     this.devices = new RelayDeviceStore(cfg.dir, cfg.trust);
-    this.subscriptions = new SecurePushStore(cfg.dir, cfg.trust);
+    this.subscriptions = new SecurePushStore(cfg.dir, cfg.trust, 64, {
+      ...(cfg.pushLeaseMs === undefined ? {} : { leaseMs: cfg.pushLeaseMs }),
+    });
   }
   get connectionCount(): number {
     return [...this.peers.values()].filter((peer) => peer.stage === 'ready' && this.current(peer))
@@ -196,7 +201,25 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     );
     this.rid = await relayV2.ridOf(this.machine.publicKey);
     this.running = true;
+    const leaseMs = this.cfg.pushLeaseMs ?? 24 * 60 * 60 * 1000;
+    this.pushLeaseTimer = setInterval(
+      () => {
+        for (const peer of this.peers.values())
+          if (peer.stage === 'ready' && this.current(peer)) this.renewPushLease(peer);
+      },
+      leaseMs > 0 ? Math.min(15 * 60_000, Math.max(1, leaseMs / 3)) : 15 * 60_000,
+    );
+    this.pushLeaseTimer.unref?.();
     void this.connect();
+  }
+  private renewPushLease(peer: Peer): void {
+    if (!peer.pushAuthority) return;
+    try {
+      this.subscriptions.renew(peer.pushAuthority);
+    } catch {
+      // A busy/unreadable store cannot renew; the next tick retries, never cached authority.
+      this.log('Secure push lease renewal refused: store unavailable');
+    }
   }
   private url(role: 'host' | 'pipe', cid?: string): string {
     return relayWorkerUrl(this.cfg.relayUrl, role, this.rid, cid);
@@ -578,6 +601,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               }
               peer.channel = ready.channel;
               peer.stage = 'ready';
+              this.renewPushLease(peer);
               clearTimeout(peer.timer);
               this.install(peer);
               ws.send(ready.ready);
@@ -1088,6 +1112,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
 
   private closePeer(peer: Peer, orderly = false): Promise<void> {
     if (peer.closing) return peer.closing;
+    if (peer.stage === 'ready' && !peer.cancelled) this.renewPushLease(peer);
     // Cancel synchronously, before crypto/storage may resume; only BYE may leave afterward.
     peer.cancelled = true;
     peer.orderlyClosing = orderly;
@@ -1356,6 +1381,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    clearInterval(this.pushLeaseTimer);
+    this.pushLeaseTimer = undefined;
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.stable) clearTimeout(this.stable);
     // Forget the control before closing it: on Bun 1.3.11 its close handler runs inside close(),

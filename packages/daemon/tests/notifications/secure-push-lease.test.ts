@@ -93,7 +93,7 @@ test('secure lease expiry and unregister cannot be revived by renewal', async ()
 });
 
 test('secure lease renewal refuses replaced grants and never waits on a contended lock', async () => {
-  const { subscriptions, authority, identity } = await registered();
+  const { subscriptions, authority, identity, registration } = await registered();
   seen(Date.now() - 600);
   const before = fs.readFileSync(file(), 'utf8');
   withInterprocessFileLock(path.join(directory, 'authorized_keys.json'), () => {
@@ -104,7 +104,21 @@ test('secure lease renewal refuses replaced grants and never waits on a contende
   });
   trust.removeAuthorizedKey(identity.fingerprint);
   await trust.addAuthorizedKey(identity.publicKey, 'replacement grant');
+  const replacement = subscriptions.captureAuthority(identity.publicKey);
+  if (!replacement) throw new Error('missing replacement authority');
+  expect(await subscriptions.register(replacement, registration)).toMatchObject({ success: true });
+  seen(Date.now() - 600);
+  const replacementBytes = fs.readFileSync(file(), 'utf8');
   expect(subscriptions.renew(authority)).toBe(false);
+  expect(fs.readFileSync(file(), 'utf8')).toBe(replacementBytes);
+  await new RelayDeviceStore(directory, trust).add(identity.publicKey, 'replacement enrollment');
+  const enrolled = subscriptions.captureAuthority(identity.publicKey);
+  if (!enrolled) throw new Error('missing new enrollment');
+  expect(await subscriptions.register(enrolled, registration)).toMatchObject({ success: true });
+  seen(Date.now() - 600);
+  const enrolledBytes = fs.readFileSync(file(), 'utf8');
+  expect(subscriptions.renew(replacement)).toBe(false);
+  expect(fs.readFileSync(file(), 'utf8')).toBe(enrolledBytes);
 });
 
 test('secure lease migrates untimestamped records once and clamps future sightings durably', async () => {

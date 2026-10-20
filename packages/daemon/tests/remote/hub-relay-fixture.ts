@@ -86,6 +86,7 @@ export async function resumedHub(config: Partial<HubRelayConfig> = {}) {
     pin: { relayUrl: worker.wsUrl, machinePublicKey: relayV2.b64u(machine) },
     sendApplication: (bytes: Uint8Array) => channel.send(bytes),
     closed: socket.closed,
+    disconnect: () => socket.close(),
     exchange: async (request: ProtocolMessage) => {
       await channel.send(new TextEncoder().encode(serialize(request)));
       const bytes = await channel.receive(await socket.binary());

@@ -50,7 +50,7 @@ function state() {
   };
 }
 
-test('secure subscription: actual registration persists bound private generations and exact idempotence', async () => {
+test('secure subscription: registration persists bound generations and idempotent renewal', async () => {
   const { authority, registration } = await recipient();
   expect(await subscriptions.register(authority, registration)).toEqual({
     success: true,
@@ -62,11 +62,13 @@ test('secure subscription: actual registration persists bound private generation
   expect(original.authorizationEpoch).toBe(authority.authorizationEpoch);
   expect(original.enrollmentEpoch).toBe(authority.enrollmentEpoch);
   expect(Buffer.from(original.subscriptionEpoch, 'base64url')).toHaveLength(32);
-  const bytes = state().bytes;
+  const before = state().file.subscriptions[0];
   expect(
     await subscriptions.register(authority, { ...registration, pushPrefs: { questions: true } }),
   ).toEqual({ success: true, keyVersion: 1 });
-  expect(state().bytes).toBe(bytes);
+  const after = state().file.subscriptions[0];
+  expect(after?.['lastSeenAt']).toBeGreaterThanOrEqual(before?.['lastSeenAt'] as number);
+  expect({ ...after, lastSeenAt: undefined }).toEqual({ ...before, lastSeenAt: undefined });
   expect(new SecurePushStore(directory, trust).listCurrent()).toEqual([original]);
   expect(fs.statSync(path.join(directory, 'secure_push_subscriptions.json')).mode & 0o777).toBe(
     0o600,

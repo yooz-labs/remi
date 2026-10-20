@@ -92,7 +92,7 @@ export interface NotificationsConfig {
    * How long a phone keeps getting pushes after it was last seen (#1254, owner
    * decision 2026-10-06). The phone renews it by connecting and by staying
    * connected, and the lease counts from when its connection closed;
-   * disconnecting the machine in the app (`unregister_device_token`, sent only
+   * disconnecting the machine in the app (legacy or secure unregister, sent only
    * while the machine is reachable) ends it at once. 0 means it never
    * expires. Hours; fractions are allowed.
    */

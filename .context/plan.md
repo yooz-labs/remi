@@ -889,3 +889,24 @@ has completed for preparation; actual current-grant caller, further managed-copy
 failure and held-answer acceptance remain pending. The workspace-update gate
 subsequently passed its full suite and actual 61-minute measurement, landing in
 #1515 at `5efb5665`; its evidence remains separate from download preparation.
+
+## TestFlight backend continuation (2026-10-19, #1272)
+
+The app-session handoff is `packages/native/handoff/testflight-backend.md`
+(PR #1549). Preserve the primary checkout's local native edits and existing
+worktrees; backend changes run in `agents/secure-push-leases`.
+
+- Reuse `SecurePushStore`, the shared authorization lock and original grant,
+  enrollment and subscription generations. No protocol or native UI changes.
+- Apply the already-decided push lease to all secure store consumers and the
+  source hub: register/connected/close renewal, locked expiry at fan-out and
+  final invocation, 0 disables expiry, one migration lease for old records.
+- Require real-store and source hub/Worker regression checks, both Bun gates,
+  mutation checks, independent review and exact-head CI/R7 before landing.
+- #1225's reviewed #1271 fix is already an ancestor of develop. Verify current
+  close tests before reconciling the stale issue; do not rebuild the fix.
+- #1303 backend provisioning landed in #1315; native identity/approval UI and
+  physical fleet acceptance remain separate. #1385 source lifecycle landed in
+  #1386; battery improvement remains unmeasured.
+- Apple distribution signing/upload and deployed Cloudflare measurements are
+  still the owner's gates. Relay remains opt-in.

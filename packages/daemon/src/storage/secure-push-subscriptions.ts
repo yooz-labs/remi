@@ -18,6 +18,8 @@ export interface StoredSecurePushSubscription extends SecurePushRegistration {
   readonly enrollmentEpoch: string;
   readonly subscriptionEpoch: string;
   readonly pushPrefs: Required<PushPreferences>;
+  /** Missing only on pre-lease records, migrated under the store lock (#1272). */
+  readonly lastSeenAt?: number;
 }
 const PREFS = ['questions', 'turnComplete', 'harnessDenied', 'turnFailed'] as const;
 const REGISTRATION = ['token', 'environment', 'pushPublicKey', 'keyVersion', 'pushPrefs'];
@@ -103,7 +105,14 @@ export function readSecurePushSubscriptions(directory: string): StoredSecurePush
     for (const item of value['subscriptions']) {
       if (
         !record(item) ||
-        Object.keys(item).sort().join(',') !== STORED ||
+        Object.keys(item)
+          .filter((key) => key !== 'lastSeenAt')
+          .sort()
+          .join(',') !== STORED ||
+        ('lastSeenAt' in item &&
+          (typeof item['lastSeenAt'] !== 'number' ||
+            !Number.isSafeInteger(item['lastSeenAt']) ||
+            item['lastSeenAt'] < 0)) ||
         typeof item['publicKey'] !== 'string' ||
         typeof item['fingerprint'] !== 'string' ||
         !isAuthorityEpoch(item['authorizationEpoch']) ||
