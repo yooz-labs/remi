@@ -7,9 +7,13 @@ import Testing
 private actor RealHubRecorder {
     var states: [RemiConnectionState] = []
     var events: [RemiInboundEvent] = []
+    var authenticatedKey: Data?
 
     func record(_ state: RemiConnectionState) { states.append(state) }
-    func record(_ event: RemiInboundEvent) { events.append(event) }
+    func record(_ event: RemiInboundEvent) {
+        events.append(event)
+        if case .hello(_, let key) = event { authenticatedKey = key }
+    }
 
     func isWaiting(for fingerprint: String) -> Bool {
         states.contains(.awaitingLocalApproval(fingerprint: fingerprint))
@@ -18,6 +22,7 @@ private actor RealHubRecorder {
     var connected: Bool {
         states.contains { if case .connected = $0 { true } else { false } }
     }
+    var authenticatedHello: Bool { connected && authenticatedKey != nil }
 
     var errorCodes: [String] {
         events.compactMap { if case .error(let error) = $0 { error.code } else { nil } }
@@ -81,6 +86,49 @@ struct RealHubIntegrationTests {
         try await waitUntil { await recorder.errorCodes.contains("INVALID_MESSAGE") }
         #expect(await recorder.errorCodes.contains("INVALID_MESSAGE"))
         await connection.stop()
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_E2E_URL"] != nil &&
+        ProcessInfo.processInfo.environment["REMI_E2E_HOME"] != nil &&
+        ProcessInfo.processInfo.environment["REMI_REPO_ROOT"] != nil,
+        "Requires an owned source hub; see RealHubIntegrationTests.swift."))
+    @MainActor func savedFullPinReconnectsThroughTheRealDirectHandshake() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let urlString = try #require(environment["REMI_E2E_URL"])
+        let url = try #require(URL(string: urlString))
+        let remiHome = try #require(environment["REMI_E2E_HOME"])
+        let root = try #require(environment["REMI_REPO_ROOT"])
+        let identity = ClientIdentity()
+        let recorder = RealHubRecorder()
+        let initial = RemiConnection(configuration: .init(url: url, clientVersion: "native-pin-test", clientId: "native-pin-test"),
+            identity: identity, stateHandler: { state in Task { await recorder.record(state) } },
+            eventHandler: { event in Task { await recorder.record(event) } })
+        await initial.start()
+        try await waitUntil { await recorder.isWaiting(for: identity.fingerprint) }
+        try authorize(fingerprint: identity.fingerprint, remiHome: remiHome, repositoryRoot: root)
+        await initial.retryAfterApproval()
+        try await waitUntil { await recorder.authenticatedHello }
+        let authenticatedKey = await recorder.authenticatedKey
+        let key = try #require(authenticatedKey)
+        await initial.stop()
+
+        let defaultsKey = "remi.saved-pin.real-hub.\(UUID())"
+        defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        let saved = MachineConfigurationStore(key: defaultsKey)
+        let endpoint = MachineEndpoint(host: try #require(url.host), port: try #require(url.port))
+        saved.saveProfiles([MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [endpoint], connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(key))])
+        let restored = MachineStore(profiles: try saved.loadProfilesValidated(), identity: identity,
+            clientVersion: "native-pin-test", clientId: "native-pin-test")
+        #expect(restored.machines.first?.endpoint.expectedPublicKey == key.base64EncodedString())
+        restored.start()
+        defer { restored.stop() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while restored.machines.first?.status != .connected, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(restored.machines.first?.status == .connected)
+        #expect(restored.persistableProfiles.first?.machinePublicKey == RelayCrypto.b64(key))
     }
 
     private struct UnknownClientMessage: Encodable, Sendable {

@@ -154,10 +154,11 @@ public final class NativeRelayNotifications {
                     currentIdentity = nil
                 }
                 let identity = try currentIdentity ?? identityStore.loadOrCreate()
-                let saved = MachineConfigurationStore.shared.loadProfiles()
+                let saved = try MachineConfigurationStore.shared.loadProfilesValidated()
                 let startup = saved.map { profile in
                     MachineRouteProfile(machineID: profile.machineID,
-                        routes: Self.startupEndpoints(from: profile.routes), displayName: profile.displayName)
+                        routes: Self.startupEndpoints(from: profile.routes), displayName: profile.displayName,
+                        connectionPreference: profile.connectionPreference, machinePublicKey: profile.machinePublicKey)
                 }.filter { !$0.routes.isEmpty }
                 let current = MachineStore(profiles: startup,
                     identity: identity,
@@ -169,6 +170,8 @@ public final class NativeRelayNotifications {
                 }
                 store = current
                 startupError = nil
+            } catch is MachineConfigurationStore.ReadError {
+                startupError = "Saved connection settings could not be read. Recover those settings before connecting."
             } catch {
                 startupError = "Device identity is unavailable. Remi cannot sign answers with this identity."
             }
@@ -381,6 +384,13 @@ public final class NativeRelayNotifications {
                 guard let identity = try identityStore.loadCurrent(), !identity.requiresAppUnlock else {
                     throw RemiPushError.unavailable
                 }
+                #if DEBUG
+                if !ownedTesting {
+                    MachineConnectionPolicyFence.shared.seed(try MachineConfigurationStore.shared.loadProfilesValidated())
+                }
+                #else
+                MachineConnectionPolicyFence.shared.seed(try MachineConfigurationStore.shared.loadProfilesValidated())
+                #endif
                 current = MachineStore(endpoints: [], identity: identity,
                     clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
                     clientId: UUID().uuidString.lowercased(), pushStore: pushStore)

@@ -4,6 +4,8 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded direct handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy and routes. Automatic advances on reachability failure; an unavailable locked layer does not fall back. This requires a separate app upload; alternate-address pairing and local discovery remain subsequent phases of #1571.
+
 ## [0.8.0] - 2026-10-20
 
 ### Upgrade for the native TestFlight app

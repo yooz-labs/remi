@@ -13,6 +13,8 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     /// Child connections must authenticate as the Mac that advertised their port.
     public let expectedMachineID: String?
     public let relayPin: RelayMachinePin?
+    public let directConnectTimeout: Duration
+    public let directAuthenticationTimeout: Duration
 
     public init(
         url: URL,
@@ -24,7 +26,9 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         pairingNonce: String? = nil,
         pairingLabel: String? = nil,
         expectedMachineID: String? = nil,
-        relayPin: RelayMachinePin? = nil
+        relayPin: RelayMachinePin? = nil,
+        directConnectTimeout: Duration = .seconds(5),
+        directAuthenticationTimeout: Duration = .seconds(30)
     ) {
         self.url = url
         self.clientVersion = clientVersion
@@ -36,6 +40,8 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.pairingLabel = pairingLabel
         self.expectedMachineID = expectedMachineID
         self.relayPin = relayPin
+        self.directConnectTimeout = min(.seconds(30), max(.milliseconds(100), directConnectTimeout))
+        self.directAuthenticationTimeout = min(.seconds(60), max(.milliseconds(100), directAuthenticationTimeout))
     }
 }
 
@@ -54,7 +60,7 @@ public enum RemiConnectionState: Sendable, Equatable {
 }
 
 public enum RemiInboundEvent: Sendable, Equatable {
-    case hello(HelloAckMessage)
+    case hello(HelloAckMessage, authorityPublicKey: Data? = nil)
     case sessions(SessionListResponse)
     case question(QuestionMessage)
     case questionResolved(QuestionResolvedMessage)
@@ -139,6 +145,9 @@ public actor RemiConnection {
     private let relayPairingExpiresAt: UInt64?
     private var relayEnrolled: Bool
     private var relayDeadline: Task<Void, Never>?
+    private var directDeadline: Task<Void, Never>?
+    private enum DirectDeadlineFailure: Equatable { case unreachable, authentication }
+    private var directDeadlineFailure: DirectDeadlineFailure?
     private var sendTail: Task<Void, Never>?
     private var pendingSends = 0
     private var relayClosing = false
@@ -319,28 +328,34 @@ public actor RemiConnection {
                 if singleAttempt { shouldRun = false; return }
                 if case .awaitingLocalApproval = state { return }
                 if case .rejected = state { return }
-            } catch is CancellationError {
-                return
             } catch {
+                if !shouldRun || Task.isCancelled { return }
+                if error is CancellationError && directDeadlineFailure == nil { return }
+                let directFailure = directDeadlineFailure
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
+                if directFailure == .authentication {
+                    shouldRun = false
+                    transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
+                    return
+                }
                 if singleAttempt { shouldRun = false; transition(to: .rejected(reason: "The relay attempt ended.")); return }
                 if configuration.relayPin != nil && (!relayEnrolled || attempt >= 5 || error is RelayFailure) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
                 }
-                if configuration.relayPin == nil && !Self.isDirectReachabilityFailure(error) {
+                if configuration.relayPin == nil && directFailure != .unreachable && !Self.isDirectReachabilityFailure(error) {
                     shouldRun = false
                     transition(to: .rejected(
                         reason: "The direct connection failed authentication or protocol validation."
                     ))
                     return
                 }
-                if configuration.relayPin == nil && attempt == 3 {
+                if configuration.relayPin == nil {
                     transition(to: .reachabilityFailed(attempt: attempt))
                 }
             }
@@ -362,8 +377,10 @@ public actor RemiConnection {
             return
         }
         pendingAuthentication = nil
+        directDeadlineFailure = nil
         let task = session.webSocketTask(with: configuration.url)
         socket = task
+        armDirectDeadline(task, after: configuration.directConnectTimeout, opening: true)
         task.resume()
         initialDirectHelloPending = true
         try await sendHello(on: task)
@@ -383,6 +400,10 @@ public actor RemiConnection {
                 throw RemiConnectionError.nonTextFrame
             }
             try await handle(data, on: task)
+            // An explicit pairing retry closes this socket without rejecting
+            // the machine. Return to the bounded retry loop; do not classify
+            // our own cancelled receive as an authentication failure.
+            if socket !== task { return }
         }
     }
 
@@ -432,6 +453,7 @@ public actor RemiConnection {
                 pairingLabel: configuration.pairingLabel
             )
             pendingAuthentication = pending
+            armDirectDeadline(task, after: configuration.directAuthenticationTimeout, opening: false)
             try await task.send(.data(encoder.encode(response)))
         case "auth_result":
             let result = try decoder.decode(AuthResultMessage.self, from: data)
@@ -455,6 +477,7 @@ public actor RemiConnection {
             authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
             guard acceptMachineIdentity(descriptor: nil) else { return }
+            armDirectDeadline(task, after: configuration.directConnectTimeout, opening: false)
             try await sendHello(on: task)
         case "hello_ack":
             guard pendingAuthentication == nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
@@ -466,8 +489,12 @@ public actor RemiConnection {
             let message = try decoder.decode(HelloAckMessage.self, from: data)
             guard acceptMachineIdentity(descriptor: message.machine) else { return }
             applicationAdmitted = true
+            directDeadline?.cancel()
+            directDeadline = nil
             transition(to: .connected(sessionId: message.sessionId))
-            eventHandler(.hello(message))
+            let authority = configuration.relayPin.flatMap { try? RelayCrypto.unb64($0.machinePublicKey) }
+                ?? authenticatedServerPublicKey
+            eventHandler(.hello(message, authorityPublicKey: authority))
             for buffered in relayHelloBuffer.drain() {
                 guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
                 try await handle(buffered, on: task)
@@ -572,6 +599,9 @@ public actor RemiConnection {
         initialDirectHelloPending = false
         relayDeadline?.cancel()
         relayDeadline = nil
+        directDeadline?.cancel()
+        directDeadline = nil
+        directDeadlineFailure = nil
         relayHandshake?.abort()
         relayHandshake = nil
         relaySecret = nil
@@ -708,6 +738,17 @@ public actor RemiConnection {
                 phase = "data"
             default: throw RelayFailure.state
             }
+        }
+    }
+
+    private func armDirectDeadline(_ task: URLSessionWebSocketTask, after delay: Duration, opening: Bool) {
+        guard configuration.relayPin == nil else { return }
+        directDeadline?.cancel()
+        directDeadline = Task {
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard socket === task, shouldRun, !applicationAdmitted else { return }
+            directDeadlineFailure = opening ? .unreachable : .authentication
+            task.cancel(with: .goingAway, reason: nil)
         }
     }
 

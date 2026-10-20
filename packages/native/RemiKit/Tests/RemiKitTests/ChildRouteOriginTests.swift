@@ -132,11 +132,13 @@ struct ChildRouteOriginTests {
         let key = Data(repeating: 7, count: 32)
         let pin = try RelayMachinePin(relayURL: "wss://relay.example.test", machinePublicKey: RelayCrypto.b64(key))
         let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
-        let (store, _, _, generation) = try consolidatedStore(current: relay)
+        let (store, generation) = try activeRelayStore(relay)
         defer { store.stop() }
         store.receive(.sessions(try sessions(ports: [28003])), from: relay, generation: generation)
 
-        #expect(store.connectionGenerations.count == 2)
+        #expect(store.machines.first?.endpoint.id == relay.id)
+        #expect(store.connectionGenerations.count == 1)
+        #expect(!store.connectionGenerations.keys.contains { $0.relayPin == nil && $0.port == 28003 })
     }
 
     @Test func inactiveRelayHelloCannotReplaceDirectCapabilities() throws {
@@ -173,7 +175,7 @@ struct ChildRouteOriginTests {
         let pin = try RelayMachinePin(relayURL: "wss://relay.example.test",
             machinePublicKey: RelayCrypto.b64(Data(repeating: 7, count: 32)))
         let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
-        let (store, _, _, generation) = try consolidatedStore(current: relay)
+        let (store, generation) = try activeRelayStore(relay)
         defer { store.stop() }
         let response: CreateSessionResponseMessage = try frame([
             "type": "create_session_response", "requestId": "create", "success": true,
@@ -181,7 +183,9 @@ struct ChildRouteOriginTests {
         ])
         store.receive(.createSessionResponse(response), from: relay, generation: generation)
 
-        #expect(store.connectionGenerations.count == 2)
+        #expect(store.machines.first?.endpoint.id == relay.id)
+        #expect(store.connectionGenerations.count == 1)
+        #expect(!store.connectionGenerations.keys.contains { $0.relayPin == nil && $0.port == 28004 })
     }
 
     @Test func resumeResponseKeepsExactCorrelationAndUsesTheRespondingAddress() throws {
@@ -200,6 +204,18 @@ struct ChildRouteOriginTests {
 
         #expect(store.connectionGenerations[MachineEndpoint(host: current.host, port: 28005)] != nil)
         #expect(store.connectionGenerations[MachineEndpoint(host: old.host, port: 28005)] == nil)
+    }
+
+    private func activeRelayStore(_ relay: MachineEndpoint) throws -> (MachineStore, UUID) {
+        let key = Data(repeating: 7, count: 32)
+        let local = MachineEndpoint(host: "192.0.2.10", port: 28000)
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [local, relay], connectionPreference: .relayOnly, machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start()
+        let generation = try #require(store.connectionGenerations[relay])
+        store.receive(.hello(try hello(), authorityPublicKey: key), from: relay, generation: generation)
+        return (store, generation)
     }
 
     private func consolidatedStore(current: MachineEndpoint = MachineEndpoint(host: "192.0.2.20", port: 28002)) throws

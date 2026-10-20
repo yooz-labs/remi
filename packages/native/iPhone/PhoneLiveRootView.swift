@@ -43,6 +43,7 @@ struct PhoneLiveRootView: View {
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
                 onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
                 onEnableRelayNotifications: relayNotifications.enable,
                 enablingRelayNotifications: relayNotifications.enabling,
                 onDismissError: store.clearLatestError,
@@ -375,10 +376,6 @@ struct PhoneLiveRootView: View {
 
     private func addMachine(_ endpoint: MachineEndpoint) {
         relayNotifications.machineWillChange(endpoint)
-        if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
-            guard store.removeMachine(existing.endpoint) else { return }
-            relayNotifications.didForget(existing.endpoint)
-        }
         store.addMachine(endpoint)
         MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
     }
