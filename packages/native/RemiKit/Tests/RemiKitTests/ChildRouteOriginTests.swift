@@ -114,6 +114,23 @@ struct ChildRouteOriginTests {
         #expect(store.connectionGenerations.count == 2)
     }
 
+    @Test func inactiveRelayHelloCannotReplaceDirectCapabilities() throws {
+        let pin = try RelayMachinePin(relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(Data(repeating: 7, count: 32)))
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let (store, old, _, generation) = try consolidatedStore(current: relay)
+        defer { store.stop() }
+        let acknowledgment: HelloAckMessage = try frame([
+            "type": "hello_ack", "serverVersion": "1.0.0", "machine": descriptor,
+            "capabilities": ["relay-only"], "harnesses": ["codex"],
+        ])
+        store.receive(.hello(acknowledgment), from: relay, generation: generation)
+
+        #expect(store.machines.first?.endpoint == old)
+        #expect(store.machines.first?.capabilities == [])
+        #expect(store.machines.first?.harnesses == ["claude"])
+    }
+
     @Test func createResponseUsesTheRespondingAddress() throws {
         let (store, old, current, generation) = try consolidatedStore()
         defer { store.stop() }
