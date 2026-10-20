@@ -1,10 +1,21 @@
 # TestFlight and relay handoff
 
-This is the live handoff for the first native iPhone TestFlight build. It is
-reconciled on 2026-10-19 against `develop` at `d085e42e` and the #1272
-continuation. Re-check the source head and linked issues before claiming a gate
-passed. The primary checkout has local native edits; preserve them and use the
-backend worktree for backend validation.
+This handoff is reconciled on 2026-10-20. The iPhone candidate is **0.2.0 (11)**,
+from clean source `e72012e6f8aa67c300b9bdf478653d8936f80c56`, which includes
+#1551's secure push lease fix and #1552's release metadata. It has been signed,
+exported, uploaded, processed, cleared for export compliance with owner
+confirmation, and verified as **Testing** in the existing internal group.
+
+The CLI is a separate release: npm and Homebrew still publish 0.7.16 at this
+snapshot. #1556 tracks publishing CLI 0.7.17 through `develop` to `main` so
+`remi pair` is available from those channels. A reviewed local compiled backend
+at the candidate source reaches the real QR pairing flow; this does not prove
+completed phone pairing. See [the upgrade guide](../../../docs/UPGRADING-0.7.17.md).
+
+The old primary-checkout native edits were compared with landed #1535 and removed
+at the owner's request. The primary checkout is clean; other pre-existing
+worktrees remain preserved. Recheck current heads and linked issues before
+claiming any remaining gate passed.
 
 ## What is ready
 
@@ -19,14 +30,15 @@ backend worktree for backend validation.
   answers are implemented. Physical evidence already includes iPhone lock-screen
   Yes and Watch-mirrored No through a deployed Debug relay; see #1242.
 
-These facts do not prove distribution signing, App Store export/upload, deployed
-production relay behavior, battery behavior, or all remaining hardware gates.
+The signed export/upload evidence is recorded below. Source and CI results alone
+do not establish deployed production relay behavior, battery behavior or all
+remaining hardware gates.
 
 ## Backend developer queue
 
 Work these as their own reviewed changes; do not fold them into release signing.
 
-1. **#1272 — secure push subscription leases implemented in this continuation.**
+1. **#1272 — secure push subscription leases landed in #1551; issue closed.**
    All secure store consumers and the hub use `push_lease_hours` (24 hours by
    default; 0 never expires). The hub renews on registration, ready, periodic
    current connection checks and close. Fan-out, prepared sends and native-answer
@@ -37,12 +49,13 @@ Work these as their own reviewed changes; do not fold them into release signing.
    corrected a stale-key rollback after expiry; regressions cover restart,
    physical capacity, clock/config changes, actual HTTP send and a real held-hook
    commit. Both supported Bun full suites and loaded close controls passed
-   locally; exact-head CI and R7 remain merge gates.
+   locally. Exact-head CI and the actual 61-minute R7 source soak passed before
+   merge `a3f8f10c`; the final reviewed head was `fbe9e1e8`.
 2. **#1225 — the fix already landed.** Reviewed #1271 (`5cb6c49f`) is an ancestor
    of current develop. The hub preserves its authenticated BYE with a bounded
    orderly-close grace and forgets the control before shutdown. Keep the
    existing loaded-test receipts and current close tests; reconcile the stale
-   open issue rather than reimplementing the fix.
+   issue, now closed with those receipts, rather than reimplementing the fix.
 3. **#1202 — current R7 evidence and owner acceptance.** Run the ordinary relay
    gates and 61-minute source-hub/source-client soak at one immutable commit.
    Preserve full logs, exit status, runtime versions and the receipt. Prior
@@ -69,10 +82,15 @@ Work these as their own reviewed changes; do not fold them into release signing.
 Follow `docs/relay-worker-deploy-runbook.md`; agents must not handle these secrets
 or deploy on the owner's behalf.
 
-- Run the committed engine check on the deployed Cloudflare runtime and record its
-  complete result.
-- Configure `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_PRIVATE_KEY` and `PUSH_SECRET` as
-  Worker secrets. Configure the same push secret on each participating hub.
+- The committed engine check passed all 39 required checks on a temporary
+  deployed Worker on 2026-10-20; its report is retained and that Worker deleted.
+- Live account inspection found production version
+  `560bfe27-1d35-44bf-bb3d-1af8d356ea48`, migration v3, last deployed in July.
+  `/connect/<code>` still returns 426 without an upgrade and `/v2/host/<rid>`
+  returns 404. This is the old relay, separate from the engine check.
+- `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_PRIVATE_KEY` already exist as Worker
+  secrets. `PUSH_SECRET` and `PUSH_AUDIENCE` are missing. Preserve the existing
+  APNS secrets; configure a matching push secret on every participating hub.
 - Set `PUSH_AUDIENCE` to the exact canonical HTTPS Worker origin.
 - Deploy the Worker migration, then run the health, removed-route, WebSocket nonce,
   unauthenticated push and authenticated-malformed push smoke checks.
@@ -83,34 +101,36 @@ or deploy on the owner's behalf.
 
 ## Apple/TestFlight owner queue
 
-App Store Connect was checked in the owner's authenticated session on 2026-10-19.
-[Yooz Remi](https://appstoreconnect.apple.com/apps/6785313030/testflight/ios)
-already has iOS version 0.1.0 build 10, marked Ready to Submit and expiring in
-eight days. The next candidate needs build 11 or higher. The portal also displays
-an updated Apple Developer Program License Agreement awaiting the Account
-Holder's acceptance before updates or new submissions. No agreement was
-accepted, and no upload was attempted during this continuation.
+App Store Connect was checked in the owner's authenticated Chrome session on
+2026-10-20. [Yooz Remi](https://appstoreconnect.apple.com/apps/6785313030/testflight/ios)
+now has native iOS **0.2.0 (11)**, verified **Testing** in the existing internal
+group, with one tester and 90 days remaining. The owner confirmed the updated
+Developer Program agreement was already accepted.
 
-1. Resolve that agreement in the owner's Apple Developer account and ensure the
-   App ID has Push Notifications, App Groups and the required keychain capability.
-2. Ensure the distribution certificate/profile can sign both the app and
-   `live.yooz.remi.native-push-service`, including production APNS and
-   `group.live.yooz.remi`.
-3. Install the App Store Connect API key locally and set `ASC_KEY_ID`,
-   `ASC_ISSUER_ID`, and optionally `ASC_KEY_PATH`. Do not commit them.
-4. Prepare the next build with `bun run app:version --bump-build`, commit the
-   shared release metadata through a PR, then run from a clean checkout:
+- Source: `e72012e6f8aa67c300b9bdf478653d8936f80c56`.
+- Delivery/build ID: `795c742d-23f3-45d9-82a0-29b70dc2135d`.
+- IPA SHA-256: `329ec7f4c5e6f5e8605ed0c8519ede192d6e4940e204336a5e6c6fbccaf433b1`.
+- Both exported app and Notification Service Extension passed strict signature,
+  App Group and shared keychain checks; the app has production APNS and both
+  have debugger access disabled. Xcode's intermediate automatic-signing archive
+  used development profiles; the distribution export was checked separately.
+- Upload succeeded without errors. Processing and internal testing availability
+  were verified independently in App Store Connect. With owner confirmation,
+  the OS-only encryption declaration was saved: native cryptographic primitives
+  use Apple CryptoKit/Security. This does not mean that the app has no encryption.
+- #1555 corrects the helper's premature production-APNS check: final distribution
+  entitlements must be checked after export, before upload. A full signed
+  archive/export at its reviewed head `985ad3e3` passed without a second upload.
 
-   ```sh
-   bun install --frozen-lockfile
-   bun run testflight:ios
-   ASC_KEY_ID=... ASC_ISSUER_ID=... bun run testflight:ios -- --upload
-   ```
+Receipts, upload logs and the internal Testing screenshot are under
+`/Volumes/S1/yooz/remi/artifacts/2026-10-19-testflight-backend/signed-release/`.
+Build 11 has been consumed: **do not upload it again**. Keep marketing version
+0.2.0 and advance the build number to 12 or higher for another upload.
 
-5. Preserve the acceptance receipt and upload response with the exact source
-   commit. Confirm processing before assigning testers.
-6. Complete export-compliance, privacy answers, the internal test group and tester
-   access in App Store Connect.
+Internal testing availability does not prove the device gates below. The main
+iPhone reports 0.2.0 (11) installed; pairing, transport, notification and answer
+acceptance need their own observations. External Beta/App Review submission,
+privacy review and broad availability remain separate.
 
 ## Native/device gates before broad TestFlight
 
@@ -145,8 +165,7 @@ Receipts and full logs are retained under
 The native assets, release-contract script and preflight can be validated without
 Apple credentials. They do not prove distribution signing or upload.
 
-An internal TestFlight upload can proceed once the signed native archive/export and
-App Store Connect checks pass. Relay should remain visibly opt-in while #1202,
-#1225, #1272 or deployed-provider measurements remain open. A build may be an
-internal TestFlight candidate without claiming relay default-on, battery readiness,
-or broad production readiness.
+The internal TestFlight upload and App Store Connect gates above passed. Relay
+should remain visibly opt-in while #1202 or deployed-provider and signed-device
+measurements remain open. Internal TestFlight availability does not establish
+relay default-on, battery readiness or broad production readiness.

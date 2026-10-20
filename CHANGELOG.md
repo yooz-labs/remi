@@ -4,6 +4,18 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-10-20
+
+### Upgrade for the native TestFlight app
+
+- CLI 0.7.17 provides `remi pair` for native iPhone app 0.2.0 (11). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.7.17.md) for package installation, daemon restart and pairing.
+- The native iPhone app is distributed separately through TestFlight. This CLI release does not publish the native Mac app or establish all signed-device, deployed-relay or battery acceptance gates.
+- Secure push subscriptions now enforce the configured 24-hour lease by default, including final send and answer commits. Expired subscriptions retain their push-key version floor until explicit removal; periodic authenticated relay activity renews a current subscription (#1272).
+- Direct connections recheck the device's authorization before domain dispatch and at the existing ping interval. Removing a device closes an active connection on its next message or ping tick (#1305).
+- Optional direct TLS fails closed when its certificate, private key or local control capability is unavailable. Native secure endpoint/QR support remains pending; ordinary direct QR pairing refuses a TLS hub. See [DIRECT-TLS.md](docs/DIRECT-TLS.md).
+- The web client can submit structured Codex chat and explicitly transfer supported images, links and downloads through their authenticated direct/relay capabilities. Native conformance and physical acceptance remain separate gates; legacy typed Codex input stays refused.
+- Relay v2 remains opt-in. Publishing the CLI does not deploy the Worker, configure push credentials, retire legacy push or complete R7 provider/device measurements. Old connection codes are retired in the CLI; use direct pairing or the separately configured v2 relay.
+
 ### Keep repositories available for native session creation (#1284)
 
 #### Added
@@ -20,7 +32,7 @@ All notable changes to Remi are documented here.
 
 #### Known limits
 
-- Removing a key (`remi authorize --remove`) does not close a connection that key already authenticated; the next fresh authentication is refused (#1305).
+- Removing a key (`remi authorize --remove`) closes an authenticated direct connection on its next domain message or ping tick, and refuses its next authentication (#1305).
 - `remi authorize` keeps only the public key of the JSON it is given and does not refuse one that holds a private key (#1320), and a `--label` is stored and printed as typed (#1321).
 
 ### Resume a session from the app when the machine runs only a hub (#1129)
@@ -57,7 +69,7 @@ All notable changes to Remi are documented here.
 
 #### Added
 
-- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. The Remi app scans it, and you approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. No released app scans the code yet; the native app's scanner is being aligned with it (#1283). Without a terminal, `remi keys` and `remi authorize` still work.
+- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. Native iPhone TestFlight app 0.2.0 (11) reads this format. You approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. Without a terminal, `remi keys` and `remi authorize` still work.
 - The code approves nothing on its own: the phone still proves its key, and you still say yes. A code someone else photographs gets them nothing but a request you can see and refuse. The connection is not encrypted by remi; use a trusted network, a VPN or an SSH tunnel.
 - `remi pair` needs the hub to listen on an address your phone can reach (`daemon.bind`) and authentication on, and says how to fix either. It needs the hub restarted once after upgrading, so the hub records how it is bound.
 - If another device tries the code after a phone claimed it, the terminal names it at the question; answer no unless the fingerprint is your phone's. Ctrl-C, SIGTERM or a closed terminal cancels a code nobody has claimed, and rejects one that is waiting for your answer. Keys typed while the code is up never answer the question.
