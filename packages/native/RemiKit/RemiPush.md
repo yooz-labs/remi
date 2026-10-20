@@ -23,6 +23,8 @@ Debug/Release namespace configuration, no-UI recipient reads, owned bytes across
 notification queue hops, Swift concurrency annotations and escaped display text.
 The public runtime APNs query is a separate Clang target; it retains its exact
 entitlement checks, cancellation and deadlines.
+Both Swift copies preserve callback submission order on the main queue (#1565);
+an earlier duplicate cannot be overtaken by a complementary query result.
 
 `RemiKit` contains the app-exclusive versioned Dpk record adapter, from legacy
 `packages/macos/Remi/ClientIdentity.swift` at the same commit.

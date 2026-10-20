@@ -124,6 +124,8 @@ original-byte decoder; the persistence API does not verify a signature itself.
 `NativeAPNsEnvironment` queries both exact entitlement values under one two-second
 async deadline. One match and the other mismatch selects the environment;
 conflict, missing evidence, cancellation, context replacement, and timeout refuse.
+Callback hops preserve submission order on the main queue (#1565), so a duplicate
+delivered before the other query's result refuses before that result can finish.
 macOS uses public SecTask self-entitlement lookup. iOS 17.4 and newer use the public
 anonymous self-XPC lightweight requirement path. Older iOS and simulator builds
 report unavailable, with no receipt, DEBUG, configured-environment, or private-API
