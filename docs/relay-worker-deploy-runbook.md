@@ -1,7 +1,10 @@
 # Relay Worker v2: deploy runbook
 
-For the owner. **No live deploy was done for this change, and no agent holds Cloudflare credentials.**
-Nothing here has been run against a Cloudflare account; every command is the owner's to run, and the expected outputs are what the repository's tests and `wrangler`'s documentation lead one to expect, not observations of a deployed Worker.
+For the owner. The original R2 implementation did not deploy a Worker.
+The explicitly owner-approved production v2 deployment on 2026-10-20 is recorded
+in [its acceptance receipt](relay-production-2026-10-20.md). Commands below remain
+the deployment procedure; distinguish their expected outputs from that receipt's
+actual observations and remaining gates.
 What the Worker does is in [relay-worker-v2.md](relay-worker-v2.md).
 
 The Worker is deployed by hand: there is no deploy workflow.
@@ -31,7 +34,9 @@ The Worker is deployed by hand: there is no deploy workflow.
 
 ## Check the runtime first (ADR 0034 section 19)
 
-The relay library's WebCrypto use has been checked on a local workerd (1.20260107.1), not on the deployed fleet.
+The original relay library check used local workerd (1.20260107.1). The first
+production deployment also passed the committed check on a temporary deployed
+Worker; see the receipt above. Run the check again for a new runtime deployment.
 Before the real Worker, run the committed check as a throwaway Worker on the deployed runtime and read its report.
 
 ```
