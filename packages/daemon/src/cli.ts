@@ -1839,6 +1839,7 @@ async function startMdnsIfNeeded(
       version: REMI_VERSION,
       authEnabled,
       fingerprint: serverFingerprint,
+      role: serveMode ? 'hub' : 'session',
     });
     await publisher.start();
     logFn('[mDNS] Advertising on local network');

@@ -8,6 +8,8 @@ export interface MdnsPublisherConfig {
   readonly version: string;
   readonly authEnabled: boolean;
   readonly fingerprint?: string | undefined;
+  /** Public discovery hint only; the client still authenticates the machine key (#1575). */
+  readonly role?: 'hub' | 'session' | undefined;
   readonly name?: string | undefined;
   readonly probe?: boolean | undefined;
 }
@@ -44,6 +46,7 @@ export class MdnsPublisher {
       if (this.config.fingerprint) {
         txt['fingerprint'] = this.config.fingerprint;
       }
+      if (this.config.role) txt['role'] = this.config.role;
 
       this.service = this.instance.publish({
         name: this.config.name ?? `remi-${hostname}`,

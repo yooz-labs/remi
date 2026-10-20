@@ -27,6 +27,7 @@ describe('discoverDaemons', () => {
     expect(found).toBeDefined();
     expect(found?.version).toBe('0.2.3');
     expect(found?.authEnabled).toBe(false);
+    expect(found?.role).toBeUndefined();
   });
 
   test('returns empty array gracefully on short timeout', async () => {
@@ -68,5 +69,24 @@ describe('discoverDaemons', () => {
     expect(found).toBeDefined();
     expect(found?.hostname).toBeTruthy();
     expect(found?.name).toContain('remi-');
+  });
+
+  test.each(['hub', 'session'] as const)('discovers the public %s role hint', async (role) => {
+    const name = `remi-route-role-${crypto.randomUUID()}`;
+    publisher = new MdnsPublisher({
+      port: 19987,
+      version: 'test',
+      authEnabled: true,
+      fingerprint: '0123456789abcdef',
+      role,
+      name,
+      probe: false,
+    });
+    await publisher.start();
+    const found = (await discoverDaemons({ timeoutMs: 2000 })).find(
+      (daemon) => daemon.name === name,
+    );
+    expect(found).toBeDefined();
+    expect(found?.role).toBe(role);
   });
 });
