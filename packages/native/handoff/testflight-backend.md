@@ -79,21 +79,23 @@ Work these as their own reviewed changes; do not fold them into release signing.
 
 ## Relay deployment owner queue
 
-Follow `docs/relay-worker-deploy-runbook.md`; agents must not handle these secrets
-or deploy on the owner's behalf.
+The owner explicitly approved the v2 cutover and push setup after reviewing the
+irreversible migration and impact on old clients. Production is now version
+`8110ead2-d14c-4343-b408-3cbd9146d135`, migration v4, from `e72012e6`.
+The APNS secrets were preserved, the push bearer and canonical audience were
+configured, and this Mac's real hub reported `Relay control admitted`.
 
-- The committed engine check passed all 39 required checks on a temporary
-  deployed Worker on 2026-10-20; its report is retained and that Worker deleted.
-- Live account inspection found production version
-  `560bfe27-1d35-44bf-bb3d-1af8d356ea48`, migration v3, last deployed in July.
-  `/connect/<code>` still returns 426 without an upgrade and `/v2/host/<rid>`
-  returns 404. This is the old relay, separate from the engine check.
-- `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_PRIVATE_KEY` already exist as Worker
-  secrets. `PUSH_SECRET` and `PUSH_AUDIENCE` are missing. Preserve the existing
-  APNS secrets; configure a matching push secret on every participating hub.
-- Set `PUSH_AUDIENCE` to the exact canonical HTTPS Worker origin.
-- Deploy the Worker migration, then run the health, removed-route, WebSocket nonce,
-  unauthenticated push and authenticated-malformed push smoke checks.
+The deployed engine's 39 required checks, seven live route/nonce checks and
+13 controlled-peer checks passed. These sent no APNS notification and do not
+establish full shipping-client or signed-device acceptance. See the
+[deployment receipt](../../../docs/relay-production-2026-10-20.md) for exact
+scope, source, version and retained evidence. Continue with the
+[deployment runbook](../../../docs/relay-worker-deploy-runbook.md):
+
+- Configure the matching bearer on every other participating hub and update old
+  senders. Existing session daemons on this Mac were preserved.
+- Verify the production push/decryption/answer path on the installed TestFlight
+  app and finish the deployed R7 session and negative controls.
 - Measure production hibernation, alarm behavior, limits and Durable Object cost;
   local Miniflare observations are not Cloudflare measurements.
 - Keep relay opt-in until every R7 default-on gate passes. Do not retire legacy
