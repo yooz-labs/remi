@@ -10,23 +10,30 @@ struct PairingScreen: View {
     private let pairCommand = "remi pair"
     private let keysCommand = "remi keys"
     private let authorizeCommand = "remi authorize <fingerprint> --label phone"
-    let onAddMachine: (MachineEndpoint) -> Void
+    let onAddMachine: (AddMachineRequest) -> UUID?
+    let pairingAttempts: [PairingAttemptState]
+    let onCancelPairing: (UUID) -> Void
     let publicIdentity: PublicClientIdentity?
     let machineStates: [MachineState]
 
     @State private var draft = AddMachineDraft()
     @State private var showingScanner = false
     @State private var added = false
+    @State private var attemptID: UUID?
 
     @MainActor init(
         publicIdentity: PublicClientIdentity? = nil,
         machineStates: [MachineState] = [],
         draft: AddMachineDraft? = nil,
-        onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in }
+        pairingAttempts: [PairingAttemptState] = [],
+        onCancelPairing: @escaping (UUID) -> Void = { _ in },
+        onAddMachine: @escaping (AddMachineRequest) -> UUID? = { _ in nil }
     ) {
         self.publicIdentity = publicIdentity
         self.machineStates = machineStates
         self.onAddMachine = onAddMachine
+        self.pairingAttempts = pairingAttempts
+        self.onCancelPairing = onCancelPairing
         _draft = State(initialValue: draft ?? AddMachineDraft())
     }
 
@@ -57,6 +64,8 @@ struct PairingScreen: View {
                 Picker("Connection method", selection: $draft.mode) {
                     Label("Direct", systemImage: "point.3.connected.trianglepath.dotted")
                         .tag(AddMachineDraft.ConnectionMode.direct)
+                    Label("Pairing code", systemImage: "qrcode")
+                        .tag(AddMachineDraft.ConnectionMode.pairingCode)
                     Label("Relay", systemImage: "network")
                         .tag(AddMachineDraft.ConnectionMode.relay)
                 }
@@ -71,6 +80,18 @@ struct PairingScreen: View {
                         .onSubmit(addMachine)
                     TextField("Port", value: $draft.port, format: .number)
                         .keyboardType(.numberPad)
+                } else if draft.mode == .pairingCode {
+                    TextField("remi://pair#…", text: $draft.pairingCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit(addMachine)
+                    if let payload = try? PairingPayload(scannedValue: draft.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                        LabeledContent("Machine fingerprint", value: payload.daemonFingerprint)
+                            .fontDesign(.monospaced)
+                        LabeledContent("This phone", value: publicIdentity?.fingerprint ?? "Unavailable")
+                            .fontDesign(.monospaced)
+                        Text("Compare these fingerprints in the terminal before approving this phone.")
+                    }
                 } else {
                     SecureField("Relay pairing token", text: $draft.relayToken)
                         .textInputAutocapitalization(.never)
@@ -84,9 +105,14 @@ struct PairingScreen: View {
                         .foregroundStyle(.red)
                 }
 
+                if let attemptID, let attempt = pairingAttempts.first(where: { $0.id == attemptID }) {
+                    Text(attempt.message)
+                    if !attempt.phase.isTerminal { Button("Cancel pairing") { onCancelPairing(attemptID) } }
+                    else { Button("Try again") { added = false } }
+                }
                 LabeledContent("Connection", value: draft.connectionSummary)
 
-                Button(added ? "Machine added" : draft.mode == .relay ? "Pair over the relay" : "Add machine") {
+                Button(added ? "Request submitted" : draft.mode == .relay ? "Pair over the relay" : "Add machine") {
                     addMachine()
                 }
                 .buttonStyle(.glassProminent)
@@ -97,8 +123,10 @@ struct PairingScreen: View {
             } footer: {
                 if draft.mode == .direct {
                     Text("Use 127.0.0.1 in the simulator. A physical phone needs an address reachable through the machine’s configured LAN, VPN, or Tailscale bind. Direct traffic is not encrypted by Remi.")
-                } else {
+                } else if draft.mode == .relay {
                     Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving.")
+                } else {
+                    Text("Paste the complete code from remi pair. Confirm this phone's fingerprint in the terminal.")
                 }
             }
 
@@ -107,7 +135,7 @@ struct PairingScreen: View {
                     PairingStep(number: 3, title: "Find the pending key", detail: "After the phone first reaches the machine, list pending keys.", command: keysCommand, copyLabel: "Copy remi keys command", copiedLabel: "remi keys command copied")
                     PairingStep(number: 4, title: "Compare and authorize", detail: "Compare the fingerprint shown on both devices, then authorize the exact fingerprint.", command: authorizeCommand, copyLabel: "Copy authorization command", copiedLabel: "Authorization command copied")
                 }
-            } else {
+            } else if draft.mode == .relay {
                 Section("Terminal confirmation") {
                     ForEach(machineStates.filter { $0.endpoint.relayPin != nil }) { machine in
                         if case .waitingForRelayConfirmation(let fingerprint) = machine.status {
@@ -131,25 +159,30 @@ struct PairingScreen: View {
         .onChange(of: draft.mode) { _, _ in added = false }
         .onChange(of: draft.host) { _, _ in added = false }
         .onChange(of: draft.port) { _, _ in added = false }
+        .onChange(of: draft.pairingCode) { _, _ in added = false }
+        .onDisappear { if let attemptID { onCancelPairing(attemptID) } }
         .onChange(of: draft.relayToken) { _, _ in added = false }
         .sheet(isPresented: $showingScanner) {
             PairingScannerSheet(
                 phoneFingerprint: publicIdentity?.fingerprint,
-                machineStates: machineStates
-            ) { endpoint in
-                onAddMachine(endpoint)
-            }
+                pairingAttempts: pairingAttempts,
+                onCancelPairing: onCancelPairing,
+                onConnect: onAddMachine
+            )
         }
     }
 
     private func addMachine() {
-        guard let endpoint = draft.makeEndpoint() else { return }
-        onAddMachine(endpoint)
+        guard let request = draft.makeRequest(proposedLabel: UIDevice.current.name, fallbackLabel: "iPhone") else { return }
+        attemptID = onAddMachine(request)
         added = true
     }
 
     private func validationMessage(_ issue: AddMachineDraft.ValidationIssue) -> LocalizedStringResource {
         switch issue {
+        case .pairingCodeRequiresForm: "Select Pairing code to paste a complete remi:// link."
+        case .missingPairingCode: "Paste the pairing code from remi pair."
+        case .invalidPairingCode(let error): "Pairing code not accepted (\(error.rawValue)). Run remi pair again."
         case .missingHost: "Enter a host or IP address."
         case .invalidPort: "Enter a port from 1 through 65535."
         case .missingRelayToken: "Paste the relay pairing token from the machine."

@@ -33,7 +33,9 @@ struct HomeScreen: View {
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     let onCreateSession: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
-    let onAddMachine: (MachineEndpoint) -> Void
+    let pairingAttempts: [PairingAttemptState]
+    let onCancelPairing: (UUID) -> Void
+    let onAddMachine: (AddMachineRequest) -> UUID?
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
@@ -65,7 +67,9 @@ struct HomeScreen: View {
         onTerminateSession: @escaping (String) -> Void = { _ in },
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onCreateSession: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void = { _, _, _, _, _ in },
-        onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
+        pairingAttempts: [PairingAttemptState] = [],
+        onCancelPairing: @escaping (UUID) -> Void = { _ in },
+        onAddMachine: @escaping (AddMachineRequest) -> UUID? = { _ in nil },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
         onRetryConnection: @escaping (MachineEndpoint) -> Void = { _ in },
@@ -96,6 +100,8 @@ struct HomeScreen: View {
         self.onTerminateSession = onTerminateSession
         self.onResumeSession = onResumeSession
         self.onCreateSession = onCreateSession
+        self.pairingAttempts = pairingAttempts
+        self.onCancelPairing = onCancelPairing
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
         self.onRetryApproval = onRetryApproval
@@ -255,6 +261,8 @@ struct HomeScreen: View {
                 PairingScreen(
                     publicIdentity: publicIdentity,
                     machineStates: sessionMachines,
+                    pairingAttempts: pairingAttempts,
+                    onCancelPairing: onCancelPairing,
                     onAddMachine: onAddMachine
                 )
                     .toolbar {

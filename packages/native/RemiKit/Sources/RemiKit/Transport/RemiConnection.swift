@@ -1,6 +1,12 @@
 import CryptoKit
 import Foundation
 
+public enum DirectRetryPolicy: Sendable, Equatable {
+    case runtime
+    /// The initial-pairing owner advances candidates only on reachability failure.
+    case coordinatedPairing
+}
+
 public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let url: URL
     public let clientVersion: String
@@ -15,6 +21,8 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let relayPin: RelayMachinePin?
     public let directConnectTimeout: Duration
     public let directAuthenticationTimeout: Duration
+    public let directHelloTimeout: Duration
+    public let directRetryPolicy: DirectRetryPolicy
 
     public init(
         url: URL,
@@ -28,7 +36,9 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         expectedMachineID: String? = nil,
         relayPin: RelayMachinePin? = nil,
         directConnectTimeout: Duration = .seconds(5),
-        directAuthenticationTimeout: Duration = .seconds(30)
+        directAuthenticationTimeout: Duration = .seconds(30),
+        directHelloTimeout: Duration = .seconds(5),
+        directRetryPolicy: DirectRetryPolicy = .runtime
     ) {
         self.url = url
         self.clientVersion = clientVersion
@@ -42,6 +52,16 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.relayPin = relayPin
         self.directConnectTimeout = min(.seconds(30), max(.milliseconds(100), directConnectTimeout))
         self.directAuthenticationTimeout = min(.seconds(60), max(.milliseconds(100), directAuthenticationTimeout))
+        self.directHelloTimeout = min(.seconds(30), max(.milliseconds(100), directHelloTimeout))
+        self.directRetryPolicy = directRetryPolicy
+    }
+
+    func admittedPairingConfiguration() -> Self {
+        Self(url: url, clientVersion: clientVersion, clientId: clientId, deviceId: deviceId,
+            expectedServerFingerprint: expectedServerFingerprint, expectedServerPublicKey: expectedServerPublicKey,
+            expectedMachineID: expectedMachineID, relayPin: relayPin,
+            directConnectTimeout: directConnectTimeout, directAuthenticationTimeout: directAuthenticationTimeout,
+            directHelloTimeout: directHelloTimeout, directRetryPolicy: .runtime)
     }
 }
 
@@ -112,7 +132,9 @@ public actor RemiConnection {
     public typealias EventHandler = @Sendable (RemiInboundEvent) -> Void
     public typealias ReadyHandler = @Sendable () async throws -> Void
 
-    private let configuration: RemiConnectionConfiguration
+    private var configuration: RemiConnectionConfiguration
+    private nonisolated let expectedMachineID: String?
+    private let authenticationRetryHandler: @Sendable (String) -> Void
     private let identity: ClientIdentity
     private let stateHandler: StateHandler
     private let eventHandler: EventHandler
@@ -138,6 +160,7 @@ public actor RemiConnection {
     private var applicationAdmitted = false
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
+    private var directOpeningCompleted = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
     private var relayChannel: RelayChannel?
@@ -158,10 +181,13 @@ public actor RemiConnection {
         relayPairingSecret: Data? = nil,
         relayPairingExpiresAt: UInt64? = nil,
         readyHandler: ReadyHandler? = nil,
+        authenticationRetryHandler: @escaping @Sendable (String) -> Void = { _ in },
         stateHandler: @escaping StateHandler,
         eventHandler: @escaping EventHandler
     ) {
         self.configuration = configuration
+        expectedMachineID = configuration.expectedMachineID
+        self.authenticationRetryHandler = authenticationRetryHandler
         self.identity = identity
         self.relaySecret = relayPairingSecret
         self.relayPairingExpiresAt = relayPairingExpiresAt
@@ -171,12 +197,22 @@ public actor RemiConnection {
         self.readyHandler = readyHandler
     }
 
+    /// Keeps this verified socket, but removes the claim from every future reconnect (#1574).
+    func completeCoordinatedPairing() throws {
+        guard configuration.directRetryPolicy == .coordinatedPairing,
+              configuration.relayPin == nil, applicationAdmitted,
+              authenticatedServerPublicKey != nil, socket != nil, shouldRun,
+              case .connected = state else { throw RelayFailure.closed }
+        configuration = configuration.admittedPairingConfiguration()
+    }
+
     func configureOneShot() throws {
         guard !shouldRun else { throw RelayFailure.state }
         singleAttempt = true; applicationHello = false
     }
     #if DEBUG
-    nonisolated var ownedExpectedMachineID: String? { configuration.expectedMachineID }
+    nonisolated var ownedExpectedMachineID: String? { expectedMachineID }
+    var ownedConfiguration: RemiConnectionConfiguration { configuration }
     /// Owned integration sessions only; production always uses normal URLSession trust.
     func useOwnedTestSession(_ session: URLSession) throws {
         guard !shouldRun else { throw RelayFailure.state }
@@ -332,12 +368,13 @@ public actor RemiConnection {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
                 let directFailure = directDeadlineFailure
+                let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
-                if directFailure == .authentication {
+                if directFailure == .authentication || (configuration.directRetryPolicy == .coordinatedPairing && authenticationStarted) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
                     return
@@ -357,6 +394,7 @@ public actor RemiConnection {
                 }
                 if configuration.relayPin == nil {
                     transition(to: .reachabilityFailed(attempt: attempt))
+                    if configuration.directRetryPolicy == .coordinatedPairing { shouldRun = false; return }
                 }
             }
 
@@ -384,6 +422,8 @@ public actor RemiConnection {
         task.resume()
         initialDirectHelloPending = true
         try await sendHello(on: task)
+        directOpeningCompleted = true
+        armDirectDeadline(task, after: configuration.directAuthenticationTimeout, opening: false)
 
         while shouldRun && !Task.isCancelled {
             let message = try await task.receive()
@@ -456,16 +496,20 @@ public actor RemiConnection {
             armDirectDeadline(task, after: configuration.directAuthenticationTimeout, opening: false)
             try await task.send(.data(encoder.encode(response)))
         case "auth_result":
+            guard !applicationAdmitted, pendingAuthentication != nil else {
+                throw AuthenticationHandshakeError.missingPendingChallenge
+            }
             let result = try decoder.decode(AuthResultMessage.self, from: data)
             guard result.success else {
                 pendingAuthentication = nil
                 closeSocket()
-                if result.error == "UNKNOWN_KEY" {
+                if result.error == "UNKNOWN_KEY", configuration.directRetryPolicy != .coordinatedPairing {
                     shouldRun = false
                     transition(to: .awaitingLocalApproval(fingerprint: identity.fingerprint))
                     return
                 }
                 if Self.shouldRetryAuthentication(result.error) {
+                    authenticationRetryHandler(result.error ?? "AUTH_STORE_ERROR")
                     closeSocket()
                     return
                 }
@@ -477,7 +521,7 @@ public actor RemiConnection {
             authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
             guard acceptMachineIdentity(descriptor: nil) else { return }
-            armDirectDeadline(task, after: configuration.directConnectTimeout, opening: false)
+            armDirectDeadline(task, after: configuration.directHelloTimeout, opening: false)
             try await sendHello(on: task)
         case "hello_ack":
             guard pendingAuthentication == nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
@@ -597,6 +641,7 @@ public actor RemiConnection {
         applicationAdmitted = false
         relayHelloBuffer = RelayHelloBuffer()
         initialDirectHelloPending = false
+        directOpeningCompleted = false
         relayDeadline?.cancel()
         relayDeadline = nil
         directDeadline?.cancel()

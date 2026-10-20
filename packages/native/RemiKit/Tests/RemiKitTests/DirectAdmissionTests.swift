@@ -14,7 +14,7 @@ private actor AdmissionRecorder {
 }
 
 struct DirectAdmissionTests {
-    @Test(arguments: ["preauth", "prehello", "prehello-list", "wrong-key", "admitted", "legacy"])
+    @Test(arguments: ["preauth", "prehello", "prehello-list", "wrong-key", "admitted", "legacy", "silent", "retry-without-challenge"])
     func applicationFramesRequireVerifiedHello(mode: String) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Integration/direct-admission-peer.ts")
@@ -44,7 +44,9 @@ struct DirectAdmissionTests {
         let machineID = try #require(metadata["machineID"] as? String)
         let recorder = AdmissionRecorder()
         let connection = RemiConnection(configuration: .init(url: try #require(URL(string: "ws://127.0.0.1:\(port)/ws")),
-            clientVersion: "test", clientId: "test", expectedMachineID: mode == "legacy" ? nil : machineID),
+            clientVersion: "test", clientId: "test", expectedMachineID: mode == "legacy" ? nil : machineID,
+            directConnectTimeout: .seconds(1), directAuthenticationTimeout: .milliseconds(200),
+            directRetryPolicy: .coordinatedPairing),
             identity: ClientIdentity(), stateHandler: { value in Task { await recorder.record(value) } },
             eventHandler: { value in Task { await recorder.record(value) } })
         await connection.start()

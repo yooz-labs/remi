@@ -303,4 +303,15 @@ struct MachineConnectionPreferenceTests {
         #expect(store.machines.first?.status == .disconnected)
         #expect(store.connectionGenerations.isEmpty)
     }
+
+    @Test(arguments: ["fd7a:115c:a1e0:0:0:0:0:1", "::ffff:6440:1", "ts.net."])
+    func numericCandidateClassificationMatchesCodec(host: String) throws {
+        let key = ClientIdentity().publicKeyBase64
+        let json = #"{"v":2,"name":"Owned source","hosts":["\#(host)"],"port":18765,"key":"\#(key)","nonce":"AAAAAAAAAAAAAAAAAAAAAA","exp":\#(Int(Date().timeIntervalSince1970) + 300),"proto":1}"#
+        let decoded = try PairingPayload(scannedValue: "remi://pair#" + RelayCrypto.b64(Data(json.utf8)))
+        #expect(decoded.endpoint.connectionLayer == .tailscale)
+        #expect(!MachineConnectionPreference.localOnly.permits(decoded.endpoint))
+        #expect(MachineConnectionPreference.tailscaleOnly.permits(decoded.endpoint))
+    }
+
 }
