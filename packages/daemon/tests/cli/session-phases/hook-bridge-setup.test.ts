@@ -490,6 +490,60 @@ describe('setupHookBridge', () => {
     expect(hookServer.permissionResolver).not.toBeNull();
   });
 
+  test('real Stop HTTP removes only an ended owning turn render card (#1570)', async () => {
+    const port = await reserveRange(1, 50, '127.0.0.1');
+    const server = new HookServer({ port });
+    const { tracker } = build({
+      realServer: server,
+      realTracker: true,
+      realMessageApi: true,
+      liveQuestionDeps: true,
+    });
+    server.start();
+    const claudeID = generateId();
+    const post = (event: Record<string, unknown>) =>
+      fetch(`http://127.0.0.1:${port}/hooks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: claudeID,
+          transcript_path: path.join(tmpDir, `${claudeID}.jsonl`),
+          cwd: tmpDir,
+          ...event,
+        }),
+      });
+    try {
+      expect(
+        (
+          await post({
+            hook_event_name: 'Notification',
+            notification_type: 'auth_success',
+            message: '',
+          })
+        ).status,
+      ).toBe(200);
+      const question = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+      if (!question) throw new Error('Captured dialog did not parse');
+      tracker.onPTYPromptVisible(question);
+      expect(sessionRegistry.getQuestion(SID, question.id)).not.toBeNull();
+      expect((await post({ hook_event_name: 'Stop', stop_hook_active: true })).status).toBe(200);
+      expect(sessionRegistry.getQuestion(SID, question.id)).not.toBeNull();
+      expect(
+        (await post({ hook_event_name: 'Stop', stop_hook_active: false, session_id: generateId() }))
+          .status,
+      ).toBe(200);
+      expect(sessionRegistry.getQuestion(SID, question.id)).not.toBeNull();
+      expect(
+        (await post({ hook_event_name: 'SubagentStop', agent_id: 'other-agent' })).status,
+      ).toBe(200);
+      expect(sessionRegistry.getQuestion(SID, question.id)).not.toBeNull();
+      expect((await post({ hook_event_name: 'Stop', stop_hook_active: false })).status).toBe(200);
+      expect(sessionRegistry.getQuestion(SID, question.id)).toBeNull();
+    } finally {
+      server.stop();
+    }
+  });
+
   describe('UserPromptSubmit listener (#893)', () => {
     function lock(id: string): void {
       // #930: SessionStart is no longer a registered/dispatched hook

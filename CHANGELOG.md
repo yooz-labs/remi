@@ -4,6 +4,8 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+- Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
+
 ## [0.8.0] - 2026-10-20
 
 ### Upgrade for the native TestFlight app

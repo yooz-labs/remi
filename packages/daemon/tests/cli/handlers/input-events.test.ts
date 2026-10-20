@@ -32,7 +32,8 @@ function fakePTY(capture: {
 }): PTYSession {
   return {
     id: generateId(),
-    write: (content: string) => {
+    write: (content: string, guard?: () => boolean) => {
+      if (guard && !guard()) return;
       if (capture.writeError) throw capture.writeError;
       capture.writes.push(content);
     },
@@ -71,6 +72,8 @@ const QID = 'ques0000-0000-0000-0000-000000000000' as UUID;
  */
 let registryForScreen: SessionRegistry | undefined;
 const PROMPT_ON_SCREEN = {
+  isPromptCurrent: (sessionId: UUID, questionId: UUID) =>
+    Boolean(registryForScreen?.getQuestion(sessionId, questionId)),
   isPromptObservedOnPTY: () => true,
   observedPromptOptions: (sessionId: UUID) =>
     [...(registryForScreen?.getSession(sessionId)?.currentQuestions.values() ?? [])].flatMap(

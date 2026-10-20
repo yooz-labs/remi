@@ -126,10 +126,10 @@ export interface InputHandlerDeps {
    * Prompt-currency check for a resolved card-answer PTY submit (#920).
    * Backed by the session's `QuestionPresenceTracker.isPromptCurrent`, so
    * answering a card whose on-screen prompt is gone is refused instead of
-   * typing into whatever Claude is doing now. Consulted ONLY for `Question.source === 'pty'`
-   * cards (the genuinely hook-less cohort #920 traced the leak to); every
-   * other source is left alone, see the call site's comment for why a
-   * blanket check would misfire on hook-paired questions. Absent (no
+   * typing into whatever Claude is doing now. Typed answers consult it for
+   * `Question.source === 'pty'`; every card Cancel that could type Esc
+   * requires its exact current render (#1570). Confirmed render-born
+   * merges bind their card ID to the raw render in the tracker. Absent (no
    * tracker wired for this session) is treated as "not current" — fail
    * toward refusing, matching `isQuestionLive`'s own default in
    * question-presence-tracker.ts.
@@ -667,14 +667,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // typed into a hook-backed prompt. On any other card still active (a
     // hook-less prompt, a multi-choice card) it sends Esc to the PTY so the
     // prompt cancels and Claude unblocks. The Esc is gated on the question
-    // still being active: a delayed cancel for an already-resolved question
-    // must NOT inject Esc into whatever Claude renders next (#631 review).
+    // still being active AND its exact render still being current, checked
+    // again inside the PTY write queue (#1570). Registry membership alone
+    // can outlive a terminal answer and must not authorize an interrupt.
     // Cleanup (gate retirement, removeQuestion, broadcast) is unconditional so
     // the card always clears.
     if (extra?.cancel) {
       const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
-      const stillActive =
-        held === 'unknown' && sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
+      const active = sessionRegistry.getQuestion(session.sessionId, questionId);
+      const canEscape = () =>
+        held === 'unknown' &&
+        active !== null &&
+        !active.isAnswered &&
+        !active.held &&
+        sessionRegistry.getQuestion(session.sessionId, questionId) === active &&
+        (isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false);
       // #1235: the cancel reached the agent (the hook took it, or the Esc was written), or it only
       // cleared the card.
       let reached = held === 'resolved';
@@ -684,17 +691,26 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         log(
           `[Answer] cancel: ${questionId.slice(0, 8)} is no longer held; clearing the card, nothing typed`,
         );
-      } else if (stillActive) {
+      } else if (canEscape()) {
         try {
-          await session.pty.write(ESC);
-          reached = true;
-          log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
+          let wrote = false;
+          await session.pty.write(ESC, () => {
+            if (!canEscape()) return false;
+            wrote = true;
+            return true;
+          });
+          reached = wrote;
+          log(
+            wrote
+              ? `[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`
+              : '[Answer] cancel: prompt changed while queued; nothing typed',
+          );
         } catch (err) {
           logError(`[Answer] cancel: Esc write failed: ${errorToString(err)}`);
         }
       } else {
         log(
-          `[Answer] cancel: question ${questionId.slice(0, 8)} already gone; skipping Esc, clearing card`,
+          `[Answer] cancel: question ${questionId.slice(0, 8)} has no current render; skipping Esc, clearing card`,
         );
       }
       // Guarded (#661 review): a throw from the gate retirement must never skip

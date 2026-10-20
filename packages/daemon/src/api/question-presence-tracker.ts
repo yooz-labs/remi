@@ -290,8 +290,9 @@ export class QuestionPresenceTracker {
    * Set by `pairAndPush` when a merge produces a question with NO pairing
    * hook record (`hookRecord === undefined` in `consumeAndMerge` -- a
    * genuinely hook-less prompt), cleared (and `deps.onHooklessQuestionGone`
-   * fired) the moment that evidence is gone: a DIFFERENT render supersedes it
-   * (see `pairAndPush`), status leaves 'waiting', or `clearPending` runs.
+   * fired) when a confirmed replacement render supersedes it, or an admitted
+   * hook confirms that its owning agent's turn ended (#1570). A parsed
+   * status change or a presence reset alone never resolves this card.
    *
    * Distinct from `observedPTYQuestionId` (the RAW pre-merge PTY parse id,
    * half of `isPromptCurrent`) because the id that matters here
@@ -1100,6 +1101,19 @@ export class QuestionPresenceTracker {
     this.cancelOrphanTimer();
   }
 
+  /** An admitted, completed owning-agent turn proves its render-owned card
+   * is no longer pending (#1570). Parsed status guesses never call this.
+   * Held cards are owned by the gate; other agents keep their cards. */
+  onAgentTurnEnded(agentId?: string): void {
+    const card = this.observedRenderOwnedQuestion;
+    if (card === null || card.agent !== (agentId ?? MAIN_AGENT_ID)) return;
+    this.noteHooklessGone('agent_turn_ended');
+    if (this.observedPTYText === card.text) {
+      this.ptyShowingQuestion = false;
+      this.clearObservedPTYQuestion();
+    }
+  }
+
   /** Match a rendered PTY prompt to a PARKED (#751 awaiting-PTY) record: an
    *  exact agent-key match, or the sole-candidate fallback (exactly one
    *  pending record and it is parked — PTY prompts rarely name their agent,
@@ -1198,7 +1212,7 @@ export class QuestionPresenceTracker {
    * with presence alone, an answer meant for a prompt that was since answered
    * in the terminal would be typed into whatever prompt replaced it (the #751
    * wrong-prompt hazard). Used by the answer path's #920 guard for
-   * `source: 'pty'` cards.
+   * `source: 'pty'` cards, and by every card Cancel before typing Esc (#1570).
    *
    * `ptyText` matters because a prompt that merely REDRAWS re-emits under a
    * fresh id (#486) — matching on the id alone would call a prompt still
@@ -1209,6 +1223,13 @@ export class QuestionPresenceTracker {
   isPromptCurrent(questionId: string, ptyText?: string): boolean {
     if (!this.ptyShowingQuestion) return false;
     if (this.observedPTYQuestionId === questionId) return true;
+    // A confirmed render-born merge keeps the hook's card ID and text;
+    // bind that card to its observed raw render before a guarded Cancel.
+    if (
+      this.observedRenderOwnedQuestion?.id === questionId &&
+      this.observedRenderOwnedQuestion.text === this.observedPTYText
+    )
+      return true;
     return ptyText !== undefined && this.observedPTYText === ptyText;
   }
 
