@@ -19,6 +19,7 @@ All notable changes to Remi are documented here.
 ### Native child connections (#1561)
 
 - Native app 0.2.0 (12) keeps session chat and questions on the active machine route. Re-pairing a Mac at a new address no longer opens session connections at the old address. Child connections verify the advertising machine identity, including when an older daemon omits its machine descriptor. Retired foreground sockets display as disconnected.
+- Application messages wait for an identity-verified hello. Failed session connections show an error and can be retried from machine settings while the hub stays connected.
 - The native app remains a separate TestFlight upload; this CLI release does not upload it.
 
 ### Keep repositories available for native session creation (#1284)

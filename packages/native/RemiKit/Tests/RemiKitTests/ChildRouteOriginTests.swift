@@ -51,6 +51,30 @@ struct ChildRouteOriginTests {
         let childGeneration = try #require(store.connectionGenerations[child])
         store.receive(.rejected(reason: "Session identity mismatch"), from: child, generation: childGeneration)
         #expect(store.machines.first?.status == .connected)
+        #expect(store.latestOperationError?.contains("Session identity mismatch") == true)
+        #expect(store.machines.first?.sessionConnectionIssue != nil)
+        store.retryConnection(for: current)
+        let retryGeneration = try #require(store.connectionGenerations[child])
+        #expect(retryGeneration != childGeneration)
+        #expect(store.machines.first?.sessionConnectionIssue == nil)
+        #expect(store.ownedConnectionMachineIDs[child] == store.machines.first?.machineID)
+        store.receive(.rejected(reason: "Retired child"), from: child, generation: childGeneration)
+        #expect(store.latestOperationError?.contains("Retired child") != true)
+    }
+
+    @Test func childApprovalFailureHasAnExplicitRetryWithoutChangingHubTrust() throws {
+        let (store, _, current, generation) = try consolidatedStore()
+        defer { store.stop() }
+        store.receive(.connected(sessionId: nil), from: current, generation: generation)
+        store.receive(.sessions(try sessions(ports: [28003])), from: current, generation: generation)
+        let child = MachineEndpoint(host: current.host, port: 28003)
+        let first = try #require(store.connectionGenerations[child])
+        store.receive(.awaitingLocalApproval(fingerprint: "1234567890abcdef"), from: child, generation: first)
+        #expect(store.machines.first?.status == .connected)
+        #expect(store.machines.first?.sessionConnectionIssue?.contains("1234567890abcdef") == true)
+        store.retryConnection(for: current)
+        #expect(store.connectionGenerations[child] != first)
+        #expect(store.ownedConnectionMachineIDs[child] == store.machines.first?.machineID)
     }
 
     @Test func oldRouteChildrenCannotDeliverAfterANewRouteBecomesActive() throws {

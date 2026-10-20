@@ -6,7 +6,7 @@ from clean source `e72012e6f8aa67c300b9bdf478653d8936f80c56`, which includes
 exported, uploaded, processed, cleared for export compliance with owner
 confirmation, and verified as **Testing** in the existing internal group.
 
-The next candidate is **0.2.0 (12)** for #1561. Build 11 drops child chat/question events and can open child connections at an old saved address after route consolidation. The correction keeps actual route ownership, binds child authentication to the advertising machine, and clears retired connection status. Build 12 source validation is separate from its still-pending upload and physical acceptance.
+The next candidate is **0.2.0 (12)** for #1561. Build 11 drops child chat/question events and can open child connections at an old saved address after route consolidation. The correction keeps actual route ownership, binds child authentication to the advertising machine before application dispatch, and clears retired connection status. Session authentication failures stay visible and Retry connection replaces their sockets without changing the hub's trust. A real adversarial WebSocket peer covers unauthenticated, pre-hello and wrong-key refusals, plus valid authenticated and legacy controls. Build 12 source validation is separate from its still-pending upload and physical acceptance.
 
 The CLI is a separate release: npm and Homebrew still publish 0.7.16 at this
 snapshot. #1556 tracks publishing CLI 0.8.0 through `develop` to `main` so

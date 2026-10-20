@@ -126,6 +126,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public private(set) var machineDescriptor: MachineDescriptor?
     private var persistedMachineID: String?
     public var status: MachineConnectionStatus
+    public var sessionConnectionIssue: String?
     public var sessions: [DiscoverableSession]
     public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
@@ -247,6 +248,7 @@ public final class MachineStore {
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var connectedRoutes: Set<MachineEndpoint> = []
+    @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
     @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
     @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
@@ -627,7 +629,11 @@ public final class MachineStore {
         connections.removeAll()
         parentByConnection.removeAll()
         connectedRoutes.removeAll()
-        for index in machines.indices { machines[index].status = .disconnected }
+        failedChildConnections.removeAll()
+        for index in machines.indices {
+            machines[index].status = .disconnected
+            machines[index].sessionConnectionIssue = nil
+        }
         for task in resumeTimeoutTasks.values { task.cancel() }
         resumeTimeoutTasks.removeAll()
         resumeAttemptsByRequest.removeAll()
@@ -725,6 +731,7 @@ public final class MachineStore {
                 Task { await connection.stop() }
             }
             parentByConnection[child] = nil
+            failedChildConnections.remove(child)
         }
         // Callback/reconnect authority is invalidated before durable forget.
         if let pushStore {
@@ -766,6 +773,20 @@ public final class MachineStore {
 
     public func retryConnection(for endpoint: MachineEndpoint) {
         guard endpoint.relayPin == nil, let connection = connections[endpoint] else { return }
+        // A healthy hub does not retry itself. Explicit Retry also replaces its
+        // rejected session sockets, preserving their advertising machine pin.
+        let children = failedChildConnections.filter { parentByConnection[$0]?.id == endpoint.id }
+        for child in children {
+            connectionGenerations[child] = nil
+            parentByConnection[child] = nil
+            failedChildConnections.remove(child)
+            if let rejected = connections.removeValue(forKey: child) { Task { await rejected.stop() } }
+            connect(child, parent: endpoint)
+        }
+        if !children.isEmpty, let index = machineIndex(containing: endpoint) {
+            machines[index].sessionConnectionIssue = nil
+            latestOperationError = nil
+        }
         Task { await connection.retry() }
     }
 
@@ -1187,8 +1208,29 @@ public final class MachineStore {
               let index = machineIndex(containing: parent)
         else { return }
 
-        // Session sockets do not describe the machine route's reachability.
-        guard endpoint.id == parent.id else { return }
+        // Session sockets do not describe the machine route's reachability, but
+        // terminal failures still need an explicit retry path (#1561).
+        if endpoint.id != parent.id {
+            guard machines[index].endpoint.id == parent.id else { return }
+            let issue: String
+            switch state {
+            case .rejected(let reason):
+                issue = "A session connection failed: \(reason) Use Retry connection in machine settings."
+            case .awaitingLocalApproval(let fingerprint):
+                issue = "A session daemon needs local approval for device \(fingerprint). Authorize it on the machine, then use Retry connection in machine settings."
+            case .connected:
+                failedChildConnections.remove(endpoint)
+                if !failedChildConnections.contains(where: { parentByConnection[$0]?.id == parent.id }) {
+                    machines[index].sessionConnectionIssue = nil
+                }
+                return
+            default: return
+            }
+            failedChildConnections.insert(endpoint)
+            machines[index].sessionConnectionIssue = issue
+            latestOperationError = issue
+            return
+        }
         if machines[index].endpoint.id != endpoint.id {
             guard case .connected = state else { return }
         }
