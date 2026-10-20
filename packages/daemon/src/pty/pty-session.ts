@@ -226,9 +226,10 @@ export class PTYSession {
    * Throws synchronously if the session is not currently running. The actual
    * byte write is then queued (see `enqueueWrite`) so a single-shot write can
    * never land in the middle of another connection's in-flight `submitInput`
-   * sequence (#795).
+   * sequence (#795). An optional guard runs inside that queue immediately
+   * before the byte effect; false writes nothing (#1570).
    */
-  write(data: string | Uint8Array): Promise<void> {
+  write(data: string | Uint8Array, guard?: () => boolean): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
@@ -238,6 +239,9 @@ export class PTYSession {
       if (this.state !== 'running' || !this.process?.terminal) {
         throw new Error(`Cannot write to session in state: ${this.state}`);
       }
+      // Card Cancel must validate the exact prompt at the byte write, not
+      // before an earlier queued submission finishes (#1570).
+      if (guard && !guard()) return;
       this.termWrite(data);
     });
   }

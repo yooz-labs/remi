@@ -302,11 +302,13 @@ struct MachineStoreTests {
         )
 
         let machine = try #require(store.machines.first)
-        #expect(machine.endpoint == direct)
-        #expect(machine.routes == [direct, relay])
+        #expect(machine.endpoint.id == direct.id)
+        #expect(machine.endpoint.expectedPublicKey == key.base64EncodedString())
+        #expect(machine.routes.map(\.id) == [direct.id, relay.id])
         #expect(machine.displayName == "Build Mac")
         #expect(store.persistableProfiles.first?.machineID == machineID)
-        #expect(store.persistableProfiles.first?.routes == [direct, relay])
+        #expect(store.persistableProfiles.first?.routes.map(\.id) == [direct.id, relay.id])
+        #expect(store.persistableProfiles.first?.machinePublicKey == pin.machinePublicKey)
     }
 
     @Test @MainActor func tamperedProfileCannotGroupRoutesByUnverifiedStoredID() throws {
@@ -322,8 +324,13 @@ struct MachineStoreTests {
             identity: ClientIdentity(), clientVersion: "test", clientId: "test"
         )
 
-        #expect(store.machines.count == 2)
-        #expect(store.machines.allSatisfy { $0.routes.count == 1 })
+        store.start()
+        defer { store.stop() }
+        #expect(store.machines.count == 1)
+        #expect(store.connectionGenerations.isEmpty)
+        guard case .unavailable = store.machines.first?.status else {
+            Issue.record("Invalid saved trust must be unavailable"); return
+        }
     }
 
     @Test func machineDisplayNamesPersistSeparatelyFromEndpoints() {
