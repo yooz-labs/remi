@@ -3,7 +3,7 @@
  * real PTYSession is deliberately unstarted because held answers use the hook.
  */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -658,6 +658,23 @@ test('native ledger tells a storage lock fault from a refusal while claiming (#1
   expect(f.gate.isHeld(held.question.id)).toBe(true);
   expect(await f.ledger.answer(proof)).toBe('delivered');
 }, 10000);
+
+test('native ledger lease expiry after claim leaves the real held hook unanswered', async () => {
+  const f = await fixture({
+    beforeApply: () => {
+      const file = join(f.directory, 'secure_push_subscriptions.json');
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      data.subscriptions[0].lastSeenAt = Date.now() - 24 * 60 * 60 * 1000 - 1;
+      writeFileSync(file, JSON.stringify(data));
+    },
+  });
+  const held = await f.hold();
+  const proof = await f.proof(held.question);
+  expect(await f.ledger.answer(proof)).toBe('stale');
+  expect(f.gate.isHeld(held.question.id)).toBe(true);
+  expect(f.resolved).toEqual([]);
+  expect(f.output()).toBe('');
+});
 
 test('native ledger tells a storage lock fault from a refusal at the final commit (#1201)', async () => {
   let release: (() => void) | undefined;

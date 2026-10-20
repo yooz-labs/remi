@@ -723,37 +723,40 @@ those two are both exactly `{token, title, body}`.
   #1258 the `cli.ts` wiring dropped them, so every device was stored with the
   defaults and muting did nothing; sibling daemons now also adopt the newest
   registration (its preferences included) from the shared store.
-- **On the legacy path, a phone is pushed only while its lease holds** (#1254,
-  owner decision; the secure path has no lease yet, see the end of this item).
-  The registration lives while the phone keeps connecting: the app
-  re-registers on every connection, and the daemon renews the lease while the
-  connection stays open and stamps it when the connection closes; a phone
-  connected to a daemon never expires there (`isLive`). Disconnecting the
-  machine in the app (`unregister_device_token`, #690, sent only while the
-  machine is reachable) ends it at once; otherwise a phone not seen for
-  `[notifications] push_lease_hours` (default 24; 0 never expires) is dropped
-  from memory and from `device-tokens.json` the next time any daemon sharing
-  the file reads it. Every push path re-reads the file first
-  (`refreshFromDisk`, #1259 review), so an expiry, a removal or a mute
-  recorded by a sibling daemon applies to the next push. It covers a phone
-  that removed the machine while the daemon was unreachable, which the
-  unregister cannot reach. The Worker-side revocation (a phone telling the
-  Worker directly) is R7 work. The store file is written owner-only (0600).
-  Only the legacy path has the lease today. A secure subscription has none
-  yet; the owner's lease decision covers it too, and that change is planned
-  for R7 (#1272). Until then it is read from disk under the interprocess lock
-  at every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister
-  or a revoke recorded by another process applies to the next push, and it
-  ends only on the app's `secure_push_unregister_request` over the relay, on
-  `remi devices revoke`, or on `remi authorize --remove` (a subscription is
-  current only while its authorized key and its enrollment are). A phone that
-  dropped the machine while the hub was unreachable keeps being sent sealed
-  pushes until one of those.
+- **A phone is pushed only while its lease holds** (#1254, #1272, owner decision).
+  Both legacy registrations and secure subscriptions use
+  `[notifications] push_lease_hours` (default 24; 0 never expires).
+  Legacy registrations renew on registration, while connected and on close;
+  a locally connected legacy token never expires there (`isLive`). Secure
+  subscriptions renew on registration, when an enrolled relay channel becomes
+  ready, periodically while it stays current (at most every 15 minutes, or a
+  third of the lease), and on close. Renewal uses the original grant and
+  enrollment generations and a nonwaiting lock; a busy or unreadable store
+  cannot renew. A stalled hub or failed renewal can therefore lose a secure
+  lease; fresh registration is then required.
+  Every push reads fresh disk state. Secure fan-out and final send/answer
+  invocation check expiry under the authorization lock; an already expired or
+  unregistered subscription is never
+  recreated by renewal. A new registration has a new subscription generation,
+  so it cannot revive a prepared old push or answer. Expired subscriptions remain
+  dormant with a durable expiry marker to preserve the push-key version floor until explicit unregister or
+  revoke. The file keeps at most 64 total rows; a full dormant file refuses a
+  new device with `CAPACITY` until a row is explicitly removed. A longer lease,
+  disabling expiry or a clock rollback cannot reactivate a marked epoch; fresh
+  registration is required.
+  Pre-lease secure records receive one lease from their first locked read;
+  future sightings are clamped and persisted once. Timestamped records require
+  the upgraded daemon reader; stop older daemons sharing the same remi home.
+  Disconnecting a reachable machine explicitly unregisters at once
+  (`unregister_device_token` or `secure_push_unregister_request`); removal while
+  unreachable is bounded by the lease instead. Revocation and mute changes from
+  another process apply on the next push. Store files are owner-only (0600).
+  Secure subscription expiry never clears the monotonic legacy-push retirement
+  latch. Worker-side phone-initiated revocation remains R7 work.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise. The one exception is a device that
-  is gone: unregistered, or (on the legacy path) rejected by APNS or past its
-  lease, gets nothing, dismissals included, so a card it still holds stays
+  is gone: unregistered, past its lease, or (on the legacy path) rejected by APNS, gets nothing, dismissals included, so a card it still holds stays
   until the app opens.
   The next main-agent tool call or
   `Stop` after a `turn_failed` push sends one (same collapse key, only while a

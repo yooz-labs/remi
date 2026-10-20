@@ -2797,7 +2797,7 @@ function machineDescriptor(): MachineDescriptor | undefined {
   };
 }
 const relayTrust = new IdentityStore();
-const relayChildAuthority = new SecurePushStore(REMI_DIR, relayTrust);
+const relayChildAuthority = new SecurePushStore(REMI_DIR, relayTrust, 64, { leaseMs: pushLeaseMs });
 let hubRelay: HubRelay | undefined;
 const localRelayControl = serveMode
   ? {
@@ -3026,7 +3026,7 @@ if (relayWanted && relayIdentity) {
         relayIdentity.privateKey,
         new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
       );
-      const store = new SecurePushStore(REMI_DIR, relayTrust);
+      const store = new SecurePushStore(REMI_DIR, relayTrust, 64, { leaseMs: pushLeaseMs });
       // #1200: the Worker refuses a /v2/push submit without its per-deployment secret, so without
       // one there is no service to build; say so once, never print the value.
       const pushSecret = cliPushSecret?.trim();
@@ -3415,6 +3415,7 @@ if (cliDaemonMode) {
           registry: liveSessionsRegistry,
           // A subscription is acknowledged only while a secure push service exists (#1200, B5).
           securePushSender: () => securePushService !== undefined,
+          pushLeaseMs,
           log: console.error,
         },
         sharedEvents,

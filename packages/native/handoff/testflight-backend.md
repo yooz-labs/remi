@@ -1,8 +1,10 @@
 # TestFlight and relay handoff
 
 This is the live handoff for the first native iPhone TestFlight build. It is
-written against `develop` at `4be3b65c` on 2026-10-18. Re-check the source head
-and linked issues before claiming a gate passed.
+reconciled on 2026-10-19 against `develop` at `d085e42e` and the #1272
+continuation. Re-check the source head and linked issues before claiming a gate
+passed. The primary checkout has local native edits; preserve them and use the
+backend worktree for backend validation.
 
 ## What is ready
 
@@ -24,23 +26,43 @@ production relay behavior, battery behavior, or all remaining hardware gates.
 
 Work these as their own reviewed changes; do not fold them into release signing.
 
-1. **#1272 — secure push subscription leases.** Renew a secure subscription while
-   its phone is connected, expire it after `push_lease_hours` under the store lock,
-   and cover the real secure store and source hub.
-2. **#1225 — loaded relay close behavior.** Reproduce the BYE and grant failures
-   under CPU load on the pinned Bun runtime, identify whether the cause is runtime,
-   Worker, hub, or test timing, and close only with repeatable evidence.
-3. **#1202 — R7 evidence and cleanup.** Run the ordinary relay gates and the
-   61-minute source-hub/source-client soak at one immutable commit. Preserve full
-   logs, exit status, runtime versions and the receipt. Local evidence does not
-   substitute for deployed Cloudflare measurements or signed-device checks.
-4. **#1303 — authorization/provisioning integration.** Complete the real-hub
-   pending approval, public-key pre-authorization, same-label/different-key,
-   revocation, and multi-host stable-identity tests.
-5. **Support #1385 without changing Mac behavior.** Retain the real source
-   hub/Worker fixture needed to prove iPhone background entry removes foreground
-   connections, a signed background No reaches the held hook, and foreground
-   activation reconnects exactly once.
+1. **#1272 — secure push subscription leases implemented in this continuation.**
+   All secure store consumers and the hub use `push_lease_hours` (24 hours by
+   default; 0 never expires). The hub renews on registration, ready, periodic
+   current connection checks and close. Fan-out, prepared sends and native-answer
+   commits reject expiry under the store lock. Expired records retain a monotonic dormant marker
+   within the 64-row file bound to retain their push-key version floor; explicit
+   unregister/revoke frees a row. Fresh registration rotates the subscription
+   generation. Old records receive one migration lease. Review identified and
+   corrected a stale-key rollback after expiry; regressions cover restart,
+   physical capacity, clock/config changes, actual HTTP send and a real held-hook
+   commit. Both supported Bun full suites and loaded close controls passed
+   locally; exact-head CI and R7 remain merge gates.
+2. **#1225 — the fix already landed.** Reviewed #1271 (`5cb6c49f`) is an ancestor
+   of current develop. The hub preserves its authenticated BYE with a bounded
+   orderly-close grace and forgets the control before shutdown. Keep the
+   existing loaded-test receipts and current close tests; reconcile the stale
+   open issue rather than reimplementing the fix.
+3. **#1202 — current R7 evidence and owner acceptance.** Run the ordinary relay
+   gates and 61-minute source-hub/source-client soak at one immutable commit.
+   Preserve full logs, exit status, runtime versions and the receipt. Prior
+   source-runtime soaks passed (#1331, #1330 and later work); this is a current
+   regression gate. Local evidence does not establish deployed Cloudflare
+   measurements, production cost, Release/TestFlight or signed-device checks.
+4. **#1303 — backend provisioning already landed in #1315 (`e4a1ecf7`).**
+   `packages/daemon/tests/integration/key-provisioning.test.ts` constructs real
+   hubs, a child daemon and CLI operations for pending approval, public-key
+   preauthorization, same-label/different-key refusal, revocation, rotation and
+   one identity on two machines. Keep the issue open for the remaining native
+   identity/approval workflow and physical fleet acceptance; do not duplicate
+   the completed backend implementation.
+5. **#1385 — source lifecycle already landed in #1386 (`389d9dbf`).** The real
+   `NativeSecureSourceIntegrationTests` fixture covers iPhone background
+   transport retirement, signed background No delivery, single foreground
+   reconnect and unchanged Mac monitoring. Keep this fixture intact. Physical
+   connection/CPU observations exist on the issue, but battery improvement and
+   a usable power trace remain unmeasured; no new source fix is required by the
+   handoff alone.
 
 ## Relay deployment owner queue
 
@@ -61,15 +83,23 @@ or deploy on the owner's behalf.
 
 ## Apple/TestFlight owner queue
 
-1. Ensure App Store Connect has the iOS app record for `live.yooz.remi` and the
+App Store Connect was checked in the owner's authenticated session on 2026-10-19.
+[Yooz Remi](https://appstoreconnect.apple.com/apps/6785313030/testflight/ios)
+already has iOS version 0.1.0 build 10, marked Ready to Submit and expiring in
+eight days. The next candidate needs build 11 or higher. The portal also displays
+an updated Apple Developer Program License Agreement awaiting the Account
+Holder's acceptance before updates or new submissions. No agreement was
+accepted, and no upload was attempted during this continuation.
+
+1. Resolve that agreement in the owner's Apple Developer account and ensure the
    App ID has Push Notifications, App Groups and the required keychain capability.
 2. Ensure the distribution certificate/profile can sign both the app and
    `live.yooz.remi.native-push-service`, including production APNS and
    `group.live.yooz.remi`.
 3. Install the App Store Connect API key locally and set `ASC_KEY_ID`,
    `ASC_ISSUER_ID`, and optionally `ASC_KEY_PATH`. Do not commit them.
-4. Bump and commit `config/app-release.json`'s build number, then run from a clean
-   checkout:
+4. Prepare the next build with `bun run app:version --bump-build`, commit the
+   shared release metadata through a PR, then run from a clean checkout:
 
    ```sh
    bun install --frozen-lockfile
@@ -84,7 +114,7 @@ or deploy on the owner's behalf.
 
 ## Native/device gates before broad TestFlight
 
-- **#1385:** land iPhone background connection suspension and collect a physical
+- **#1385:** background suspension is landed; collect a physical
   power trace with Xcode disconnected. Source correctness is not battery evidence.
 - **#1242:** finish two-machine signed-Mac validation, connection/registration
   recovery polish, and remaining standing-grant hardware behavior.
@@ -96,6 +126,24 @@ or deploy on the owner's behalf.
   Yes/No answers, dismissal and revocation. Do not recommend `tailscale serve`.
 
 ## Go/no-go boundary
+
+Local acceptance at backend source `b6e66aad` passed 10,369 tests on each Bun
+1.4.2 and 1.3.11 (37 skips), 101 focused checks on each runtime, and all 28
+semantic mutation controls. The initial 1.4.2 full run had one discovery failure;
+the single quiet full rerun passed. #1550 retains the original failure and its
+undetermined cause. Loaded original R3 grant/BYE and orderly-close controls also
+passed twice on each runtime with one owned load process per CPU.
+
+The current Swift package passed 230 tests, unsigned Mac build/tests and an
+unsigned iPhone simulator build. Its optional source fixture deliberately pins
+backend `1e96c688f89409043e17177c1914d8eec247de7e`; that interoperability pass is
+against the reviewed reference, not the changed lease backend. Real current
+backend store, HTTP, held-hook and source-hub tests cover the lease change.
+Receipts and full logs are retained under
+`/Volumes/S1/yooz/remi/artifacts/2026-10-19-testflight-backend/`.
+
+The native assets, release-contract script and preflight can be validated without
+Apple credentials. They do not prove distribution signing or upload.
 
 An internal TestFlight upload can proceed once the signed native archive/export and
 App Store Connect checks pass. Relay should remain visibly opt-in while #1202,
