@@ -1,20 +1,50 @@
 import { expect, test } from 'bun:test';
-import { constants, closeSync, openSync } from 'node:fs';
+import { constants, closeSync, openSync, writeFileSync, writeSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { runChild, sampleProc } from '../../../../scripts/ci/run-bun-test-with-diagnostics';
 
-function sink() {
+function sink(observe?: (chunk: Buffer) => void) {
   const stream = new PassThrough();
   const chunks: Buffer[] = [];
-  stream.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  stream.on('data', (chunk: Buffer) => {
+    chunks.push(Buffer.from(chunk));
+    observe?.(chunk);
+  });
   return {
     stream,
     text: () => Buffer.concat(chunks).toString('utf8'),
     bytes: () => Buffer.concat(chunks),
   };
+}
+
+function checkpointSink(
+  emit: (stage: string) => void = (stage) => {
+    writeSync(2, `[log-file-child-stage] ${stage}\n`);
+  },
+) {
+  let line = '';
+  let oversized = false;
+  return sink((chunk) => {
+    for (const character of chunk.toString('utf8')) {
+      if (character === '\n') {
+        const match = oversized
+          ? null
+          : /^\[log-file-stage\] (module-body|setup:(?:entered|tempdir|reset)|first:(?:entered|opened|read))$/.exec(
+              line,
+            );
+        if (match?.[1]) emit(match[1]);
+        line = '';
+        oversized = false;
+      } else if (line.length < 128) {
+        line += character;
+      } else {
+        oversized = true;
+      }
+    }
+  });
 }
 
 function bun(code: string): string[] {
@@ -86,18 +116,17 @@ test.skipIf(process.platform !== 'linux')(
 for (const actions of [false, true]) {
   test(`logging boundary stages preserve the real cases (GitHub Actions=${actions})`, async () => {
     const loggingTest = path.resolve(import.meta.dir, '../cli/log-file.test.ts');
-    const child = Bun.spawn([process.execPath, 'test', loggingTest], {
+    const out = sink();
+    const err = checkpointSink();
+    const result = await runChild([process.execPath, 'test', loggingTest], {
       env: { ...process.env, GITHUB_ACTIONS: String(actions) },
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: out.stream,
+      stderr: err.stream,
+      timeoutMs: 2_000,
     });
-    const [exit, out, err] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    const text = `${out}${err}`.replace(/\x1b\[[0-9;]*m/g, '');
-    expect(exit).toBe(0);
+    const text = `${out.text()}${err.text()}`.replace(/\x1b\[[0-9;]*m/g, '');
+    expect(result.exitCode).toBe(0);
+    expect(result.cleanupVerified).toBe(true);
     expect(text).toContain('14 pass');
     expect(text).toContain('0 fail');
     const stages = text.split('\n').filter((line) => line.startsWith('[log-file-stage] '));
@@ -113,8 +142,41 @@ for (const actions of [false, true]) {
     } else {
       expect(stages).toEqual([]);
     }
-  });
+  }, 10_000);
 }
+
+test('streams only static child checkpoints before the child can exit', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'remi-ci-stage-'));
+  const release = path.join(directory, 'release');
+  const stages: string[] = [];
+  const out = sink();
+  const err = checkpointSink((stage) => {
+    stages.push(stage);
+    writeFileSync(release, 'released');
+  });
+  try {
+    const result = await runChild(
+      bun(
+        `const fs = require('node:fs');
+         fs.writeSync(2, 'packages/daemon/tests/cli/log-file.test.ts:\\n');
+         fs.writeSync(2, '[log-file-stage] unknown\\n');
+         fs.writeSync(2, 'x'.repeat(129) + '[log-file-stage] first:read\\n');
+         fs.writeSync(2, '[log-file-stage] first:');
+         await Bun.sleep(20);
+         fs.writeSync(2, 'opened\\n');
+         while (!fs.existsSync(${JSON.stringify(release)})) await Bun.sleep(10);`,
+      ),
+      { stdout: out.stream, stderr: err.stream, timeoutMs: 2_000 },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.cleanupVerified).toBe(true);
+    expect(stages).toEqual(['first:opened']);
+    expect(err.text()).toContain('[log-file-stage] unknown');
+    expect(err.text()).toContain('packages/daemon/tests/cli/log-file.test.ts:');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 10_000);
 
 test('forwards child stdout and stderr bytes unchanged and returns success', async () => {
   const out = sink();

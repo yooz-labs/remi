@@ -39,7 +39,7 @@ depending on kernel configuration:
 <https://docs.kernel.org/filesystems/proc.html>.
 It is not a native stack or a diagnosis of every sleeping task.
 
-The test population, assertions, runtime pins, deadlines, ownership contracts,
+The existing test population, assertions, runtime pins, deadlines, ownership contracts,
 coverage union/threshold, classifiers and release guard remain in force.
 Fresh exact-head hosted checks and one independent review gate this change.
 If the stall recurs, preserve its new stage/wait evidence and investigate that
@@ -62,3 +62,18 @@ disabled control passed, preserving all 14 original cases.
 One fresh-context single reviewer covers all applicable lenses (cap one).
 There are at most two review rounds for this PR. This does not reopen the
 completed reviews of release #1564 or native routing #1562.
+
+Round 1 found that the new nested logging-test controls buffered their stages
+until exit and lacked bounded child cleanup. The accepted fix uses the existing
+`runChild` owner with a two-second child deadline and ten-second outer budget
+for these new controls. Only the seven static stage names are forwarded live,
+under a distinct `log-file-child-stage` prefix; nested test headers and other
+child output stay captured so they cannot alter the outer file inventory.
+A real child waits for a file written only by the checkpoint observer before
+it can exit, proving live delivery while also checking that unknown and oversized
+lines and a nested test header are not forwarded. Process lifecycle changes
+make this a substantial fix, so round 2 reviews only this fix delta.
+
+After the fix, pinned Mac Bun 1.3.11 passed 28 cases with the one Linux-only skip
+(110 assertions) across the same two files. The original 14 logging cases remain
+intact. This validation does not replace the required hosted run.
