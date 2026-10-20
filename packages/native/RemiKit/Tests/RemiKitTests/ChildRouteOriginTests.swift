@@ -7,6 +7,58 @@ import Testing
 struct ChildRouteOriginTests {
     // These synchronous tests deliver verified transport events to the real Store.
     // stop() retires generations before its queued connection tasks can start.
+    @Test func activeSessionChildDeliversTranscriptEvents() throws {
+        let origin = MachineEndpoint(host: "192.0.2.20", port: 28002)
+        let store = MachineStore(endpoints: [origin], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start()
+        defer { store.stop() }
+        let generation = try #require(store.ownedConnectionGenerations[origin])
+        store.receive(.hello(try hello()), from: origin, generation: generation)
+        store.receive(.sessions(try sessions(ports: [28003])), from: origin, generation: generation)
+        let child = try #require(store.ownedConnectionGenerations.keys.first { $0.port == 28003 })
+        let childGeneration = try #require(store.ownedConnectionGenerations[child])
+        store.receive(.hello(try hello()), from: child, generation: childGeneration)
+        let message = try JSONDecoder().decode(TranscriptContentMessage.self,
+            from: FixtureConformanceTests.fixture("transcript_content"))
+        store.receive(.transcript(message), from: child, generation: childGeneration)
+
+        #expect(store.transcriptsBySession[message.sessionId]?.count == 1)
+    }
+
+    @Test func oldRouteChildrenCannotDeliverAfterANewRouteBecomesActive() throws {
+        let old = MachineEndpoint(host: "192.0.2.10", port: 28000)
+        let current = MachineEndpoint(host: "192.0.2.20", port: 28002)
+        let store = MachineStore(endpoints: [old], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start()
+        defer { store.stop() }
+        let first = try #require(store.ownedConnectionGenerations[old])
+        store.receive(.hello(try hello()), from: old, generation: first)
+        store.receive(.sessions(try sessions(ports: [28003])), from: old, generation: first)
+        let child = try #require(store.ownedConnectionGenerations.keys.first { $0.port == 28003 })
+        let childGeneration = try #require(store.ownedConnectionGenerations[child])
+        store.addMachine(current)
+        let next = try #require(store.ownedConnectionGenerations[current])
+        store.receive(.hello(try hello()), from: current, generation: next)
+        let message = try JSONDecoder().decode(TranscriptContentMessage.self,
+            from: FixtureConformanceTests.fixture("transcript_content"))
+        store.receive(.transcript(message), from: child, generation: childGeneration)
+
+        #expect(store.transcriptsBySession[message.sessionId] == nil)
+    }
+
+    @Test func suspensionDoesNotPresentRetiredSocketsAsConnected() throws {
+        let origin = MachineEndpoint(host: "192.0.2.20", port: 28002)
+        let store = MachineStore(endpoints: [origin], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start()
+        let generation = try #require(store.ownedConnectionGenerations[origin])
+        store.receive(.connected(sessionId: nil), from: origin, generation: generation)
+        #expect(store.machines.first?.status == .connected)
+        store.suspendForegroundConnections()
+
+        #expect(store.machines.first?.status == .disconnected)
+        #expect(store.persistableEndpoints == [origin])
+    }
+
     @Test func discoveryUsesTheRespondingAddressAfterRouteConsolidation() throws {
         let (store, old, current, generation) = try consolidatedStore()
         defer { store.stop() }
