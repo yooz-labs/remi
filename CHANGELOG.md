@@ -4,11 +4,11 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
-## [0.7.17] - 2026-10-20
+## [0.8.0] - 2026-10-20
 
 ### Upgrade for the native TestFlight app
 
-- CLI 0.7.17 provides `remi pair` for native iPhone app 0.2.0 (11). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.7.17.md) for package installation, daemon restart and pairing.
+- CLI 0.8.0 provides `remi pair` for native iPhone app 0.2.0 (11). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.8.0.md) for package installation, daemon restart and pairing.
 - The native iPhone app is distributed separately through TestFlight. This CLI release does not publish the native Mac app or establish all signed-device, deployed-relay or battery acceptance gates.
 - Secure push subscriptions now enforce the configured 24-hour lease by default, including final send and answer commits. Expired subscriptions retain their push-key version floor until explicit removal; periodic authenticated relay activity renews a current subscription (#1272).
 - Direct connections recheck the device's authorization before domain dispatch and at the existing ping interval. Removing a device closes an active connection on its next message or ping tick (#1305).
