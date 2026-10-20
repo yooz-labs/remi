@@ -8,6 +8,8 @@ confirmation, and verified as **Testing** in the existing internal group.
 
 The next candidate is **0.2.0 (12)** for #1561. Build 11 drops child chat/question events and can open child connections at an old saved address after route consolidation. The correction keeps actual route ownership, binds child authentication to the advertising machine before application dispatch, and clears retired connection status. Session authentication failures stay visible and Retry connection replaces their sockets without changing the hub's trust. A real adversarial WebSocket peer covers unauthenticated, pre-hello and wrong-key refusals, plus valid authenticated and legacy controls. Build 12 source validation is separate from its still-pending upload and physical acceptance.
 
+Authenticated relay broadcasts between READY and application Hello wait in a buffer limited to 32 frames and 1 MiB; they reach the Store only after verified Hello. The source CLI and real Worker control creates an auxiliary direct client during READY to force that ordering, then retires it before the existing independent orderly-restart/answer control. Keeping that auxiliary client connected during shutdown produced a reconnect with an unclean stream ending on both Bun 1.3.11 and the local 1.4.3 runtime. #1563 records that observation under #1202's loaded-close acceptance; this native correction does not claim a backend shutdown fix.
+
 The CLI is a separate release: npm and Homebrew still publish 0.7.16 at this
 snapshot. #1556 tracks publishing CLI 0.8.0 through `develop` to `main` so
 `remi pair` is available from those channels. A reviewed local compiled backend

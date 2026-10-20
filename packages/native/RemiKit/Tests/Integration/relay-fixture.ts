@@ -50,6 +50,7 @@ while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
 );
 const processes: ReturnType<typeof Bun.spawn>[] = [];
 let control: WebSocket | undefined;
+let censusPeer: WebSocket | undefined;
 let hookAbort: AbortController | undefined;
 let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
 let ended = false;
@@ -123,6 +124,7 @@ function cleanup(): Promise<void> {
     ended = true;
     hookAbort?.abort();
     control?.close();
+    censusPeer?.close();
     const children = ownedChildProcesses();
     writeFileSync(join(own, 'driver/release'), '');
     // Stop only the child daemons whose registry, project path, command and parent belong here.
@@ -222,6 +224,46 @@ try {
             accept: true,
           }),
         );
+      } else if (command['kind'] === 'broadcast-before-hello') {
+        censusPeer?.close();
+        const peer = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+          headers: { [CAPABILITY_HEADER]: capability },
+        } as never);
+        censusPeer = peer;
+        await new Promise<void>((done, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Census broadcast timed out')), 5000);
+          peer.onopen = () =>
+            peer.send(
+              JSON.stringify({
+                type: 'hello',
+                id: crypto.randomUUID(),
+                timestamp: new Date().toISOString(),
+                clientVersion: 'owned-census',
+                clientId: 'owned-census',
+              }),
+            );
+          peer.onerror = () => {
+            clearTimeout(timeout);
+            reject(new Error('Owned census peer refused'));
+          };
+          peer.onmessage = (event) => {
+            const frame = JSON.parse(String(event.data));
+            if (frame.type === 'hub_status' && frame.localClients >= 1) {
+              clearTimeout(timeout);
+              done();
+            }
+          };
+        });
+        out({ kind: 'broadcast-before-hello' });
+      } else if (command['kind'] === 'end-broadcast-control') {
+        censusPeer?.close();
+        await until(
+          () => !censusPeer || censusPeer.readyState === WebSocket.CLOSED,
+          'census peer cleanup',
+          5000,
+        );
+        censusPeer = undefined;
+        out({ kind: 'end-broadcast-control' });
       } else if (command['kind'] === 'question') {
         let entry: Record<string, unknown> | undefined;
         await until(() => {

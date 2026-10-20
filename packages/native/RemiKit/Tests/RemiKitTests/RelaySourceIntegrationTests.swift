@@ -62,12 +62,20 @@ struct RelaySourceIntegrationTests {
                 let connection = RemiConnection(configuration: RemiConnectionConfiguration(
                     url: try #require(saved.webSocketURL), clientVersion: "native-x2-test",
                     clientId: "owned-swift-probe", relayPin: saved.relayPin), identity: identity,
-                    stateHandler: { _ in }, eventHandler: { event in
+                    readyHandler: { try await broadcastBeforeHello(input: input, output: output, probe: probe) },
+                    stateHandler: { state in Task { @MainActor in probe.states.append(state) } }, eventHandler: { event in
                         Task { @MainActor in probe.receive(event) }
                     })
                 await connection.start()
                 do {
                     try await until("standalone native connection hello") { probe.helloCount == 1 }
+                    try await until("buffered source census after verified hello") { probe.censusCount > 0 }
+                    #expect(!probe.censusBeforeHello)
+                    // Retire the ordering-control peer before the independent
+                    // existing orderly-restart control below.
+                    try send(["kind": "end-broadcast-control"], to: input)
+                    let retired = try await next(from: output)
+                    #expect(retired["kind"] as? String == "end-broadcast-control")
                     do {
                         try await connection.send(HelloMessage(id: "owned-oversize", timestamp: "owned",
                             clientVersion: String(repeating: "x", count: RelayCrypto.maxPlaintext + 1), clientId: "owned"))
@@ -83,7 +91,10 @@ struct RelaySourceIntegrationTests {
                     }
                     #expect(probe.uncleanEndCount == 0)
                     await connection.stop()
-                } catch { await connection.stop(); throw error }
+                } catch {
+                    Issue.record("Owned relay probe: hello=\(probe.helloCount), census=\(probe.censusCount), clean=\(probe.cleanEndCount), unclean=\(probe.uncleanEndCount), states=\(probe.states)")
+                    await connection.stop(); throw error
+                }
                 resumed.start()
                 try await Task.sleep(for: .milliseconds(25))
                 try await until("Store resumes after transport probe") {
@@ -209,6 +220,16 @@ struct RelaySourceIntegrationTests {
         try pipe.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: message) + Data([10]))
     }
 
+    private func broadcastBeforeHello(input: Pipe, output: Pipe, probe: RelayConnectionProbe) async throws {
+        // Only the first READY owns this IPC read. The existing restart control
+        // owns the output pipe during reconnect and must not race another reader.
+        guard !probe.broadcastInjected else { return }
+        probe.broadcastInjected = true
+        try send(["kind": "broadcast-before-hello"], to: input)
+        let receipt = try await next(from: output)
+        try #require(receipt["kind"] as? String == "broadcast-before-hello")
+    }
+
     private func cleanupFixture(_ process: Process, input: Pipe) {
         guard process.isRunning else { return }
         try? send(["kind": "stop"], to: input)
@@ -239,16 +260,23 @@ struct RelaySourceIntegrationTests {
 
 @MainActor
 private final class RelayConnectionProbe {
+    var states: [RemiConnectionState] = []
     var helloCount = 0
     var sessionCount = 0
     var cleanEndCount = 0
     var uncleanEndCount = 0
+    var censusCount = 0
+    var censusBeforeHello = false
+    var broadcastInjected = false
     func receive(_ event: RemiInboundEvent) {
         switch event {
         case .hello: helloCount += 1
         case .sessions: sessionCount += 1
         case .relayStreamEnded(let clean):
             if clean { cleanEndCount += 1 } else { uncleanEndCount += 1 }
+        case .unsupported(type: "hub_status"):
+            censusCount += 1
+            if helloCount == 0 { censusBeforeHello = true }
         default: break
         }
     }

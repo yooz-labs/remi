@@ -81,6 +81,24 @@ public enum RemiConnectionError: Error, Sendable, Equatable {
     case authentication(String)
 }
 
+/// Pinned relay broadcasts can arrive between READY and application Hello.
+/// Keep them bounded and invisible until Hello verifies the machine descriptor.
+struct RelayHelloBuffer {
+    private var frames: [Data] = []
+    private var bytes = 0
+
+    mutating func append(_ data: Data) throws {
+        guard frames.count < 32, data.count <= 1_048_576 - bytes else { throw RelayFailure.oversize }
+        frames.append(data)
+        bytes += data.count
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll(); bytes = 0 }
+        return frames
+    }
+}
+
 /// One authenticated daemon connection with bounded exponential reconnect.
 /// Unknown client keys pause in `awaitingLocalApproval` until a manual retry is requested.
 public actor RemiConnection {
@@ -112,6 +130,7 @@ public actor RemiConnection {
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
     private var applicationAdmitted = false
+    private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
@@ -379,6 +398,10 @@ public actor RemiConnection {
         // frame may reach it before hello verifies the authenticated machine.
         if !["auth_challenge", "auth_result", "hello_ack", "ping", "error"].contains(envelope.type),
            !applicationAdmitted {
+            if configuration.relayPin != nil, relayChannel != nil {
+                try relayHelloBuffer.append(data)
+                return
+            }
             throw RemiConnectionError.authentication("Application frame before verified hello")
         }
         switch envelope.type {
@@ -445,6 +468,10 @@ public actor RemiConnection {
             applicationAdmitted = true
             transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message))
+            for buffered in relayHelloBuffer.drain() {
+                guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
+                try await handle(buffered, on: task)
+            }
         case "ping":
             let ping = try decoder.decode(PingMessage.self, from: data)
             let pong = PongMessage(
@@ -541,6 +568,7 @@ public actor RemiConnection {
         pendingAuthentication = nil
         authenticatedServerPublicKey = nil
         applicationAdmitted = false
+        relayHelloBuffer = RelayHelloBuffer()
         initialDirectHelloPending = false
         relayDeadline?.cancel()
         relayDeadline = nil
