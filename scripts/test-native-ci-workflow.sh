@@ -9,6 +9,7 @@ contains() { grep -Fq -- "$2" "$1" || fail "$3"; }
 
 contains "$WORKFLOW" 'runs-on: xcode-27' "workflow is not on the Xcode 27 image"
 contains "$WORKFLOW" 'packages/native/**' "native changes do not trigger the workflow"
+contains "$WORKFLOW" 'config/app-release.json' "release version changes do not trigger archive validation"
 contains "$WORKFLOW" 'scripts/testflight-ios.sh' "release script changes do not trigger the workflow"
 contains "$WORKFLOW" 'native-app.yml' "workflow does not trigger for its own changes"
 contains "$WORKFLOW" 'cancel-in-progress:' "superseded PR runs are not cancelled"

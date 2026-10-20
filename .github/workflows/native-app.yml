@@ -5,6 +5,7 @@ on:
     branches: [main, develop, "feature/**"]
     paths:
       - "packages/native/**"
+      - "config/app-release.json"
       - "scripts/testflight-ios.sh"
       - "scripts/test-testflight-ios.sh"
       - "scripts/test-native-ci-workflow.sh"
