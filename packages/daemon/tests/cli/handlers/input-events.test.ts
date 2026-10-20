@@ -574,6 +574,8 @@ describe('createInputHandlers', () => {
           bindingStore,
           send,
           isPromptCurrent: (s, q, ptyText) => {
+            if (ptyText === undefined)
+              throw new Error('Typed answers must supply their prompt text');
             checked.push({ sessionId: s, questionId: q, ptyText });
             return true;
           },

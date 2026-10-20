@@ -124,6 +124,8 @@ export type PushQuestion = (
 /** The one card the current on-screen prompt owns, and what identifies it. */
 interface RenderOwnedCard {
   readonly id: string;
+  /** Exact raw render that confirmed this card; text alone grants no Cancel authority. */
+  readonly renderId: string;
   /** Agent the PTY prompt belonged to; a different agent never supersedes. */
   readonly agent: string;
   /** Raw PTY text, so a byte-identical redraw is not read as a replacement. */
@@ -592,7 +594,7 @@ export class QuestionPresenceTracker {
     // not, so whether a hook was consumed no longer changes what is tracked.
     const { merged } = this.consumeAndMerge(ptyQuestion);
     this.ptyShowingQuestion = true;
-    this.pushRenderBorn(merged, ptyQuestion.text);
+    this.pushRenderBorn(merged, ptyQuestion);
   }
 
   /**
@@ -606,7 +608,7 @@ export class QuestionPresenceTracker {
    * phone tap on it while a later prompt was on screen passed the
    * any-prompt-observed guard and typed into that later prompt.
    */
-  private pushRenderBorn(merged: Question, ptyText: string, context?: string): void {
+  private pushRenderBorn(merged: Question, render: Question, context?: string): void {
     const outcome = this.pushMerged(merged, context);
     if (outcome?.status !== 'registered') {
       // Not confirmed (deduped, or the push sink returned no outcome):
@@ -619,6 +621,7 @@ export class QuestionPresenceTracker {
     }
     this.adoptRenderOwnedQuestion({
       id: merged.id,
+      renderId: render.id,
       // Scope by the MERGED question, not the raw PTY parse. The parse often
       // carries no `agentId` at all (`Do you want to proceed?` says nothing
       // about whose permission it is), so keying on it filed a parked SUBAGENT
@@ -626,7 +629,7 @@ export class QuestionPresenceTracker {
       // which is the very cross-agent bleed the scoping exists to stop. The
       // merge takes the hook record's agent, which is the one that knows.
       agent: agentKey(merged),
-      text: ptyText,
+      text: render.text,
     });
   }
 
@@ -1227,7 +1230,7 @@ export class QuestionPresenceTracker {
     // bind that card to its observed raw render before a guarded Cancel.
     if (
       this.observedRenderOwnedQuestion?.id === questionId &&
-      this.observedRenderOwnedQuestion.text === this.observedPTYText
+      this.observedRenderOwnedQuestion.renderId === this.observedPTYQuestionId
     )
       return true;
     return ptyText !== undefined && this.observedPTYText === ptyText;

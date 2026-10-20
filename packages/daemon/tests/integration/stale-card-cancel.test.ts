@@ -74,6 +74,7 @@ async function pipeline(submitDelay?: () => Promise<void>) {
     },
   });
   cleanups.push(async () => {
+    tracker.clearPending();
     await registry.shutdown();
     rmSync(home, { recursive: true, force: true });
   });
@@ -85,7 +86,8 @@ async function pipeline(submitDelay?: () => Promise<void>) {
   const question = parsed.question;
   tracker.onPTYPromptVisible(question);
   expect(registry.getQuestion(sid, question.id)).not.toBeNull();
-  const cancel = () => handlers.onAnswer(cid, sid, question.id, '', undefined, { cancel: true });
+  const cancel = (questionId = question.id) =>
+    handlers.onAnswer(cid, sid, questionId, '', undefined, { cancel: true });
   const drain = async () => {
     await pty.write('__boundary__');
     await until(() => output.includes('__boundary__'));
@@ -163,4 +165,34 @@ test('owning turn completion removes the render card; another agent and status g
   expect(p.registry.getQuestion(p.sid, p.question.id)).toBeNull();
   await p.cancel();
   expect(await p.drain()).not.toContain('\x1b');
+});
+
+test.each([undefined, 'another-agent'])(
+  'same-text unconfirmed render does not authorize Cancel (agent %s)',
+  async (agentId) => {
+    const p = await pipeline();
+    const observed = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!observed) throw new Error('Captured dialog did not parse');
+    p.tracker.onOrphanPTYPrompt({ ...observed, ...(agentId ? { agentId } : {}) });
+    expect(p.registry.getQuestion(p.sid, p.question.id)).not.toBeNull();
+    await p.cancel();
+    expect(await p.drain()).not.toContain('\x1b');
+  },
+);
+
+test('a confirmed hook-card/raw-render alias retains legitimate Cancel', async () => {
+  const p = await pipeline();
+  const card = {
+    ...p.question,
+    id: generateId(),
+    text: 'Bash permission',
+    source: 'permission_request' as const,
+  };
+  p.tracker.recordPendingHook(card);
+  const render = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+  if (!render) throw new Error('Captured dialog did not parse');
+  p.tracker.onPTYPromptVisible(render);
+  expect(p.registry.getQuestion(p.sid, card.id)).not.toBeNull();
+  await p.cancel(card.id);
+  expect((await p.drain()).match(/\x1b/g)?.length).toBe(1);
 });

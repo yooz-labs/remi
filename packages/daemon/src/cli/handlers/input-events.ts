@@ -134,7 +134,7 @@ export interface InputHandlerDeps {
    * toward refusing, matching `isQuestionLive`'s own default in
    * question-presence-tracker.ts.
    */
-  isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText: string) => boolean;
+  isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText?: string) => boolean;
   /**
    * Weaker companion to `isPromptCurrent`: "is this session rendering ANY
    * interactive prompt right now?", backed by
@@ -681,7 +681,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         !active.isAnswered &&
         !active.held &&
         sessionRegistry.getQuestion(session.sessionId, questionId) === active &&
-        (isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false);
+        // Cancel never gains authority from generic same-text prompt titles.
+        (isPromptCurrent?.(session.sessionId, questionId) ?? false);
       // #1235: the cancel reached the agent (the hook took it, or the Esc was written), or it only
       // cleared the card.
       let reached = held === 'resolved';
