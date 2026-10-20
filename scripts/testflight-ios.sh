@@ -156,7 +156,8 @@ codesign --verify --deep --strict "$APP" || fail "archived app signature verific
 ARCHIVE_ENTITLEMENTS=$(codesign -d --entitlements :- "$APP" 2>/dev/null)
 grep -Fq 'group.live.yooz.remi' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing its app group"
 grep -Fq 'live.yooz.remi.secure-push' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing the shared push keychain group"
-grep -Fq '<string>production</string>' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is not using production APNS"
+# Automatic signing may use a development profile here (#1554). App Store
+# export re-signs the payload; production APNS is required on that final app.
 
 echo "[4/7] Exporting App Store IPA"
 EXPORT_OPTIONS=$(mktemp /tmp/remi-native-export.XXXXXX.plist)
@@ -178,9 +179,18 @@ IPA=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa')
 VERIFY_DIR=$(mktemp -d /tmp/remi-native-ipa.XXXXXX)
 unzip -q "$IPA" -d "$VERIFY_DIR"
 EXPORTED_APP="$VERIFY_DIR/Payload/Remi.app"
+EXPORTED_EXTENSION="$EXPORTED_APP/PlugIns/PhonePushService.appex"
 [ -d "$EXPORTED_APP" ] || fail "IPA does not contain Payload/Remi.app"
-[ -d "$EXPORTED_APP/PlugIns/PhonePushService.appex" ] || fail "IPA does not contain PhonePushService.appex"
-codesign --verify --deep --strict "$EXPORTED_APP" || fail "exported app signature verification failed"
+[ -d "$EXPORTED_EXTENSION" ] || fail "IPA does not contain PhonePushService.appex"
+for TARGET in "$EXPORTED_APP" "$EXPORTED_EXTENSION"; do
+  codesign --verify --deep --strict "$TARGET" || fail "exported target signature verification failed"
+  ENTITLEMENTS=$(codesign -d --entitlements :- "$TARGET" 2>/dev/null) || fail "cannot read exported target entitlements"
+  grep -Fq 'group.live.yooz.remi' <<<"$ENTITLEMENTS" || fail "exported target is missing its app group"
+  grep -Fq 'live.yooz.remi.secure-push' <<<"$ENTITLEMENTS" || fail "exported target is missing the shared push keychain group"
+  [ "$(plutil -extract get-task-allow raw -o - - <<<"$ENTITLEMENTS")" = false ] || fail "exported target permits debugger access"
+done
+EXPORTED_APP_ENTITLEMENTS=$(codesign -d --entitlements :- "$EXPORTED_APP" 2>/dev/null) || fail "cannot read exported app entitlements"
+[ "$(plutil -extract aps-environment raw -o - - <<<"$EXPORTED_APP_ENTITLEMENTS")" = production ] || fail "exported app is not using production APNS"
 
 echo "[5/7] Writing release receipt"
 RECEIPT="$EXPORT_PATH/acceptance-receipt.txt"
@@ -192,6 +202,8 @@ RECEIPT="$EXPORT_PATH/acceptance-receipt.txt"
   echo "build_number=$BUILD"
   echo "app_bundle_id=$APP_ID"
   echo "extension_bundle_id=$EXTENSION_ID"
+  echo "exported_apns_environment=production"
+  echo "exported_debugger_access=false"
   echo "archive_manifest_sha256=$(find "$ARCHIVE_PATH" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
   echo "ipa_sha256=$(shasum -a 256 "$IPA" | awk '{print $1}')"
 } > "$RECEIPT"
